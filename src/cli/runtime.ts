@@ -177,6 +177,9 @@ export async function installProfile(
             }
         }
         const installed = await run({ ...command, args: [...command.args, 'plugin', '--profile', config.dsh.profile, 'add', `link:${resolve(packageRoot)}`] }, { env, timeoutMs: 300_000 });
+        if (installed.exitCode === 127 && installed.stderr.split(/\r?\n/).includes('dsh: pnpm was not found; install pnpm and make it available on PATH.')) {
+            throw new Error('The official DSH plugin manager requires pnpm on PATH. Install pnpm 11.28.5, then retry installation; the existing profile was preserved');
+        }
         if (installed.exitCode !== 0) throw new Error('Official DSH plugin installation failed; run dsh plugin for its installation diagnostics');
         const dump = await run({ ...command, args: [...command.args, '--profile', config.dsh.profile, '--dump-config'] }, { env, timeoutMs: 120_000 });
         if (dump.exitCode !== 0 || !new RegExp(`^\\s*-?\\s*id:\\s*["']?${bundleName}["']?\\s*$`, 'm').test(dump.stdout)) {

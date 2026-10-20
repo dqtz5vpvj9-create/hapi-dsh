@@ -21,6 +21,8 @@ jobs:
         with:
           node-version: 24.19.0
           package-manager-cache: false
+      - name: Install the official DSH plugin manager prerequisite
+        run: npm install --global pnpm@11.28.5
       - name: Install exact dependencies
         run: npm ci
       - name: Types, unit cases, and distributable build

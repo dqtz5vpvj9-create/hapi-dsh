@@ -73,6 +73,42 @@ test('an incomplete existing profile is never reset by setup', async (t) => {
     assert.equal(await readFile(join(profile, 'valuable.txt'), 'utf8'), 'keep');
 });
 
+test('a missing official package manager is actionable while subprocess diagnostics stay private', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-prerequisite-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const packageRoot = await fixture(directory);
+    const config = createConfig('http://127.0.0.1:3006', {});
+    config.dsh.home = join(directory, 'dsh');
+    const profile = join(config.dsh.home, 'profiles', config.dsh.profile);
+    await mkdir(profile, { recursive: true });
+    const original = JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-web-app', 'existing-plugin'] } } });
+    await writeFile(join(profile, 'package.json'), original);
+    const marker = 'dsh: pnpm was not found; install pnpm and make it available on PATH.';
+    for (const [exitCode, stderr, expected] of [
+        [127, `${marker}\r\nfixture-private-diagnostic`, /requires pnpm on PATH.*11\.28\.5/],
+        [1, `${marker}\nfixture-private-diagnostic`, /Official DSH plugin installation failed/],
+        [127, 'fixture-private-diagnostic', /Official DSH plugin installation failed/],
+    ] as const) {
+        let calls = 0;
+        await assert.rejects(installProfile(config, join(directory, 'config.json'), packageRoot, {
+            command: { executable: 'fixture-dsh', args: [] }, env: {},
+            run: async (command) => {
+                calls++;
+                if (command.args.includes('--version')) return { exitCode: 0, stdout: DSH_VERSION, stderr: '' };
+                assert.equal(command.args[0], 'plugin');
+                return { exitCode, stdout: 'fixture-private-stdout', stderr };
+            },
+        }), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.match(error.message, expected);
+            assert.ok(!error.message.includes('fixture-private'));
+            return true;
+        });
+        assert.equal(calls, 2);
+        assert.equal(await readFile(join(profile, 'package.json'), 'utf8'), original);
+    }
+});
+
 test('artifact verification refuses an escaping client export', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-artifact-'));
     t.after(() => rm(directory, { recursive: true, force: true }));

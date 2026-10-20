@@ -29,9 +29,10 @@ bun run build:single-exe
 
 ## 主 Host 安装
 
-需要 Node.js 24 或更新版本。以下用源码入口演示；从 `.tgz` 全局安装后，将 `node dist/cli.js` 换为 `hapi-dsh`。
+需要 Node.js 24 或更新版本，以及 `PATH` 中可执行的 pnpm。固定官方 DSH 的 `dsh plugin` 命令通过 pnpm 管理 profile 依赖；本项目沿用上游固定版本 pnpm 11.28.5。主 Host 与 DSH Runner 所在机器都需要这一安装前提。以下用源码入口演示；从 `.tgz` 全局安装后，将 `node dist/cli.js` 换为 `hapi-dsh`。
 
 ```bash
+npm install --global pnpm@11.28.5
 npm ci
 npm run build
 node dist/cli.js init \

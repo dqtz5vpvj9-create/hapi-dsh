@@ -11,6 +11,7 @@
 | 组件 | 本仓库使用的版本 |
 | --- | --- |
 | Node.js | 24 或更新版本；CI 固定 24.19.0 |
+| pnpm | 11.28.5；官方 DSH 插件管理器要求 `pnpm` 位于 `PATH` |
 | 官方 DSH | `@deepseek-ai/dsh@0.2.1-rc.2`，主机和 Runner 必须一致 |
 | DSH 对照源码 | [`687f282e8625c6b8d11ff58211a90524be2e4317`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317) |
 | HAPI 原生桥 | [`dqtz5vpvj9-create/hapi@0f8ef6970884c92fb2ddca3070be2ec56cb50333`](https://github.com/dqtz5vpvj9-create/hapi/tree/0f8ef6970884c92fb2ddca3070be2ec56cb50333) |
@@ -25,6 +26,7 @@
 ```bash
 git clone https://github.com/dqtz5vpvj9-create/hapi-dsh.git
 cd hapi-dsh
+npm install --global pnpm@11.28.5
 npm ci
 npm run build
 
@@ -57,6 +59,7 @@ node scripts/distribution-pack.mjs
 
 ```bash
 sha256sum -c SHA256SUMS
+npm install --global pnpm@11.28.5
 npm install --global ./hapi-dsh-0.1.0.tgz
 hapi-dsh --help
 ```

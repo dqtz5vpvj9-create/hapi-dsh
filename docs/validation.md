@@ -5,6 +5,7 @@
 ## 本地命令
 
 ```bash
+npm install --global pnpm@11.28.5
 npm ci
 npm run check
 HAPI_DSH_OFFICIAL_TESTS=1 node --import tsx --test --test-isolation=none tests/federation-official.test.ts
