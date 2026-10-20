@@ -1,0 +1,9 @@
+# Installed as an ordinary bundle over the official web profile.
+# Credentials stay in the Host's environment or private configuration file.
+- id: session-controller
+  name: hapi-dsh/session-controller
+- insert:
+    - id: hapi-dsh
+      name: hapi-dsh
+      config:
+        configFile: !!js process.env.HAPI_DSH_CONFIG_FILE

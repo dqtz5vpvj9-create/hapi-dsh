@@ -1,0 +1,13 @@
+# A Host-only plugin mounted over the unchanged official Web profile.
+# The Runner keeps the official browser launch credential in process memory.
+- id: web-runtime
+  config:
+    openBrowser: false
+    printUrl: false
+    surfaceContext: true
+
+- insert:
+    - id: hapi-dsh-runner
+      name: hapi-dsh-runner
+      config:
+        configFile: !!js process.env.HAPI_DSH_RUNNER_CONFIG_FILE

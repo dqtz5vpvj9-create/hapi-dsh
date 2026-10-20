@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Install exact dependencies
+        run: npm ci
+      - name: Types, unit cases, and distributable build
+        run: npm run check
+      - name: Unmodified official DSH federation integration
+        env:
+          HAPI_DSH_OFFICIAL_TESTS: '1'
+        run: node --import tsx --test --test-isolation=none tests/federation-official.test.ts
+      - name: Install Chromium
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Browser end to end
+        run: npm run test:e2e
+      - name: Check and pack distribution
+        run: node scripts/distribution-pack.mjs
+      - name: Clean tarball install and official profiles
+        run: node scripts/distribution-smoke.mjs
+      - name: Upload verified package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hapi-dsh-package
+          path: |
+            artifacts/*.tgz
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload browser reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-reports
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7

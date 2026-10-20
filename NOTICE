@@ -1,0 +1,47 @@
+hapi-dsh
+Source: https://github.com/dqtz5vpvj9-create/hapi-dsh
+License: GNU Affero General Public License, version 3 only (AGPL-3.0-only).
+The complete license text is provided in LICENSE.
+
+HAPI-derived portions
+---------------------
+Persistent workspace geometry and native input compatibility contain adaptations
+from HAPI, including shared/src/workspaces.ts, web workspace behavior, and native
+Codex contracts. Copyright HAPI contributors. The source references in the
+adapted files are preserved.
+
+Pinned fork: https://github.com/dqtz5vpvj9-create/hapi
+Revision: 0f8ef6970884c92fb2ddca3070be2ec56cb50333
+Original project: https://github.com/tiann/hapi
+HAPI is licensed under AGPL-3.0. The upstream CLI's additional attribution
+notice is reproduced, unmodified, in docs/licenses/HAPI-NOTICE.txt for provenance.
+That notice describes upstream CLI components; it does not imply every listed
+third-party component has been copied into this plugin.
+
+DeepSeek Harness
+----------------
+Official @deepseek-ai/dsh and its official plugin packages are used as unchanged
+dependencies and runtime services. They are not forked or patched by this
+project. DeepSeek Harness is licensed under the MIT License.
+
+Copyright (c) 2026 DeepSeek
+Source: https://github.com/deepseek-ai/deepseek-harness
+Version: 0.2.1-rc.2
+Source reference: 687f282e8625c6b8d11ff58211a90524be2e4317
+The unmodified upstream license is included in docs/licenses/DSH-MIT.txt.
+
+Federated Client store runtime
+------------------------------
+The browser artifact also bundles the unmodified official
+@deepseek-ai/dsh-client-store 0.2.1-rc.2 source with its unchanged store-engine
+dependencies. Each Client graph evaluates that factory with its own browser
+storage capability; no upstream implementation is patched.
+
+Zustand 4.5.7, MIT License, Copyright (c) 2019 Paul Henschel.
+Original license: docs/licenses/ZUSTAND-MIT.txt.
+Immer 10.1.1, MIT License, Copyright (c) 2017 Michel Weststrate.
+Original license: docs/licenses/IMMER-MIT.txt.
+
+Other dependencies retain their individual copyright and license notices in
+their npm distributions. The dependency graph and exact resolved versions are
+recorded in package-lock.json in the corresponding source release.

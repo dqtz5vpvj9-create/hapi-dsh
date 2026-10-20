@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tgz
+.env
+.env.*
+!.env.example
+.local/
+*.log
+artifacts/
+tsconfig.build-*.json

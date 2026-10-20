@@ -1,0 +1,337 @@
+import {
+  freezeMessage, LlmAttemptId, MessageId, ToolCallId,
+  type AssistantMessage, type AssistantStreamRecord, type ContentBlock, type StreamChunk, type UserMessage,
+} from '@deepseek-ai/dsh-llm'
+import {
+  appendPluginRecord, type PluginRecordMap, type Session, type SessionEvent, type SessionEventMap,
+  type SessionEventType, type SurfaceEventType, type SurfaceIntent, type TurnEndReason,
+} from '@deepseek-ai/dsh-session'
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
+import type { NativeExecution, NativeRow } from './native.js'
+import type { NativeForkBoundary } from './control-types.ts'
+import './projection-state.js'
+
+interface Step {
+  turn: number
+  step: number
+  nativeTurnId: string
+  open: boolean
+}
+interface Turn {
+  number: number
+  nextStep: number
+  ended: boolean
+}
+interface Stream {
+  key: string
+  attemptId: LlmAttemptId
+  revision: number
+  index: number
+  text: string
+  reasoning: boolean
+  step: Step
+  records: AssistantStreamRecord[]
+}
+
+export class NativeHistoryChangedError extends Error {
+  override readonly name = 'NativeHistoryChangedError'
+}
+
+export interface NativeProjectorOptions {
+  model(): string
+  provider(): string
+  submittedMessage(localId: string): UserMessage | undefined
+  content?(row: NativeRow): readonly ContentBlock[] | undefined
+  stream(frame: AssistantStreamFrame): void
+}
+
+/**
+ * Translates native observations into DSH's public display vocabulary. Logical
+ * DSH steps group native items; they never launch an LLM or drain an inbox.
+ */
+export class NativeProjector {
+  private readonly turns = new Map<string, Turn>()
+  private readonly steps = new Map<string, Step>()
+  private readonly calls = new Map<string, { step: Step; id: ToolCallId }>()
+  private readonly committed = new Map<string, string>()
+  private readonly rawKeys = new Set<string>()
+  private readonly forkBoundaries = new Map<string, NativeForkBoundary>()
+  private activeStream: Stream | undefined
+  private revision = 0
+  private seed: SessionEvent[] | undefined
+  private sourceTime = 0
+  private seedRecords: PluginRecordMap['plugin:hapi-dsh/native-item'][] = []
+
+  constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {}
+
+  get session(): Session { return this.currentSession }
+
+  /** Collect a detached historical seed without altering any published log. */
+  beginHistorySeed(): void {
+    if (this.session.seq !== 0 || this.seed) throw new Error('Native history seeding requires a new detached Session')
+    this.seed = []
+  }
+
+  historySeed(): readonly SessionEvent[] {
+    if (!this.seed) throw new Error('Native history seeding was not started')
+    return this.seed
+  }
+
+  /** Bind only a freshly prepared Session that validated our historical seed. */
+  finishHistorySeed(session: Session): void {
+    if (!this.seed || session.id !== this.session.id || session.firstLiveSeq !== this.seed.length) {
+      throw new Error('The prepared native history does not match its display seed')
+    }
+    this.currentSession = session
+    this.seed = undefined
+    for (const record of this.seedRecords) appendPluginRecord(this.session, 'plugin:hapi-dsh/native-item', record)
+    this.seedRecords = []
+  }
+
+  private append<T extends SessionEventType>(
+    type: T, data: SessionEventMap[T], ...options: T extends SurfaceEventType ? [options: SurfaceIntent<T>] : []
+  ): SessionEvent<T> {
+    const event = this.session.append(type, data, ...options)
+    // append already validated the discriminated type/data pair. TypeScript
+    // cannot distribute a generic T through the mapped SessionEvent union.
+    if (this.seed) this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
+    return event
+  }
+
+  get projectedKeys(): ReadonlySet<string> { return this.rawKeys }
+
+  /** Only a committed displayed message can name a source-native boundary. */
+  forkBoundary(messageId: string): NativeForkBoundary | undefined {
+    const value = this.forkBoundaries.get(messageId)
+    return value ? { ...value } : undefined
+  }
+
+  /** Apply a coherent source page; terminal facts settle after that page's items. */
+  apply(rows: readonly NativeRow[]): void {
+    const groups = new Map<string, NativeRow[]>()
+    for (const row of rows) {
+      const key = row.execution?.turnId ?? ''
+      const group = groups.get(key) ?? []
+      group.push(row)
+      groups.set(key, group)
+    }
+    for (const [id, group] of groups) {
+      let ending: NativeExecution['turn']
+      for (const row of group) {
+        this.sourceTime = row.createdAt
+        if (row.execution?.turn?.ended) ending = row.execution.turn
+        this.applyRow(row)
+      }
+      if (ending) this.endTurn(id, ending.status)
+    }
+  }
+
+  private applyRow(row: NativeRow): void {
+    if (row.kind === 'user' && !row.invoked) return
+    const previous = this.committed.get(row.key)
+    if (previous !== undefined) {
+      if (row.kind === 'assistant' && !row.final) return // A delayed provisional frame cannot regress a committed item.
+      if (previous !== row.fingerprint && row.kind !== 'turn') {
+        throw new NativeHistoryChangedError('Native Codex changed an already projected item; the conversation must acquire a fresh history generation')
+      }
+      return
+    }
+    const turnId = row.execution?.turnId
+    if (row.kind === 'turn') {
+      if (turnId) this.ensureTurn(turnId)
+      this.committed.set(row.key, row.fingerprint)
+      return
+    }
+    // Native errors without a turn cannot be attributed to an invented model turn.
+    if (!turnId) return
+    const turn = this.ensureTurn(turnId)
+    if (turn.ended) throw new NativeHistoryChangedError('A native item arrived after its projected terminal boundary; refresh native history')
+    let event: SessionEvent | undefined
+    let step: Step | undefined
+    switch (row.kind) {
+      case 'user': {
+        const submitted = row.localId ? this.options.submittedMessage(row.localId) : undefined
+        const message: UserMessage = submitted ?? freezeMessage({
+          id: MessageId(`hapi:${row.key}`), role: 'user',
+          content: this.options.content?.(row) ?? [{ type: 'text', text: row.text }], source: { kind: 'user' },
+        })
+        event = this.append('user/message', message, { surfaceOp: 'append' })
+        break
+      }
+      case 'assistant': {
+        step = this.stepFor(row)
+        if (!row.final) { this.updateStream(row, step); return }
+        const block: ContentBlock = row.reasoning ? { type: 'reasoning', text: row.text } : { type: 'text', text: row.text }
+        const stream = this.activeStream?.key === row.key ? this.activeStream : undefined
+        if (stream) this.updateStream(row, step)
+        const current = this.activeStream?.key === row.key ? this.activeStream : undefined
+        if (current) this.emitChunk(current, { type: 'block-end', index: 0, block })
+        const message = this.assistant(row.key, [block])
+        event = this.append('assistant/message', {
+          turn: step.turn, step: step.step, message, stream: current?.records ?? [],
+        }, { surfaceOp: 'append' })
+        if (current) {
+          this.options.stream({ type: 'end', attemptId: current.attemptId, revision: current.revision,
+            index: current.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
+          this.activeStream = undefined
+        }
+        this.closeStep(step)
+        break
+      }
+      case 'tool-call': {
+        step = this.stepFor(row)
+        // Native plan updates reuse `codex-plan-state` within a turn. The
+        // completed item's stable key distinguishes each real invocation.
+        const callId = ToolCallId(`codex:${turnId}:${row.callId}:${row.key}`)
+        const argumentsText = typeof row.input === 'string' ? row.input : JSON.stringify(row.input)
+        event = this.append('assistant/message', {
+          turn: step.turn, step: step.step,
+          message: this.assistant(row.key, [{ type: 'tool-call', id: callId, name: row.name, arguments: argumentsText }]), stream: [],
+        }, { surfaceOp: 'append' })
+        this.append('tool/call', { turn: step.turn, step: step.step, callId, name: row.name, arguments: argumentsText })
+        this.calls.set(`${turnId}:${row.callId}`, { step, id: callId })
+        if (row.execution?.itemId) this.calls.set(`${turnId}:${row.callId}:${row.execution.itemId}`, { step, id: callId })
+        break
+      }
+      case 'tool-result': {
+        const call = (row.execution?.itemId ? this.calls.get(`${turnId}:${row.callId}:${row.execution.itemId}`) : undefined)
+          ?? this.calls.get(`${turnId}:${row.callId}`)
+        step = call?.step ?? this.stepFor(row)
+        const callId = call?.id ?? ToolCallId(`codex:${turnId}:${row.callId}:result:${row.key}`)
+        event = this.append('tool/result', {
+          turn: step.turn, step: step.step,
+          message: freezeMessage({
+            id: MessageId(`hapi:${row.key}`), role: 'tool',
+            source: { kind: 'tool', callId }, toolCallId: callId,
+            content: this.options.content?.(row) ?? [{ type: 'text', text: typeof row.output === 'string' ? row.output : JSON.stringify(row.output, null, 2) }],
+            ...(row.isError ? { isError: true } : {}),
+          }),
+        }, { surfaceOp: 'append' })
+        this.closeStep(step)
+        break
+      }
+      case 'notice': {
+        // A source-native error belongs to the terminal turn facts; retain the
+        // message as plugin metadata without inventing an assistant answer.
+        this.committed.set(row.key, row.fingerprint)
+        return
+      }
+    }
+    if (event) {
+      const messageId = event.type === 'user/message' ? event.data.id
+        : event.type === 'assistant/message' || event.type === 'tool/result' ? event.data.message.id : undefined
+      if (messageId && row.execution?.itemId) {
+        this.forkBoundaries.set(messageId, {
+          threadId: row.execution.threadId, turnId: row.execution.turnId, itemId: row.execution.itemId,
+        })
+      }
+      this.committed.set(row.key, row.fingerprint)
+      this.rawKeys.add(row.key)
+      const nativeRecord = {
+        key: row.key, fingerprint: row.fingerprint, surfaceSeq: event.seq,
+        // Official Conversation treats top-level `turn` / `step` fields on
+        // every event as timeline coordinates, including ignorable records.
+        // Seed metadata is appended after history and must not invent a late
+        // Step 0 that replaces the final answer's real latest Step.
+        displayTurn: step?.turn ?? turn.number, displayStep: step?.step ?? 0,
+        nativeTurnId: turnId, nativeItemId: row.execution?.itemId ?? null,
+      }
+      if (this.seed) this.seedRecords.push(nativeRecord)
+      else appendPluginRecord(this.session, 'plugin:hapi-dsh/native-item', nativeRecord)
+    }
+  }
+
+  private ensureTurn(id: string): Turn {
+    let turn = this.turns.get(id)
+    if (!turn) {
+      turn = { number: this.turns.size + 1, nextStep: 0, ended: false }
+      this.turns.set(id, turn)
+      this.append('turn/start', { turn: turn.number })
+    }
+    return turn
+  }
+
+  private stepFor(row: NativeRow): Step {
+    const turnId = row.execution?.turnId
+    if (!turnId) throw new Error('A native item must identify its source turn')
+    const key = `${turnId}:${row.execution?.itemId ?? row.key}:${row.kind === 'assistant' && row.reasoning ? 'reasoning' : 'item'}`
+    let step = this.steps.get(key)
+    if (!step) {
+      const turn = this.ensureTurn(turnId)
+      step = { turn: turn.number, step: ++turn.nextStep, nativeTurnId: turnId, open: true }
+      this.steps.set(key, step)
+      this.append('step/start', { turn: step.turn, step: step.step })
+    }
+    return step
+  }
+
+  private assistant(key: string, content: readonly ContentBlock[]): AssistantMessage {
+    return freezeMessage({ id: MessageId(`hapi:${key}`), role: 'assistant', content,
+      source: { kind: 'model', provider: this.options.provider(), model: this.options.model() } })
+  }
+
+  private updateStream(row: NativeRow & { kind: 'assistant' }, step: Step): void {
+    let stream = this.activeStream
+    if (stream?.key === row.key && stream.reasoning === row.reasoning && stream.text.startsWith(row.text) && !row.final) return
+    if (!stream || stream.key !== row.key || stream.reasoning !== row.reasoning || !row.text.startsWith(stream.text)) {
+      this.abandonStream()
+      stream = { key: row.key, attemptId: LlmAttemptId(`native:${row.key}:${++this.revision}`),
+        revision: this.revision, index: 0, text: '', reasoning: row.reasoning, step, records: [] }
+      this.activeStream = stream
+      this.options.stream({ type: 'start', attemptId: stream.attemptId, revision: stream.revision, turn: step.turn, step: step.step })
+      this.emitChunk(stream, { type: 'block-start', index: 0, blockType: row.reasoning ? 'reasoning' : 'text' })
+    }
+    const text = row.text.slice(stream.text.length)
+    if (text) this.emitChunk(stream, { type: row.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text })
+    stream.text = row.text
+  }
+
+  private emitChunk(stream: Stream, chunk: StreamChunk): void {
+    const time = Date.now()
+    stream.records.push({ type: 'chunk', time, chunk })
+    this.options.stream({ type: 'chunk', attemptId: stream.attemptId, revision: stream.revision,
+      index: stream.index++, time, chunk })
+  }
+
+  private closeStep(step: Step): void {
+    if (!step.open) return
+    this.append('step/end', { turn: step.turn, step: step.step })
+    step.open = false
+  }
+
+  private endTurn(id: string, status: NonNullable<NativeExecution['turn']>['status']): void {
+    if (status === 'inProgress') return
+    const turn = this.ensureTurn(id)
+    if (turn.ended) return
+    const stream = this.activeStream
+    if (stream?.step.nativeTurnId === id) {
+      // An interrupted native item may never emit item/completed. Its visible
+      // partial is committed only after an authoritative non-success terminal.
+      if (status !== 'completed' && stream.text) {
+        const block: ContentBlock = stream.reasoning ? { type: 'reasoning', text: stream.text } : { type: 'text', text: stream.text }
+        const event = this.append('assistant/message', {
+          turn: stream.step.turn, step: stream.step.step,
+          message: this.assistant(stream.key, [block]), stream: stream.records, interrupted: true,
+        }, { surfaceOp: 'append' })
+        this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: stream.revision,
+          index: stream.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
+        this.activeStream = undefined
+      } else this.abandonStream()
+    }
+    for (const step of this.steps.values()) if (step.nativeTurnId === id) this.closeStep(step)
+    const reason: TurnEndReason = status === 'completed' ? { kind: 'completed' }
+      : status === 'interrupted' ? { kind: 'aborted', reason: { kind: 'user' } }
+        : { kind: 'error', error: { code: 'CODEX_NATIVE_TURN_FAILED', message: 'The native Codex turn failed' } }
+    this.append('turn/end', { turn: turn.number, reason })
+    turn.ended = true
+  }
+
+  /** Viewer disposal abandons a transient view and never closes the native turn. */
+  abandonStream(): void {
+    const stream = this.activeStream
+    if (!stream) return
+    this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: stream.revision,
+      index: stream.index, outcome: { kind: 'abandoned' } })
+    this.activeStream = undefined
+  }
+}

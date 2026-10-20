@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": "." },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/client-api.ts", "tests/workspace-*.test.ts", "tests/client-*.test.ts"],
+  "exclude": ["node_modules", "dist"]
+}

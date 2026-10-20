@@ -1,0 +1,134 @@
+{
+  "name": "hapi-dsh",
+  "version": "0.1.0",
+  "description": "A distributed tmux-style DSH workspace with native HAPI Codex sessions",
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dqtz5vpvj9-create/hapi-dsh.git"
+  },
+  "engines": {
+    "node": ">=24",
+    "dsh": "0.2.1-rc.2"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/types/client/index.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./cli": {
+      "types": "./dist/types/cli/index.d.ts",
+      "default": "./dist/cli.js"
+    },
+    "./session-controller": {
+      "types": "./dist/types/codex/session-controller.d.ts",
+      "default": "./dist/session-controller.js"
+    },
+    "./package.json": "./package.json",
+    "./config/cordis.patch.yml": "./config/cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "bin": {
+    "hapi-dsh": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "config",
+    "locale",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "docs",
+    "src",
+    "scripts/build.mjs",
+    "tsconfig.json",
+    "tsconfig.host.json",
+    "tsconfig.client.json",
+    "UPSTREAMS.json"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./config/cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-session"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
+    "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm test && npm run build",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-modules": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-scope": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session-projection": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session-title": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-loader": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "ws": "8.21.0",
+    "yaml": "2.8.2",
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-client-store": "0.2.1-rc.2",
+    "@playwright/test": "1.56.1",
+    "@types/node": "24.10.1",
+    "@types/react": "18.3.27",
+    "@types/react-dom": "18.3.7",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.25.11",
+    "immer": "10.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "zustand": "4.5.7"
+  }
+}
