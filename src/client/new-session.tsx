@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { remoteValue, type CreateNativeSession, type HapiCatalog, type HapiRemoteApi, type MachineOptions, type NativeCreationState } from '../client-api.ts'
 import { errorMessage, type WorkspaceController } from './controller.ts'
@@ -162,7 +163,7 @@ export function NativeSessionForm({ api, controller, close, t, uploadInitialFile
         if (!attempt.current && !await directoryCheck.check()) return
         let request: CreateNativeSession
         try {
-            request = attempt.current ?? nativeCreationRequest(fields, initial.state.draft.creationRequestId ?? crypto.randomUUID())
+            request = attempt.current ?? nativeCreationRequest(fields, initial.state.draft.creationRequestId ?? randomId())
             saveLaunchIntent(controller.options.storage, intentKey, request)
             attempt.current = request
             await initial.task.prepare(request.requestId)

@@ -1,4 +1,5 @@
 /** Lossless import of HAPI v1 scratchlists and original HAPI session exports. */
+import { randomId } from './random-id.ts';
 import { z } from 'zod';
 import { remoteValue, type SessionExtrasApi, type SourceNote, type WorkbenchSource } from '../client-api.ts';
 import { sourceAttachmentSchema, sourceNoteSchema } from '../session-extras-types.ts';
@@ -93,7 +94,7 @@ export class NoteMigrationController {
         try {
             this.save({ ...journal, rows: journal.rows.map(row => row.original.id !== originalId || row.state !== 'conflict' ? row
                 : choice === 'keep-source' ? { ...row, state: 'kept', error: undefined }
-                    : { ...row, targetId: crypto.randomUUID(), state: 'pending', error: undefined }) });
+                    : { ...row, targetId: randomId(), state: 'pending', error: undefined }) });
             this.publish({ error: null });
         } catch (error) { this.publish({ error: String(error) }); }
     }

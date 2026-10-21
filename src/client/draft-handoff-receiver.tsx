@@ -1,4 +1,5 @@
 /** A live official composer endpoint; neither editor nor submission is replaced. */
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -32,12 +33,12 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
             } : null, [projection?.hubId, projection?.hapiSessionId, observed?.sidechain, props.sessionId, pane]);
             useEffect(() => {
                 if (!source || !pane) return;
-                let generation: ReturnType<typeof owner.sessions.binding>, bindingId = crypto.randomUUID();
+                let generation: ReturnType<typeof owner.sessions.binding>, bindingId = randomId();
                 const live = () => {
                     const current = latest.current, binding = owner.sessions.binding(props.sessionId);
                     if (!binding || current.observed?.sidechain || current.projection?.hubId !== source.hubId
                         || current.projection?.hapiSessionId !== source.sessionId) throw new Error('The original source composer binding changed. Both drafts are retained.');
-                    if (generation !== binding) { generation = binding; bindingId = crypto.randomUUID(); }
+                    if (generation !== binding) { generation = binding; bindingId = randomId(); }
                     return { binding, facade: owner.conversation.input.for(binding.ctx) };
                 };
                 const capture = (): HandoffDraft => {

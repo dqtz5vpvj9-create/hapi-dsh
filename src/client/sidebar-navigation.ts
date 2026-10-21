@@ -1,4 +1,5 @@
 /** Adapt the official sidebar through Cordis's public service-isolation seam. */
+import { randomId } from './random-id.ts';
 import { Context } from '@deepseek-ai/cordis'
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
@@ -18,7 +19,7 @@ export async function installSidebarNavigation(ctx: Context, controller: Pick<Wo
     const original = entry.context.get('uiWorkspace') as UiWorkspace | undefined
     if (!original) throw new Error('The official sidebar navigation capability is not available')
     const priorIsolation = entry.options.isolate?.uiWorkspace
-    const label = `hapi-dsh:sidebar:${crypto.randomUUID()}`
+    const label = `hapi-dsh:sidebar:${randomId()}`
     const restore = async (): Promise<void> => {
         if (entry.options.isolate?.uiWorkspace !== label || ![...ctx.loader.entries()].includes(entry)) return
         const isolation = { ...entry.options.isolate }

@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { z } from 'zod';
 import { remoteValue, type SessionExtrasApi, type SourceAttachment, type SourceNote, type WorkbenchSource } from '../client-api.ts';
 import { sourceAttachmentSchema, sourceNoteSchema } from '../session-extras-types.ts';
@@ -104,7 +105,7 @@ export class ComposerParkingController {
             if (!this.source.sourceHubId) throw new Error('The original Hub identity is unavailable.');
             snapshotSchema.parse(snapshot);
             if (JSON.stringify(snapshot.attachmentIds) !== JSON.stringify(files.map(file => file.id))) throw new Error('The composer attachments changed before parking. The draft is retained.');
-            const journal: ComposerParkingJournal = { version: 1, source: this.source, entryId: crypto.randomUUID(), createdAt: Date.now(), snapshot,
+            const journal: ComposerParkingJournal = { version: 1, source: this.source, entryId: randomId(), createdAt: Date.now(), snapshot,
                 state: 'preparing', files: files.map(({ id, file }) => ({ draftId: id, name: file.name, mediaType: file.type || 'application/octet-stream', lastModified: file.lastModified, blob: file, upload: 'pending' })) };
             await this.save(journal); await this.commit(false);
         } catch (error) { this.publish({ error: errorText(error) }); }

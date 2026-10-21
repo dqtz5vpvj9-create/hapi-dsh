@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SourcePiHistoryPanel } from './source-history.tsx';
 import { nativeToolAllowed } from './native-tool-admission.ts';
@@ -43,7 +44,7 @@ function useOperation(api: HapiRemoteApi) {
     const run = async (submit: (operationId: string) => Promise<NativeOperationReceipt>): Promise<NativeOperationReceipt | null> => {
         if (gate.current) return null;
         gate.current = true; setBusy(true); setError(null); setReceipt(null);
-        const id = crypto.randomUUID(); setPendingId(id);
+        const id = randomId(); setPendingId(id);
         try { const result = await submit(id); setReceipt(result); return result; }
         catch (failure) {
             // The host may have durably admitted this operation before the browser disconnected.

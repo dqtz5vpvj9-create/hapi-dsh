@@ -1,4 +1,5 @@
 /** Gemini/Qwen wire handling adapted from HAPI 0f8ef697 realtime/*VoiceSession.tsx (AGPL-3.0-only). */
+import { randomId } from '../random-id.ts';
 import { remoteValue } from '../../client-api.ts';
 import { isObject } from '../../voice/messages.ts';
 import { resolveComposedVoiceSystemPrompt, truncateUtf8ByteLength } from '../../voice/protocol/voicePersonality.ts';
@@ -73,7 +74,7 @@ export class VoiceAssistant {
                 run.eleven = true;
                 const language = getElevenLabsCodeFromPreference(settings.language ?? null);
                 const tool = (name: string, args: unknown) => this.current(run)
-                    ? run.tools.call({ id: crypto.randomUUID(), name, args }) : Promise.resolve('error (The original voice connection has ended)');
+                    ? run.tools.call({ id: randomId(), name, args }) : Promise.resolve('error (The original voice connection has ended)');
                 await this.eleven.start({ conversationToken: token.token, connectionType: 'webrtc',
                     dynamicVariables: { sessionId: context.sessionId, initialConversationContext: capElevenLabsInitialContext(context.plan.bootstrap) },
                     overrides: buildElevenLabsSessionOverridesFromPrefs(settings.personality, { ...(language ? { language } : {}), ...(settings.voice ? { voiceId: settings.voice } : {}) }),
@@ -118,7 +119,7 @@ export class VoiceAssistant {
     providerMode(mode: 'speaking' | 'listening'): void { if (this.run?.eleven && this.current(this.run)) this.update({ mode }); }
     providerCaption(text: string): void { if (this.run?.eleven && this.current(this.run)) this.update({ caption: text.slice(0, 4096) }); }
     providerEnded(error?: unknown): void { const run = this.run; if (run?.eleven && this.current(run) && !run.closing) void this.finish(run, error).catch(() => {}); }
-    tool(name: string, args: unknown, id: string = crypto.randomUUID()): Promise<string> {
+    tool(name: string, args: unknown, id: string = randomId()): Promise<string> {
         const run = this.run; if (!run || !this.current(run)) return Promise.resolve('error (The voice session has ended)');
         return run.tools.call({ id, name, args });
     }

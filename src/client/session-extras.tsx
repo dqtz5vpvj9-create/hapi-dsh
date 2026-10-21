@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { remoteValue, type HapiRemoteApi, type WorkbenchSource, type SourceAttachment, type SourceNote,
     type SourceOutline, type SessionExtrasResponse } from '../client-api.ts';
@@ -19,7 +20,7 @@ export interface SourcePanelProps {
 }
 interface NoteDraft { entryId: string; text: string; attachments: SourceAttachment[]; editing: boolean; updatedAt?: number }
 function draftKey(source: WorkbenchSource): string { return `hapi-dsh:note-draft:${identity(source)}`; }
-function freshDraft(): NoteDraft { return { entryId: crypto.randomUUID(), text: '', attachments: [], editing: false }; }
+function freshDraft(): NoteDraft { return { entryId: randomId(), text: '', attachments: [], editing: false }; }
 function readDraft(source: WorkbenchSource): NoteDraft {
     try {
         const value: unknown = JSON.parse(storage()?.getItem(draftKey(source)) ?? 'null');
@@ -127,7 +128,7 @@ export function SourceNotesPanel({ api, source, active, language, onUse, legacyR
             <ul>{draft.attachments.map(file => <li key={file.id}>{file.filename} <button type="button" disabled={busy} onClick={() => setDraft(previous => ({ ...previous, attachments: previous.attachments.filter(row => row.id !== file.id) }))}>{tr('Remove', '移除')}</button></li>)}</ul>
             <div className="hapi-button-row"><label className="hapi-source-file-pick">{tr('Attach files', '添加附件')}<input type="file" multiple disabled={busy || !data} accept={data?.limits.allowedMimeTypes.join(',')} onChange={event => { const files = event.currentTarget.files; void upload(files); event.currentTarget.value = ''; }}/></label>
                 <button type="submit" disabled={busy || !data || (!draft.text.trim() && !draft.attachments.length)}>{tr('Save note', '保存笔记')}</button>
-                {draft.editing && <button type="button" disabled={busy} onClick={() => setDraft(previous => ({ ...previous, entryId: crypto.randomUUID(), editing: false }))}>{tr('Save as new', '另存为新笔记')}</button>}
+                {draft.editing && <button type="button" disabled={busy} onClick={() => setDraft(previous => ({ ...previous, entryId: randomId(), editing: false }))}>{tr('Save as new', '另存为新笔记')}</button>}
                 {(draft.editing || draft.text || draft.attachments.length > 0) && <button type="button" disabled={busy} onClick={() => {
                     if (window.confirm(tr('Discard this local draft?', '放弃当前本地草稿？'))) setDraft(freshDraft());
                 }}>{tr('Discard draft', '放弃草稿')}</button>}</div>
@@ -256,7 +257,7 @@ export function SourceSchedulePanel({ api, source, sessionId, language, readOnly
         if (!intent && (!text.trim() || scheduleError(scheduledAt, now))) {
             setError(tr('Choose a time in the next seven days and enter a message.', '请输入消息，并选择未来七天内的时间。')); return;
         }
-        const request = intent ?? { sessionId, operationId: crypto.randomUUID(), text, scheduledAt };
+        const request = intent ?? { sessionId, operationId: randomId(), text, scheduledAt };
         if (!saveScheduleDraft(store, source, sessionId, { text, at, selection, intent: request, receipt })) {
             setLocalSaved(false); setError(tr('This browser could not retain the submission identity. Nothing was sent; keep the draft and free some browser storage before trying again.', '浏览器无法保存本次提交身份，尚未发送任何内容。请保留草稿并释放浏览器存储后重试。')); return;
         }

@@ -1,6 +1,7 @@
 // Adapted from HAPI 0f8ef697; original HAPI/Haven/TermBeam notices follow.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Haven toolbar key IDs and macro presets; browser sequences use TermBeam's encoder.
+import { randomId } from '../random-id.ts';
 import { DEFAULT_TOUCHBAR_KEYS } from './defaultKeys.ts'
 import { encodeCombo } from './keyCombo.ts'
 import type { TouchBarKey } from './types.ts'
@@ -51,7 +52,7 @@ export function importLayout(text: string): TouchBarKey[] {
                 if (!builtin) throw new Error(`Unknown key: ${item}`)
                 key = { ...builtin }
             } else if (item && typeof item === 'object' && 'label' in item && 'send' in item && typeof item.label === 'string' && typeof item.send === 'string' && item.label && item.send) {
-                key = { id: `custom-${crypto.randomUUID()}`, label: item.label, send: item.send === 'PASTE' ? '' : item.send, ...(item.send === 'PASTE' ? { action: 'paste' as const } : {}) }
+                key = { id: `custom-${randomId()}`, label: item.label, send: item.send === 'PASTE' ? '' : item.send, ...(item.send === 'PASTE' ? { action: 'paste' as const } : {}) }
             } else throw new Error('Custom keys need a label and a send string')
             return { ...key, row: (rowIndex + 1) as 1 | 2, col: index + 1, size: 1 }
         })

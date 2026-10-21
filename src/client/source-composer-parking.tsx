@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -13,7 +14,7 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
         const tr = (en: string, zh: string): string => language.startsWith('zh') ? zh : en;
         const input = props.useInput(value => value);
         const [expanded, setExpanded] = useState(false), [captureError, setCaptureError] = useState<string | null>(null), [dismissed, setDismissed] = useState(false);
-        const [viewId] = useState(() => crypto.randomUUID());
+        const [viewId] = useState(() => randomId());
         const files = useRef<readonly { id: string; file: File }[]>([]);
         const actions = useRef(props.inputActions); actions.current = props.inputActions;
         const pane = ctx.get('hapiWorkspacePane');

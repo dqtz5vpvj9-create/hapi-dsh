@@ -1,4 +1,6 @@
 /** HAPI's original browser-only Web Share Target transfer format (AGPL-3.0). */
+import { randomId } from './random-id.ts';
+
 export const SHARE_DATABASE = 'hapi-share-transfers';
 export const SHARE_STORE = 'transfers';
 export const SHARE_TTL = 60 * 60 * 1000;
@@ -77,7 +79,7 @@ export class BrowserShareTransfers {
         return this.transaction('readonly', store => store.get(id));
     }
     async put(payload: SharePayload): Promise<string> {
-        validateSharePayload(payload); const id = crypto.randomUUID();
+        validateSharePayload(payload); const id = randomId();
         await this.transaction('readwrite', store => store.add({ ...payload, id })); return id;
     }
     async delete(id: string): Promise<void> { await this.transaction('readwrite', store => store.delete(id)); }

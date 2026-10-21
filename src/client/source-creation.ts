@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { createSourceSessionSchema, type CreateSourceSession, type SourceCreationFlavor, type SourceCreationState } from '../hapi-agent/creation-types.ts'
 import { errorMessage } from './controller.ts'
@@ -38,7 +39,7 @@ export class SourceCreationController {
     private state: Snapshot = { request: null, rows: [], busy: false, loading: false, error: null }
     private readonly listeners = new Set<() => void>()
     private reading: Promise<void> | undefined
-    constructor(private readonly api: Api, private readonly nextId: () => string = () => crypto.randomUUID(),
+    constructor(private readonly api: Api, private readonly nextId: () => string = () => randomId(),
         private readonly storage?: RecoveryStore, private readonly storageKey = 'hapi-dsh:source-launch') {
         try {
             const parsed = createSourceSessionSchema.safeParse(JSON.parse(storage?.getItem(storageKey) ?? 'null'))

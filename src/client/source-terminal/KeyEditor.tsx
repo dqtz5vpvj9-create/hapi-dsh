@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Browser port of Haven toolbar configuration. See HAVEN.md.
+import { randomId } from '../random-id.ts';
 import { useEffect, useRef, useState } from 'react'
 import { TerminalDialog, Button } from './dialog.tsx'
 import type { TerminalTranslate } from './locales.ts'
@@ -161,7 +162,7 @@ export function KeyEditor(props: { t: TerminalTranslate; error?: string | null; 
                         <Button disabled={!selected || !label.trim()} onClick={() => props.onChange(props.keys.map(key => { if (key.id !== selectedId) return key; const { action: oldAction, modifier: oldModifier, ...position } = key; return { ...position, ...configuredKey() } }))}>{t('button.save')}</Button>
                         <Button variant="secondary" disabled={!label.trim()} onClick={() => {
                             const key: TouchBarKey = {
-                                id: `custom-${crypto.randomUUID()}`, label: label.trim(), send: '',
+                                id: `custom-${randomId()}`, label: label.trim(), send: '',
                                 row: 2, col: rowKeys[1]!.length + 1,
                                 ...configuredKey(),
                             }

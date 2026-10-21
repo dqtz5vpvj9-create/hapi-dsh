@@ -1,4 +1,5 @@
 /** Durable UI intent ownership. Native receipts, not optimistic values, decide completion. */
+import { randomId } from './random-id.ts';
 import { remoteValue, type HapiRemoteApi, type NativeForkCloseResult, type NativeForkRequest, type NativeForkState, type NativeForkView, type NativeSettingChange, type NativeSettingReceipt, type NativeSettings } from '../client-api.ts'
 import { errorMessage } from './controller.ts'
 import { NativePlanController, type NativePlanApi } from './native-plan-state.ts'
@@ -164,7 +165,7 @@ export class NativeControlLedger {
     private readonly settingEntries = new Map<string, NativeSettingsController>()
     private readonly forkEntries = new Map<string, NativeForkController>()
     private readonly planEntries = new Map<string, NativePlanController>()
-    constructor(private readonly api: ControlApi, private readonly nextId: () => string = () => crypto.randomUUID()) {}
+    constructor(private readonly api: ControlApi, private readonly nextId: () => string = () => randomId()) {}
     settings(sessionId: string): NativeSettingsController {
         let entry = this.settingEntries.get(sessionId)
         if (!entry) { entry = new NativeSettingsController(this.api, sessionId, this.nextId); this.settingEntries.set(sessionId, entry) }

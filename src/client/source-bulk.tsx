@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useRef, useState } from 'react';
 import { remoteValue } from '../client-api.ts';
 import type { SourceAdminApi, SourceBulkOperation, SourceBulkReceipt } from '../source-admin-types.ts';
@@ -27,7 +28,7 @@ export function SourceBulkPanel({ api, hubId, language }: { api: Pick<SourceAdmi
     }, [receipt?.state, receipt?.operationId, api]);
     const run = async (action: SourceBulkOperation['action']) => {
         if (flight.current) return;
-        const operationId = crypto.randomUUID();
+        const operationId = randomId();
         try { localStorage.setItem(key, operationId); } catch { setError(tr('The operation was not sent because its recovery identity could not be saved.', '恢复标识无法保存，因此操作未发送。')); return; }
         pending.current = operationId; flight.current = true; setBusy(true); setError(null); setReceipt(null);
         try { const result = remoteValue(await api.sourceSessionBulk({ operationId, action })); if (mounted.current) setReceipt(result); }

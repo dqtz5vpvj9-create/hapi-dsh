@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { remoteValue, type HapiRemoteApi, type WorkspaceWrite } from '../client-api.ts'
 import type { WorkspacePersistence } from './controller.ts'
 import type { WorkspaceState } from './model.ts'
@@ -13,7 +14,7 @@ export class WorkspaceConflictError extends Error {
  * One outstanding operation has one idempotency identity. An uncertain network
  * outcome is reconciled using that same operation before a newer layout writes.
  */
-export function createWorkspacePersistence(api: Pick<HapiRemoteApi, 'workspaceGet' | 'workspacePut'>, nextId: () => string = () => crypto.randomUUID()): WorkspacePersistence {
+export function createWorkspacePersistence(api: Pick<HapiRemoteApi, 'workspaceGet' | 'workspacePut'>, nextId: () => string = () => randomId()): WorkspacePersistence {
     let revision: number | undefined
     let pending: WorkspaceWrite | undefined
     const read = async (signal: AbortSignal): Promise<WorkspaceState | null> => {

@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiCatalog, type HapiRemoteApi } from '../client-api.ts'
 import { SOURCE_CREATION_FLAVORS, SOURCE_LAUNCH_PERMISSION_MODES, type SourceCreationFlavor, type SourceCreationState } from '../hapi-agent/creation-types.ts'
@@ -20,7 +21,7 @@ const requestFields = (request: SourceCreationState['request']): SourceLaunchFie
 export function SourceSessionForm({ api, controller, close, t, uploadInitialFile }: {
     api: HapiRemoteApi; controller: WorkspaceController; close: () => void; t: WorkspaceTranslate; uploadInitialFile: InitialFileUpload
 }) {
-    const creation = useMemo(() => new SourceCreationController(api, () => crypto.randomUUID(), controller.options.storage, `${controller.options.storageKey}:source-launch`), [api, controller])
+    const creation = useMemo(() => new SourceCreationController(api, () => randomId(), controller.options.storage, `${controller.options.storageKey}:source-launch`), [api, controller])
     const drafts = useMemo(() => new LaunchDraftStore(controller.options.storage, `${controller.options.storageKey}:source-launch:form`, sourceLaunchFieldsSchema), [controller])
     const initial = useInitialTask(api, uploadInitialFile, `${controller.options.storageKey}:source-launch:task`)
     const state = useSyncExternalStore(creation.subscribe, creation.getSnapshot)

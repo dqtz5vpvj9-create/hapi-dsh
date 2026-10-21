@@ -4,6 +4,7 @@
  * Copyright HAPI contributors. SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { randomId } from './random-id.ts';
 import { documentKey, parseDocumentRef, type DocumentRef } from '../workspace/documents.ts'
 import { parseDshPaneTarget, type DshPaneTarget } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
@@ -185,7 +186,7 @@ export class WorkspaceStore {
     private listeners = new Set<() => void>()
     private closed: { window: WorkspaceWindow; index: number } | undefined
 
-    constructor(private state: WorkspaceState, private readonly nextId: () => string = () => crypto.randomUUID(), private readonly beforeRemove?: (resources: readonly PaneResource[]) => boolean) {
+    constructor(private state: WorkspaceState, private readonly nextId: () => string = () => randomId(), private readonly beforeRemove?: (resources: readonly PaneResource[]) => boolean) {
         this.state = parseWorkspaceState(state)
     }
 

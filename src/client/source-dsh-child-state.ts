@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { z } from 'zod'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { sourceDshChildStateSchema, type SourceDshChildState } from '../hapi-agent/dsh-child-types.ts'
@@ -17,7 +18,7 @@ export class SourceDshChildController {
   private recoveryFault: string | null = null
   private readonly nextId: () => string
   constructor(private readonly api: SourceDshChildApi, readonly sessionId: string,
-    private readonly storage: SourceDshChildStorage | undefined, nextId?: () => string) { this.nextId = nextId ?? (() => crypto.randomUUID()) }
+    private readonly storage: SourceDshChildStorage | undefined, nextId?: () => string) { this.nextId = nextId ?? (() => randomId()) }
   getSnapshot = (): Snapshot => this.snapshot
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private publish(change: Partial<Snapshot>): void { this.snapshot = { ...this.snapshot, ...change }; for (const listener of this.listeners) listener() }

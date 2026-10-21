@@ -1,4 +1,5 @@
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
+import { randomId } from './random-id.ts';
 import type { ISessions, SessionListState, SessionReference, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -237,7 +238,7 @@ export class WorkspaceController {
     private primarySourceHubId: string | null = null
 
     constructor(readonly options: WorkspaceOptions) {
-        const nextId = options.nextId ?? (() => crypto.randomUUID())
+        const nextId = options.nextId ?? (() => randomId())
         let state = initialWorkspace(nextId)
         let notice: string | null = null
         let restored = false
@@ -677,7 +678,7 @@ export class WorkspaceController {
             return false
         })
         if (existing) { this.store.updateView(existing.id, target, options.title); this.store.focus(existing.id) }
-        else this.store.openResource({ kind: 'view', sessionId, viewId: this.options.nextId?.() ?? crypto.randomUUID(), target,
+        else this.store.openResource({ kind: 'view', sessionId, viewId: this.options.nextId?.() ?? randomId(), target,
             ...(options.title === undefined ? {} : { title: options.title }),
             ...(source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : {}),
         }, options.beside)

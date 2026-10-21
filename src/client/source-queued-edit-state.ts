@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { z } from 'zod'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { sourceQueuedEditReceiptSchema, sourceQueuedEditRequestSchema, type SourceQueuedEditReceipt, type SourceQueuedEditRequest } from '../codex/queued-edit-types.ts'
@@ -34,7 +35,7 @@ export class SourceQueuedEditController {
   private storageFault: string | null = null
   private savedRaw: string | null = null
   constructor(private readonly api: Api, readonly sessionId: string, private readonly storage: ScheduleStorage | undefined,
-    private readonly key: string, private readonly target: QueuedEditTarget, private readonly nextId: () => string = () => crypto.randomUUID(),
+    private readonly key: string, private readonly target: QueuedEditTarget, private readonly nextId: () => string = () => randomId(),
     private readonly owner?: QueuedEditOwner) {
     try {
       this.savedRaw = storage?.getItem(key) ?? null

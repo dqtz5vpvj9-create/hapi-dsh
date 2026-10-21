@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { sourceOperationSchema, sourceOperationReceiptSchema, type SourceAction, type SourceOperation,
@@ -48,7 +49,7 @@ export class SourceLifecycleController {
     private observers = 0
     private timer: ReturnType<typeof setInterval> | undefined
     constructor(private readonly api: Api, readonly sessionId: string, private readonly storage?: RecoveryStore,
-        private readonly nextId: () => string = () => crypto.randomUUID()) {
+        private readonly nextId: () => string = () => randomId()) {
         this.storageKey = `hapi-dsh:source-lifecycle:${sessionId}`
         try {
             const saved: unknown = JSON.parse(storage?.getItem(this.storageKey) ?? 'null')

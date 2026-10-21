@@ -1,4 +1,6 @@
 /** Source-successor draft transfer. No chat submission or private editor state. */
+import { randomId } from './random-id.ts';
+
 export interface HandoffSource { hubId: string; sessionId: string }
 export interface HandoffAddress extends HandoffSource { displayId: string; hostId: string }
 export interface HandoffReference {
@@ -89,7 +91,7 @@ export class BrowserHandoffStorage implements HandoffStorage {
         });
     }
     async write(owner: string, previous: string | null, record: HandoffRecord | null): Promise<HandoffEntry> {
-        const db = await this.open(), entry = { revision: crypto.randomUUID(), record };
+        const db = await this.open(), entry = { revision: randomId(), record };
         return new Promise((resolve, reject) => {
             const tx = db.transaction('windows', 'readwrite', { durability: 'strict' }), store = tx.objectStore('windows');
             const request = store.get(owner); let failure: unknown;
@@ -183,7 +185,7 @@ export class WorkspaceDraftHandoffs {
         const release = selected.endpoint.retain();
         this.publish({ busy: true, error: null });
         try {
-            const record: HandoffRecord = { version: 1, id: crypto.randomUUID(), from, to, draft: selected.draft, status: 'prepared', createdAt: Date.now() };
+            const record: HandoffRecord = { version: 1, id: randomId(), from, to, draft: selected.draft, status: 'prepared', createdAt: Date.now() };
             await this.save(record);
             this.retained?.(); this.retained = release; this.sourceEndpoint = selected.endpoint;
             this.publish({ opened: true }); this.changed(); return true;

@@ -1,4 +1,5 @@
 /** Browser-local source editor recovery; content never enters workspace geometry. */
+import { randomId } from './random-id.ts';
 import { z } from 'zod';
 import { MAX_EDITABLE_BYTES, nativeDocumentSchema } from '../workbench-types.ts';
 import type { NativeDocumentDraft } from './workbench-drafts.ts';
@@ -36,7 +37,7 @@ export class BrowserNativeDocumentJournal implements NativeDocumentJournal {
     }
     async write(key: string, expectedRevision: string | null, draft: NativeDocumentDraft | null): Promise<NativeDocumentJournalEntry> {
         const database = await this.open();
-        const value = recordSchema.parse({ version: 1, revision: crypto.randomUUID(), updatedAt: Date.now(), draft });
+        const value = recordSchema.parse({ version: 1, revision: randomId(), updatedAt: Date.now(), draft });
         return new Promise((resolve, reject) => {
             const transaction = database.transaction('drafts', 'readwrite', { durability: 'strict' }), store = transaction.objectStore('drafts');
             let reason: Error | undefined;
@@ -59,7 +60,7 @@ class ProcessDocumentJournal implements NativeDocumentJournal {
     async read(key: string) { return structuredClone(this.rows.get(key) ?? null); }
     async write(key: string, expectedRevision: string | null, draft: NativeDocumentDraft | null) {
         if ((this.rows.get(key)?.revision ?? null) !== expectedRevision) throw new Error('Another editor saved a newer draft for this source file.');
-        const value: NativeDocumentJournalEntry = { version: 1, revision: crypto.randomUUID(), updatedAt: Date.now(), draft: structuredClone(draft) };
+        const value: NativeDocumentJournalEntry = { version: 1, revision: randomId(), updatedAt: Date.now(), draft: structuredClone(draft) };
         this.rows.set(key, value); return value;
     }
 }

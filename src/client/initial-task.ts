@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { remoteValue, type HapiRemoteApi, type SourceInitialTask, type SourceInitialTaskReceipt } from '../client-api.ts'
 import { errorMessage } from './controller.ts'
 
@@ -52,7 +53,7 @@ export class BrowserInitialTaskStore implements InitialTaskStore {
 const browserStore = new BrowserInitialTaskStore()
 type Api = Pick<HapiRemoteApi, 'sourceInitialTask' | 'sourceInitialTaskRead' | 'sourceInitialTaskRetry' | 'sourceInitialTasks'>
 type State = { loaded: boolean; busy: boolean; draft: InitialTaskDraft; error: string | null }
-const empty = (): InitialTaskDraft => ({ version: 1, operationId: crypto.randomUUID(), text: '', files: [], creationRequestId: null, sessionId: null, request: null, submitted: false, receipt: null })
+const empty = (): InitialTaskDraft => ({ version: 1, operationId: randomId(), text: '', files: [], creationRequestId: null, sessionId: null, request: null, submitted: false, receipt: null })
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
 async function base64(blob: Blob): Promise<string> {
     const bytes = new Uint8Array(await blob.arrayBuffer()); let binary = ''
@@ -98,7 +99,7 @@ export class InitialTaskController {
             this.publish({ error: 'Use at most 32 attachments, 32 MiB each and 128 MiB in total.' }); return
         }
         try {
-            await this.save({ ...this.state.draft, files: [...existing, ...files.map(file => ({ id: crypto.randomUUID(), name: file.name, mediaType: file.type, lastModified: file.lastModified, blob: file }))] })
+            await this.save({ ...this.state.draft, files: [...existing, ...files.map(file => ({ id: randomId(), name: file.name, mediaType: file.type, lastModified: file.lastModified, blob: file }))] })
         } catch { /* Persisted error remains visible. */ }
     }
     removeFile(id: string): void {

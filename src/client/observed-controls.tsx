@@ -1,4 +1,5 @@
 /** Source engines keep their own settings values and operation finality. */
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import type { ObservedSettingChange, ObservedSettingReceipt, ObservedSettings } from '../hapi-agent/control-types.ts'
@@ -13,7 +14,7 @@ export class ObservedSettingsController {
     private snapshot: Snapshot = { data: null, loading: false, busy: false, pending: null, receipt: null, error: null }
     private readonly listeners = new Set<() => void>()
     private reading: Promise<void> | undefined
-    constructor(private readonly api: Api, readonly sessionId: string, private readonly nextId = () => crypto.randomUUID()) {}
+    constructor(private readonly api: Api, readonly sessionId: string, private readonly nextId = () => randomId()) {}
     getSnapshot = (): Snapshot => this.snapshot
     subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
     private publish(value: Partial<Snapshot>): void { this.snapshot = { ...this.snapshot, ...value }; for (const listener of this.listeners) listener() }

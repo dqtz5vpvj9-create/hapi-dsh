@@ -1,4 +1,5 @@
 /** Durable bytes around the published official composer attachment owner. */
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -45,7 +46,7 @@ class AttachmentStore {
     }
     async write(key: string, expectedRevision: string | null, value: SavedAttachments | null): Promise<AttachmentEntry> {
         const database = await this.open();
-        const entry: AttachmentEntry = { version: 1, revision: crypto.randomUUID(), value };
+        const entry: AttachmentEntry = { version: 1, revision: randomId(), value };
         await new Promise<void>((resolve, reject) => {
             const transaction = database.transaction('drafts', 'readwrite', { durability: 'strict' }), store = transaction.objectStore('drafts');
             let reason: Error | undefined;

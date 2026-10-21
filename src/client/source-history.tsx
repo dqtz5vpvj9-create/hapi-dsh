@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { remoteValue } from '../client-api.ts'
 import { sourceHistoryOperationSchema, sourceHistoryReceiptSchema, type PiHistoryEntry, type SourceHistoryAction,
@@ -23,7 +24,7 @@ export class SourceHistoryController {
   private readonly reads = new Map<string, Promise<SourceHistoryReceipt | null>>()
   private readonly storageKey: string
   constructor(private readonly api: SourceHistoryApi, scope: string, private readonly saved?: StorageLike,
-    private readonly nextId: () => string = () => crypto.randomUUID()) {
+    private readonly nextId: () => string = () => randomId()) {
     this.storageKey = `hapi-dsh:source-history:${scope}`
     try {
       const value: unknown = JSON.parse(saved?.getItem(this.storageKey) ?? 'null')

@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
@@ -20,7 +21,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
 } {
   const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed
   const latest = useRef(props); latest.current = props
-  const [viewId] = useState(() => crypto.randomUUID())
+  const [viewId] = useState(() => randomId())
   const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
   const tr = (en: string, zh: string): string => language.startsWith('zh') ? zh : en
   const pane = ctx.get('hapiWorkspacePane')

@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { remoteValue } from '../client-api.ts';
 import { sourceAdminOperationSchema, sourceAdminReceiptSchema, type SourceAdminAction, type SourceAdminApi, type SourceAdminOperation, type SourceAdminReceipt } from '../source-admin-types.ts';
 
@@ -19,7 +20,7 @@ export class SourceAdminController {
     private readonly reads = new Map<string, Promise<SourceAdminReceipt | null>>();
     private readonly key: string;
     constructor(private readonly api: SourceAdminApi, private readonly hubId: string, private readonly storage?: StorageLike,
-        private readonly nextId: () => string = () => crypto.randomUUID()) {
+        private readonly nextId: () => string = () => randomId()) {
         this.key = `hapi-dsh:administration:${hubId}`;
         try {
             const value: unknown = JSON.parse(storage?.getItem(this.key) ?? 'null');

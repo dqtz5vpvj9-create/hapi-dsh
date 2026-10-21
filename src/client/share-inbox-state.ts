@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { BrowserShareTransfers, shareTargetKey, validateSharePayload, type ShareDelivery, type SharePayload, type ShareRecord, type ShareTarget, type ShareTransfers } from './share-transfer.ts';
 import type { HandoffAddress } from './draft-handoff.ts';
 
@@ -22,7 +23,7 @@ export class WorkspaceShareInbox {
     constructor(private readonly transfers: ShareTransfers = new BrowserShareTransfers(), storage?: Pick<Storage, 'getItem' | 'setItem'>) {
         let owner = '';
         try { owner = storage?.getItem('hapi-dsh:share-window:v1') ?? ''; } catch { /* Recovery never replays an unknown insertion. */ }
-        if (!owner || owner.length > 128) { owner = crypto.randomUUID(); try { storage?.setItem('hapi-dsh:share-window:v1', owner); } catch { /* A fresh window can still stage content. */ } }
+        if (!owner || owner.length > 128) { owner = randomId(); try { storage?.setItem('hapi-dsh:share-window:v1', owner); } catch { /* A fresh window can still stage content. */ } }
         this.owner = owner;
     }
     getSnapshot = (): ShareInboxSnapshot => this.snapshot;
@@ -62,7 +63,7 @@ export class WorkspaceShareInbox {
     }
     beginCreation(): string | null {
         if (!this.snapshot.record || this.running) return null;
-        this.creationToken = crypto.randomUUID(); this.publish({ phase: 'creating', opened: false, error: null }); return this.creationToken;
+        this.creationToken = randomId(); this.publish({ phase: 'creating', opened: false, error: null }); return this.creationToken;
     }
     cancelCreation(): void { if (this.creationToken) { this.creationToken = null; this.publish({ phase: 'pick', opened: true }); } }
     created(target: ShareTarget): void { if (this.creationToken) { this.creationToken = null; void this.select(target); } }

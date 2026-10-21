@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { errorMessage, type WorkspaceCatalogRow, type WorkspaceController } from './controller.ts'
@@ -15,7 +16,7 @@ type Store = Pick<Storage, 'getItem' | 'setItem'>
 export class SourcePinController {
     private state: Snapshot = { pending: null, receipt: null, busy: false, error: null }
     private readonly listeners = new Set<() => void>()
-    constructor(private readonly api: Api, private readonly storage?: Store, private readonly key = 'source-pin', private readonly nextId: () => string = () => crypto.randomUUID()) {
+    constructor(private readonly api: Api, private readonly storage?: Store, private readonly key = 'source-pin', private readonly nextId: () => string = () => randomId()) {
         try {
             const saved: unknown = JSON.parse(storage?.getItem(key) ?? 'null')
             if (saved && typeof saved === 'object') {

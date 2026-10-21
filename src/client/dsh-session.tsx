@@ -1,3 +1,4 @@
+import { randomId } from './random-id.ts';
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types'
 import { errorMessage, type WorkspaceController } from './controller.ts'
@@ -40,7 +41,7 @@ export function DshSessionForm({ controller, close, t }: { controller: Workspace
     return <form className="hapi-native-create" onSubmit={event => {
         event.preventDefault()
         if (pending || !host) return
-        const request = attempt.current ?? { hostId, directory, sessionId: crypto.randomUUID() }
+        const request = attempt.current ?? { hostId, directory, sessionId: randomId() }
         attempt.current = request
         setPending(true); setError(null)
         void controller.createSession(request.hostId, request.directory, request.sessionId).then(close, reason => {
