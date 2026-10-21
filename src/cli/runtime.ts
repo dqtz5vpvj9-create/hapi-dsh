@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { access, lstat, mkdir, readFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DSH_VERSION, type RuntimeConfig, resolveHapiToken } from './config.ts';
@@ -229,6 +229,36 @@ export function startArguments(config: RuntimeConfig, noOpen: boolean): string[]
     return args;
 }
 
+/**
+ * Read the official Web launcher's login line. The launch token is scoped to
+ * one DSH process, so the persisted URL becomes stale as soon as the process
+ * restarts; the launcher prints the current URL exactly once per boot.
+ */
+export function parseLaunchUrl(line: string): string | undefined {
+    const match = /^\s*dsh web:\s*(https?:\/\/\S+)\s*$/.exec(line);
+    if (!match) return undefined;
+    try {
+        const url = new URL(match[1]!);
+        if (!url.searchParams.has('token')) return undefined;
+        return url.href;
+    } catch {
+        return undefined;
+    }
+}
+
+/** Keep the current process's login URL beside the private config, readable only by the owner. */
+export async function writeLaunchUrl(configFile: string, url: string): Promise<void> {
+    const target = join(dirname(resolve(configFile)), 'launch-url');
+    const temporary = `${target}.${process.pid}.tmp`;
+    await writeFile(temporary, `${url}\n`, { mode: 0o600 });
+    try {
+        await rename(temporary, target);
+    } catch (error) {
+        await unlink(temporary).catch(() => {});
+        throw error;
+    }
+}
+
 /** DSH owns all application boot and teardown; this wrapper only forwards signals and exit status. */
 export async function startProfile(config: RuntimeConfig, configFile: string, noOpen = false): Promise<number> {
     resolveHapiToken(config);
@@ -236,7 +266,55 @@ export async function startProfile(config: RuntimeConfig, configFile: string, no
     const env = runtimeEnvironment(config, configFile);
     await verifyDshVersion(command, env);
     await requireProfileBundle(config, 'hapi-dsh');
-    return runForeground(command, startArguments(config, noOpen), env);
+    return runProfileForeground(command, startArguments(config, noOpen), env, configFile);
+}
+
+/**
+ * Run the Web profile while mirroring its output and persisting the current
+ * launch URL. Piping stdout is what makes the URL observable; stderr stays a
+ * direct pipe so launcher diagnostics keep their ordering.
+ */
+export async function runProfileForeground(command: Command, args: string[], env: NodeJS.ProcessEnv, configFile: string): Promise<number> {
+    return new Promise((resolveExit, reject) => {
+        const child = spawn(command.executable, [...command.args, ...args], {
+            env, stdio: ['inherit', 'pipe', 'pipe'], shell: false, windowsHide: true,
+        });
+        let pending = '';
+        let written: string | undefined;
+        child.stdout?.on('data', (chunk: Buffer) => {
+            process.stdout.write(chunk);
+            pending += chunk.toString('utf8');
+            for (;;) {
+                const index = pending.indexOf('\n');
+                if (index === -1) break;
+                const line = pending.slice(0, index);
+                pending = pending.slice(index + 1);
+                const url = parseLaunchUrl(line);
+                if (url !== undefined && url !== written) {
+                    written = url;
+                    void writeLaunchUrl(configFile, url).catch((error: unknown) => {
+                        process.stderr.write(`hapi-dsh: could not persist the launch URL: ${error instanceof Error ? error.message : String(error)}\n`);
+                    });
+                }
+            }
+            // Launcher output is line-oriented; bound a hostile partial line.
+            if (pending.length > 64 * 1024) pending = pending.slice(-4096);
+        });
+        child.stderr?.on('data', (chunk: Buffer) => { process.stderr.write(chunk); });
+        const forwardInt = (): void => { child.kill('SIGINT'); };
+        const forwardTerm = (): void => { child.kill('SIGTERM'); };
+        process.on('SIGINT', forwardInt);
+        process.on('SIGTERM', forwardTerm);
+        const cleanup = (): void => {
+            process.off('SIGINT', forwardInt);
+            process.off('SIGTERM', forwardTerm);
+        };
+        child.on('error', (error) => { cleanup(); reject(error); });
+        child.on('close', (code, signal) => {
+            cleanup();
+            resolveExit(code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1));
+        });
+    });
 }
 
 export async function requireProfileBundle(config: Pick<RuntimeConfig, 'dsh'>, bundleName: string): Promise<void> {

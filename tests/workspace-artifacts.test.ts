@@ -176,3 +176,37 @@ test('legacy document navigation persists without losing its original artifact r
     const file = rebound.type === 'pane' && rebound.resource.kind === 'document' && rebound.resource.target?.type === 'resource' ? parseFileAddress(rebound.resource.target.address) : undefined
     assert.equal(file?.scope === 'session' && file.sessionId, 'display-r2')
 })
+
+test('a stalled source document ends in an explicit retryable failure instead of loading forever', async () => {
+    const hang = async (): Promise<never> => { await new Promise<void>(() => {}); throw new Error('unreachable') }
+    const stalledApi = { nativeDocument: hang, nativePreview: hang } as unknown as ArtifactApi
+    // The Host call itself is lost: metadata waits forever without its deadline.
+    await assert.rejects(loadArtifact(stalledApi, reference, new AbortController().signal, 5), /did not finish in time/)
+    // The binary route sends headers and then stops. The body read must be
+    // bounded too, not only the fetch call that delivered the headers.
+    const stalledBody: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({ start() { /* never enqueues */ } }))
+    await assert.rejects(readArtifactBytes('/document', base, new AbortController().signal, stalledBody, 5), /did not finish in time/)
+    // The fetch call never settles at all.
+    const stalledFetch: typeof fetch = async () => { await new Promise<void>(() => {}); return new Response() }
+    await assert.rejects(readArtifactBytes('/document', base, new AbortController().signal, stalledFetch, 5), /did not finish in time/)
+    // A caller's own cancellation keeps abort semantics rather than being
+    // reported as a stale source.
+    const cancelled = new AbortController(); cancelled.abort()
+    await assert.rejects(readArtifactBytes('/document', base, cancelled.signal, stalledBody), { name: 'AbortError' })
+})
+
+test('PDF preview renders complete source bytes and Office conversion waits for its own reply', async () => {
+    // Rendering happens from complete bytes, never from a guessed URL.
+    const api: ArtifactApi = { nativeDocument: async () => ({ ok: true, value: metadata({ fileName: 'source.pdf', mimeType: 'application/pdf' }) }),
+        nativePreview: async () => { throw new Error('A plain PDF is not converted') } }
+    const fetcher: typeof fetch = async () => new Response(new Uint8Array([37, 80, 68, 70]))
+    const loaded = await loadArtifact(api, reference, new AbortController().signal)
+    const presentation = await artifactPresentation(api, loaded, 'pdf', base, new AbortController().signal, fetcher)
+    assert.equal(presentation.viewer, 'pdf'); assert.equal(presentation.converted, false)
+    assert.deepEqual(presentation.content.kind === 'bytes' && [...presentation.content.data], [37, 80, 68, 70])
+    // A conversion that never answers must not hold the preview open.
+    const pending = { nativeDocument: async () => ({ ok: true, value: metadata({ fileName: 'source.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', officePreview: true }) }),
+        nativePreview: async () => { await new Promise<void>(() => {}); throw new Error('unreachable') } } as unknown as ArtifactApi
+    const office = await loadArtifact(pending, reference, new AbortController().signal)
+    await assert.rejects(artifactPresentation(pending, office, 'pdf', base, new AbortController().signal, fetcher, 5), /did not finish in time/)
+})

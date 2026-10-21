@@ -369,7 +369,10 @@ test('saved local and remote panes wait for their own catalogs and recover when 
     assert.equal(remote.refs.length, 0)
     assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'opening' && lease.waitingForCatalog))
     local.phase('ready'); remote.phase('ready')
-    assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'failed' && lease.waitingForCatalog))
+    // An empty but ready official list is not proof of a missing target: the
+    // HAPI catalog keeps attaching sources, so the pane stays a transient
+    // `opening` state instead of claiming the session is unavailable.
+    assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'opening' && lease.reason === 'catalog-loading'))
     local.add('native'); remote.add('remote')
     await Promise.resolve()
     assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'ready' && lease.reference))
@@ -582,7 +585,7 @@ test('an explicit source deep link waits for catalog and opens the real mapped s
     source.project('real-display', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'hub' } } as SessionSummary['projectionValues'])
     controller.setSourceCatalog([], 'hub')
     await turn()
-    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'real-display' })
+    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'real-display', sourceSessionId: 'original-source', sourceHubId: 'hub' })
     controller.dispose(); source.disposeMain()
 })
 

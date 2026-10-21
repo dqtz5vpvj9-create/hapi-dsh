@@ -71,7 +71,7 @@ export const en = {
     nativeCreateHelp: 'Create a native Codex thread on a connected HAPI runner.', create: 'Create', noMachines: 'No HAPI runners are connected.',
     workingTree: 'New Git worktree', worktreeName: 'Worktree name', created: 'Session created', resume: 'Resume native session',
     nativeForkUnavailable: 'Native fork is not available on this Host',
-    hostTools: 'Host tools', hostSettings: 'Host settings', conversation: 'Conversation',
+    hostTools: 'Host tools', hostSettings: 'Host settings', hostSettingsHelp: 'Open the Settings panel for this Host.', conversation: 'Conversation',
     nativeSettings: 'Native settings', nativeModel: 'Codex model', nativeReasoning: 'Codex reasoning effort', nativePermission: 'Codex permissions',
     nativeCollaboration: 'Codex collaboration mode', nativeServiceTier: 'Codex service tier', sourceUnreported: 'Not reported by Codex', modelDefault: 'Model default',
     permission: 'Permissions', permissionDefault: 'Request approval', permissionReadOnly: 'Read only', permissionYolo: 'Full access',
@@ -90,6 +90,8 @@ export const en = {
     planSubmitted: 'Codex accepted the implementation request.', planQueued: 'Implementation is in the native Codex queue.',
     planInvoked: 'Codex started the implementation turn. Follow its progress in the conversation.',
     planUnknown: 'The native result is unconfirmed. Check its receipt; this request will not be sent again.', planRejected: 'Codex rejected this implementation request.',
+    untitledConversation: 'Untitled conversation', paneCount: '{n} panes', statusFilter: 'Status',
+    errorSummary: 'The action could not be completed.', readableMachineFallback: 'Unknown machine',
 } as const
 
 export const zh: Record<keyof typeof en, string> = {
@@ -165,7 +167,7 @@ export const zh: Record<keyof typeof en, string> = {
     nativeCreateHelp: '在已连接的 HAPI Runner 上创建 Codex 原生线程。', create: '创建', noMachines: '没有已连接的 HAPI Runner。',
     workingTree: '新建 Git worktree', worktreeName: 'Worktree 名称', created: '会话已创建', resume: '恢复原生会话',
     nativeForkUnavailable: '此 Host 尚未提供原生分叉',
-    hostTools: 'Host 工具', hostSettings: 'Host 设置', conversation: '聊天',
+    hostTools: 'Host 工具', hostSettings: 'Host 设置', hostSettingsHelp: '打开此 Host 的设置面板。', conversation: '聊天',
     nativeSettings: '原生设置', nativeModel: 'Codex 模型', nativeReasoning: 'Codex 推理强度', nativePermission: 'Codex 权限',
     nativeCollaboration: 'Codex 协作模式', nativeServiceTier: 'Codex 服务级别', sourceUnreported: 'Codex 尚未回报', modelDefault: '模型默认值',
     permission: '权限', permissionDefault: '请求批准', permissionReadOnly: '只读', permissionYolo: '完全访问',
@@ -184,6 +186,8 @@ export const zh: Record<keyof typeof en, string> = {
     planSubmitted: 'Codex 已接受实施请求。', planQueued: '实施请求已进入 Codex 原生队列。',
     planInvoked: 'Codex 已开始实施回合，请在聊天中查看执行进度。',
     planUnknown: '原生结果尚未确认。请核对回执；此请求不会被再次发送。', planRejected: 'Codex 拒绝了此次实施请求。',
+    untitledConversation: '未命名会话', paneCount: '{n} 个窗格', statusFilter: '状态',
+    errorSummary: '操作未能完成。', readableMachineFallback: '未知机器',
 }
 
 export type WorkspaceKey = keyof typeof en
@@ -191,4 +195,89 @@ export type WorkspaceTranslate = (key: WorkspaceKey, params?: Record<string, unk
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap { hapiWorkspace: WorkspaceKey }
+}
+
+/**
+ * User-facing labels for engine, host and model values. Internal projection
+ * identifiers (`hapi-observed`, `hapi-codex-native`, provider tuples, bare
+ * UUIDs) never reach the sidebar, window tabs or the source header verbatim.
+ */
+const INTERNAL_NAMES: Record<string, string> = {
+    dsh: 'DSH', codex: 'Codex', claude: 'Claude', gemini: 'Gemini', cursor: 'Cursor', copilot: 'Copilot',
+    opencode: 'OpenCode', hapi: 'HAPI', 'hapi-observed': 'HAPI', 'hapi-codex-native': 'Codex',
+    'hapi-dsh-runner': 'HAPI Runner', 'hapi-runner': 'HAPI Runner', 'hapi-presets': 'HAPI presets',
+    'hapi-codex': 'Codex', 'codex-native': 'Codex', 'dsh-native': 'DSH',
+}
+const INTERNAL_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?:hapi|host|machine|session|native|dsh)-(?:observed|codex-native|runner|dsh-runner)(?:[-:][\w-]+)?|[0-9a-f]{24,})$/i
+
+/** A value that is a machine/engine/session identifier rather than a label. */
+export function isInternalIdentifier(value: string | null | undefined): boolean {
+    const raw = value?.trim()
+    return Boolean(raw && (INTERNAL_ID.test(raw) || /^hapi-(?:observed|codex-native)$/i.test(raw)))
+}
+
+/**
+ * Engine values are stored as source flavors (`dsh`, `codex`, `hapi-observed`).
+ * Return the human name and leave unknown custom flavors capitalized.
+ */
+export function readableEngine(value: string | null | undefined): string {
+    const raw = value?.trim()
+    if (!raw) return ''
+    const known = INTERNAL_NAMES[raw.toLowerCase()]
+    if (known) return known
+    const tail = raw.split(/[:/]/).filter(Boolean).at(-1) ?? raw
+    const mapped = INTERNAL_NAMES[tail.toLowerCase()]
+    if (mapped) return mapped
+    return tail.charAt(0).toUpperCase() + tail.slice(1)
+}
+
+/** Machine labels fall back to nothing instead of a raw host id. */
+export function readableHost(value: string | null | undefined): string {
+    const raw = value?.trim()
+    if (!raw || INTERNAL_ID.test(raw)) return ''
+    const known = INTERNAL_NAMES[raw.toLowerCase()]
+    return known ?? raw
+}
+
+function modelName(value: unknown, depth: number): string | null {
+    if (depth > 3 || value === null || value === undefined) return null
+    if (typeof value === 'string') {
+        const text = value.trim()
+        return text && !INTERNAL_NAMES[text.toLowerCase()] ? text : null
+    }
+    if (Array.isArray(value)) {
+        for (const item of [...value].reverse()) {
+            const found = modelName(item, depth + 1)
+            if (found) return found
+        }
+        return null
+    }
+    if (typeof value !== 'object') return null
+    const record = value as Record<string, unknown>
+    for (const key of ['model', 'modelName', 'name', 'label', 'displayName', 'id']) {
+        const found = modelName(record[key], depth + 1)
+        if (found) return found
+    }
+    return null
+}
+
+/**
+ * Some sources serialize the model as a provider tuple. Show the model name,
+ * and drop values that are only a provider identifier.
+ */
+export function readableModel(value: string | null | undefined): string | null {
+    const raw = value?.trim()
+    if (!raw) return null
+    if (raw.startsWith('{') || raw.startsWith('[')) {
+        try { return modelName(JSON.parse(raw), 0) } catch { return null }
+    }
+    const name = raw.replace(/^hapi-(?:observed|codex-native)[:/]/i, '').trim()
+    return name && !INTERNAL_NAMES[name.toLowerCase()] ? name : null
+}
+
+/** Collapse whitespace and clip at a stable character budget. */
+export function stableLabel(value: string | null | undefined, max = 48): string | null {
+    const raw = value?.replace(/\s+/g, ' ').trim()
+    if (!raw) return null
+    return raw.length > max ? `${raw.slice(0, Math.max(1, max - 1)).trimEnd()}…` : raw
 }

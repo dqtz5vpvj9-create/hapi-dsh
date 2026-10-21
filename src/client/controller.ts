@@ -8,6 +8,7 @@ import type { ReactNode } from 'react'
 import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type PaneResource, type SplitAxis, type WorkspaceState } from './model.ts'
 import { SidebarState } from '../workspace/sidebar-state.ts'
 import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../workspace/legacy.ts'
+import { bindingFailureState, invalidPaneAddressState, paneOpenState, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
 import type { CatalogMachine, CatalogSession } from '../client-api.ts'
 import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
@@ -42,6 +43,12 @@ export interface WorkspaceOptions {
     /** Notification and shared links preserve the original Hub identity too. */
     sourceHubQuery?: string
     beforeRemove?: (resources: readonly PaneResource[]) => boolean
+    /**
+     * How long a restored pane waits for a calm catalog before an unresolved
+     * target is reported instead of retried. Attaching a large HAPI catalog
+     * keeps emitting events; production default is 30s.
+     */
+    catalogSettleMs?: number
 }
 
 export interface WorkspaceHost {
@@ -82,8 +89,13 @@ export interface WorkspaceViewOptions {
 export interface WorkspaceCatalogRow extends SessionSummary {
     readonly hostId: string
     readonly hostLabel: string
+    /** The pane graph for this Host is registered and the Host is reachable. */
     readonly hostOnline: boolean
     readonly sourceSessionId: string
+    /** Original HAPI machine liveness, distinct from the serving DSH Host. */
+    readonly sourceMachineOnline?: boolean
+    /** Original HAPI Hub connectivity, distinct from `hostOnline`. */
+    readonly sourceHubOnline?: boolean
     readonly archived: boolean
     readonly pinned: boolean
     /** Original HAPI pin policy; independent of DSH display bookmarks. */
@@ -120,7 +132,16 @@ export interface PaneLease {
     readonly sessionId: string
     readonly reference?: SessionReference
     readonly status: 'opening' | 'ready' | 'failed'
+    /** Human explanation plus next step; never a raw code or JSON dump. */
     readonly error?: string
+    /** Typed cause of an unresolved/failed pane target. */
+    readonly reason?: PaneOpenFailure
+    /** The concrete action that can resolve this state. */
+    readonly nextStep?: string
+    /** Raw identifiers/transport text for diagnostics only. */
+    readonly detail?: string
+    /** A manual retry is meaningful after the stated condition changes. */
+    readonly retryable?: boolean
     /** Catalog arrival can recover this lease without a user retry. */
     readonly waitingForCatalog?: boolean
     /** Localized original-Hub loading and failure states, independent of directory size. */
@@ -222,6 +243,30 @@ interface SourceResolution {
 }
 const originalSourceKey = (source: OriginalSource): string => JSON.stringify([source.hubId, source.sourceSessionId])
 
+/** One user-facing sentence per unresolved pane; the raw detail stays separate. */
+function paneFailureError(state: PaneOpenState): string {
+    return `${state.message} ${state.nextStep}`
+}
+
+const sourceReference = (row: Pick<SessionSummary, 'projectionValues'> | undefined): { sourceSessionId: string; sourceHubId?: string } | null => {
+    const source = sourceIdentity(row)
+    return source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : null
+}
+
+/** The typed explanation that pairs with a structured original-source failure. */
+function sourceResolutionTypedState(failure: SourceResolutionFailure): { reason: PaneOpenFailure; nextStep: string } {
+    switch (failure) {
+        case 'denied': return { reason: 'binding-denied', nextStep: 'Check the current account’s access to this original session, then retry.' }
+        case 'removed': return { reason: 'source-not-found', nextStep: 'The original session was removed; close this pane or open another conversation from the sidebar.' }
+        case 'not-found': return { reason: 'source-not-found', nextStep: 'Check the original Hub, then retry to continue opening the same conversation.' }
+        case 'transport': return { reason: 'source-offline', nextStep: 'Restore the Hub/Runner connection, then retry.' }
+        case 'not-ready': return { reason: 'source-not-found', nextStep: 'Retry to continue opening the same original conversation.' }
+        case 'ambiguous': return { reason: 'source-hub-changed', nextStep: 'Choose the conversation from the unified sidebar.' }
+        case 'identity': return { reason: 'source-hub-changed', nextStep: 'Open the conversation again from the unified sidebar to rebind this pane.' }
+        default: return { reason: 'binding-failed', nextStep: 'Retry the pane; if it keeps failing, check the Host log.' }
+    }
+}
+
 /**
  * Own references at plugin scope, not React mount scope. Opening an official
  * plugin page, switching windows, zooming, and resizing therefore preserve the
@@ -260,8 +305,17 @@ export class WorkspaceController {
     private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<void>) | undefined
     private readonly sourceResolutions = new Map<string, SourceResolution>()
     private readonly sourceRequests = new Map<string, number>()
+    private catalogChangedAt = Date.now()
+    /** High-water mark of attached Sessions; only growth is catalog progress. */
+    private catalogMaxIds = 0
+    private settleTimer: ReturnType<typeof setTimeout> | undefined
+    private readonly catalogSettleMs: number
 
     constructor(readonly options: WorkspaceOptions) {
+        this.catalogSettleMs = Math.max(0, options.catalogSettleMs ?? 30_000)
+        // The restore itself starts the settle window; a slow constructor must
+        // not be mistaken for a calm catalog.
+        this.catalogChangedAt = Date.now()
         const nextId = options.nextId ?? (() => randomId())
         let state = initialWorkspace(nextId)
         let notice: string | null = null
@@ -300,11 +354,14 @@ export class WorkspaceController {
         this.hostMainIds.set('local', this.selectedMain('local'))
         this.unsubscribers.push(this.store.subscribe(this.onLayout), options.sessions.list.subscribe(() => this.onCatalog('local')))
         if (options.workspaceState) this.unsubscribers.push(options.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
+        // The first classification must start from a fresh settle window even
+        // when constructing the store took a while.
+        this.catalogChangedAt = Date.now()
         this.reconcileLeases()
         // A restored workspace has deliberate selection; a first install follows
         // the already selected official Session, if there is one.
         const selected = this.hostMainIds.get('local')
-        if (!restored && selected) this.store.openSession(selected)
+        if (!restored && selected) this.openCatalogSession('local', selected)
         else this.syncNavigation()
         if (options.persistence) void this.loadRemote()
         else { this.remoteLoaded = true; this.openPendingSource() }
@@ -352,23 +409,52 @@ export class WorkspaceController {
         this.options.reveal?.()
     }
     closeSessionPicker = (): void => { this.publish({ pickingSession: false }) }
-    setMachines(machines: readonly CatalogMachine[]): void { this.publish({ machines }) }
+    setMachines(machines: readonly CatalogMachine[]): void {
+        this.snapshot = { ...this.snapshot, machines }
+        this.publish({ catalog: this.aggregateCatalog() })
+    }
     setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {
         hosts: readonly { id: string; label: string; online: boolean }[]; connected: boolean
     }): void {
         if (hubId) this.primarySourceHubId = hubId
+        // Only real catalog movement resets the settle window; the 3s poll is
+        // not itself progress.
+        const connected = discovery?.connected ?? true
+        const changed = sessions.length !== this.sourceCatalog.size
+            || (connected ? 'ready' : 'unavailable') !== this.discovery.sourcePhase
+            || sessions.some(session => {
+                const previous = this.sourceCatalog.get(session.id)
+                return previous === undefined || previous.displayRevision !== session.displayRevision
+                    || previous.lifecycleState !== session.lifecycleState || previous.active !== session.active
+            })
         this.sourceCatalog.clear()
         for (const session of sessions) this.sourceCatalog.set(session.id, session)
-        this.discovery.observe(discovery?.hosts ?? [], discovery?.connected ?? true)
+        this.discovery.observe(discovery?.hosts ?? [], connected)
+        if (changed) this.catalogChangedAt = Date.now()
         this.publish({ catalog: this.aggregateCatalog() })
         const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
         if (rebound !== state) this.store.replace(rebound)
         else this.reconcileLeases()
         this.openPendingSource()
     }
-    sourceCatalogFailed(error: unknown): void { this.discovery.sourceFailed(errorMessage(error)); this.publish() }
-    catalogHostReady(id: string, label: string): void { this.discovery.hostReady(id, label); this.publish() }
-    catalogHostFailed(id: string, label: string, error: unknown): void { this.discovery.hostFailed(id, label, errorMessage(error)); this.publish() }
+    sourceCatalogFailed(error: unknown): void {
+        this.discovery.sourceFailed(errorMessage(error))
+        this.catalogChangedAt = Date.now()
+        this.publish()
+        if (this.hasWaitingLeases()) this.reconcileLeases()
+    }
+    catalogHostReady(id: string, label: string): void {
+        this.discovery.hostReady(id, label)
+        this.catalogChangedAt = Date.now()
+        this.publish()
+    }
+    catalogHostFailed(id: string, label: string, error: unknown): void {
+        this.discovery.hostFailed(id, label, errorMessage(error))
+        this.catalogChangedAt = Date.now()
+        this.publish()
+        if (this.hasWaitingLeases()) this.reconcileLeases()
+    }
+    private hasWaitingLeases(): boolean { return [...this.leases.values()].some(lease => lease.waitingForCatalog) }
     openNativeLibrary = (): void => { this.publish({ nativePanel: { kind: 'library' }, creation: null, creationContext: null, pickingSession: false }); this.options.reveal?.() }
     openNativeTools = (sessionId: string, initialAction?: 'fork' | 'archive' | 'reopen' | 'pin' | 'restart' | 'delete'): void => {
         this.publish({ nativePanel: { kind: 'session', sessionId, ...(initialAction ? { initialAction } : {}) }, pickingSession: false }); this.options.reveal?.()
@@ -467,6 +553,13 @@ export class WorkspaceController {
     private onCatalog = (hostId: string): void => {
         if (this.disposed) return
         const catalog = this.aggregateCatalog()
+        // Attaching a Session is catalog progress; an update to an existing
+        // row (tokens, titles, retainedBy) is not and must not keep a genuinely
+        // deleted pane in the loading state forever.
+        if (catalog.ids.length > this.catalogMaxIds) {
+            this.catalogMaxIds = catalog.ids.length
+            this.catalogChangedAt = Date.now()
+        }
         this.publish({ catalog })
         if (this.navigationGuard || this.reconciling) return
         const current = this.store.getSnapshot()
@@ -493,8 +586,17 @@ export class WorkspaceController {
         if (!mainId || mainId === this.hostMainIds.get(hostId)) return
         this.hostMainIds.set(hostId, mainId)
         const resourceId = sessionResourceId(hostId, mainId)
+        // A restored document, terminal or plugin pane for this same Session is
+        // not a request to replace it with a chat pane.
         if (focused.kind !== 'empty' && focused.sessionId === resourceId) return
-        this.store.openSession(resourceId)
+        this.openCatalogSession(hostId, mainId)
+    }
+
+    /** Opening from any catalog path persists the original identity when known. */
+    private openCatalogSession(hostId: string, sessionId: string): void {
+        const resourceId = sessionResourceId(hostId, sessionId)
+        const reference = sourceReference(this.snapshot.catalog.byId[resourceId])
+        this.store.openResource({ kind: 'chat', sessionId: resourceId, ...(reference ?? {}) })
     }
 
     private aggregateCatalog(): WorkspaceCatalog {
@@ -505,6 +607,9 @@ export class WorkspaceController {
         for (const [hostId, cached] of this.hostCatalogs) {
             const host = this.hosts.get(hostId)
             if (host && cached.catalog.phase === 'pending') phase = 'pending'
+            // `hostOnline` is registration plus reachability, never registration alone:
+            // a pane graph can outlive the machine's catalog connection briefly.
+            const hostOnline = host !== undefined && (hostId === 'local' || this.discovery.host(hostId)?.phase !== 'unavailable')
             const workspace = host?.workspaceState?.getSnapshot()
             const archived = new Set(workspace?.archivedSessionIds ?? [])
             const pinned = new Set(workspace?.pinnedSessionIds ?? [])
@@ -512,14 +617,21 @@ export class WorkspaceController {
                 const resourceId = sessionResourceId(hostId, sourceSessionId)
                 const source = hostId === 'local' ? this.sourceCatalog.get(sourceSessionId) : undefined
                 const sourceOwned = hostId === 'local' && (sourceIdentity(row) !== null || isSourceChild(row))
-                byId[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline: host !== undefined,
+                const sourceLocation = sourceOwned ? sessionLocation(row) : undefined
+                const sourceMachine = sourceLocation?.machineId ? (this.snapshot?.machines ?? []).find(machine => machine.id === sourceLocation.machineId) : undefined
+                byId[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
+                    ...(sourceOwned ? { sourceHubOnline: this.discovery.sourcePhase !== 'unavailable',
+                        ...(sourceMachine ? { sourceMachineOnline: sourceMachine.online } : {}) } : {}),
                     ...(sourceOwned && Number.isFinite(source?.updatedAt) ? { updatedAt: source!.updatedAt! } : {}),
                     ...(sourceOwned && typeof source?.active === 'boolean' ? { sourceActive: source.active } : {}),
                     ...(sourceOwned && source?.lifecycleState !== undefined ? { sourceLifecycleState: source.lifecycleState } : {}),
                     ...(sourceOwned && source ? { sourceCreatedAt: source.sourceCreatedAt ?? null, sourceLastActiveAt: source.sourceLastActiveAt ?? null, sourceSummary: source.sourceSummary ?? null, sourceWorktree: source.sourceWorktree ?? null, sourceSubagentSearch: source.sourceSubagentSearch ?? [],
                         ...(source.sourceListFacts ? { sourceListFacts: source.sourceListFacts } : {}),
                         ...(source.sourceRowState ? { sourceRowState: source.sourceRowState } : {}) } : {}),
-                    sourceSessionId, archived: !sourceOwned && archived.has(sourceSessionId),
+                    sourceSessionId,
+                    // A source-owned row is archived by the original HAPI lifecycle,
+                    // not by a DSH display bookmark that never applies to it.
+                    archived: sourceOwned ? source?.lifecycleState === 'archived' : archived.has(sourceSessionId),
                     pinned: sourceOwned ? source?.pinMode === 'project' || source?.pinMode === 'global' : pinned.has(sourceSessionId),
                     ...(sourceOwned ? { sourcePinMode: source?.pinMode ?? 'none' } : {}),
                 }
@@ -536,6 +648,7 @@ export class WorkspaceController {
         if (!host.renderConversation) throw new Error('A remote Host must provide its own Conversation renderer')
         this.hosts.set(host.id, host)
         this.hostMainIds.set(host.id, this.selectedMain(host.id))
+        this.catalogChangedAt = Date.now()
         const subscriptions = [host.sessions.list.subscribe(() => this.onCatalog(host.id))]
         if (host.workspaceState) subscriptions.push(host.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
         this.hostUnsubscribers.set(host.id, subscriptions)
@@ -551,11 +664,18 @@ export class WorkspaceController {
             for (const unsubscribe of this.hostUnsubscribers.get(host.id) ?? []) unsubscribe()
             this.hostUnsubscribers.delete(host.id)
             this.hostMainIds.delete(host.id)
+            this.catalogChangedAt = Date.now()
             for (const [paneId, lease] of this.leases) {
-                if (lease.hostId === host.id) {
-                    this.leases.set(paneId, { hostId: host.id, sessionId: lease.sessionId, status: 'failed', error: `Host is offline: ${host.label}` })
-                    lease.reference?.release()
-                }
+                if (lease.hostId !== host.id) continue
+                // The machine disconnected. A view that was already open keeps
+                // its reference; an unresolved target explains the reconnect path.
+                const failure = paneOpenState({ kind: 'display', label: host.label,
+                    hostId: host.id, sessionId: lease.sessionId, sourcePhase: this.discovery.sourcePhase, currentHubId: this.primarySourceHubId,
+                    localPhase: 'ready', hostRegistered: false, hostOnline: false, settled: true })
+                this.leases.set(paneId, { hostId: host.id, sessionId: lease.sessionId, status: 'failed',
+                    error: paneFailureError(failure), reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail,
+                    retryable: true, waitingForCatalog: true })
+                lease.reference?.release()
             }
             this.publish({ catalog: this.aggregateCatalog() })
         }
@@ -594,10 +714,112 @@ export class WorkspaceController {
         this.publish()
     }
 
+    /** True once no catalog event has arrived for the settle window. */
+    private catalogSettled(now = Date.now()): boolean {
+        return now - this.catalogChangedAt >= this.catalogSettleMs
+    }
+
+    /**
+     * A restored pane that is not listed yet stays `opening` while the catalog
+     * is still busy; only a calm catalog turns an absence into a reported
+     * cause. The timer exists solely to convert that last transient state.
+     */
+    private scheduleSettleCheck(): void {
+        if (this.disposed || this.settleTimer !== undefined) return
+        const waiting = [...this.leases.values()].some(lease => lease.waitingForCatalog)
+        if (!waiting || this.catalogSettled()) return
+        const delay = Math.max(0, this.catalogSettleMs - (Date.now() - this.catalogChangedAt)) + 10
+        this.settleTimer = setTimeout(() => {
+            this.settleTimer = undefined
+            this.reconcileLeases()
+        }, delay)
+    }
+
+    private hostLabel(hostId: string): string {
+        return this.hosts.get(hostId)?.label ?? this.hostCatalogs.get(hostId)?.label ?? this.discovery.host(hostId)?.label ?? ''
+    }
+
+    private paneOpenContext(hostId: string, sessionId: string, resource: Exclude<PaneResource, { kind: 'empty' }>): PaneOpenContext {
+        const catalogRow = this.snapshot.catalog.byId[sessionId]
+        const host = this.hosts.get(hostId)
+        const machineId = catalogRow ? sessionLocation(catalogRow).machineId : undefined
+        const machine = machineId ? this.snapshot.machines.find(entry => entry.id === machineId) : undefined
+        const localPhase = this.options.sessions.list.getSnapshot().phase === 'ready' ? 'ready' : 'pending'
+        const archived = catalogRow?.archived === true
+            || (host?.workspaceState?.getSnapshot().archivedSessionIds ?? []).includes(sessionId)
+        return {
+            kind: resource.sourceSessionId ? 'source' : 'display',
+            label: this.hostLabel(hostId),
+            hostId, sessionId,
+            ...(resource.sourceSessionId ? { sourceSessionId: resource.sourceSessionId } : {}),
+            ...(resource.sourceHubId ? { savedHubId: resource.sourceHubId } : {}),
+            currentHubId: this.primarySourceHubId,
+            sourcePhase: this.discovery.sourcePhase,
+            sourceError: this.discovery.sourceFailure,
+            localPhase,
+            hostRegistered: host !== undefined,
+            hostOnline: host !== undefined && (hostId === 'local' || this.discovery.host(hostId)?.phase !== 'unavailable'),
+            settled: this.catalogSettled(),
+            ...(archived ? { archived: true } : {}),
+            ...(catalogRow?.sourceLifecycleState !== undefined ? { sourceLifecycle: catalogRow.sourceLifecycleState } : {}),
+            ...(machine ? { machineLabel: machine.label, machineOnline: machine.online } : {}),
+        }
+    }
+
+    private markPaneUnavailable(paneId: string, hostId: string, sessionId: string, resource: Exclude<PaneResource, { kind: 'empty' }>,
+        resolution?: SourceResolution, ambiguous = false): void {
+        const state = paneOpenState(this.paneOpenContext(hostId, sessionId, resource))
+        if (resource.sourceSessionId && (resolution !== undefined || ambiguous)) {
+            // Structured original-source acquisition owns this pane's copy. The
+            // typed message/next step stays on the lease for other surfaces; the
+            // raw resolver error is the expandable technical detail.
+            if (ambiguous) {
+                const typed = sourceResolutionTypedState('ambiguous')
+                this.leases.set(paneId, { hostId, sessionId, status: 'failed', sourceResolution: 'ambiguous',
+                    error: `This original session has multiple display bindings. Its saved reference is preserved.${state.detail ? ` · ${state.detail}` : ''}`,
+                    reason: typed.reason, nextStep: typed.nextStep, detail: state.detail, retryable: true, waitingForCatalog: true })
+                return
+            }
+            if (resolution!.phase === 'failed') {
+                const failure = resolution!.failure ?? 'unknown'
+                const typed = sourceResolutionTypedState(failure)
+                this.leases.set(paneId, { hostId, sessionId, status: 'failed', sourceResolution: failure,
+                    error: resolution!.error ?? failure, reason: typed.reason, nextStep: typed.nextStep, detail: state.detail,
+                    retryable: true, waitingForCatalog: true })
+                return
+            }
+            if (resolution!.phase === 'opening' || !this.catalogSettled()) {
+                this.leases.set(paneId, { hostId, sessionId, status: 'opening', sourceResolution: 'loading',
+                    reason: state.reason, nextStep: state.nextStep, detail: state.detail, retryable: true, waitingForCatalog: true })
+                return
+            }
+            // The exact source was acquired, but this graph's own official catalog
+            // has not projected its display yet. A retry continues the same request.
+            this.leases.set(paneId, { hostId, sessionId, status: 'failed', sourceResolution: 'not-ready',
+                error: state.detail || state.message, reason: 'source-not-found', nextStep: 'Retry to continue opening the same original conversation.',
+                detail: state.detail, retryable: true, waitingForCatalog: true })
+            return
+        }
+        // Without a structured resolver the typed classifier owns the copy; an
+        // installed resolver still uses its localized loading state while waiting.
+        const loading: SourceResolutionStatus | undefined = resource.sourceSessionId && this.sourceResolver && state.transient ? 'loading' : undefined
+        this.leases.set(paneId, state.transient
+            ? { hostId, sessionId, status: 'opening', reason: state.reason, nextStep: state.nextStep, detail: state.detail, retryable: state.retryable, waitingForCatalog: true,
+                ...(loading ? { sourceResolution: loading } : {}) }
+            : { hostId, sessionId, status: 'failed', error: paneFailureError(state), reason: state.reason, nextStep: state.nextStep, detail: state.detail, retryable: state.retryable, waitingForCatalog: state.retryable })
+    }
+
     private reconcileLeases(): void {
         if (this.disposed || this.reconciling) return
         this.reconciling = true
         try {
+            // Re-bind saved identities before classifying anything: a display
+            // generation (`-rN`) is a resolvable rename, an imported legacy
+            // identity may receive its confirmed Hub, and neither is a deleted
+            // session. An already-saved Hub is never replaced.
+            const current = this.store.getSnapshot()
+            const rebound = bindSourceResources(current, this.snapshot.catalog.byId, this.sourceBindingScope())
+            if (rebound !== current) this.store.replace(rebound)
             const expected = new Map(this.store.getSnapshot().windows.flatMap(window => panes(window.root))
                 .flatMap(pane => pane.resource.kind !== 'empty' ? [[pane.id, pane.resource] as const] : []))
             this.pruneSourceResolutions(expected.values())
@@ -609,32 +831,38 @@ export class WorkspaceController {
                 }
             }
             for (const [paneId, resource] of expected) {
-                const resourceId = resource.sessionId
                 const previous = this.leases.get(paneId)
                 if (previous && !previous.waitingForCatalog) continue
                 let hostId = 'local'
-                let sessionId = resourceId
+                let sessionId = resource.sessionId
+                try {
+                    ;({ hostId, sessionId } = parseSessionResourceId(resource.sessionId))
+                } catch (error) {
+                    const failure = invalidPaneAddressState(resource.sessionId, error)
+                    this.leases.set(paneId, { hostId, sessionId, status: 'failed', error: paneFailureError(failure),
+                        reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: false })
+                    continue
+                }
+                const host = this.hosts.get(hostId)
                 try {
                     const source = this.originalSource(resource)
                     if (resource.sourceSessionId && (!source || !sourceRow({ ...resource, sourceHubId: source.hubId }, this.snapshot.catalog.byId))) {
                         const matches = source ? this.sourceMatches({ sessionId: source.sourceSessionId, hubId: source.hubId }) : []
-                        const resolution = matches.length === 0 && source ? this.resolveSource(source) : undefined
-                        const opening = resolution?.phase === 'opening' || resolution?.phase === 'ready' || Boolean(this.sourceResolver && !source)
-                        this.leases.set(paneId, { hostId, sessionId, status: opening ? 'opening' : 'failed', waitingForCatalog: true,
-                            sourceResolution: opening ? 'loading' : resolution?.failure ?? (matches.length > 1 ? 'ambiguous' : 'not-ready'),
-                            ...(!opening ? { error: resolution?.error ?? (matches.length > 1
-                                ? 'This original session has multiple display bindings. Choose its Host in the unified sidebar.'
-                                : `Original HAPI session ${resource.sourceSessionId} is not available yet. Its pane and source identity are preserved; it will attach when the source becomes available.`) } : {}) })
+                        // A saved Hub that is not the configured Hub is a different identity:
+                        // never request it, and never adopt another Hub's same-id session.
+                        const foreignHub = source !== undefined && resource.sourceHubId !== undefined
+                            && this.primarySourceHubId !== null && resource.sourceHubId !== this.primarySourceHubId
+                        const resolution = source && !foreignHub && matches.length === 0 ? this.resolveSource(source) : undefined
+                        this.markPaneUnavailable(paneId, hostId, sessionId, resource, resolution, matches.length > 1)
                         continue
                     }
-                    ;({ hostId, sessionId } = parseSessionResourceId(resourceId))
-                    const { host } = this.source(resourceId)
+                    if (!host) {
+                        this.markPaneUnavailable(paneId, hostId, sessionId, resource)
+                        continue
+                    }
                     const catalog = host.sessions.list.getSnapshot()
                     if (!catalog.byId[sessionId as SessionId]) {
-                        this.leases.set(paneId, { hostId, sessionId, waitingForCatalog: true,
-                            status: catalog.phase === 'pending' ? 'opening' : 'failed',
-                            ...(catalog.phase === 'pending' ? {} : { error: 'This session is not currently listed by its Host. It will reopen when the Host makes it available.' }),
-                        })
+                        this.markPaneUnavailable(paneId, hostId, sessionId, resource)
                         continue
                     }
                     const reference = host.sessions.retain(sessionId as SessionId, { source: 'hapiWorkspace' })
@@ -646,15 +874,20 @@ export class WorkspaceController {
                         this.publish()
                     }, error => {
                         if (this.disposed || this.leases.get(paneId) !== lease) return
-                        this.leases.set(paneId, { hostId, sessionId, reference, status: 'failed', error: errorMessage(error) })
+                        const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(error) })
+                        this.leases.set(paneId, { hostId, sessionId, reference, status: 'failed', error: paneFailureError(failure),
+                            reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
                         this.publish()
                     })
                 } catch (error) {
-                    this.leases.set(paneId, { hostId, sessionId, status: 'failed', error: errorMessage(error) })
+                    const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(error) })
+                    this.leases.set(paneId, { hostId, sessionId, status: 'failed', error: paneFailureError(failure),
+                        reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
                 }
             }
         } finally { this.reconciling = false }
         this.publish({ catalog: this.aggregateCatalog() })
+        this.scheduleSettleCheck()
     }
 
     private syncNavigation(): void {
@@ -697,7 +930,7 @@ export class WorkspaceController {
             const rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
             if (rebound !== state) this.store.replace(rebound)
             this.store.focus(existing.id)
-        } else this.store.openSession(sessionId, beside)
+        } else this.store.openResource({ kind: 'chat', sessionId, ...(sourceReference(this.snapshot.catalog.byId[sessionId]) ?? {}) }, beside)
         this.closeSessionPicker()
         this.options.reveal?.()
     }
@@ -883,6 +1116,9 @@ export class WorkspaceController {
             const key = originalSourceKey(source), failed = this.sourceResolutions.get(key)
             if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
         }
+        // An explicit retry grants a fresh catalog settle window instead of
+        // immediately repeating the same authoritative conclusion.
+        this.catalogChangedAt = Date.now()
         this.reconcileLeases()
     }
 
@@ -985,6 +1221,7 @@ export class WorkspaceController {
         this.lifetime.abort()
         for (const entry of this.sourceResolutions.values()) entry.abort.abort()
         this.sourceResolutions.clear(); this.sourceRequests.clear(); this.sourceResolver = undefined
+        if (this.settleTimer !== undefined) { clearTimeout(this.settleTimer); this.settleTimer = undefined }
         for (const unsubscribe of this.unsubscribers) unsubscribe()
         for (const subscriptions of this.hostUnsubscribers.values()) for (const unsubscribe of subscriptions) unsubscribe()
         this.hostUnsubscribers.clear()

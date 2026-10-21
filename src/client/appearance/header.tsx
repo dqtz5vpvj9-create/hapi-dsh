@@ -7,6 +7,7 @@ import type { HapiProjection } from '../../codex/projection-types.ts'
 import type { HapiObservedProjection } from '../../hapi-agent/projection-types.ts'
 import type { WorkspaceCatalogRow } from '../controller.ts'
 import { sourceIdentity } from '../../workspace/legacy.ts'
+import { readableEngine, readableHost, readableModel } from '../locales.ts'
 import type { AppearanceState } from './state.ts'
 import type { HeaderField, HeaderPreferences } from './preferences.ts'
 import type {} from '../pane-navigation.ts'
@@ -45,10 +46,12 @@ export function sourceHeaderFacts(native: HapiProjection, observed: HapiObserved
     const facts: HeaderFact[] = []
     const add = (key: HeaderFact['key'], value: string | null | undefined): void => { if (preferences[key] && value) facts.push({ key, value }) }
     const flavor = native ? 'codex' : observed?.flavor ?? ''
-    add('agent', SOURCE_AGENT_LABELS[flavor] ?? flavor)
-    add('machine', source.machineName ?? source.machineId)
-    add('model', sourceHeaderModel(source.model, flavor))
-    add('reasoning', native?.reasoningEffort ?? observed?.effort)
+    add('agent', SOURCE_AGENT_LABELS[flavor] ?? readableEngine(flavor))
+    add('machine', readableHost(source.machineName ?? source.machineId))
+    // Upstream hotfix formats an opaque DSH [provider, model] tuple; the shared
+    // readability helper keeps provider-only values out of the header.
+    add('model', readableModel(sourceHeaderModel(source.model, flavor)))
+    add('reasoning', readableEngine(native?.reasoningEffort ?? observed?.effort))
     if (row?.sourceRowState?.serviceTier === 'fast') add('fastMode', 'FAST')
     const lastActive = row?.sourceLastActiveAt
     if (preferences.lastActive && typeof lastActive === 'number' && Number.isFinite(lastActive) && lastActive > 0) {

@@ -30,6 +30,23 @@ export type ObservedItem = ObservedBase & (
 const str = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined
 const count = (value: unknown): number | null => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
 
+/** Protocol/lifecycle rows describe source execution state, not transcript text. */
+const NON_TRANSCRIPT_TYPES = new Set(['native-turn', 'thread_goal_updated', 'thread_goal_cleared',
+  'agent-run-start', 'agent-run-update', 'agent-run-trace'])
+/** Unknown protocol rows stay visible as one readable notice; raw JSON never enters a transcript. */
+function unknownProtocolLabel(data: Record<string, unknown>): string {
+  const type = str(data.type)
+  return type ? `Unsupported source event: ${type}` : 'Unsupported source event'
+}
+/** Readable error text from a source fact; a source payload is not a transcript body. */
+function sourceErrorText(value: unknown, fallback: string): string {
+  if (typeof value === 'string' && value.trim()) return value
+  const found = record(value)
+  const nested = record(found?.error)
+  const text = str(found?.message) ?? str(nested?.message) ?? (typeof found?.error === 'string' ? found.error : undefined)
+  return text?.trim() || fallback
+}
+
 /** Interpret only documented HAPI / Claude wire blocks; URLs stay links. */
 export function sourceParts(value: unknown): SourcePart[] {
   if (typeof value === 'string') return [{ type: 'text', text: value }]
@@ -152,10 +169,11 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
     else if (data.type === 'abort-restore') {
       push({ ...base, kind: 'end', reason: 'aborted', error: null })
       if (typeof data.text === 'string') notice('message', data.text, 'aborted-input')
-    } else if (data.type === 'message' || data.type === 'error') notice(data.type, str(data.message) ?? canonicalJson(data), 'notice', str(data.details))
+    } else if (data.type === 'message' || data.type === 'error') notice(data.type, sourceErrorText(data, data.type === 'error'
+      ? 'The source engine reported an error' : 'The source sent a message event without text'), 'notice', str(data.details))
     else if (data.type === 'compact-summary') notice('summary', str(data.summary) ?? '')
-    else if (data.type === 'compact') notice('compact', str(data.message) ?? canonicalJson(data))
-    else notice('source-event', canonicalJson(data))
+    else if (data.type === 'compact') notice('compact', str(data.message) ?? 'Source context was compacted.')
+    else notice('source-event', unknownProtocolLabel(data))
     return values
   }
   if (content.type === 'codex' || childTrace) {
@@ -164,11 +182,14 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
       const reasoning = data.type === 'reasoning'
       const cumulative = reasoning && id !== undefined || data.streamSnapshot === true || childTrace && id !== undefined || Boolean(id?.match(/^pi-.+-turn-\d+-message-\d+-text-\d+$/))
       // Shared Codex history keeps streamSnapshot=true on completed items.
-      // Only its stable localId confirms durability; the flag describes the
-      // cumulative payload, not whether the source item is still streaming.
+      // Only a durable source identity confirms completion: execution-bearing
+      // rows compare against their stable message id, other codex rows require
+      // the durable localId so a completed answer is not re-detected as live.
       const live = data.live === true || (nativeExecution
         ? id === undefined || row.localId !== id
-        : !reasoning && cumulative && (!childTrace || row.localId !== id || data.streamSnapshot === true))
+        : !reasoning && cumulative && (childTrace
+          ? row.localId !== id || data.streamSnapshot === true
+          : row.localId === null))
       const review = !reasoning && !live ? sourceStandaloneReview(data.message, data) : null
       push({ ...base, key: `${namespace}${reasoning ? 'reasoning' : 'text'}:${cumulative && id ? id : sourceKey}`,
         kind: 'assistant', parts: [{ type: reasoning ? 'reasoning' : 'text', text: data.message }],
@@ -191,7 +212,7 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
     } else if (data.type === 'token_count') {
       const usage = usageOf(data.info, base, true)
       if (usage) push({ ...base, kind: 'usage', usage })
-    } else if (data.type === 'error') notice('error', str(data.message) ?? canonicalJson(data), 'notice', str(data.details))
+    } else if (data.type === 'error') notice('error', sourceErrorText(data, 'The source engine reported an error'), 'notice', str(data.details))
     else if (data.type === 'context_compacted') notice('compact', 'The source context was compacted.')
     else if (data.type === 'compact-summary') notice('summary', str(data.summary) ?? '')
     else if (data.type === 'generated-image') {
@@ -203,7 +224,8 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
         : imageId ? [{ type: 'generated-media', media: { imageId, fileName: str(data.fileName ?? data.file_name) ?? 'generated-media', mimeType: str(data.mimeType ?? data.mime_type) ?? null } }]
         : [{ type: 'unsupported', label: `Generated image ${imageId ?? row.id} requires its source resource` }]
       push({ ...base, kind: 'assistant', parts, text: '', reasoning: false, cumulative: false, live: false })
-    } else notice('source-event', canonicalJson(data))
+    } else if (NON_TRANSCRIPT_TYPES.has(String(data.type))) return values
+    else notice('source-event', unknownProtocolLabel(data))
     return values
   }
   if (!sdk || data.isMeta === true || data.isCompactSummary === true) return []
@@ -233,12 +255,12 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
     if (usage) push({ ...base, key: `${base.key}:usage`, kind: 'usage', usage })
   } else if (data.type === 'result' || data.type === 'system' && data.subtype === 'turn_duration') {
     push({ ...base, kind: 'end', reason: data.is_error === true ? 'error' : 'completed',
-      error: data.is_error === true ? str(data.result) ?? canonicalJson(data.errors ?? data) : null })
+      error: data.is_error === true ? sourceErrorText(data.result ?? data.errors ?? data, 'The source engine reported an error') : null })
     const usage = usageOf(record(data.resultSummary)?.usage ?? data.usage, base, false)
     if (usage) push({ ...base, key: `${base.key}:usage`, kind: 'usage', usage })
   } else if (data.type === 'summary') notice('summary', str(data.summary) ?? '')
-  else if (data.type === 'system' && data.subtype === 'api_error') notice('error', canonicalJson(data.error ?? data))
-  else if (data.type === 'system' && ['compact_boundary', 'microcompact_boundary'].includes(String(data.subtype))) notice('compact', canonicalJson(data))
+  else if (data.type === 'system' && data.subtype === 'api_error') notice('error', sourceErrorText(data.error ?? data, 'The source provider reported an API error'))
+  else if (data.type === 'system' && ['compact_boundary', 'microcompact_boundary'].includes(String(data.subtype))) notice('compact', 'Source context was compacted.')
   else if (data.type === 'system' && data.subtype === 'away_summary') notice('summary', str(data.content) ?? '')
   else if (data.type === 'agy_message' && typeof data.content === 'string') push({ ...base, kind: 'assistant', parts: [{ type: 'text', text: data.content }],
     text: data.content, reasoning: false, cumulative: false, live: false })

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { filterSessions, sessionLocation, type WorkspaceController } from './controller.ts'
+import { isInternalIdentifier, readableEngine, readableHost, stableLabel } from './locales.ts'
 import type { WorkspaceKey, WorkspaceTranslate } from './locales.ts'
 import { paneRectangles, panes, splitBoundaries, type PaneNode, type SplitBoundary, type WorkspaceWindow } from './model.ts'
 import { PrefixKeys, runWorkspaceCommand, WORKSPACE_PREFIX_TIMEOUT_MS } from './shortcuts.ts'
@@ -42,6 +43,22 @@ const activityLabel: Record<ActivityKind, WorkspaceKey> = { error: 'activityErro
 const sourceResolutionLabel: Record<SourceResolutionStatus, WorkspaceKey> = {
     loading: 'sourceLoading', 'not-found': 'sourceNotFound', removed: 'sourceRemoved', denied: 'sourceDenied',
     transport: 'sourceTransport', 'not-ready': 'sourceNotReady', ambiguous: 'sourceAmbiguous', identity: 'sourceIdentityMismatch', unknown: 'sourceResolveFailed',
+}
+
+/** One readable label for a conversation; identifiers never stand in for titles. */
+function readableTitle(raw: string | null | undefined, t: WorkspaceTranslate, max = 48): string {
+    const label = stableLabel(raw, max)
+    return !label || isInternalIdentifier(label) ? t('untitledConversation') : label
+}
+
+/** Split raw failures (JSON, stack traces) into a readable line plus optional detail. */
+function errorParts(message: string, t: WorkspaceTranslate): { summary: string; detail: string | null } {
+    const text = (message ?? '').trim()
+    if (!text) return { summary: t('errorSummary'), detail: null }
+    const raw = /^[\[{]/.test(text) || /"code"\s*:|"stack"\s*:/.test(text)
+    const first = text.split('\n')[0]!.trim()
+    return { summary: raw ? t('errorSummary') : first.length > 180 ? `${first.slice(0, 180)}…` : first,
+        detail: raw || text.includes('\n') || first !== text ? text : null }
 }
 function ActivityDot({ kind, pending, compacting, t }: { kind: ActivityKind; pending?: boolean; compacting?: boolean; t: WorkspaceTranslate }) {
     const title = t(compacting && kind === 'running' ? 'compacting' : activityLabel[kind])
@@ -94,7 +111,7 @@ function RenameDialog({ title, initial, save, close, t }: {
         void Promise.resolve().then(() => save(value)).then(close, error => setError(error instanceof Error ? error.message : String(error))).finally(() => setPending(false))
     }}>
         <label>{t('name')}<input autoFocus maxLength={200} value={value} onChange={event => setValue(event.currentTarget.value)} disabled={pending}/></label>
-        {error && <p className="hapi-error" role="alert">{error}</p>}
+        {error && <p className="hapi-error" role="alert" title={error}>{error}</p>}
         <div className="hapi-button-row"><button type="button" onClick={close}>{t('cancel')}</button><button type="submit" disabled={pending || !value.trim()}>{t('save')}</button></div>
     </form></Dialog>
 }
@@ -142,7 +159,7 @@ function ResizeHandle({ boundary, controller, stage, t }: { boundary: SplitBound
 
 function WorkspacePane({ pane, window, focused, hidden, style, controller, bind, create, t }: {
     pane: PaneNode; window: WorkspaceWindow; focused: boolean; hidden: boolean; style: CSSProperties;
-    controller: WorkspaceController; bind: (pane: PaneNode, visible: boolean, toolsTarget: HTMLElement | null) => ReactNode; create: () => void;
+    controller: WorkspaceController; bind: (pane: PaneNode, visible: boolean) => ReactNode; create: () => void;
     t: WorkspaceTranslate
 }) {
     const snapshot = controller.getSnapshot()
@@ -150,7 +167,6 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
     const location = sessionLocation(summary)
     const lease = snapshot.leases.get(pane.id)
     const element = useRef<HTMLElement>(null)
-    const [toolsTarget, setToolsTarget] = useState<HTMLDivElement | null>(null)
     const lastVisibleSize = useRef<{ width: number; height: number } | null>(null)
     const drop = useWorkspacePaneDrop(controller, pane, hidden)
     useLayoutEffect(() => {
@@ -179,31 +195,33 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
         <header className="hapi-pane-header">
             <ActivityDot {...sessionActivity(summary)} t={t}/>
-            <span className="hapi-pane-title" title={summary?.cwd ?? title} draggable={!hidden}
-                onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>{title}</span>
-            {summary && <span className="hapi-pane-source" title={[location.machineName, location.machineId, location.nativeId].filter(Boolean).join(' · ')}>{location.machineName ? `${location.machineName} · ` : ''}{location.engine.toUpperCase()}</span>}
+            <span className="hapi-pane-title" title={[title, summary?.cwd].filter(Boolean).join('\n')} draggable={!hidden}
+                onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>{readableTitle(title, t, 72)}</span>
             <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
-            <PaneMenu pane={pane} window={window} controller={controller} t={t} toolsTarget={setToolsTarget}/>
+            <PaneMenu pane={pane} window={window} controller={controller} t={t}/>
             <IconButton label={t('closePane')} icon="close" onClick={() => controller.store.closePane(pane.id)}/>
         </header>
         <div className="hapi-pane-body">
             {pane.resource.kind === 'empty' ? <div className="hapi-empty"><WorkspaceIcon kind="grid" size={34}/><h2>{t('chooseSession')}</h2><p>{t('emptyHelp')}</p><button type="button" onClick={controller.requestSessionPicker}>{t('openConversation')}</button><button type="button" onClick={create}>{t('newSession')}</button><kbd>Ctrl B → %</kbd></div>
-                : lease?.status === 'failed' ? <div className="hapi-empty" role="alert"><h2>{t('openFailed')}</h2>
-                    <p>{lease.sourceResolution ? t(sourceResolutionLabel[lease.sourceResolution]) : lease.error}</p>
-                    {lease.sourceResolution && lease.error && <details className="hapi-failure-details"><summary>{t('technicalDetails')}</summary><pre>{lease.error}</pre></details>}
-                    <button type="button" onClick={() => controller.retryPane(pane.id)}>{t('retry')}</button></div>
-                : bind(pane, !hidden, toolsTarget)}
+                : lease?.status === 'failed' ? (() => {
+                    const error = errorParts(lease.error ?? '', t)
+                    const detail = lease.sourceResolution && lease.error ? lease.error : error.detail
+                    return <div className="hapi-lease-error" role="alert"><h2>{t('openFailed')}</h2>
+                        <p>{lease.sourceResolution ? t(sourceResolutionLabel[lease.sourceResolution]) : error.summary}</p>
+                        {detail && <details><summary>{t('technicalDetails')}</summary><pre>{detail}</pre></details>}
+                        <button type="button" onClick={() => controller.retryPane(pane.id)}>{t('retry')}</button></div>
+                })()
+                : bind(pane, !hidden)}
         </div>
         {drop.position && <div className="hapi-dock-indicator" data-hapi-drop={drop.position} aria-hidden="true"/>}
     </section>
 }
 
-function PaneMenu({ pane, window, controller, t, toolsTarget }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate; toolsTarget?: (target: HTMLDivElement | null) => void }) {
+function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
     const layout = controller.getSnapshot().layout
     const row = pane.resource.kind === 'empty' ? undefined : controller.getSnapshot().catalog.byId[pane.resource.sessionId]
     const split = (axis: 'horizontal' | 'vertical'): void => { controller.store.focus(pane.id); controller.store.split(axis); controller.requestSessionPicker() }
     return <details className="hapi-menu hapi-pane-menu"><summary title={t('actions')} aria-label={t('actions')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
-        <div className="hapi-pane-tools-outlet" ref={toolsTarget}/>
         {pane.resource.kind !== 'empty' && <>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('pluginViewsBeside')}</button>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('projectFiles')}</button>
@@ -229,7 +247,6 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     const [switcher, setSwitcher] = useState(false)
     const [rename, setRename] = useState<WorkspaceWindow | null>(null)
     const [prefix, setPrefix] = useState(false)
-    const [mobileToolsTarget, setMobileToolsTarget] = useState<HTMLDivElement | null>(null)
     const mobile = useNarrowViewport()
     const windowTabs = useRef<HTMLDivElement>(null)
     const paneTabs = useRef<HTMLDivElement>(null)
@@ -284,13 +301,13 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         return () => { window.removeEventListener('keydown', keydown, true); window.removeEventListener('blur', clear); if (timeout) clearTimeout(timeout) }
     }, [controller])
     const action = (operation: () => void): void => { try { operation() } catch (error) { controller.report(error) } }
-    const bind = (pane: PaneNode, visible: boolean, toolsTarget: HTMLElement | null): ReactNode => {
+    const bind = (pane: PaneNode, visible: boolean): ReactNode => {
         const lease = snapshot.leases.get(pane.id)
         if (!lease?.reference) return <div className="hapi-loading" role="status">{t(lease?.sourceResolution === 'loading' ? 'sourceLoading' : 'loading')}</div>
         if (pane.resource.kind === 'empty') return null
         const host = controller.host(lease.hostId)
         const focused = controller.store.focusedPane().id === pane.id
-        const options = { paneId: pane.id, focused, visible, toolsTarget: mobile ? focused ? mobileToolsTarget : null : toolsTarget }
+        const options = { paneId: pane.id, focused, visible }
         if (host?.renderPane) return host.renderPane(lease.reference, pane.resource, options)
         return <div className="hapi-loading" role="status">{t('loading')}</div>
     }
@@ -300,7 +317,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     ]
     return <div className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="" onClickCapture={links.capture}>
         <header className="hapi-workspace-toolbar">
-            <div className="hapi-workspace-brand"><WorkspaceIcon kind="grid"/><strong>HAPI</strong><span>{windowAlias(active, layout.windows.indexOf(active) + 1)}</span></div>
+            <div className="hapi-workspace-brand"><WorkspaceIcon kind="grid"/><strong>HAPI</strong>{layout.windows.length > 1 && <span>{windowAlias(active, layout.windows.indexOf(active) + 1)}</span>}</div>
             <div className="hapi-workspace-tools">
                 <details className="hapi-menu"><summary aria-label={t('newSession')} title={t('newSession')}><WorkspaceIcon kind="add"/></summary><div className="hapi-menu-content">
                     <button type="button" onClick={() => controller.requestNewSession('dsh')}>DSH · {t('newSession')}</button>
@@ -316,7 +333,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
             </div>
         </header>
         {runnerSkew}
-        {snapshot.notice && <div className="hapi-notice" role="alert"><span>{snapshot.notice}</span>{snapshot.conflict ? <><button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button><button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button></> : snapshot.persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retry')}</button>}<IconButton label={t('dismiss')} icon="close" onClick={controller.clearNotice}/></div>}
+        {snapshot.notice && <div className="hapi-notice" role="alert"><span title={snapshot.notice}>{snapshot.notice}</span>{snapshot.conflict ? <><button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button><button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button></> : snapshot.persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retry')}</button>}<IconButton label={t('dismiss')} icon="close" onClick={controller.clearNotice}/></div>}
         <WorkspaceLinkNotice links={links} language={language}/>
         <div className="hapi-workspace-stage" ref={setStage}>
             {layout.windows.map(window => {
@@ -339,22 +356,31 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         {mobile && <nav className="hapi-mobile-pane-bar" aria-label={t('pane')}>
             <IconButton label={t('allChats')} icon="sidebar" onClick={controller.requestSessionPicker}/>
             <div className="hapi-pane-tabs" role="tablist" aria-label={t('pane')} ref={paneTabs}>
-                {panes(active.root).map((pane, index) => <button type="button" role="tab" key={pane.id} aria-selected={pane.id === activePane.id} onClick={() => controller.store.focus(pane.id)}
-                    title={paneTitle(pane, snapshot.catalog.byId, t('newPane'))}><span>P{index + 1}</span><span>{paneTitle(pane, snapshot.catalog.byId, t('newPane'))}</span></button>)}
+                {panes(active.root).map((pane, index) => {
+                    const paneName = paneTitle(pane, snapshot.catalog.byId, t('newPane'))
+                    return <button type="button" role="tab" key={pane.id} aria-selected={pane.id === activePane.id} onClick={() => controller.store.focus(pane.id)}
+                        title={paneName}><span>P{index + 1}</span><span>{readableTitle(paneName, t, 36)}</span></button>
+                })}
             </div>
             <button type="button" className="hapi-pane-add" aria-label={t('newPane')} onClick={() => { controller.store.split('horizontal'); controller.requestSessionPicker() }}>P+</button>
-            <PaneMenu pane={activePane} window={active} controller={controller} t={t} toolsTarget={setMobileToolsTarget}/>
+            <PaneMenu pane={activePane} window={active} controller={controller} t={t}/>
         </nav>}
         <footer className="hapi-statusbar">
             <div role="tablist" aria-label={t('window')} className="hapi-window-tabs" ref={windowTabs}>
-                {layout.windows.map((window, index) => <button type="button" role="tab" key={window.id} aria-selected={window.id === active.id}
-                    className={window.id === active.id ? 'hapi-window-tab-active' : ''} onClick={() => controller.store.selectWindow(window.id)}
-                    onDragOver={event => { if (acceptsWorkspaceDrag(event.dataTransfer)) { event.preventDefault(); event.stopPropagation() } }}
-                    onDrop={event => dropOnWorkspaceWindow(controller, window.id, event)}
-                    onDoubleClick={() => setRename(window)} title={`${windowAlias(window, index + 1)} · ${windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))}`}>
-                    <ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/><span className="hapi-window-position">{index + 1}</span>
-                    <span className="hapi-window-label">{windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))}</span>
-                    <span className="hapi-window-count">{panes(window.root).length}</span></button>)}
+                {layout.windows.map((window, index) => {
+                    const paneCount = panes(window.root).length
+                    const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))
+                    // A renamed window keeps its name; an auto window identifies the focused conversation.
+                    const label = window.autoName === false ? readableTitle(windowAlias(window, index + 1), t) : readableTitle(paneName, t)
+                    return <button type="button" role="tab" key={window.id} aria-selected={window.id === active.id}
+                        className={window.id === active.id ? 'hapi-window-tab-active' : ''} onClick={() => controller.store.selectWindow(window.id)}
+                        onDragOver={event => { if (acceptsWorkspaceDrag(event.dataTransfer)) { event.preventDefault(); event.stopPropagation() } }}
+                        onDrop={event => dropOnWorkspaceWindow(controller, window.id, event)}
+                        onDoubleClick={() => setRename(window)} title={[label, paneName !== label ? paneName : null, paneCount > 1 ? t('paneCount', { n: paneCount }) : null].filter(Boolean).join('\n')}>
+                        <ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/><span className="hapi-window-position">{index + 1}</span>
+                        <span className="hapi-window-label">{label}</span>
+                        {paneCount > 1 && <span className="hapi-window-count" aria-label={t('paneCount', { n: paneCount })}>{paneCount}</span>}</button>
+                })}
             </div>
             <IconButton label={t('newWindow')} icon="add" onClick={() => action(() => { controller.store.createWindow(); controller.requestSessionPicker() })}/>
             <details className="hapi-menu hapi-window-menu"><summary title={t('more')} aria-label={t('more')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
@@ -380,9 +406,13 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 onOpen={id => { void controller.refresh(); controller.openSession(id); controller.closeNativePanel() }}/>}
         </Dialog>}
         {switcher && <Dialog title={t('windowList')} close={() => setSwitcher(false)} t={t}><div className="hapi-window-switcher">
-            {layout.windows.map((window, index) => <button type="button" key={window.id} aria-current={window.id === active.id ? 'page' : undefined}
-                onClick={() => { controller.store.selectWindow(window.id); setSwitcher(false) }}><ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/>
-                <strong>{windowAlias(window, index + 1)}</strong><span>{windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))}</span><small>{panes(window.root).length} P</small></button>)}
+            {layout.windows.map((window, index) => {
+                const count = panes(window.root).length
+                const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))
+                return <button type="button" key={window.id} aria-current={window.id === active.id ? 'page' : undefined}
+                    onClick={() => { controller.store.selectWindow(window.id); setSwitcher(false) }}><ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/>
+                    <strong>W{index + 1}</strong><span>{window.autoName === false ? windowAlias(window, index + 1) : readableTitle(paneName, t)}</span><small>{t('paneCount', { n: count })}</small></button>
+            })}
         </div></Dialog>}
         {rename && <RenameDialog key={rename.id} title={t('renameWindow')} initial={rename.name} save={name => controller.store.renameWindow(rename.id, name)} close={() => setRename(null)} t={t}/>}
         {snapshot.creation === 'choose' && <Dialog title={t('newSession')} close={controller.closeNewSession} t={t}><div className="hapi-new-choice">
@@ -509,6 +539,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         const { row, children } = branch
         const facts = sidebarActionFacts(row), child = facts.child
         const location = sessionLocation(row)
+        const machineLabel = readableHost(location.machineName ?? row.hostLabel)
         const worktree = sourceWorktreeLabel(row)
         const activity = sessionActivity(row)
         const isSelected = selectedId === row.id
@@ -546,11 +577,11 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     {facts.sourceId && <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.sourceId!).catch(controller.report) }}>{t('copySourceId')}</button>}
                     {facts.source && <button role="menuitem" type="button" disabled={!facts.nativeId} title={facts.nativeId ?? t('nativeIdUnavailable')} onClick={() => { if (facts.nativeId) void navigator.clipboard.writeText(facts.nativeId).catch(controller.report) }}>{t('copyNativeId')}</button>}
                     <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.displayId).catch(controller.report) }}>{t(facts.source ? 'copyDisplayId' : 'copyId')}</button>
-                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined)} title={[row.displayTitle, row.sourceSummary, row.cwd, worktree, location.machineName, location.nativeId].filter(Boolean).join('\n')}
+                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
                     <div className="hapi-session-title"><ActivityDot {...activity} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
-                    <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`}>{location.engine.toUpperCase()}</span>
-                        <span className="hapi-ellipsis">{location.machineName ?? row.hostLabel}</span>{destination ? <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span> : <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1)}</span>}
+                    <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`} title={t('engine')}>{readableEngine(location.engine)}</span>
+                        {machineLabel && <span className="hapi-ellipsis">{machineLabel}</span>}{destination ? <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span> : <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1)}</span>}
                     </div>
                     <div className="hapi-session-source-state"><SessionRowState state={row.sourceRowState} detailed={!mobile || statusMode === 'detailed'} t={t}/></div>
                 </button>}</SidebarActionSurface>
@@ -600,31 +631,33 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         </section>
     }
     const body = <div className={`hapi-session-sidebar${mobile && snapshot.pickingSession ? ' hapi-session-picker' : ''}`}>
-        <header><strong>{t('allChats')}</strong><span>{tree.length}</span>
+        <header><strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length} ${t('sessions')}`}>{tree.length}</span>
             {snapshot.pickingSession && <button type="button" className="hapi-picker-back" onClick={controller.closeSessionPicker}>{t('backToWorkspace')}</button>}
             <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
         </header>
         <SidebarSearchControls query={query} onQueryChange={setQuery} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
-        <div className="hapi-session-filters">
-            <select aria-label={t('engine')} value={engine} onChange={event => controller.sidebar.change({ engine: event.currentTarget.value })}><option value="">{t('allEngines')}</option>{engines.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}</select>
-            <select aria-label={t('machine')} value={machine} onChange={event => controller.sidebar.change({ machine: event.currentTarget.value })}><option value="">{t('allMachines')}</option>{machines.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-        </div>
-        <div className="hapi-list-modes" aria-label={t('allChats')}>
-            <button type="button" aria-pressed={mode === 'recent'} onClick={() => { reseed(); controller.sidebar.change({ mode: 'recent' }) }}>{t('recent')}</button>
-            <button type="button" aria-pressed={mode === 'folders'} onClick={() => controller.sidebar.change({ mode: 'folders' })}>{t('folders')}</button>
-            <button type="button" className="hapi-mark-all" onClick={() => controller.sidebar.markAllSeen(matching)} title={t('markAllRead')}>✓</button>
+        <div className="hapi-sidebar-toolbar">
+            <div className="hapi-list-modes" role="group" aria-label={t('allChats')}>
+                <button type="button" aria-pressed={mode === 'recent'} onClick={() => { reseed(); controller.sidebar.change({ mode: 'recent' }) }}>{t('recent')}</button>
+                <button type="button" aria-pressed={mode === 'folders'} onClick={() => { controller.sidebar.change({ mode: 'folders' }) }}>{t('folders')}</button>
+            </div>
+            <select className="hapi-status-select" aria-label={t('statusFilter')} value={filter} onChange={event => controller.sidebar.change({ filter: event.currentTarget.value as SidebarFilter })}>
+                {(['all', 'running', 'attention', 'unread'] as SidebarFilter[]).map(key => <option key={key} value={key}>{t(key)}{counts[key] ? ` · ${counts[key]}` : ''}</option>)}
+            </select>
+            <button type="button" className="hapi-mark-all" onClick={() => controller.sidebar.markAllSeen(matching)} title={t('markAllRead')} aria-label={t('markAllRead')}>✓</button>
         </div>
         <details className="hapi-sidebar-options"><summary>{t('sidebarOptions')}</summary>
+            <div className="hapi-session-filters">
+                <select aria-label={t('engine')} value={engine} onChange={event => controller.sidebar.change({ engine: event.currentTarget.value })}><option value="">{t('allEngines')}</option>{engines.map(value => <option key={value} value={value}>{readableEngine(value)}</option>)}</select>
+                <select aria-label={t('machine')} value={machine} onChange={event => controller.sidebar.change({ machine: event.currentTarget.value })}><option value="">{t('allMachines')}</option>{machines.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+            </div>
             <label><input type="checkbox" checked={pinInProgressSessions} onChange={event => controller.sidebar.change({ pinInProgressSessions: event.currentTarget.checked })}/>{t('floatActiveSessions')}</label>
             <label><input type="checkbox" checked={showActiveSessionsOnly} onChange={event => controller.sidebar.change({ showActiveSessionsOnly: event.currentTarget.checked })}/>{t('activeSessionsOnly')}</label>
             <label>{t('sessionPreviewLimit')}<input type="number" min={1} max={99} step={1} value={sessionPreviewLimit} onChange={event => { if (event.currentTarget.value) controller.sidebar.change({ sessionPreviewLimit: event.currentTarget.valueAsNumber }) }}/></label>
             <label>{t('mobileStatusMode')}<select aria-label={t('mobileStatusMode')} value={statusMode} onChange={event => controller.sidebar.change({ statusMode: event.currentTarget.value === 'detailed' ? 'detailed' : 'standard' })}>
                 <option value="standard">{t('standardStatus')}</option><option value="detailed">{t('detailedStatus')}</option></select></label>
         </details>
-        <div className="hapi-activity-filters" aria-label={t('attention')}>
-            {(['all', 'running', 'attention', 'unread'] as SidebarFilter[]).map(key => <button type="button" key={key} aria-pressed={filter === key} onClick={() => controller.sidebar.change({ filter: key })}>{t(key)}<span>{counts[key]}</span></button>)}
-        </div>
         <div className="hapi-session-list" aria-label={t('allChats')} ref={setScrollElement}>
             <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={rows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
             {!tree.length && <p className="hapi-list-empty" role="status">{snapshot.catalog.phase === 'ready' ? t('noSessions') : t('loading')}</p>}

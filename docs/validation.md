@@ -2,6 +2,17 @@
 
 这份记录区分原始 HAPI/Runner 协议 fixture、真实传输、未修改的官方 DSH 进程、真实浏览器与实际账号执行。某一层通过不能替代下一层。功能和 UX 尚未等价的项目继续列在 [功能对照表](feature-parity.md)，不因构建或单测通过而自动标成完成。
 
+## 开发回路与发版回路
+
+日常开发只跑 **micro**：`npm run test:micro`（三份 tsc + `npm test`，约 30 秒）。`npm run test:release` 只做 typecheck、单测和构建，不跑 Playwright。完整 E2E 每个 spec 都要启动未修改的官方 DSH 进程、配对 Runner 和浏览器，耗时以分钟计，**不再进入任何自动回路**；需要时按受影响范围手动跑定向 spec（例如 `npx playwright test e2e/pane-surface.spec.ts`），全量套件只在专门的验收窗口手动执行。
+
+E2E 的官方 profile 现在按构建产物缓存到系统临时目录：第一次运行生成模板（约 13 秒），之后每个 spec 只复制 profile 树并启动自己的 DSH（约 8 秒），不再为每个 spec 重复 `dsh plugin add` 的 pnpm 安装。可用环境变量：
+
+- `HAPI_DSH_E2E_CACHE=/path`：缓存目录（默认 `$TMPDIR/hapi-dsh-e2e-cache`）。
+- `HAPI_DSH_E2E_TIMING=1`：打印 template/copy/start 分阶段耗时。
+- `HAPI_DSH_E2E_WORKERS=N`：本地并行 spec 文件数（默认 1；缓存热后可用 3–4）。
+- dist 重建会使缓存键变化，下一次 E2E 自动重建模板。
+
 ## 当前代码验证
 
 运行环境为 Linux、Node 24.19.0，DSH 固定 `0.2.1-rc.2`。上游源码与已发布 bundle 均未修改，具体来源见 [UPSTREAMS.json](../UPSTREAMS.json)。浏览器测试使用 Playwright 1.64.1 与 Chrome for Testing 156.0.8078.4；后者具备固定上游 PDF.js 所需的原生浏览器 API，没有给上游加 polyfill。
@@ -11,7 +22,7 @@
 | Host TypeScript | `npx tsc -p tsconfig.host.json --noEmit` 通过 |
 | Client TypeScript | `npx tsc -p tsconfig.client.json --noEmit` 通过 |
 | E2E TypeScript | `npx tsc -p tsconfig.e2e.json --noEmit` 通过 |
-| 全部代码与传输测试 | `npm test` 实际执行 768 项，767 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
+| 全部代码与传输测试 | `npm test` 实际执行 807 项，806 通过，0 失败，1 项官方进程测试按设计等待显式启用（`npm run test:micro` 同一套） |
 | 显式官方 federation 集成 | 前一检查点独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流。本轮未重复该独立用例，实际官方浏览器仍运行同一传输链路 |
 | 构建 | Host、Client、CLI、Runner、五个 source-aware providers 与类型声明构建通过 |
 

@@ -1,9 +1,11 @@
-import { mkdtemp, mkdir, readFile, writeFile, symlink, rm } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, stat, writeFile, symlink, rm } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
+import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createConfig, writeConfig } from '../src/cli/config.ts';
 import { installProfile, resolveDshCommand, runCommand, runtimeEnvironment, type Command } from '../src/cli/runtime.ts';
@@ -13,6 +15,95 @@ import { HapiWireFixture } from './hapi-fixture.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 type Rpc = <T = unknown>(method: string, request?: unknown) => Promise<T>;
+
+const timingEnabled = process.env.HAPI_DSH_E2E_TIMING === '1';
+const timingStarted = Date.now();
+function stage(label: string): void {
+    if (timingEnabled) process.stderr.write(`[e2e ${((Date.now() - timingStarted) / 1000).toFixed(1)}s] ${label}\n`);
+}
+function cacheRoot(): string { return process.env.HAPI_DSH_E2E_CACHE ?? join(tmpdir(), 'hapi-dsh-e2e-cache'); }
+
+interface E2eTemplate { key: string; root: string; hubHome: string; runnerHome: string; provider: string }
+
+/** Identity of everything a prepared profile depends on; a dist or fixture rebuild invalidates it. */
+async function templateKey(): Promise<string> {
+    const rows = ['hapi-dsh-e2e-template-v1'];
+    const files = ['package.json', 'dist/client.js', 'dist/index.js', 'dist/runner/index.js', 'dist/runner/config.js', 'dist/runner/client.js', 'dist/runner/protocol.js', 'dist/runner/tunnel.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml', 'e2e/provider-fixture.mjs'];
+    for (const path of files) {
+        try {
+            const info = await stat(join(root, path));
+            rows.push(`${path}:${Math.trunc(info.mtimeMs)}:${info.size}`);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+            rows.push(`${path}:missing`);
+        }
+    }
+    return createHash('sha256').update(rows.join('\n')).digest('hex').slice(0, 16);
+}
+
+/** Add the in-repo fixture provider to one profile through the official plugin manager. */
+async function addFixtureProvider(profile: string, provider: string, command: Command, env: NodeJS.ProcessEnv): Promise<void> {
+    const result = await runCommand({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', `link:${provider}`] }, { env, timeoutMs: 120_000 });
+    if (result.exitCode) throw new Error(`Fixture provider installation failed: ${result.stderr.replace(/([?&]token=)[^\s&]+/g, '$1[redacted]')}`);
+}
+
+/**
+ * Prepare the two official profiles once per build and cache them. Each test
+ * environment then copies the prepared profile tree instead of paying two
+ * `dsh plugin add` pnpm installs and repeated version checks per spec file.
+ */
+async function ensureTemplate(): Promise<E2eTemplate> {
+    const cache = cacheRoot();
+    await mkdir(cache, { recursive: true });
+    const key = await templateKey();
+    const directory = join(cache, key);
+    const template: E2eTemplate = { key, root: directory, hubHome: join(directory, 'hub-home'), runnerHome: join(directory, 'runner-home'), provider: join(directory, 'provider') };
+    const marker = join(directory, '.ready');
+    const ready = (): Promise<boolean> => readFile(marker, 'utf8').then(() => true, () => false);
+    if (await ready()) return template;
+    await withFileLock(join(cache, `.${key}.setup`), async () => {
+        if (await ready()) return;
+        stage('template: build');
+        await rm(directory, { recursive: true, force: true });
+        await mkdir(directory, { recursive: true });
+        // One provider package shared by every prepared profile; it only reads the repository.
+        await mkdir(template.provider);
+        await symlink(join(root, 'node_modules'), join(template.provider, 'node_modules'), 'junction');
+        await writeFile(join(template.provider, 'index.mjs'), await readFile(join(root, 'e2e/provider-fixture.mjs')));
+        await writeFile(join(template.provider, 'package.json'), JSON.stringify({ name: 'hapi-dsh-e2e-provider', version: '0.0.0', type: 'module',
+            exports: { '.': './index.mjs', './package.json': './package.json', './cordis.patch.yml': './cordis.patch.yml' },
+            dsh: { bundle: { patch: './cordis.patch.yml' } } }));
+        await writeFile(join(template.provider, 'cordis.patch.yml'), '- insert:\n    - id: hapi-dsh-e2e-provider\n      name: hapi-dsh-e2e-provider\n');
+        const command = await resolveDshCommand({ dsh: { home: template.hubHome } } as never);
+        const hubConfig = createConfig('http://127.0.0.1:9', { DSH_HOME: template.hubHome });
+        hubConfig.server.port = 0;
+        hubConfig.hapi.token = 'template-access-token';
+        hubConfig.hapi.id = 'e2e-template-hub';
+        hubConfig.federation = { credentialsFile: join(directory, 'template-pairings.json') };
+        const hubConfigFile = join(directory, 'template-hub.json');
+        await writeConfig(hubConfigFile, hubConfig);
+        await installProfile(hubConfig, hubConfigFile, root);
+        await addFixtureProvider(hubConfig.dsh.profile, template.provider, command, runtimeEnvironment(hubConfig, hubConfigFile));
+        const runner = createRunnerConfig('http://127.0.0.1:9', { id: 'template-runner', token: 'template-pair-token', dshHome: template.runnerHome });
+        const runnerFile = join(directory, 'template-runner.json');
+        await writeRunnerConfig(runnerFile, runner);
+        await installProfile(runner, runnerFile, join(root, 'dist/runner'), { bundleName: 'hapi-dsh-runner' });
+        const runnerEnv = { ...process.env, DSH_HOME: runner.dsh.home, HAPI_DSH_RUNNER_CONFIG_FILE: runnerFile };
+        await addFixtureProvider(runner.dsh.profile, template.provider, command, runnerEnv);
+        await writeFile(marker, JSON.stringify({ key, provider: template.provider }));
+        stage('template: ready');
+    });
+    if (!(await ready())) throw new Error('The prepared official e2e profile was not written');
+    return template;
+}
+
+/** Copy one prepared profile tree (pnpm symlinks preserved) into one environment home. */
+async function materializeProfiles(templateHome: string, targetHome: string): Promise<void> {
+    await mkdir(targetHome, { recursive: true });
+    // Default copy resolve symlinks to absolute targets; verbatim would keep
+    // template-relative links that break after the tree moves.
+    await cp(join(templateHome, 'profiles'), join(targetHome, 'profiles'), { recursive: true, force: true });
+}
 export interface OfficialEnvironment {
     hapi: HapiWireFixture;
     launchUrl: string;
@@ -77,20 +168,10 @@ export async function startOfficialEnvironment(remote = false, options: { compan
         const pairToken = remote ? await addPairing(credentialsFile, 'runner-one', 'Remote Linux') : undefined;
         const configFile = join(directory, 'hub.json');
         await writeConfig(configFile, config);
-        await installProfile(config, configFile, root);
+        const template = await ensureTemplate();
+        await materializeProfiles(template.hubHome, config.dsh.home);
+        stage('hub: profile copied');
         const command = await resolveDshCommand(config);
-        const provider = join(directory, 'provider');
-        await mkdir(provider);
-        await symlink(join(root, 'node_modules'), join(provider, 'node_modules'), 'junction');
-        await writeFile(join(provider, 'index.mjs'), await readFile(join(root, 'e2e/provider-fixture.mjs')));
-        await writeFile(join(provider, 'package.json'), JSON.stringify({ name: 'hapi-dsh-e2e-provider', version: '0.0.0', type: 'module',
-            exports: { '.': './index.mjs', './package.json': './package.json', './cordis.patch.yml': './cordis.patch.yml' },
-            dsh: { bundle: { patch: './cordis.patch.yml' } } }));
-        await writeFile(join(provider, 'cordis.patch.yml'), '- insert:\n    - id: hapi-dsh-e2e-provider\n      name: hapi-dsh-e2e-provider\n');
-        const addProvider = async (profile: string, env: NodeJS.ProcessEnv): Promise<void> => {
-            const result = await runCommand({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', `link:${provider}`] }, { env, timeoutMs: 120_000 });
-            if (result.exitCode) throw new Error(`Fixture provider installation failed: ${sanitize(result.stderr)}`);
-        };
         const start = async (runtime: Command, args: string[], env: NodeJS.ProcessEnv, runner = false): Promise<string> => {
             const child = spawn(runtime.executable, [...runtime.args, ...args], { env: { ...env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
             children.push(child);
@@ -111,18 +192,18 @@ export async function startOfficialEnvironment(remote = false, options: { compan
             }
         };
         const env = runtimeEnvironment(config, configFile);
-        await addProvider(config.dsh.profile, env);
         const launchUrl = await start(command, ['--profile', config.dsh.profile, '--host', '127.0.0.1', '--port', '0', '--no-open'], env);
+        stage('hub: started');
         const client = await rpcClient(launchUrl);
         const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory, diagnostics: () => processOutput.map(read => read()).join('\n'), close };
         if (remote && pairToken) {
             const runner = createRunnerConfig(client.origin, { id: 'runner-one', token: pairToken, dshHome: join(directory, 'runner-home') });
             const runnerFile = join(directory, 'runner.json');
             await writeRunnerConfig(runnerFile, runner);
-            await installProfile(runner, runnerFile, join(root, 'dist/runner'), { bundleName: 'hapi-dsh-runner' });
+            await materializeProfiles(template.runnerHome, runner.dsh.home);
             const runnerEnv = { ...process.env, DSH_HOME: runner.dsh.home, HAPI_DSH_RUNNER_CONFIG_FILE: runnerFile };
-            await addProvider(runner.dsh.profile, runnerEnv);
             await start(command, ['--profile', runner.dsh.profile, '--host', '127.0.0.1', '--port', '0', '--no-open'], runnerEnv, true);
+            stage('runner: started');
             const deadline = Date.now() + 30_000;
             while (true) {
                 const catalog = await client.rpc<{ hosts: Array<{ online: boolean }> }>('hapi/catalog');

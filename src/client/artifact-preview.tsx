@@ -7,7 +7,7 @@ import type { PropsRenderSlots, PropsRuntime, SlotHookFactory, SlotMap } from '@
 import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { ARTIFACT_PROTOCOL, GENERATED_MEDIA_PROTOCOL, ARTIFACT_TAB_ID, ARTIFACT_TAB_KIND, parseSourceDocumentResourceAddress,
+import { ARTIFACT_PROTOCOL, GENERATED_MEDIA_PROTOCOL, ARTIFACT_TAB_ID, ARTIFACT_TAB_KIND, parseSourceDocumentResourceAddress, sessionFileArtifactPath,
     type ArtifactReference, type GeneratedMediaReference, type SourceDocumentReference } from '../workspace/artifacts.ts'
 import { artifactPresentation, artifactViewers, loadArtifact, readArtifactBytes, type ArtifactApi, type ArtifactPresentation, type ArtifactViewer, type LoadedArtifact } from './artifact-content.ts'
 import { SourceMarkdown, sourceMarkdownLabels } from './source-markdown.tsx'
@@ -101,8 +101,13 @@ function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: Artifac
     const body = (): ReactNode => {
         if (!presentation || !loaded) return null
         const { content } = presentation
+        // A `session-file:` artifact names a real path on the source machine, so
+        // its Markdown keeps the original relative-image and link base. An
+        // opaque artifact has no filesystem base and must not guess one.
+        const artifactPath = reference.document.kind === 'artifact' ? sessionFileArtifactPath(reference.document.artifactId) : null
         if (presentation.viewer === 'markdown' && content.kind === 'text') return <div className="hapi-source-markdown" data-document-markdown><SourceMarkdown text={content.text} complete={content.eof}
-            source={reference.source} language={language} openFile={(path, line) => tab.actions.openResource(sessionFileAddress(props.sessionId, path), line === undefined ? {} : { params: { line } })}/></div>
+            source={reference.source} {...(artifactPath === null ? {} : { documentPath: artifactPath })} language={language}
+            openFile={(path, line) => tab.actions.openResource(sessionFileAddress(props.sessionId, path), line === undefined ? {} : { params: { line } })}/></div>
         if (presentation.viewer === 'code' && content.kind === 'text') return <CodeBlock className="hapi-artifact-code" code={content.text} lang={languageForPath(loaded.metadata.fileName)} streaming={false}
             lineNumbers wrap={wrap} copyLabel={labels.code.copyLabel} copiedLabel={labels.code.copiedLabel} toolbarLabels={labels.code.toolbarLabels}/>
         if (presentation.viewer === 'image' && content.kind === 'bytes') return <ArtifactImage data={content.data} mimeType={loaded.metadata.mimeType} name={loaded.metadata.fileName} language={language} visible={tab.visible}/>

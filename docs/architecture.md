@@ -23,6 +23,12 @@ flowchart TD
 
 独立到窗格是为了保留官方插件的单个活动会话、右栏导航和对话框状态。把同一个官方 AppFrame 同时渲染两次，会错误共享这些状态。相应成本是更多 Client 对象和内存；已经共享模块加载与每个 Host 的插件更新连接，但不会为节约对象而让两个窗格共用会话焦点。
 
+## 窗格宿主（TMUX 表面）
+
+一个窗格不再把官方 Web 的完整 AppFrame 当作自己的界面：`src/client/surface/` 定义单包内的三个 seam——`contracts.ts`（PaneHost/SessionSource/SessionView/ChromeOwnership）、`pane-graph.ts`（窗格只启动对话所需官方插件行，并把 Host 的插件图事件投影到同一子集）、`chrome.ts`（官方 `sidebar`/`shell.leading` 等窗口级 seat 在窗格图中影子为空，右栏/设置/对话框归焦点窗格）。官方 AppFrame 仍是唯一公开的 Conversation 宿主，所以窗格仍拥有自己的官方 Client Context；路由 b 的结论与证据、保留/排除行清单、内存实测见 [pane-surface.md](pane-surface.md)。
+
+窗格图不再重新求值本插件自己的 client bundle：根图通过 `mountPaneNative` 在窗格 Context 上安装 HAPI 侧贡献，bundle 与官方行按 Host 编译缓存共享一次 `new Function` 结果、每次执行仍传入该窗格自己的 `document/localStorage/fetch` facade。实测 4 窗格 JS heap 从 244.6MB 降到 75.8MB，第 2 个以后每窗格约 6.05MB。
+
 ## 为什么要独立 Context
 
 官方 Client 的 connection、remote `$host`、会话目录和插件依赖图都属于一个 Context。把多台 Host 的对象塞进同一个 Context，会错误地共享机器级 API、schema 和 provider。单纯改一个代理 base URL 也不能给所有第三方插件补全这些归属关系。

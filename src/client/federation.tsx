@@ -14,7 +14,10 @@ import { z } from 'zod'
 import { remoteValue, type FederationHost } from '../client-api.ts'
 import { errorMessage, parseSessionResourceId, sessionResourceId, type WorkspaceController, type WorkspaceRenderOptions } from './controller.ts'
 import { panes, type PaneResource } from './model.ts'
+import { mountPaneNative } from './pane-native.ts'
 import { installRemotePane } from './remote-pane.tsx'
+import { installPaneChrome } from './surface/chrome.ts'
+import { PANE_GRAPH_POLICY, projectPluginEvents } from './surface/pane-graph.ts'
 import { installSourceVoice } from './source-voice/index.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installShareReceiver } from './share-receiver.tsx'
@@ -66,11 +69,19 @@ interface HostRuntime { stop(): Promise<void> }
 // only the primary application's later window shortcuts should be excluded.
 const remoteKeyboardEvents = new WeakSet<KeyboardEvent>()
 interface HostResources {
+    /** Refreshed before every pane boot so a later graph revision is not stale. */
     payload: Bootstrap
     modulesExport: typeof import('@deepseek-ai/dsh-client-modules/client')
     staticModules: Record<string, unknown>
     /** Share immutable bytes, never factories, Contexts, references, or browser globals. */
     artifacts: Map<string, Promise<string>>
+    /**
+     * Compiled bundle wrappers, shared by every pane graph of this Host. The
+     * wrapper takes the pane's globals as parameters, so one compilation serves
+     * all panes while each execution still closes over its own facades. Without
+     * this cache every pane retains its own copy of the bundle source.
+     */
+    compiled: Map<string, (...args: unknown[]) => unknown>
     events: SharedPluginEvents
 }
 
@@ -95,16 +106,42 @@ async function loadHostResources(root: Context, host: FederationHost, signal: Ab
     eventsUrl.protocol = eventsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
     eventsUrl.searchParams.set('host', host.id)
     const eventsFetch: typeof fetch = (_input, init) => pluginEventsOverWebSocket(eventsUrl, init?.signal)
-    return { payload, modulesExport, staticModules, artifacts: new Map(), events: new SharedPluginEvents(eventsFetch, 'plugins/events', signal) }
+    return { payload, modulesExport, staticModules, artifacts: new Map(), compiled: new Map(), events: new SharedPluginEvents(eventsFetch, 'plugins/events', signal) }
 }
 
-/** Public Loader and module-system instances execute unchanged upstream bundle bytes. */
-async function bootGraph(root: Context, host: FederationHost, resources: HostResources, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation): Promise<GraphRuntime> {
+/**
+ * Refresh the cached Host bootstrap before binding a new pane. The graph rows a
+ * pane boots come from this snapshot, so a pane opened after a Host graph
+ * rebuild must not inherit the revision fetched at page start. The previous
+ * snapshot stays usable when the refresh fails; the pane boot then fails on its
+ * own if the Host is genuinely unreachable.
+ */
+async function refreshBootstrap(host: FederationHost, resources: HostResources, signal: AbortSignal): Promise<void> {
+    try {
+        const response = await transport(host, signal)('hapi-dsh/bootstrap', { cache: 'no-store' })
+        if (!response.ok) return
+        const payload = bootstrapSchema.parse(await response.json())
+        if (host.id !== 'local' && payload.graph.entries.some(row => row.id === 'hapi-dsh')) return
+        resources.payload = payload
+    } catch { /* Keep the last known graph; a failing Host surfaces on the pane itself. */ }
+}
+
+/**
+ * Public Loader and module-system instances execute unchanged upstream bundle bytes.
+ *
+ * `projectEvents` is the pane projection: the Host still answers one official
+ * `/plugins/events` stream per Context, but graph syncs and rebuilds are
+ * rewritten/dropped so a filtered pane can never restore an excluded row.
+ */
+async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false): Promise<GraphRuntime> {
     const origin = window.location.origin
     const baseUrl = new URL(host.basePath, origin).href
     const directFetch = transport(host, signal)
     const hostFetch: typeof fetch = (input, init) => isPluginEventsRequest(input, init, origin)
-        ? resources.events.response(AbortSignal.any([signal, ...(init?.signal ? [init.signal] : []), ...(input instanceof Request ? [input.signal] : [])]))
+        ? (pluginEvents
+            ? resources.events.response(AbortSignal.any([signal, ...(init?.signal ? [init.signal] : []), ...(input instanceof Request ? [input.signal] : [])]))
+                .then(response => projectEvents ? projectPluginEvents(response) : response)
+            : new Promise<Response>(() => {}))
         : directFetch(input, init)
     const target: ClientModuleLoaderTarget = {
         mode: 'queue', pendingQueue: [], load(registration) { this.pendingQueue.push(registration) },
@@ -181,7 +218,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         return new WebSocket(url, protocols)
     }
     const overrides: Record<PropertyKey, unknown> = {
-        ...resources.payload.globals, __ModuleLoader__: target, __DSH_BOOT__: resources.payload.graph, __HAPI_DSH_PANE__: true,
+        ...resources.payload.globals, __ModuleLoader__: target, __DSH_BOOT__: boot, __HAPI_DSH_PANE__: true,
         localStorage: localStorageFacade, fetch: hostFetch, document: documentFacade,
         addEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => addEvent(window, 'window', type, listener, options),
         removeEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => removeEvent(window, 'window', type, listener, options),
@@ -206,16 +243,23 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
             resources.artifacts.set(key, bytes)
             void bytes.catch(() => { if (resources.artifacts.get(key) === bytes) resources.artifacts.delete(key) })
         }
-        const source = await bytes
-        signal.throwIfAborted()
-        const execute = new Function('window', 'globalThis', 'self', 'fetch', 'location', 'localStorage', 'document', `${source}\n//# sourceURL=${key}`)
+        let execute = resources.compiled.get(key)
+        if (execute === undefined) {
+            const source = await bytes
+            signal.throwIfAborted()
+            execute = new Function('window', 'globalThis', 'self', 'fetch', 'location', 'localStorage', 'document', `${source}\n//# sourceURL=${key}`) as (...args: unknown[]) => unknown
+            resources.compiled.set(key, execute)
+        } else {
+            await bytes
+            signal.throwIfAborted()
+        }
         execute(facade, facade, facade, hostFetch, window.location, localStorageFacade, documentFacade)
     }
     overrides.__DSH_TRANSPORT__ = { fetch: hostFetch, createWebSocket: socket, streamBaseUrl: baseUrl, loadBundle }
     // The official Web seed's store engine closes over primary localStorage.
     // Its unmodified npm source is separately bundled and evaluated against
     // this graph's persistence facade; all plugin consumers get that instance.
-    const modules: ClientModuleSystem = target.create({ boot: resources.payload.graph as WebBootGraph,
+    const modules: ClientModuleSystem = target.create({ boot,
         staticModules: { ...resources.staticModules, [GRAPH_STORE_MODULE]: createGraphStore(localStorageFacade) }, loadBundle })
     const ctx = new Context()
     if (navigation) {
@@ -300,6 +344,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let unsubscribe: (() => void) | undefined
         let unshortcut: (() => void) | undefined
         let voiceScope: ReturnType<Context['inject']> | undefined
+        let nativeDispose: (() => Promise<void>) | undefined
+        let chromeDispose: (() => void) | undefined
         let generation = 0
         let currentResource = resource
         let presentation = { focused: initial.focused, visible: initial.visible !== false }
@@ -353,8 +399,13 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             await ui.stopOwnedVoice().catch(workspace.report)
             lifetime?.abort(); unsubscribe?.(); unsubscribe = undefined
             unshortcut?.(); unshortcut = undefined
-            await voiceScope?.dispose(); voiceScope = undefined
+            // Unmount the rendered pane first: its React tree stops issuing
+            // calls before the Context contributions and the graph go away.
             pane?.dispose(); pane = undefined
+            try { await nativeDispose?.() } catch (error) { workspace.report(error) }
+            nativeDispose = undefined
+            chromeDispose?.(); chromeDispose = undefined
+            await voiceScope?.dispose(); voiceScope = undefined
             reference?.release(); reference = undefined
             const graph = runtime; runtime = undefined
             await graph?.stop()
@@ -371,9 +422,31 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(reason)}</p><button type="button" onClick={() => { void start() }}>Retry</button></div>)
             }
             try {
-                const graph = await bootGraph(root, host, resources, surface, paneId, activeSignal, navigation)
+                // Refresh the cached Host snapshot first: the rows a pane boots come
+                // from it, so a pane opened after a Host graph revision must not boot
+                // the stale revision fetched when the page started.
+                await refreshBootstrap(host, resources, activeSignal)
+                if (disposed || currentGeneration !== generation || activeSignal.aborted) return
+                // A pane boots the Host's chat-surface subset: chrome-only rows and
+                // this plugin's own bundle are excluded, and the shared plugin-event
+                // stream is projected onto the same subset (graph syncs rewritten,
+                // rebuilds of excluded rows dropped).
+                const graph = await bootGraph(root, host, resources, PANE_GRAPH_POLICY.transform(resources.payload.graph as WebBootGraph), surface, paneId, activeSignal, navigation, true, true)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) { await graph.stop(); return }
                 runtime = graph
+                // Window-level chrome is owned once by the primary graph. Empty
+                // shadows remove the official sidebar and leading seats from the pane.
+                chromeDispose = installPaneChrome(graph.ctx)
+                // The pane graph excludes this plugin's own client bundle: the root
+                // graph installs the pane-only HAPI surfaces on this Context, so the
+                // ~4 MB bundle is evaluated once per page, not once per pane. The
+                // installer is generation-checked: a pane closed during the awaited
+                // install disposes it immediately instead of leaking it.
+                if (host.id === 'local' && !graph.ctx.get('hapiPaneNative')) {
+                    const disposeNative = await mountPaneNative(graph.ctx)
+                    if (disposed || currentGeneration !== generation || activeSignal.aborted) { await disposeNative(); return }
+                    nativeDispose = disposeNative
+                }
                 // Every official hook and SessionProvider is bound to this
                 // graph's own reference, never the Host catalog reference.
                 // Activation only starts the catalog poll. Its first response
@@ -474,7 +547,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }
     }
     try {
-        if (host.id !== 'local') catalog = await bootGraph(root, host, resources, catalogSurface, 'catalog', signal)
+        if (host.id !== 'local') catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, 'catalog', signal)
         function RemoteSession({ sourceId, resource, options }: { sourceId: string; resource: Resource; options: WorkspaceRenderOptions }) {
             const mount = useRef<HTMLDivElement>(null)
             const paneId = options.paneId

@@ -16,10 +16,29 @@ import type { LegacyWorkspaceSnapshot } from '../src/legacy-workspace-types.ts';
 
 const token = 'e2e-hapi-access-token';
 const jwt = 'e2e-hapi-jwt';
-export interface NativeFixture { session: HapiSession; rows: HapiMessage[]; readHistory?: (url: URL) => HapiMessagesPage }
+export interface NativeFixture {
+    session: HapiSession
+    rows: HapiMessage[]
+    /** Explicit per-session history page override (remote hotfix hook). */
+    readHistory?: (url: URL) => HapiMessagesPage
+}
+/** Opt-in bounded Hub-faithful history paging for one fixture session. */
+export interface HistoryPaging {
+    epoch: number
+    pageSize?: number
+    /** Runs before a page is served; may rewrite rows and bump the epoch. */
+    onPage?: (index: number, paging: HistoryPaging) => void
+}
+export interface ObservedFixtureOptions {
+    /** Replace the default seed rows before the session is announced. */
+    rows?: HapiMessage[]
+    paging?: HistoryPaging
+}
 
 export class HapiWireFixture {
     readonly sessions = new Map<string, NativeFixture>();
+    readonly historyPaging = new Map<string, HistoryPaging>();
+    private readonly historyPageCounts = new Map<string, number>();
     readonly sent: Array<{ sessionId: string; message: HapiSendMessage }> = [];
     readonly approvals: Array<{ sessionId: string; requestId: string; answer: unknown }> = [];
     readonly uploads: unknown[] = [];
@@ -88,7 +107,8 @@ export class HapiWireFixture {
         return fixture;
     }
     /** SDK wire rows are explicit fixtures; no Claude/Pi process is launched here. */
-    addObserved(flavor: 'claude' | 'pi' | 'cursor' | 'dsh', key: string, machineId = 'machine-alpha'): NativeFixture {
+    addObserved(flavor: 'claude' | 'pi' | 'cursor' | 'dsh', key: string, machineId = 'machine-alpha',
+        options: ObservedFixtureOptions = {}): NativeFixture {
         const id = `source-${key}`, at = Date.now();
         const session: HapiSession = { id, namespace: 'e2e', seq: 1, createdAt: at, updatedAt: at,
             active: true, activeAt: at, thinking: false, thinkingAt: at, metadataVersion: 1, agentStateVersion: 1,
@@ -102,6 +122,8 @@ export class HapiWireFixture {
         fixture.rows.push({ id: `user-${key}`, localId: `original-user-${key}`, seq: 1, createdAt: at, invokedAt: at,
             content: { role: 'user', content: { type: 'text', text: `Original ${flavor} input` } } });
         this.observedAnswer(fixture, `Original ${flavor} answer in the official DSH Conversation.`);
+        if (options.rows) fixture.rows = options.rows;
+        if (options.paging) this.historyPaging.set(id, options.paging);
         this.emit({ type: 'session-added', sessionId: id }); return fixture;
     }
     private observedAnswer(fixture: NativeFixture, text: string): void {
@@ -198,6 +220,45 @@ export class HapiWireFixture {
     async close(): Promise<void> {
         this.disconnectEvents(); this.voice.close(); await this.workbench.close(); this.server.closeAllConnections();
         await new Promise<void>(resolve => this.server.close(() => resolve()));
+    }
+    /** Hub-faithful bounded page: cursor positions, snapshot head, and a reset signal
+     * when the caller pins a stale epoch. */
+    private historyPage(fixture: NativeFixture, paging: HistoryPaging, url: URL) {
+        const id = fixture.session.id;
+        const index = this.historyPageCounts.get(id) ?? 0;
+        this.historyPageCounts.set(id, index + 1);
+        paging.onPage?.(index, paging);
+        const position = (row: HapiMessage) => ({ at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 });
+        const ordered = [...fixture.rows].sort((left, right) => {
+            const a = position(left), b = position(right);
+            return a.at - b.at || a.seq - b.seq;
+        });
+        const newest = ordered.at(-1);
+        const epoch = Number(url.searchParams.get('epoch') ?? Number.NaN);
+        const reset = Number.isFinite(epoch) && epoch !== paging.epoch;
+        const limit = Math.min(Number(url.searchParams.get('limit') ?? 200) || 200, paging.pageSize ?? 200);
+        const beforeAt = url.searchParams.get('beforeAt'), beforeSeq = url.searchParams.get('beforeSeq');
+        const untilAt = url.searchParams.get('untilAt'), untilSeq = url.searchParams.get('untilSeq');
+        let pool = ordered;
+        if (untilAt !== null && untilSeq !== null) {
+            const until = { at: Number(untilAt), seq: Number(untilSeq) };
+            pool = ordered.filter(row => { const at = position(row); return at.at < until.at || at.at === until.at && at.seq <= until.seq });
+        }
+        let selected: HapiMessage[];
+        let available: number;
+        if (!reset && beforeAt !== null && beforeSeq !== null) {
+            const before = { at: Number(beforeAt), seq: Number(beforeSeq) };
+            const older = pool.filter(row => { const at = position(row); return at.at < before.at || at.at === before.at && at.seq < before.seq });
+            selected = older.slice(-limit); available = older.length;
+        } else {
+            selected = pool.slice(-limit); available = pool.length;
+        }
+        const oldest = selected[0];
+        return { messages: selected, page: { direction: beforeAt === null ? 'latest' : 'before', limit, epoch: paging.epoch, reset,
+            nextBeforeSeq: oldest?.seq ?? null, nextBeforeAt: oldest ? position(oldest).at : null,
+            nextAfterSeq: null, nextAfterAt: null,
+            snapshotHeadSeq: newest?.seq ?? null, snapshotHeadAt: newest ? position(newest).at : null,
+            hasMore: !reset && available > selected.length } };
     }
     private async handle(request: import('node:http').IncomingMessage, response: ServerResponse): Promise<void> {
         const url = new URL(request.url ?? '/', 'http://fixture');
@@ -350,6 +411,8 @@ export class HapiWireFixture {
             }
             if (tail === 'messages' && request.method === 'GET') {
                 if (fixture.readHistory) { send(fixture.readHistory(url)); return; }
+                const paging = this.historyPaging.get(id);
+                if (paging) { send(this.historyPage(fixture, paging, url)); return; }
                 send({ messages: fixture.rows, page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
                     nextBeforeSeq: null, nextBeforeAt: null, nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: null, snapshotHeadAt: null, hasMore: false } }); return;
             }

@@ -28,7 +28,7 @@ import { hasDirtyNativeDocument } from './workbench-drafts.ts'
 import { installSourceReadSync } from '../workspace/read-sync.ts'
 import { installNativeRewindAction } from './native-rewind-action.tsx'
 import { installNativeComposerAdmission } from './native-composer.ts'
-import { installNativeIntegration } from './native-integration.tsx'
+import { installPaneNative } from './pane-native.ts'
 import type {} from './pane-navigation.ts'
 import { installHapiTabs } from './hapi-tabs.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
@@ -76,12 +76,25 @@ export const inject = ['slots', 'sessions', 'workspaces', 'uiWorkspace', 'layout
 
 /** Mount the namespace first, then consume it in an explicit Cordis inject scope. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
+    // Pane graphs exclude this bundle; this branch only remains for the primary
+    // graph and for profiles that still scan the row.
+    if (Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true) {
+        const unmount = await ctx.remote.$mount(HAPI_REMOTE)
+        let child: ReturnType<Context['inject']> | undefined
+        try {
+            child = ctx.inject(['remote.hapi'], installPaneNative)
+            await child
+            return async () => { await child?.dispose(); await unmount?.() }
+        } catch (error) {
+            await child?.dispose(); await unmount?.()
+            throw error
+        }
+    }
     let unmount: (() => Promise<void>) | undefined
     let child: ReturnType<Context['inject']> | undefined
     try {
         unmount = await ctx.remote.$mount(HAPI_REMOTE)
-        const paneMode = Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true
-        child = ctx.inject(['remote.hapi'], paneMode ? installPaneNative : installWorkspace)
+        child = ctx.inject(['remote.hapi'], installWorkspace)
         await child
         return async () => { await child?.dispose(); await unmount?.() }
     } catch (error) {
@@ -89,21 +102,6 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         await child?.dispose(); await unmount?.()
         throw error
     }
-}
-
-/** The same plugin entry runs in pane graphs without creating a second shell. */
-function installPaneNative(ctx: Context): () => void {
-    const unlocale = ctx.locale.register('hapiWorkspace', { en, zh })
-    const unstyle = installWorkspaceStyles(document)
-    const integration = installNativeIntegration(ctx, ctx.remote.hapi, sessionId => {
-        // A source fork is a new conversation, so the pane graph's own official
-        // navigation emits the selection which its outer workspace observes.
-        void ctx.sessions.refresh().then(() => ctx.uiWorkspace.openSession(sessionId as never))
-    }, () => { void ctx.sessions.refresh() })
-    const unprovide = ctx.reflect.provide('hapiPaneNative', integration)
-    const untabs = installHapiTabs(ctx, ctx.remote.hapi)
-    const unadmin = installSourceAdmin(ctx, ctx.remote.hapi)
-    return () => { unadmin(); untabs(); integration.dispose(); unstyle(); unlocale(); void unprovide() }
 }
 
 async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {

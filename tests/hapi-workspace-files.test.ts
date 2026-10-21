@@ -36,6 +36,10 @@ async function fixture(limits: Partial<Config> = {}) {
   const session: HapiSession = { id: source.sourceSessionId, active: true, thinking: false, activeAt: 1, updatedAt: 1, metadataVersion: 1, agentStateVersion: 1,
     metadata: { path: '/source/project', machineId: source.machineId }, namespace: 'fixture', seq: 1, createdAt: 1, thinkingAt: 0, agentState: null }
   const files = new Map<string, Uint8Array>([['/source/project/notes.txt', Buffer.from('first\nsecond\nthird\n')], ['/source/project/image.bin', new Uint8Array([0, 1, 2, 3])]])
+  // HAPI grants a session's own uploads one authority outside its workspace:
+  // the `session-file:` artifact route. The session file routes never see them.
+  const uploads = new Map<string, Uint8Array>([['/home/source/uploads/notes.md', Buffer.from('# Uploaded notes\n\nbody\n')],
+    ['/home/source/uploads/image.bin', new Uint8Array([9, 8, 7, 6, 5])]])
   const denied = new Set<string>()
   const requests: string[] = []
   const client: Pick<HapiClient, 'hubId' | 'getSession' | 'request' | 'readBinary'> = {
@@ -46,7 +50,11 @@ async function fixture(limits: Partial<Config> = {}) {
       const url = new URL(raw, 'http://fixture.invalid'), path = url.searchParams.get('path') ?? ''
       assert.ok(raw.startsWith('/api/sessions/native-source/'))
       if (denied.has(path)) return { success: false, error: 'Path is outside workspace roots' }
-      if (url.pathname.endsWith('/directory')) return path === '/source/project' ? { success: true, entries: [...files].map(([name, bytes]) => ({ name: posix.basename(name), type: 'file', size: bytes.byteLength, modified: hash(bytes) })) .map(entry => ({ ...entry, modified: parseInt(String(entry.modified).slice(0, 8), 16) })) } : { success: false, error: 'Not a directory' }
+      if (url.pathname.endsWith('/directory')) {
+        if (path === '/source/project') return { success: true, entries: [...files].map(([name, bytes]) => ({ name: posix.basename(name), type: 'file', size: bytes.byteLength, modified: 1 })) }
+        if (path === '/source/project/docs') return { success: true, entries: [{ name: 'nested.md', type: 'file', size: 6, modified: 1 }] }
+        return { success: false, error: 'Not a directory' }
+      }
       const bytes = files.get(path)
       if (url.pathname.endsWith('/file-info')) return { success: true, entries: [{ path, ...(bytes ? { size: bytes.byteLength, modified: parseInt(hash(bytes).slice(0, 8), 16) } : {}) }] }
       if (!bytes) return { success: false, code: 'not-found', error: 'Missing source file' }
@@ -55,7 +63,17 @@ async function fixture(limits: Partial<Config> = {}) {
     },
     readBinary: async raw => {
       requests.push(raw)
-      const path = new URL(raw, 'http://fixture.invalid').searchParams.get('path')!
+      const url = new URL(raw, 'http://fixture.invalid')
+      if (url.pathname.includes('/artifacts/')) {
+        const id = decodeURIComponent(url.pathname.slice(url.pathname.lastIndexOf('/') + 1))
+        assert.ok(id.startsWith('session-file:'))
+        const path = Buffer.from(id.slice('session-file:'.length), 'base64url').toString('utf8')
+        const bytes = uploads.get(path)
+        // The original Runner refuses any upload this session does not own.
+        if (!bytes) throw new Error('This file is outside the session working directory')
+        return { data: bytes, fileName: posix.basename(path), mimeType: 'application/octet-stream', status: 200, headers: {} }
+      }
+      const path = url.searchParams.get('path')!
       return { data: files.get(path)!, fileName: posix.basename(path), mimeType: 'application/octet-stream', status: 200, headers: {} }
     },
   }
@@ -82,7 +100,7 @@ async function fixture(limits: Partial<Config> = {}) {
   const nativeScope: WorkspaceFileScope = { sessionId: nativeId, workspaceRoot: session.metadata!.path }
   const localScope: WorkspaceFileScope = { sessionId: localId, workspaceRoot: directory }
   const peer: PeerScope = { id: 'files-fixture' as PeerId, ctx, principal: { kind: 'owner' }, interactions: 'answer', signal: signal(), dispose: async () => {} }
-  return { ctx, service, gateway, peer, nativeScope, localScope, files, denied, requests, directory, session,
+  return { ctx, service, gateway, peer, nativeScope, localScope, files, uploads, denied, requests, directory, session,
     close: async () => { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }) } }
 }
 
@@ -195,8 +213,73 @@ test('document browse-root denial stays a denial and never selects the Host file
     const path = join(f.directory, 'notes.txt')
     await writeFile(path, 'host bytes must not be used')
     f.denied.add(path)
-    await assert.rejects(f.service.readBytes(f.nativeScope, path, {}, signal()), /outside workspace roots/)
+    // Both original authorities are consulted in order (document read, then
+    // the session upload route); either explicit Runner denial is acceptable
+    // and neither may return the Host file's bytes.
+    await assert.rejects(f.service.readBytes(f.nativeScope, path, {}, signal()), /outside the (?:session working directory|workspace roots)/)
     assert.equal(f.requests.some(value => value.includes('/file?')), false)
     assert.equal(f.requests.some(value => value.includes('/filesystem/')), false)
+  } finally { await f.close() }
+})
+
+test('source path arithmetic uses the Runner working directory, not the retained Hub header root', async () => {
+  const f = await fixture()
+  // A retained Session header can predate the source metadata (`/`) or hold a
+  // path the Runner has since replaced. Resolving against it would send the
+  // Runner an absolute path outside its own working directory.
+  const staleHeader = { sessionId: nativeId, workspaceRoot: '/' } as const
+  try {
+    const page = await f.service.read(staleHeader, 'notes.txt', {}, signal())
+    assert.equal(page.absolutePath, '/source/project/notes.txt')
+    assert.equal(page.text, 'first\nsecond\nthird')
+
+    // A relative tree layer from the retained root must stay inside the
+    // verified working directory, not the serving Host process cwd.
+    const listing = await f.service.list(staleHeader, '/docs', signal())
+    assert.equal(listing.path, 'docs')
+    assert.deepEqual(listing.entries, [{ name: 'nested.md', type: 'file', size: 6 }])
+
+    // Absolute paths inside the verified root are literal and are not rebased.
+    assert.equal((await f.service.stat(f.nativeScope, '/source/project/notes.txt', signal())).absolutePath, '/source/project/notes.txt')
+    const paths = f.requests.map(raw => new URL(raw, 'http://fixture.invalid').searchParams.get('path'))
+    assert.ok(paths.every(path => path?.startsWith('/source/project')), JSON.stringify(paths))
+
+    // Directories stay workspace-scoped: outside means explicit failure.
+    await assert.rejects(f.service.list({ sessionId: nativeId, workspaceRoot: '/source' }, '/etc', signal()),
+      (error: unknown) => error instanceof RemoteError && error.code === 'workspace-file/outside-workspace')
+  } finally { await f.close() }
+})
+
+test('session upload artifacts outside the workspace keep the original Runner artifact authority', async () => {
+  const f = await fixture()
+  const outside = '/home/source/uploads/notes.md'
+  try {
+    // HAPI's original UI reads `session-file:` artifacts its Runner authorizes,
+    // including this session's uploads outside the workspace directory. The
+    // session-confined file routes never see them.
+    const stat = await f.service.stat(f.nativeScope, outside, signal())
+    assert.equal(stat.absolutePath, outside)
+    assert.equal(stat.version, hash(f.uploads.get(outside)!))
+    assert.equal(stat.bytes, f.uploads.get(outside)!.byteLength)
+    assert.equal((await f.service.read(f.nativeScope, outside, {}, signal())).text, '# Uploaded notes\n\nbody')
+
+    const window = await f.service.readBytes(f.nativeScope, '/home/source/uploads/image.bin', { range: { offset: 1, length: 3 } }, signal())
+    assert.deepEqual([...window.data], [8, 7, 6])
+    assert.equal(window.eof, false)
+
+    // A relative dependency read from the artifact's own directory stays on
+    // that same authorized path; it does not fall back to the Hub filesystem.
+    const relative = await f.service.readBytes(f.nativeScope, 'image.bin', { baseFile: outside }, signal())
+    assert.deepEqual([...relative.data], [9, 8, 7, 6, 5])
+
+    // The document authority is probed first; the artifact route supplies the
+    // bytes. No session-confined filesystem route and no Host filesystem read.
+    assert.equal(f.requests.some(raw => raw.includes('/filesystem/')), false, JSON.stringify(f.requests))
+    assert.ok(f.requests.some(raw => raw.includes('/artifacts/')), JSON.stringify(f.requests))
+    assert.ok(f.requests.filter(raw => raw.includes('/artifacts/')).every(raw => raw.includes('session-file')), JSON.stringify(f.requests))
+
+    // An upload this session does not own is refused by the Runner, not by a
+    // Hub read and not by silently opening something else.
+    await assert.rejects(f.service.stat(f.nativeScope, '/home/source/uploads/other.md', signal()), /outside the session working directory/)
   } finally { await f.close() }
 })

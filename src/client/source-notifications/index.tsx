@@ -54,21 +54,22 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
             <p><small>{state.connected ? tr('Original Hub notification stream connected.', '原 Hub 通知连接正常。') : tr('Reconnecting the original Hub notification stream. Source Push remains independent of this page.', '正在重连原 Hub 通知流；源 Push 投递不依赖此页面。')}</small></p>
         </section>;
     }
+    // Only real source notifications float above the workspace. Installation and
+    // update offers live in Settings so a normal reading/file view is never
+    // covered; the saving dialog appears only after the user starts an update.
     function Overlay(_props: PropsRuntime<'shell.overlay'>) {
         const state = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot), tr = useWords();
         const saving = useRef<HTMLDialogElement>(null);
         useEffect(() => { if (state.updating) saving.current?.showModal(); else saving.current?.close(); }, [state.updating]);
+        const notices = state.notices.slice(-5);
+        if (!state.updating && !notices.length) return null;
         return <div className="hapi-notification-stack" aria-label={tr('Source notifications', '源会话通知')}>
             <dialog ref={saving} className="hapi-update-dialog" aria-label={tr('Saving workspace drafts', '保存工作区草稿')} onCancel={event => event.preventDefault()}>
                 <p role="status">{tr('Saving open editors and original attachment bytes before updating…', '正在保存已打开的编辑器和附件原始内容，随后更新…')}</p>
             </dialog>
-            {state.notices.slice(-5).map(notice => <article key={notice.id} role="status"><div><strong>{notice.title}</strong><p>{notice.body}</p>
+            {notices.map(notice => <article key={notice.id} role="status"><div><strong>{notice.title}</strong><p>{notice.body}</p>
                 <button type="button" onClick={() => { void runtime.open({ hubId: notice.hubId, sessionId: notice.sessionId }).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{tr('Open conversation', '打开会话')}</button></div>
                 <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss notification', '关闭通知')} onClick={() => runtime.dismiss(notice.id)}>×</button></article>)}
-            {state.updateReady && <article><div><strong>{tr('Workspace update available', '工作区有可用更新')}</strong>
-                <p>{tr('Save open drafts and attachments before loading the update.', '先保存已打开的草稿和附件，再加载更新。')}</p>
-                <button type="button" disabled={state.updating} onClick={() => { void runtime.applyUpdate(); }}>{state.updating ? tr('Saving editors…', '正在保存编辑器…') : tr('Save drafts and update', '保存草稿并更新')}</button>
-                {state.error && <p role="alert">{state.error}</p>}</div></article>}
         </div>;
     }
     disposers.push(ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'hapi-notifications', order: 35,

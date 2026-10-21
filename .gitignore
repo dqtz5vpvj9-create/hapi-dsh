@@ -11,3 +11,4 @@ test-results*/
 *.log
 artifacts/
 tsconfig.build-*.json
+.qoder/

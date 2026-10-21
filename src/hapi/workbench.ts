@@ -220,6 +220,27 @@ export class NativeWorkbench {
         if (!entry || entry.size === undefined) return null;
         return { size: entry.size, ...(entry.modified === undefined ? {} : { modified: entry.modified }) };
     }
+    /**
+     * Bytes of a source path through the original HAPI artifact route.
+     *
+     * The session file routes (`/filesystem/*`) confine the Runner to the
+     * session working directory. HAPI deliberately grants one extra authority:
+     * a `session-file:` artifact may also name a file this session uploaded in
+     * the Runner's upload area, outside the workspace. Only the artifact route
+     * performs that check (`cli/src/modules/common/handlers/artifacts.ts`), so a
+     * path the original HAPI UI previewed through an artifact must be read
+     * through that same route here. The Runner stays the only judge: an
+     * unauthorized outside path is rejected there, never read from the Hub.
+     */
+    async readSourceArtifactBytes(source: WorkbenchSource, path: string, signal: AbortSignal, maxBytes: number = MAX_DOCUMENT_BYTES): Promise<Uint8Array> {
+        await this.resolveSource(source, { kind: 'file', path });
+        signal.throwIfAborted();
+        const artifactId = `session-file:${Buffer.from(path, 'utf8').toString('base64url')}`;
+        const result = await this.client.readBinary(sourcePath(source.sourceSessionId, `/artifacts/${encodeURIComponent(artifactId)}`), {
+            maxBytes: Math.min(maxBytes, MAX_DOCUMENT_BYTES), signal, timeoutMs: 120_000,
+        });
+        return result.data;
+    }
     async nativeFileManage(input: WorkbenchRequest<'nativeFileManage'>): Promise<WorkbenchResponse<'nativeFileManage'>> {
         const request = workbenchInputs.nativeFileManage.parse(input);
         await this.resolveSource(request.source);

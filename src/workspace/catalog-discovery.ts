@@ -42,6 +42,10 @@ export class CatalogDiscovery {
     hostFailed(id: string, label: string, message: string): void {
         if (id !== 'local') this.hosts.set(id, { id, label, phase: 'unavailable', error: message })
     }
+    /** A saved pane can name a Host that has not been booted yet; only a real phase is authoritative. */
+    host(id: string): CatalogHostDiscovery | undefined { return id === 'local' ? undefined : this.hosts.get(id) }
+    get sourcePhase(): WorkspaceCatalogDiscovery['source'] { return this.source }
+    get sourceFailure(): string | null { return this.sourceError }
     snapshot(localReady: boolean, sourceBindingsPending = 0): WorkspaceCatalogDiscovery {
         const hosts: CatalogHostDiscovery[] = [{ id: 'local', label: 'DSH', phase: localReady ? 'ready' : 'pending', error: null }, ...this.hosts.values()]
         const bindings = this.source === 'ready' ? sourceBindingsPending : 0

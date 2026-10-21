@@ -119,6 +119,28 @@ export class ObservedProjector {
       // source did not retain its ready marker. No synthetic terminal is added.
       if (item.kind === 'user' && this.responseInTurn) { this.flushLive(); this.open = false }
       this.ensureTurn()
+      // A corrected final message reuses the abandoned attempt's step so the
+      // discarded partial leaves no phantom step behind.
+      let settlementStep: Step | undefined
+      // A final row can arrive while the same item is still streamed from
+      // provisional snapshots. Settle that attempt once with the completed text
+      // instead of leaving a live bubble or appending a duplicate message.
+      if (item.kind === 'assistant' && !item.live && this.live?.item.key === item.key) {
+        const live = this.live, projectedText = item.reasoning ? item.text : stripNotifySummaryFooter(item.text)
+        if (projectedText.startsWith(live.text)) {
+          const delta = projectedText.slice(live.text.length)
+          if (delta) this.chunk(live, { type: item.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text: delta })
+          live.item = item
+          this.flushLive()
+          this.responseInTurn = true
+          continue
+        }
+        // The completed item is not an extension of the provisional text (the
+        // source rewrote it). Abandon that stream so its stale partial cannot
+        // survive; the regular non-live path below appends the final message.
+        settlementStep = this.live.step
+        this.abandonStream()
+      }
       if (item.kind === 'assistant' && item.live) { this.updateLive(item); continue }
       if (this.live?.item.key !== item.key) this.flushLive()
       let event: SessionEvent
@@ -134,7 +156,8 @@ export class ObservedProjector {
         this.responseInTurn = true
         const live = this.live?.item.key === item.key ? this.live : undefined
         if (live) { this.updateLive(item); this.flushLive(); continue }
-        const step = this.nextStep()
+        const step = settlementStep ?? this.nextStep()
+        settlementStep = undefined
         const media = projectGeneratedMedia(item.parts, this.content(item))
         const display = projectNotifySummaries(media.content)
         event = this.append('assistant/message', { turn: step.turn, step: step.step, message: this.assistant(item, display.content), stream: [] }, { surfaceOp: 'append' })

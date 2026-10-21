@@ -3,8 +3,39 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { SOURCE_STATE_VIEW, sourceStateDefinition, sourceStateViewDefinition } from './source-state-conversation.ts'
+import type { WorkspaceTranslate } from './locales.ts'
 
 type StateProps = PropsRuntime<'conversation.view'> & PropsLocale<'hapiWorkspace'>
+
+/**
+ * Source status words, never raw transport tokens. A disconnected historical
+ * session is offline, not "reconnecting": only a live session can reconnect.
+ */
+export function sourceConnectionText(connection: string | undefined, active: boolean | undefined, t: WorkspaceTranslate): string {
+    if (connection === 'attached' || connection === 'connected') return t('online')
+    if (connection === 'history') return active === false ? t('offline') : t('sourceUnreportedValue')
+    if (connection === 'disconnected') return active === true ? t('sourceReconnecting') : t('offline')
+    return t('sourceUnreportedValue')
+}
+
+export function sourceExecutionText(status: string | undefined, t: WorkspaceTranslate): string {
+    switch (status) {
+        case 'active': return t('running')
+        case 'idle': return t('idle')
+        case 'disconnected': return t('offline')
+        case 'systemError': return t('activityError')
+        default: return t('sourceUnreportedValue')
+    }
+}
+
+export function sourceDeliveryText(state: string | undefined, t: WorkspaceTranslate): string {
+    switch (state) {
+        case 'confirmed': return t('sourceApplied')
+        case 'submitted': return t('sourceSubmitted')
+        case 'indeterminate': return t('sourceUnknown')
+        default: return t('sourceUnreportedValue')
+    }
+}
 
 /** A real source-owned business view next to Chat and other official/plugin
  * views. It reports connection/identity/approval/queue facts, not chat messages. */
@@ -14,7 +45,10 @@ export function SourceStateView({ sessionId, useConversation, useProjection, use
     const source = native ?? observed
     const cwd = useSessions(state => state.byId[sessionId]?.cwd)
     if (!source || !recorded) return <p className="hapi-source-state-empty">{t('sourceStateUnavailable')}</p>
-    return <section className="hapi-source-state-view" aria-label={t('sourceStateView')} data-hapi-source-state={source.hapiSessionId}>
+    const connection = native?.nativeConnection ?? observed?.connection
+    const connectionText = sourceConnectionText(connection, observed?.active, t)
+    return <section className="hapi-source-state-view" aria-label={t('sourceStateView')} data-hapi-source-state={source.hapiSessionId}
+        data-source-connection={connection ?? 'unreported'} data-source-active={observed ? observed.active ? 'true' : 'false' : 'unknown'}>
         <h2>{t('sourceStateView')}</h2><p>{t('sourceStateHelp')}</p>
         <dl>
             <div><dt>{t('engine')}</dt><dd>{native ? 'Codex' : observed?.flavor}</dd></div>
@@ -24,8 +58,11 @@ export function SourceStateView({ sessionId, useConversation, useProjection, use
             <div><dt>{t('directory')}</dt><dd><code>{observed?.path ?? cwd ?? t('sourceUnreportedValue')}</code></dd></div>
             {source.nativeId && <div><dt>{t('sourceThread')}</dt><dd><code>{source.nativeId}</code></dd></div>}
             {native?.nativeHome && <div><dt>{t('codexHome')}</dt><dd><code>{native.nativeHome}</code></dd></div>}
-            <div><dt>{t('sourceStatus')}</dt><dd>{native?.nativeConnection ?? observed?.connection}</dd></div>
-            {native?.execution && <div><dt>{t('sourceExecution')}</dt><dd>{native.execution.status}</dd></div>}
+            <div><dt>{t('sourceStatus')}</dt><dd>{connectionText}
+                {connection === 'disconnected' && observed?.active === true && <small>{t('sourceReconnecting')}</small>}
+                {connection === 'history' && <small>{t('sourceReadOnly')}</small>}
+            </dd></div>
+            {native?.execution && <div><dt>{t('sourceExecution')}</dt><dd>{sourceExecutionText(native.execution.status, t)}</dd></div>}
             <div><dt>{t('permission')}</dt><dd>{source.readOnly ? t('sourceReadOnly') : observed?.controlledByUser ? t('sourceControlled') : t('sourceStartRemote')}</dd></div>
             {source.model && <div><dt>{t('model')}</dt><dd>{source.model}</dd></div>}
         </dl>
@@ -33,7 +70,7 @@ export function SourceStateView({ sessionId, useConversation, useProjection, use
             {source.pendingRequests.map(request => <p key={request.requestId}><code>{request.tool}</code> · {request.stage}{request.error && <span className="hapi-error">{request.error}</span>}</p>)}
         </section>
         <section><h3>{t('nativeDelivery')} · {source.delivery.length}</h3>
-            {source.delivery.map(delivery => <p key={delivery.localId}><span>{delivery.text}</span> · <strong>{delivery.state}</strong>{delivery.error && <span className="hapi-error">{delivery.error}</span>}</p>)}
+            {source.delivery.map(delivery => <p key={delivery.localId}><span>{delivery.text}</span> · <strong>{sourceDeliveryText(delivery.state, t)}</strong>{delivery.error && <span className="hapi-error">{delivery.error}</span>}</p>)}
         </section>
         {source.error && <p className="hapi-error" role="alert">{source.error}</p>}
     </section>
