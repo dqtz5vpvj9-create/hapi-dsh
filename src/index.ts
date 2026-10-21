@@ -515,6 +515,18 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     notifications.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountShareTarget({ webServer: ctx.webServer }), 'hapi-dsh: browser share target');
     new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
-    const starts = await Promise.allSettled([codex.start(), observed.start()]);
-    for (const result of starts) if (result.status === 'rejected') ctx.logger.warn(`HAPI is currently unavailable; source sessions will reconnect: ${result.reason instanceof Error ? result.reason.message : 'connection failed'}`);
+    // A large existing HAPI catalog attaches every source and can take minutes.
+    // Keep the Host service available after a bounded startup window; the
+    // catalog subscription publishes the remaining sources as they attach.
+    const starts = Promise.allSettled([codex.start(), observed.start()]);
+    let timer: NodeJS.Timeout | undefined;
+    const completed = await Promise.race([
+        starts.then(() => true),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000); }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (!completed) ctx.logger.warn('HAPI source catalog is still loading; sessions will appear as they attach');
+    void starts.then(results => {
+        for (const result of results) if (result.status === 'rejected') ctx.logger.warn(`HAPI is currently unavailable; source sessions will reconnect: ${result.reason instanceof Error ? result.reason.message : 'connection failed'}`);
+    });
 }
