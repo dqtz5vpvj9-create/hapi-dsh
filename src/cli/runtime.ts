@@ -5,6 +5,8 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DSH_VERSION, type RuntimeConfig, resolveHapiToken } from './config.ts';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
+import { parseDocument } from 'yaml';
+import { OFFICIAL_PROVIDERS, OFFICIAL_PROVIDER_PACKAGES, ROUTING_PROVIDERS, type OfficialProviderId } from '../shared/official-provider.ts';
 
 export interface Command {
     executable: string;
@@ -15,6 +17,35 @@ export interface CommandResult {
     exitCode: number;
     stdout: string;
     stderr: string;
+}
+
+/** The official patch name is a guard, so verify the composed provider rows, not only the bundle marker. */
+export function assertProfileProviders(dump: string): void {
+    const document = parseDocument(dump, { logLevel: 'silent' });
+    if (document.errors.length) throw new Error('The official DSH configuration dump is invalid');
+    const rows: Array<{ id: unknown; name: unknown; disabled: boolean; isolate: unknown }> = [];
+    const visit = (input: unknown, inheritedDisabled = false): void => {
+        if (!Array.isArray(input)) return;
+        for (const value of input) {
+            if (!value || typeof value !== 'object') continue;
+            const row = value as Record<string, unknown>;
+            const disabled = inheritedDisabled || row.disabled === true;
+            rows.push({ id: row.id, name: row.name, disabled, isolate: row.isolate });
+            if (row.group) visit(row.config, disabled);
+        }
+    };
+    visit(document.toJS());
+    for (const name of Object.keys(OFFICIAL_PROVIDERS) as OfficialProviderId[]) {
+        const service = OFFICIAL_PROVIDERS[name], routing = ROUTING_PROVIDERS[name];
+        const original = rows.filter(row => row.id === name);
+        const replacement = rows.filter(row => row.id === `hapi-dsh-${routing}`);
+        const isolation = original[0]?.isolate;
+        if (original.length !== 1 || original[0]!.name !== OFFICIAL_PROVIDER_PACKAGES[name] || original[0]!.disabled !== false
+            || !isolation || typeof isolation !== 'object' || (isolation as Record<string, unknown>)[service] !== true
+            || replacement.length !== 1 || replacement[0]!.name !== `hapi-dsh/${routing}` || replacement[0]!.disabled !== false) {
+            throw new Error(`The official DSH profile did not activate the hapi-dsh ${name} provider; keep the original package root active in its private service isolation and insert the routing provider`);
+        }
+    }
 }
 
 export type CommandRunner = (command: Command, options: { env: NodeJS.ProcessEnv; cwd?: string; timeoutMs?: number }) => Promise<CommandResult>;
@@ -185,6 +216,7 @@ export async function installProfile(
         if (dump.exitCode !== 0 || !new RegExp(`^\\s*-?\\s*id:\\s*["']?${bundleName}["']?\\s*$`, 'm').test(dump.stdout)) {
             throw new Error(`The resulting DSH profile does not contain the ${bundleName} plugin row`);
         }
+        if (bundleName === 'hapi-dsh') assertProfileProviders(dump.stdout);
     });
 }
 

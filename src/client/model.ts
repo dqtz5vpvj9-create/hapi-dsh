@@ -4,8 +4,19 @@
  * Copyright HAPI contributors. SPDX-License-Identifier: AGPL-3.0-only
  */
 
+import { documentKey, parseDocumentRef, type DocumentRef } from '../workspace/documents.ts'
+import { parseDshPaneTarget, type DshPaneTarget } from '../workspace/dsh-view.ts'
+import type { DockPosition } from '../workspace/drag.ts'
+export type { DocumentRef } from '../workspace/documents.ts'
+
 export type SplitAxis = 'horizontal' | 'vertical'
-export type PaneResource = { kind: 'empty' } | { kind: 'chat'; sessionId: string }
+/** Preserve the original HAPI identity across display generations and migration. */
+export type SourceReference = { sourceSessionId?: string; sourceHubId?: string }
+export type PaneResource = { kind: 'empty' }
+    | ({ kind: 'chat'; sessionId: string } & SourceReference)
+    | ({ kind: 'terminal'; sessionId: string; terminalId: string } & SourceReference)
+    | ({ kind: 'document'; sessionId: string; document: DocumentRef; target?: DshPaneTarget; title?: string } & SourceReference)
+    | ({ kind: 'view'; sessionId: string; viewId: string; target: DshPaneTarget; title?: string } & SourceReference)
 export type PaneNode = { type: 'pane'; id: string; resource: PaneResource }
 export type SplitNode = {
     type: 'split'
@@ -15,7 +26,7 @@ export type SplitNode = {
     weights: number[]
 }
 export type WorkspaceNode = PaneNode | SplitNode
-export type WorkspaceWindow = { id: string; name: string; root: WorkspaceNode }
+export type WorkspaceWindow = { id: string; name: string; autoName?: boolean; root: WorkspaceNode }
 export type WorkspaceState = {
     schemaVersion: 1
     revision: number
@@ -59,7 +70,7 @@ export function initialWorkspace(nextId: () => string): WorkspaceState {
     const root = emptyPane(nextId())
     return {
         schemaVersion: 1, revision: 0,
-        windows: [{ id, name: 'W1', root }], activeWindowId: id,
+        windows: [{ id, name: 'W1', autoName: true, root }], activeWindowId: id,
         focused: { [id]: root.id }, zoomed: {},
     }
 }
@@ -76,12 +87,12 @@ function validId(value: unknown): value is string {
 export function parseWorkspaceState(value: unknown): WorkspaceState {
     if (!record(value) || value.schemaVersion !== 1 || !Number.isSafeInteger(value.revision)
         || typeof value.revision !== 'number' || value.revision < 0
-        || !Array.isArray(value.windows) || value.windows.length < 1 || value.windows.length > 64
+        || !Array.isArray(value.windows) || value.windows.length < 1 || value.windows.length > 256
         || !validId(value.activeWindowId) || !record(value.focused) || !record(value.zoomed)) {
         throw new Error('Invalid workspace document')
     }
     const ids = new Set<string>()
-    const sessions = new Set<string>()
+    const resources = new Set<string>()
     let nodeCount = 0
     const take = (id: unknown): string => {
         if (!validId(id) || ids.has(id)) throw new Error('Duplicate or invalid workspace identity')
@@ -89,18 +100,19 @@ export function parseWorkspaceState(value: unknown): WorkspaceState {
         return id
     }
     const node = (input: unknown, depth: number): WorkspaceNode => {
-        if (!record(input) || depth > 24 || ++nodeCount > 2048) throw new Error('Invalid workspace geometry')
+        if (!record(input) || depth > 32 || ++nodeCount > 8192) throw new Error('Invalid workspace geometry')
         const id = take(input.id)
         if (input.type === 'pane') {
             if (!record(input.resource)) throw new Error('Invalid pane resource')
             if (input.resource.kind === 'empty') return emptyPane(id)
-            if (input.resource.kind !== 'chat' || !validId(input.resource.sessionId)
-                || sessions.has(input.resource.sessionId)) throw new Error('Duplicate or invalid session binding')
-            sessions.add(input.resource.sessionId)
-            return { type: 'pane', id, resource: { kind: 'chat', sessionId: input.resource.sessionId } }
+            const resource = parsePaneResource(input.resource)
+            const key = resourceKey(resource)
+            if (key && resources.has(key)) throw new Error('Duplicate or invalid session binding')
+            if (key) resources.add(key)
+            return { type: 'pane', id, resource }
         }
         if (input.type !== 'split' || !['horizontal', 'vertical'].includes(String(input.axis))
-            || !Array.isArray(input.children) || input.children.length < 2 || input.children.length > 64
+            || !Array.isArray(input.children) || input.children.length < 2 || input.children.length > 128
             || !Array.isArray(input.weights) || input.weights.length !== input.children.length
             || !input.weights.every(weight => typeof weight === 'number' && Number.isFinite(weight) && weight > 0)
             || !Number.isFinite(input.weights.reduce((total: number, weight: number) => total + weight, 0))) {
@@ -117,7 +129,8 @@ export function parseWorkspaceState(value: unknown): WorkspaceState {
             throw new Error('Invalid workspace window')
         }
         const id = take(item.id)
-        return { id, name: item.name, root: node(item.root, 0) }
+        if (item.autoName !== undefined && typeof item.autoName !== 'boolean') throw new Error('Invalid window alias')
+        return { id, name: item.name, ...(item.autoName === undefined ? {} : { autoName: item.autoName }), root: node(item.root, 0) }
     })
     if (!windows.some(window => window.id === value.activeWindowId)) throw new Error('Unknown active workspace window')
     const focused: Record<string, string> = {}
@@ -132,12 +145,47 @@ export function parseWorkspaceState(value: unknown): WorkspaceState {
     return { schemaVersion: 1, revision: value.revision, windows, activeWindowId: value.activeWindowId, focused, zoomed }
 }
 
+export function parsePaneResource(value: unknown): PaneResource {
+    if (!record(value)) throw new Error('Invalid pane resource')
+    if (value.kind === 'empty') return { kind: 'empty' }
+    if (!validId(value.sessionId)) throw new Error('Invalid pane session identity')
+    const source: SourceReference = {}
+    for (const key of ['sourceSessionId', 'sourceHubId'] as const) {
+        if (value[key] !== undefined) {
+            if (!validId(value[key])) throw new Error('Invalid original source identity')
+            source[key] = value[key]
+        }
+    }
+    const base = { sessionId: value.sessionId, ...source }
+    if (value.kind === 'chat') return { kind: 'chat', ...base }
+    if (value.kind === 'terminal' && validId(value.terminalId)) return { kind: 'terminal', ...base, terminalId: value.terminalId }
+    if (value.kind === 'document') {
+        if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 2048)) throw new Error('Invalid document view title')
+        return { kind: 'document', ...base, document: parseDocumentRef(value.document),
+            ...(value.target === undefined ? {} : { target: parseDshPaneTarget(value.target) }), ...(value.title === undefined ? {} : { title: value.title }),
+        }
+    }
+    if (value.kind === 'view' && validId(value.viewId)) {
+        if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 2048)) throw new Error('Invalid plugin view title')
+        return { kind: 'view', ...base, viewId: value.viewId, target: parseDshPaneTarget(value.target), ...(value.title === undefined ? {} : { title: value.title }) }
+    }
+    throw new Error('Invalid pane resource')
+}
+
+export function resourceKey(resource: PaneResource): string | null {
+    if (resource.kind === 'empty') return null
+    if (resource.kind === 'document') return documentKey(resource)
+    if (resource.kind === 'terminal') return JSON.stringify(['terminal', resource.sourceHubId ?? '', resource.terminalId])
+    if (resource.kind === 'view') return JSON.stringify(['view', resource.viewId])
+    return JSON.stringify(['chat', resource.sessionId])
+}
+
 /** Mutable owner of immutable layout snapshots; it never drives an agent. */
 export class WorkspaceStore {
     private listeners = new Set<() => void>()
     private closed: { window: WorkspaceWindow; index: number } | undefined
 
-    constructor(private state: WorkspaceState, private readonly nextId: () => string = () => crypto.randomUUID()) {
+    constructor(private state: WorkspaceState, private readonly nextId: () => string = () => crypto.randomUUID(), private readonly beforeRemove?: (resources: readonly PaneResource[]) => boolean) {
         this.state = parseWorkspaceState(state)
     }
 
@@ -148,13 +196,28 @@ export class WorkspaceStore {
         return () => { this.listeners.delete(listener) }
     }
 
-    private commit(next: WorkspaceState): void {
-        this.state = parseWorkspaceState({ ...next, revision: this.state.revision + 1 })
+    private canReplace(next: WorkspaceState): boolean {
+        if (!this.beforeRemove) return true
+        const remaining = new Set(next.windows.flatMap(window => panes(window.root)).map(pane => resourceKey(pane.resource)))
+        const removed = this.state.windows.flatMap(window => panes(window.root)).map(pane => pane.resource).filter(resource => {
+            const key = resourceKey(resource)
+            return key !== null && !remaining.has(key)
+        })
+        return removed.length === 0 || this.beforeRemove(removed)
+    }
+
+    private commit(next: WorkspaceState): boolean {
+        const validated = parseWorkspaceState({ ...next, revision: this.state.revision + 1 })
+        if (!this.canReplace(validated)) return false
+        this.state = validated
         for (const listener of [...this.listeners]) listener()
+        return true
     }
 
     replace(next: WorkspaceState): void {
-        this.state = parseWorkspaceState(next)
+        const validated = parseWorkspaceState(next)
+        if (!this.canReplace(validated)) return
+        this.state = validated
         for (const listener of [...this.listeners]) listener()
     }
 
@@ -196,7 +259,7 @@ export class WorkspaceStore {
         const id = this.nextId()
         const root = emptyPane(this.nextId())
         this.commit({
-            ...this.state, windows: [...this.state.windows, { id, name: name?.trim() || `W${this.state.windows.length + 1}`, root }],
+            ...this.state, windows: [...this.state.windows, { id, name: name?.trim() || `W${this.state.windows.length + 1}`, autoName: !name?.trim(), root }],
             activeWindowId: id, focused: { ...this.state.focused, [id]: root.id },
         })
         return id
@@ -205,22 +268,22 @@ export class WorkspaceStore {
     renameWindow(windowId: string, name: string): void {
         const normalized = name.trim()
         if (!normalized || normalized.length > 200) throw new Error('Window names must contain 1–200 characters')
-        this.commit({ ...this.state, windows: this.state.windows.map(window => window.id === windowId ? { ...window, name: normalized } : window) })
+        this.commit({ ...this.state, windows: this.state.windows.map(window => window.id === windowId ? { ...window, name: normalized, autoName: false } : window) })
     }
 
     closeWindow(windowId: string): void {
         const index = this.state.windows.findIndex(window => window.id === windowId)
         if (index < 0) return
-        this.closed = { window: this.state.windows[index]!, index }
+        const closed = { window: this.state.windows[index]!, index }
         const windows = this.state.windows.filter(window => window.id !== windowId)
         if (!windows.length) {
             const replacement = initialWorkspace(this.nextId)
-            this.commit({ ...replacement, revision: this.state.revision })
+            if (this.commit({ ...replacement, revision: this.state.revision })) this.closed = closed
             return
         }
         const activeWindowId = this.state.activeWindowId === windowId
             ? windows[Math.min(index, windows.length - 1)]!.id : this.state.activeWindowId
-        this.commit({ ...this.state, windows, activeWindowId })
+        if (this.commit({ ...this.state, windows, activeWindowId })) this.closed = closed
     }
 
     canRestoreWindow(): boolean { return this.closed !== undefined }
@@ -231,11 +294,11 @@ export class WorkspaceStore {
         const { window, index } = this.closed
         this.closed = undefined
         if (this.state.windows.some(existing => existing.id === window.id)) return
-        const openSessions = new Set(this.state.windows.flatMap(window => panes(window.root))
-            .flatMap(pane => pane.resource.kind === 'chat' ? [pane.resource.sessionId] : []))
+        const openResources = new Set(this.state.windows.flatMap(window => panes(window.root)).map(pane => resourceKey(pane.resource)).filter(key => key !== null))
         let root = window.root
         for (const pane of panes(root)) {
-            if (pane.resource.kind === 'chat' && openSessions.has(pane.resource.sessionId)) {
+            const key = resourceKey(pane.resource)
+            if (key && openResources.has(key)) {
                 root = updateNode(root, pane.id, () => emptyPane(pane.id))
             }
         }
@@ -246,15 +309,28 @@ export class WorkspaceStore {
 
     /** Match HAPI: a sidebar selection focuses an existing pane or binds the focused pane. */
     openSession(sessionId: string, beside?: SplitAxis): void {
-        if (!validId(sessionId)) throw new Error('Invalid session identity')
+        this.openResource({ kind: 'chat', sessionId }, beside)
+    }
+
+    openResource(input: PaneResource, beside?: SplitAxis): void {
+        const resource = parsePaneResource(input)
+        const key = resourceKey(resource)
         const existing = this.state.windows.flatMap(window => panes(window.root))
-            .find(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === sessionId)
+            .find(pane => key !== null && resourceKey(pane.resource) === key)
         if (existing) { this.focus(existing.id); return }
-        if (beside) { this.split(beside, { kind: 'chat', sessionId }); return }
+        if (beside) { this.split(beside, resource); return }
         const active = this.active()
         const focused = this.focusedPane()
-        const root = updateNode(active.root, focused.id, () => ({ ...focused, resource: { kind: 'chat', sessionId } }))
+        const root = updateNode(active.root, focused.id, () => ({ ...focused, resource }))
         this.commit({ ...this.state, windows: this.state.windows.map(window => window.id === active.id ? { ...window, root } : window) })
+    }
+
+    updateView(paneId: string, target: DshPaneTarget, title?: string): void {
+        const current = this.state.windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)
+        if (!current || current.resource.kind !== 'view' && current.resource.kind !== 'document') return
+        const resource = parsePaneResource({ ...current.resource, target, ...(title === undefined ? {} : { title }) })
+        if (JSON.stringify(resource) === JSON.stringify(current.resource)) return
+        this.commit({ ...this.state, windows: this.state.windows.map(window => ({ ...window, root: updateNode(window.root, paneId, node => node.type === 'pane' ? { ...node, resource } : node) })) })
     }
 
     /** A source-native rewind creates a new display generation, preserving the pane. */
@@ -266,16 +342,18 @@ export class WorkspaceStore {
         if (!previous) return
         const alreadyOpen = all.some(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === nextId)
         const windows = this.state.windows.map(window => ({ ...window, root: updateNode(window.root, previous.id, () => ({
-            ...previous, resource: alreadyOpen ? { kind: 'empty' } : { kind: 'chat', sessionId: nextId },
+            ...previous, resource: alreadyOpen ? { kind: 'empty' } : { ...previous.resource, kind: 'chat', sessionId: nextId },
         })) }))
         this.commit({ ...this.state, windows })
     }
 
     split(axis: SplitAxis, resource: PaneResource = { kind: 'empty' }): void {
         if (this.state.windows.flatMap(window => panes(window.root)).length >= 1024) throw new Error('The workspace has reached its pane limit')
-        if (resource.kind === 'chat') {
+        resource = parsePaneResource(resource)
+        const key = resourceKey(resource)
+        if (key) {
             const existing = this.state.windows.flatMap(window => panes(window.root))
-                .find(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === resource.sessionId)
+                .find(pane => resourceKey(pane.resource) === key)
             if (existing) { this.focus(existing.id); return }
         }
         const active = this.active()
@@ -287,6 +365,50 @@ export class WorkspaceStore {
         this.commit({
             ...this.state, windows: this.state.windows.map(window => window.id === active.id ? { ...window, root } : window),
             focused: { ...this.state.focused, [active.id]: added.id }, zoomed: { ...this.state.zoomed, [active.id]: false },
+        })
+    }
+
+    /** Dock a new resource atomically. Existing resources retain their one view. */
+    dockResource(input: PaneResource, targetPaneId: string, position: DockPosition): void {
+        const resource = parsePaneResource(input)
+        const available = this.state.windows.flatMap(window => panes(window.root)), key = resourceKey(resource)
+        const existing = key && available.find(pane => resourceKey(pane.resource) === key)
+        if (existing) { this.focus(existing.id); return }
+        const target = this.state.windows.find(window => panes(window.root).some(pane => pane.id === targetPaneId))
+        const selected = target && panes(target.root).find(pane => pane.id === targetPaneId)
+        if (!target || !selected || position === 'center' && selected.resource.kind !== 'empty') return
+        if (available.length >= 1024 && selected.resource.kind !== 'empty') throw new Error('The workspace has reached its pane limit')
+        const added: PaneNode = selected.resource.kind === 'empty' ? { ...selected, resource } : { type: 'pane', id: this.nextId(), resource }
+        const root = updateNode(target.root, selected.id, () => selected.resource.kind === 'empty' ? added : this.dockedPair(selected, added, position))
+        this.commit({ ...this.state, activeWindowId: target.id,
+            windows: this.state.windows.map(window => window.id === target.id ? { ...window, root } : window),
+            focused: { ...this.state.focused, [target.id]: added.id }, zoomed: { ...this.state.zoomed, [target.id]: false },
+        })
+    }
+
+    private dockedPair(target: PaneNode, pane: PaneNode, position: DockPosition): WorkspaceNode {
+        const before = position === 'left' || position === 'top'
+        return { type: 'split', id: this.nextId(), axis: position === 'top' || position === 'bottom' ? 'vertical' : 'horizontal',
+            children: before ? [pane, target] : [target, pane], weights: [1, 1] }
+    }
+
+    /** Reparent the exact pane. No resource disappears and no close hook runs. */
+    dockPane(paneId: string, targetPaneId: string, position: DockPosition): void {
+        if (paneId === targetPaneId) return
+        const source = this.state.windows.find(window => panes(window.root).some(pane => pane.id === paneId))
+        const target = this.state.windows.find(window => panes(window.root).some(pane => pane.id === targetPaneId))
+        if (!source || !target) return
+        const pane = panes(source.root).find(pane => pane.id === paneId)!, selected = panes(target.root).find(pane => pane.id === targetPaneId)!
+        if (position === 'center' && selected.resource.kind !== 'empty') return
+        const sourceRoot = removePane(source.root, paneId)
+        const remaining = source.id === target.id ? sourceRoot! : target.root
+        const targetRoot = updateNode(remaining, selected.id, () => selected.resource.kind === 'empty' ? pane : this.dockedPair(selected, pane, position))
+        const sourceReplacement = sourceRoot ?? emptyPane(this.nextId())
+        this.commit({ ...this.state, activeWindowId: target.id,
+            windows: this.state.windows.map(window => window.id === target.id ? { ...window, root: targetRoot }
+                : window.id === source.id ? { ...window, root: sourceReplacement } : window),
+            focused: { ...this.state.focused, ...(source.id !== target.id ? { [source.id]: panes(sourceReplacement).find(value => value.id === this.state.focused[source.id])?.id ?? panes(sourceReplacement)[0]!.id } : {}), [target.id]: pane.id },
+            zoomed: { ...this.state.zoomed, [target.id]: false },
         })
     }
 
@@ -337,6 +459,13 @@ export class WorkspaceStore {
             focused: { ...this.state.focused, [source.id]: panes(sourceRoot)[0]!.id, [target.id]: paneId },
             zoomed: { ...this.state.zoomed, [target.id]: false },
         })
+    }
+
+    movePaneToNewWindow(paneId: string): void {
+        const source = this.state.windows.find(window => panes(window.root).some(pane => pane.id === paneId))
+        if (!source) return
+        const id = this.createWindow()
+        this.movePane(paneId, id)
     }
 }
 

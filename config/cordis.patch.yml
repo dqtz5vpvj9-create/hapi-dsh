@@ -1,8 +1,36 @@
 # Installed as an ordinary bundle over the official web profile.
 # Credentials stay in the Host's environment or private configuration file.
 - id: session-controller
-  name: hapi-dsh/session-controller
+  name: '@deepseek-ai/dsh-api-session-controller'
+  isolate:
+    sessionController: true
+- id: workspace-files
+  name: '@deepseek-ai/dsh-api-workspace-files'
+  isolate:
+    workspaceFiles: true
+- id: terminal-controller
+  name: '@deepseek-ai/dsh-api-terminal-controller'
+  isolate:
+    terminalController: true
+- id: file-reference-local
+  name: '@deepseek-ai/dsh-file-reference-local'
+  isolate:
+    fileReferences: true
+- id: subagent
+  name: '@deepseek-ai/dsh-subagent'
+  isolate:
+    subagents: true
 - insert:
+    - id: hapi-dsh-session-controller
+      name: hapi-dsh/session-controller
+    - id: hapi-dsh-workspace-files
+      name: hapi-dsh/workspace-files
+    - id: hapi-dsh-terminal-controller
+      name: hapi-dsh/terminal-controller
+    - id: hapi-dsh-file-references
+      name: hapi-dsh/file-references
+    - id: hapi-dsh-subagent-controller
+      name: hapi-dsh/subagent-controller
     - id: hapi-dsh
       name: hapi-dsh
       config:

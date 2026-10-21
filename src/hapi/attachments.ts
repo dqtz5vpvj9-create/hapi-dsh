@@ -2,8 +2,59 @@ import type { AttachmentStore, ImageMediaType } from '@deepseek-ai/dsh-attachmen
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm';
 import type { HapiClient } from './client.ts';
 import { HapiRequestError, type HapiAttachment, type HapiArtifactRef } from '../codex/contracts.ts';
+import { z } from 'zod';
+import type { NativeArtifactBlock } from '../codex/content.ts';
 
 const imageMediaTypes = new Set<string>(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const MAX_NATIVE_ATTACHMENT = 32 * 1024 * 1024;
+
+function decodeNativeBytes(base64: string): Uint8Array {
+    if (base64.length > Math.ceil(MAX_NATIVE_ATTACHMENT / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
+        throw new HapiRequestError('Invalid native attachment bytes or attachment exceeds 32 MiB', 'rejected', 413);
+    }
+    const bytes = Buffer.from(base64, 'base64');
+    if (bytes.byteLength > MAX_NATIVE_ATTACHMENT) throw new HapiRequestError('Native attachment exceeds 32 MiB', 'rejected', 413);
+    return bytes;
+}
+async function saveNativeBytes(store: AttachmentStore, name: string, mimeType: string, data: Uint8Array): Promise<NativeArtifactBlock> {
+    if (imageMediaTypes.has(mimeType)) return { type: 'image', attachment: await store.saveImage({ data, mediaType: mimeType as ImageMediaType, name }) };
+    return { type: 'file', attachment: await store.saveFile({ data, name }) };
+}
+
+/** Legacy transcript uploads are fetched by the authenticated source session, never a Hub-local filesystem read. */
+export function sourceUploadImporter(store: AttachmentStore, client: HapiClient) {
+    return async (sourceSessionId: string, attachment: HapiAttachment): Promise<NativeArtifactBlock> => {
+        const source = await client.getSession(sourceSessionId);
+        if (source.id !== sourceSessionId) throw new HapiRequestError('Attachment source identity changed', 'rejected', 409);
+        if (!attachment.path || attachment.path.includes('\0') || attachment.size > MAX_NATIVE_ATTACHMENT) throw new HapiRequestError('Invalid native attachment reference', 'rejected', 400);
+        const result = z.object({ success: z.boolean(), content: z.string().optional(), error: z.string().optional() }).parse(await client.request(
+            `/api/sessions/${encodeURIComponent(sourceSessionId)}/file?${new URLSearchParams({ path: attachment.path })}`));
+        if (!result.success || result.content === undefined) throw new HapiRequestError(result.error ?? 'The source attachment is unavailable', 'rejected', 404);
+        return saveNativeBytes(store, attachment.filename, attachment.mimeType, decodeNativeBytes(result.content));
+    };
+}
+
+/** SDK inline resources already came from an authenticated transcript; image decoding remains in DSH's attachment service. */
+export function sourceInlineImporter(store: AttachmentStore) {
+    return async (_sourceSessionId: string, resource: { fileName: string; mimeType: string; base64: string }): Promise<NativeArtifactBlock> =>
+        saveNativeBytes(store, resource.fileName, resource.mimeType, decodeNativeBytes(resource.base64));
+}
+
+/** DSH file references retain names and bytes, so recover native audio semantics from both. */
+export function nativeAttachmentMediaType(name: string, data: Uint8Array): string {
+    const head = Buffer.from(data.buffer, data.byteOffset, Math.min(data.byteLength, 32));
+    const extension = name.split('.').at(-1)?.toLowerCase();
+    if (head.toString('ascii', 0, 4) === 'RIFF' && head.toString('ascii', 8, 12) === 'WAVE') return 'audio/wav';
+    if (head.toString('ascii', 0, 4) === 'fLaC') return 'audio/flac';
+    if (head.toString('ascii', 0, 4) === 'OggS' && ['ogg', 'oga', 'opus'].includes(extension ?? '')) return 'audio/ogg';
+    if (head.toString('ascii', 0, 3) === 'ID3' || head.length >= 2 && head[0] === 0xff && (head[1]! & 0xe0) === 0xe0 && extension === 'mp3') return 'audio/mpeg';
+    if (head.toString('ascii', 4, 8) === 'ftyp' && ['m4a', 'm4b', 'aac'].includes(extension ?? '')) return 'audio/mp4';
+    const types: Record<string, string> = { mp3: 'audio/mpeg', wav: 'audio/wav', wave: 'audio/wav',
+        flac: 'audio/flac', oga: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/mp4', m4b: 'audio/mp4', aac: 'audio/aac',
+        txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', pdf: 'application/pdf',
+        html: 'text/html', svg: 'image/svg+xml', zip: 'application/zip' };
+    return types[extension ?? ''] ?? 'application/octet-stream';
+}
 
 /** Copy authorized immutable native resources into DSH's ordinary attachment store. */
 export function artifactImporter(store: AttachmentStore, client: HapiClient) {
@@ -41,8 +92,9 @@ export function attachmentResolver(store: AttachmentStore, client: HapiClient) {
                     if (size > 32 * 1024 * 1024) throw new Error('Native attachment exceeds 32 MiB');
                     chunks.push(chunk);
                 }
+                const data = Buffer.concat(chunks);
                 result.push(await client.uploadAttachment(sourceSessionId, block.attachment.name,
-                    'application/octet-stream', Buffer.concat(chunks)));
+                    nativeAttachmentMediaType(block.attachment.name, data), data));
             }
         }
         return result;

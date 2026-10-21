@@ -7,8 +7,15 @@ HAPI-derived portions
 ---------------------
 Persistent workspace geometry and native input compatibility contain adaptations
 from HAPI, including shared/src/workspaces.ts, web workspace behavior, and native
-Codex contracts. Copyright HAPI contributors. The source references in the
+Codex contracts. The appearance palette definitions, original color blending
+algorithms, source header preferences, bulk session actions and Web Share
+transfer compatibility also adapt the pinned HAPI source. Copyright HAPI
+contributors. The source references in the
 adapted files are preserved.
+The Cursor model catalog and CLI SKU picker helpers in src/client/cursor-models
+also retain the pinned source's exact model identity and variant semantics.
+The machine health field schema, thresholds and uptime formatting adapt
+shared/src/schemas.ts and web/src/lib/machineHealth.ts from the same baseline.
 
 Pinned fork: https://github.com/dqtz5vpvj9-create/hapi
 Revision: 0f8ef6970884c92fb2ddca3070be2ec56cb50333
@@ -45,3 +52,39 @@ Original license: docs/licenses/IMMER-MIT.txt.
 Other dependencies retain their individual copyright and license notices in
 their npm distributions. The dependency graph and exact resolved versions are
 recorded in package-lock.json in the corresponding source release.
+
+Source terminal keyboard controls
+----------------------------------
+The optional terminal key toolbar adapts HAPI 0f8ef697's browser keyboard
+controls, Haven layout and customization semantics (AGPL-3.0-only), and
+TermBeam's key-combination encoder and pointer-repeat behavior (MIT).
+It composes with the unchanged official DSH terminal view and writes through
+that view's public input owner; it does not include a different terminal server.
+
+Haven: https://github.com/GlassHaven/Haven
+Revision: 95f7da1e6aec862740916e6f65940877a190c985
+TermBeam: https://github.com/dorlugasigal/TermBeam
+Revision: 0e0cec40284130a5a91a259354d96fe92eb1fd53
+Original MIT license: docs/licenses/TERMBEAM-MIT.txt.
+Detailed source mappings: src/client/source-terminal/HAVEN.md and UPSTREAM.md.
+
+Speech and voice adapters
+-------------------------
+The original HAPI voice protocol, personality, prompt/context formatting,
+browser-local eligibility, audio conversion and provider lifecycle modules are
+adapted under AGPL-3.0-only. Per-file original source paths are preserved;
+the pinned revision and integration changes are recorded in src/voice/UPSTREAM.md.
+
+The browser artifact uses the unmodified ElevenLabs React and client SDKs
+0.13.0 under the MIT License. Original notices are included in
+docs/licenses/ELEVENLABS-REACT-MIT.txt,
+docs/licenses/ELEVENLABS-CLIENT-MIT.txt and
+docs/licenses/ELEVENLABS-TYPES-MIT.txt.
+
+Conversation image export
+-------------------------
+The browser artifact bundles unmodified html2canvas-pro 2.2.4, the version
+pinned by the original HAPI baseline, to rasterize a reviewed, read-only copy
+of the official DSH Conversation DOM. It does not replace a chat renderer.
+Copyright (c) 2024-present yorickshan and html2canvas-pro contributors.
+Original MIT license: docs/licenses/HTML2CANVAS-PRO-MIT.txt.

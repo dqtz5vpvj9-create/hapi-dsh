@@ -8,8 +8,8 @@ export function DshSessionForm({ controller, close, t }: { controller: Workspace
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const focused = controller.store.focusedPane().resource
     const selected = focused.kind === 'chat' ? snapshot.catalog.byId[focused.sessionId] : undefined
-    const [hostId, setHostId] = useState(selected?.hostId ?? 'local')
-    const [directory, setDirectory] = useState(selected?.cwd ?? '')
+    const [hostId, setHostId] = useState(snapshot.creationContext?.hostId ?? selected?.hostId ?? 'local')
+    const [directory, setDirectory] = useState(snapshot.creationContext?.directory ?? selected?.cwd ?? '')
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [listing, setListing] = useState<DirectoryListing | null>(null)

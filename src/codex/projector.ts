@@ -9,6 +9,8 @@ import {
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import type { NativeExecution, NativeRow } from './native.js'
 import type { NativeForkBoundary } from './control-types.ts'
+import { projectNotifySummaries, stripNotifySummaryFooter, type SourceNotifySummary } from '../hapi-agent/notify-summary.js'
+import { parseSourceCodexReview, type SourceCodexReviewRecord } from '../hapi-agent/codex-review.js'
 import './projection-state.js'
 
 interface Step {
@@ -28,6 +30,8 @@ interface Stream {
   revision: number
   index: number
   text: string
+  rawText: string
+  sourceRowId: string
   reasoning: boolean
   step: Step
   records: AssistantStreamRecord[]
@@ -56,11 +60,18 @@ export class NativeProjector {
   private readonly committed = new Map<string, string>()
   private readonly rawKeys = new Set<string>()
   private readonly forkBoundaries = new Map<string, NativeForkBoundary>()
+  private readonly rewindLocalIds = new Map<string, string>()
+  private readonly rewindLocalIdsBySeq = new Map<number, string>()
+  private readonly sourceMessageSeqs = new Map<string, number>()
+  private readonly surfaceSeqs = new Map<string, number>()
+  private readonly turnErrors = new Map<string, string>()
   private activeStream: Stream | undefined
   private revision = 0
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
   private seedRecords: PluginRecordMap['plugin:hapi-dsh/native-item'][] = []
+  private seedSummaries: SourceNotifySummary[] = []
+  private seedReviews: SourceCodexReviewRecord[] = []
 
   constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {}
 
@@ -85,7 +96,11 @@ export class NativeProjector {
     this.currentSession = session
     this.seed = undefined
     for (const record of this.seedRecords) appendPluginRecord(this.session, 'plugin:hapi-dsh/native-item', record)
+    for (const summary of this.seedSummaries) appendPluginRecord(this.session, 'plugin:hapi-dsh/notify-summary', summary)
+    for (const review of this.seedReviews) appendPluginRecord(this.session, 'plugin:hapi-dsh/codex-review', review)
     this.seedRecords = []
+    this.seedSummaries = []
+    this.seedReviews = []
   }
 
   private append<T extends SessionEventType>(
@@ -105,6 +120,11 @@ export class NativeProjector {
     const value = this.forkBoundaries.get(messageId)
     return value ? { ...value } : undefined
   }
+
+  /** HAPI rewinds only at a source-confirmed invoked human input localId. */
+  rewindLocalId(messageId: string): string | undefined { return this.rewindLocalIds.get(messageId) }
+  rewindLocalIdAtSeq(seq: number): string | undefined { return this.rewindLocalIdsBySeq.get(seq) }
+  sourceMessageDisplaySeq(id: string): number | undefined { return this.sourceMessageSeqs.get(id) }
 
   /** Apply a coherent source page; terminal facts settle after that page's items. */
   apply(rows: readonly NativeRow[]): void {
@@ -130,6 +150,8 @@ export class NativeProjector {
     if (row.kind === 'user' && !row.invoked) return
     const previous = this.committed.get(row.key)
     if (previous !== undefined) {
+      const seq = this.surfaceSeqs.get(row.key)
+      if (seq !== undefined) this.sourceMessageSeqs.set(row.rowId, seq)
       if (row.kind === 'assistant' && !row.final) return // A delayed provisional frame cannot regress a committed item.
       if (previous !== row.fingerprint && row.kind !== 'turn') {
         throw new NativeHistoryChangedError('Native Codex changed an already projected item; the conversation must acquire a fresh history generation')
@@ -137,6 +159,13 @@ export class NativeProjector {
       return
     }
     const turnId = row.execution?.turnId
+    if (row.kind === 'notice') {
+      if (turnId) this.turnErrors.set(turnId, row.text)
+      this.committed.set(row.key, row.fingerprint)
+      // Source notices are also published independently, including those
+      // without a native model turn. They must not create synthetic steps.
+      return
+    }
     if (row.kind === 'turn') {
       if (turnId) this.ensureTurn(turnId)
       this.committed.set(row.key, row.fingerprint)
@@ -156,12 +185,17 @@ export class NativeProjector {
           content: this.options.content?.(row) ?? [{ type: 'text', text: row.text }], source: { kind: 'user' },
         })
         event = this.append('user/message', message, { surfaceOp: 'append' })
+        if (row.invoked && row.localId) {
+          this.rewindLocalIds.set(message.id, row.localId)
+          this.rewindLocalIdsBySeq.set(event.seq, row.localId)
+        }
         break
       }
       case 'assistant': {
         step = this.stepFor(row)
         if (!row.final) { this.updateStream(row, step); return }
-        const block: ContentBlock = row.reasoning ? { type: 'reasoning', text: row.text } : { type: 'text', text: row.text }
+        const original: ContentBlock = row.reasoning ? { type: 'reasoning', text: row.text } : { type: 'text', text: row.text }
+        const display = projectNotifySummaries([original]), block = display.content[0]!
         const stream = this.activeStream?.key === row.key ? this.activeStream : undefined
         if (stream) this.updateStream(row, step)
         const current = this.activeStream?.key === row.key ? this.activeStream : undefined
@@ -170,6 +204,17 @@ export class NativeProjector {
         event = this.append('assistant/message', {
           turn: step.turn, step: step.step, message, stream: current?.records ?? [],
         }, { surfaceOp: 'append' })
+        this.recordSummary(row.rowId, event, display)
+        // Native shared snapshots carry streamSnapshot even after completion.
+        // Only this proven final item boundary may gain a review annotation;
+        // provisional snapshots and interruption-frozen partials stay text.
+        const review = row.reasoning ? null : parseSourceCodexReview(row.text)
+        if (review) {
+          const record: SourceCodexReviewRecord = { messageId: event.data.message.id, sourceRowId: row.rowId, surfaceSeq: event.seq,
+            turn: event.data.turn, step: event.data.step, review }
+          if (this.seed) this.seedReviews.push(record)
+          else appendPluginRecord(this.session, 'plugin:hapi-dsh/codex-review', record)
+        }
         if (current) {
           this.options.stream({ type: 'end', attemptId: current.attemptId, revision: current.revision,
             index: current.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
@@ -210,14 +255,10 @@ export class NativeProjector {
         this.closeStep(step)
         break
       }
-      case 'notice': {
-        // A source-native error belongs to the terminal turn facts; retain the
-        // message as plugin metadata without inventing an assistant answer.
-        this.committed.set(row.key, row.fingerprint)
-        return
-      }
     }
     if (event) {
+      this.surfaceSeqs.set(row.key, event.seq)
+      this.sourceMessageSeqs.set(row.rowId, event.seq)
       const messageId = event.type === 'user/message' ? event.data.id
         : event.type === 'assistant/message' || event.type === 'tool/result' ? event.data.message.id : undefined
       if (messageId && row.execution?.itemId) {
@@ -270,20 +311,29 @@ export class NativeProjector {
       source: { kind: 'model', provider: this.options.provider(), model: this.options.model() } })
   }
 
+  private recordSummary(sourceRowId: string, event: SessionEvent<'assistant/message'>, display: ReturnType<typeof projectNotifySummaries>): void {
+    if (!display.summaries.length) return
+    const record: SourceNotifySummary = { messageId: event.data.message.id, sourceRowId, surfaceSeq: event.seq,
+      turn: event.data.turn, step: event.data.step, originalText: display.originalText, summaries: display.summaries }
+    if (this.seed) this.seedSummaries.push(record)
+    else appendPluginRecord(this.session, 'plugin:hapi-dsh/notify-summary', record)
+  }
+
   private updateStream(row: NativeRow & { kind: 'assistant' }, step: Step): void {
     let stream = this.activeStream
-    if (stream?.key === row.key && stream.reasoning === row.reasoning && stream.text.startsWith(row.text) && !row.final) return
-    if (!stream || stream.key !== row.key || stream.reasoning !== row.reasoning || !row.text.startsWith(stream.text)) {
+    const projectedText = row.reasoning ? row.text : stripNotifySummaryFooter(row.text)
+    if (stream?.key === row.key && stream.reasoning === row.reasoning && stream.rawText.startsWith(row.text) && !row.final) return
+    if (!stream || stream.key !== row.key || stream.reasoning !== row.reasoning || !projectedText.startsWith(stream.text)) {
       this.abandonStream()
       stream = { key: row.key, attemptId: LlmAttemptId(`native:${row.key}:${++this.revision}`),
-        revision: this.revision, index: 0, text: '', reasoning: row.reasoning, step, records: [] }
+        revision: this.revision, index: 0, text: '', rawText: '', sourceRowId: row.rowId, reasoning: row.reasoning, step, records: [] }
       this.activeStream = stream
       this.options.stream({ type: 'start', attemptId: stream.attemptId, revision: stream.revision, turn: step.turn, step: step.step })
       this.emitChunk(stream, { type: 'block-start', index: 0, blockType: row.reasoning ? 'reasoning' : 'text' })
     }
-    const text = row.text.slice(stream.text.length)
+    const text = projectedText.slice(stream.text.length)
     if (text) this.emitChunk(stream, { type: row.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text })
-    stream.text = row.text
+    stream.text = projectedText; stream.rawText = row.text; stream.sourceRowId = row.rowId
   }
 
   private emitChunk(stream: Stream, chunk: StreamChunk): void {
@@ -307,12 +357,15 @@ export class NativeProjector {
     if (stream?.step.nativeTurnId === id) {
       // An interrupted native item may never emit item/completed. Its visible
       // partial is committed only after an authoritative non-success terminal.
-      if (status !== 'completed' && stream.text) {
+      if (status !== 'completed' && stream.rawText) {
         const block: ContentBlock = stream.reasoning ? { type: 'reasoning', text: stream.text } : { type: 'text', text: stream.text }
         const event = this.append('assistant/message', {
           turn: stream.step.turn, step: stream.step.step,
           message: this.assistant(stream.key, [block]), stream: stream.records, interrupted: true,
         }, { surfaceOp: 'append' })
+        this.recordSummary(stream.sourceRowId, event, projectNotifySummaries([
+          { type: stream.reasoning ? 'reasoning' : 'text', text: stream.rawText },
+        ]))
         this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: stream.revision,
           index: stream.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
         this.activeStream = undefined
@@ -321,7 +374,7 @@ export class NativeProjector {
     for (const step of this.steps.values()) if (step.nativeTurnId === id) this.closeStep(step)
     const reason: TurnEndReason = status === 'completed' ? { kind: 'completed' }
       : status === 'interrupted' ? { kind: 'aborted', reason: { kind: 'user' } }
-        : { kind: 'error', error: { code: 'CODEX_NATIVE_TURN_FAILED', message: 'The native Codex turn failed' } }
+        : { kind: 'error', error: { code: 'CODEX_NATIVE_TURN_FAILED', message: this.turnErrors.get(id) ?? 'The native Codex turn failed' } }
     this.append('turn/end', { turn: turn.number, reason })
     turn.ended = true
   }

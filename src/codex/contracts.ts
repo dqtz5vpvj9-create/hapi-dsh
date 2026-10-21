@@ -22,7 +22,38 @@ export interface HapiMetadata {
   summary?: { text: string; updatedAt?: number }
   machineId?: string
   flavor?: string | null
+  agentSessionId?: string
+  claudeSessionId?: string
+  geminiSessionId?: string
+  dshSessionId?: string
+  opencodeSessionId?: string
+  grokSessionId?: string
+  agySessionId?: string
+  cursorSessionId?: string
+  cursorSessionProtocol?: 'acp' | 'stream-json'
+  kimiSessionId?: string
+  copilotSessionId?: string
+  piSessionId?: string
+  qoderSessionId?: string
+  startingMode?: 'local' | 'remote' | 'pty' | null
+  capabilities?: {
+    concurrentClients?: boolean
+    terminal?: boolean
+    conversationHistory?: { forkCurrent?: boolean; forkAtMessage?: boolean; rewindToMessage?: boolean }
+  }
+  acpPromptCapabilities?: { image: boolean }
+  dshCapabilities?: { control: boolean; steering: boolean; resume: boolean; images: boolean; subagents?: boolean }
+  dshConfigOptions?: HapiConfigOption[]
+  qoderConfigOptions?: HapiConfigOption[]
+  piAvailableModels?: Array<{ modelId: string; provider?: string; name?: string; contextWindow?: number; reasoning?: boolean; thinkingLevelMap?: Record<string, string | null> }>
+  piSelectedModel?: { provider: string; modelId: string } | null
+  conversationHistoryPoints?: Record<string, true>
+  conversationHistoryIndexes?: Record<string, number>
+  conversationHistoryTurns?: Record<string, string>
+  conversationHistoryEntryIds?: Record<string, string>
+  conversationHistoryDiverged?: boolean
   codexSessionId?: string
+  codexUpdatedAt?: number
   codexStoreId?: string
   codexHome?: string
   codexHomeId?: string
@@ -35,6 +66,14 @@ export interface HapiMetadata {
   forkedFrom?: string
   lifecycleState?: string
   migrationInProgress?: { id: string; sourceHome: string; targetHome: string; startedAt: number }
+}
+
+export interface HapiConfigOption {
+  id: string
+  name?: string
+  category?: string
+  currentValue?: string
+  options: Array<{ value: string; name?: string }>
 }
 
 export interface HapiApprovalRequest {
@@ -61,11 +100,25 @@ export interface HapiCompletedRequest extends HapiApprovalRequest, HapiApprovalA
   reason?: string
 }
 
+export interface HapiThreadGoal {
+  threadId: string
+  objective: string
+  status: 'active' | 'paused' | 'budgetLimited' | 'complete' | 'blocked' | 'usageLimited'
+  tokenBudget?: number | null
+  tokensUsed?: number
+  timeUsedSeconds?: number
+  createdAt?: number
+  updatedAt?: number
+}
+
 export interface HapiAgentState {
+  controlledByUser?: boolean | null
+  startingMode?: 'local' | 'remote' | 'pty' | null
   requests?: Record<string, HapiApprovalRequest> | null
   completedRequests?: Record<string, HapiCompletedRequest> | null
   steeringActive?: boolean | null
   codexPlanProposalId?: string | null
+  threadGoal?: HapiThreadGoal | null
 }
 
 export interface HapiSessionSummary {
@@ -74,14 +127,18 @@ export interface HapiSessionSummary {
   thinking: boolean
   activeAt: number
   updatedAt: number
+  pinned?: boolean
+  globalPinned?: boolean
   metadata: HapiMetadata | null
   metadataVersion: number
   agentStateVersion: number
   model?: string | null
   modelReasoningEffort?: string | null
+  effort?: string | null
   permissionMode?: string
   collaborationMode?: 'default' | 'plan'
   serviceTier?: string | null
+  copilotAgentMode?: string
   execution?: HapiNativeRuntime | null
   executionVersion?: number
 }
@@ -146,6 +203,13 @@ export interface HapiAttachment {
   previewUrl?: string
 }
 
+export interface HapiSlashCommand {
+  name: string
+  description: string
+  source?: string
+  content?: string
+}
+
 /** Authorized native item resource, as published by HAPI's ChatContentPart. */
 export interface HapiArtifactRef {
   id: string
@@ -202,6 +266,7 @@ export type HapiEvent =
   | { type: 'messages-indeterminate' | 'messages-dispatching' | 'messages-requeued'; sessionId: string; localIds: string[] }
   | { type: 'message-cancelled'; sessionId: string; messageId: string; localId?: string }
   | { type: 'connection-changed'; data?: { status: string; subscriptionId?: string; resume?: 'ok' | 'gap' } }
+  | { type: 'toast'; data: { title: string; body: string; sessionId: string; url: string } }
 
 export interface HapiTransport {
   /** Stable configured Hub identity, independent of a changing URL or token. */
@@ -210,6 +275,8 @@ export interface HapiTransport {
   getSession(sessionId: string): Promise<HapiSession>
   /** This very same REST route reads native history for codexNativeSession. */
   readMessages(sessionId: string, query?: HapiMessagesQuery): Promise<HapiMessagesPage>
+  /** Native command discovery; actual expansion/validation remains with HAPI. */
+  listSlashCommands?(sessionId: string): Promise<readonly HapiSlashCommand[]>
   /** One dispatch only. A successful response means accepted, not invoked. */
   sendMessage(sessionId: string, message: HapiSendMessage): Promise<void>
   getQueuedState(sessionId: string, localIds: string[]): Promise<HapiQueuedState>
@@ -232,6 +299,8 @@ export class HapiRequestError extends Error {
     readonly outcome: 'rejected' | 'indeterminate',
     readonly status?: number,
     readonly code?: string,
+    /** Internal parsed response; consumers must validate a public schema before returning or persisting it. */
+    readonly responseBody?: unknown,
   ) {
     super(message)
   }

@@ -1,8 +1,10 @@
 /** Real TCP/HTTP/WebSocket transport tests with a deliberately small fake DSH application. */
 import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createRequire } from 'node:module';
 import type { Duplex } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,13 +23,14 @@ async function until(condition: () => boolean, message: string): Promise<void> {
     while (!condition()) { if (Date.now() >= deadline) throw new Error(message); await delay(10); }
 }
 
-async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: number } = {}) {
+async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: number; compressed?: boolean } = {}) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-federation-'));
     const credentialsFile = join(directory, 'pairings.json');
     const id = 'fixture-machine-a';
     const token = await addPairing(credentialsFile, id, 'Fixture workstation');
     const upstreamHeaders: IncomingMessage['headers'][] = [];
     let mutationCount = 0;
+    let compressedChunks = 0, compressedStreamClosed = false;
     const upstreamSockets = new WebSocketServer({ noServer: true,
         handleProtocols: (offered) => offered.has('plugin-v2') ? 'plugin-v2' : offered.values().next().value ?? false });
     const upstream = createServer((request, response) => {
@@ -36,6 +39,24 @@ async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: n
         }
         upstreamHeaders.push(request.headers);
         if (request.headers.cookie !== 'dsh-auth-fixture=private-runner-cookie') { response.writeHead(401); response.end(); return; }
+        if (request.url === '/open-in-app/apps') {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ apps: [{ id: 'fixture-editor', name: 'Fixture editor' }] })); return;
+        }
+        if (request.url === '/plugins/large-json') {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ value: 'bounded-compressed-response\n'.repeat(100_000) })); return;
+        }
+        if (request.url === '/plugins/compressed-stream') {
+            response.writeHead(200, { 'content-type': 'text/plain' });
+            const chunk = randomBytes(64 * 1024).toString('hex');
+            const timer = setInterval(() => {
+                response.write(chunk); compressedChunks++;
+                if (compressedChunks === 64) { clearInterval(timer); response.end(); }
+            }, 10);
+            response.once('close', () => { compressedStreamClosed = true; clearInterval(timer); });
+            return;
+        }
         if (request.url === '/api/mutate') {
             void (async () => { for await (const _part of request) { /* consume request before committing */ } mutationCount++; })();
             return;
@@ -74,18 +95,24 @@ async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: n
     const origin = `http://127.0.0.1:${upstreamAddress.port}`;
     const routes: Array<Parameters<FederationMount['webServer']['register']>[0]> = [];
     const upgrades = new Map<string, (request: IncomingMessage, socket: Duplex, head: Buffer) => void | Promise<void>>();
-    const server = createServer((request, response) => {
+    const serve = (request: IncomingMessage, response: ServerResponse): void => {
         const pathname = new URL(request.url ?? '/', 'http://fixture').pathname;
         const route = routes.find((entry) => entry.kind === 'exact' ? entry.path === pathname : pathname === entry.path || pathname.startsWith(`${entry.path}/`));
         if (!route) { response.writeHead(404); response.end(); return; }
         Promise.resolve(route.handler(request, response)).catch(() => { if (!response.headersSent) response.writeHead(500); response.end(); });
-    });
+    };
+    // This is the actual middleware installed by the pinned official Web server,
+    // including its write() wrapper which intentionally ignores callbacks.
+    const compression = options.compressed ? (createRequire(import.meta.url)('compression') as () =>
+        (request: IncomingMessage, response: ServerResponse, next: () => void) => void)() : undefined;
+    const server = createServer((request, response) => compression
+        ? compression(request, response, () => serve(request, response)) : serve(request, response));
     server.on('upgrade', (request, socket, head) => {
         const handler = upgrades.get(new URL(request.url ?? '/', 'http://fixture').pathname);
         if (handler) void Promise.resolve(handler(request, socket, head)).catch(() => socket.destroy());
         else socket.destroy();
     });
-    const hub = new FederationHub({ credentialsFile, ...options });
+    const hub = new FederationHub({ credentialsFile, ...(options.httpIdleTimeoutMs === undefined ? {} : { httpIdleTimeoutMs: options.httpIdleTimeoutMs }) });
     await hub.mount({
         authorize: (request) => request.headers.cookie === 'fixture-main-dsh=authorized' ? undefined : 401,
         webServer: {
@@ -118,6 +145,7 @@ async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: n
     });
     const runner = await connectRunner();
     return { base, id, runner, hub, connectRunner, credentialsFile, upstreamHeaders, get mutationCount() { return mutationCount; },
+        get compressedChunks() { return compressedChunks; }, get compressedStreamClosed() { return compressedStreamClosed; },
         get upstreamSocketCount() { return upstreamSockets.clients.size; },
         headers: { cookie: 'fixture-main-dsh=authorized' } };
 }
@@ -139,6 +167,38 @@ test('reverse federation forwards streaming bytes, opaque plugin paths, and isol
     assert.equal(machines.machines[0]?.id, fixture.id);
     assert.equal(machines.machines[0]?.online, true);
     assert.ok(!JSON.stringify(machines).includes('tokenHash'));
+});
+
+test('official compression completes small JSON and drains large responses without waiting for dropped write callbacks', async (t) => {
+    const fixture = await transportFixture(t, { compressed: true });
+    const options = { headers: { ...fixture.headers, 'accept-encoding': 'gzip' }, signal: AbortSignal.timeout(5000) };
+    const small = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/open-in-app/apps`, options);
+    assert.equal(small.headers.get('content-encoding'), 'gzip');
+    assert.deepEqual(await small.json(), { apps: [{ id: 'fixture-editor', name: 'Fixture editor' }] });
+    const large = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/plugins/large-json`, options);
+    assert.equal(large.headers.get('content-encoding'), 'gzip');
+    assert.deepEqual(await large.json(), { value: 'bounded-compressed-response\n'.repeat(100_000) });
+    assert.equal(fixture.hub.listMachines()[0]?.online, true);
+});
+
+test('closing a compressed response releases the pending writer without dropping or replaying other Runner channels', async (t) => {
+    const fixture = await transportFixture(t, { compressed: true });
+    const abort = new AbortController();
+    const response = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/plugins/compressed-stream`, {
+        headers: { ...fixture.headers, 'accept-encoding': 'gzip' }, signal: abort.signal,
+    });
+    const reader = response.body!.getReader();
+    await reader.read(); abort.abort();
+    await reader.cancel().catch(() => {});
+    await until(() => fixture.compressedStreamClosed, 'Aborted compressed stream retained its source request');
+    assert.ok(fixture.compressedChunks > 0 && fixture.compressedChunks < 64);
+    const recovered = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/open-in-app/apps`, {
+        headers: { ...fixture.headers, 'accept-encoding': 'gzip' }, signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(recovered.status, 200);
+    assert.deepEqual(await recovered.json(), { apps: [{ id: 'fixture-editor', name: 'Fixture editor' }] });
+    assert.equal(fixture.hub.listMachines()[0]?.online, true);
+    assert.equal(fixture.mutationCount, 0);
 });
 
 test('full duplex official-style WebSocket messages survive the reverse transport', async (t) => {

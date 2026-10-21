@@ -4,8 +4,10 @@ import test from 'node:test'
 import type { SessionBinding, SessionListState, SessionReference, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
-import { filterSessions, parseSessionResourceId, sessionLocation, sessionResourceId, WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
+import { filterSessions, parseSessionResourceId, sessionCreationContext, sessionLocation, sessionResourceId, WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
 import { panes } from '../src/client/model.ts'
+import { sessionFolder } from '../src/workspace/presentation.ts'
+import { createWorkspaceNotifications } from '../src/workspace/notifications.ts'
 
 function fixture() {
     const listeners = new Set<() => void>()
@@ -17,10 +19,16 @@ function fixture() {
     const actions: Array<[string, string]> = []
     const publish = (): void => { for (const listener of [...listeners]) listener() }
     const phase = (value: SessionListState['phase']): void => { snapshot = { ...snapshot, phase: value }; publish() }
-    const add = (id: string, title = id, updatedAt = 1): void => {
+    const add = (id: string, title = id, updatedAt = 1, cwd?: string): void => {
         snapshot = { ...snapshot, ids: [...new Set([...snapshot.ids, id as SessionId])], byId: { ...snapshot.byId,
-            [id]: { id: id as SessionId, displayTitle: title, running: false, blank: false, updatedAt, retainedBy: {} },
+            [id]: { id: id as SessionId, displayTitle: title, running: false, blank: false, updatedAt, retainedBy: {}, ...(cwd ? { cwd } : {}) },
         } }
+        publish()
+    }
+    const project = (id: string, projectionValues: SessionSummary['projectionValues']): void => {
+        const row = snapshot.byId[id as SessionId]
+        if (!row) throw new Error('Missing fake row')
+        snapshot = { ...snapshot, byId: { ...snapshot.byId, [id]: { ...row, projectionValues } as SessionSummary } }
         publish()
     }
     const count = (id: string, source: string, delta: number): void => {
@@ -82,8 +90,51 @@ function fixture() {
         storage: { getItem: key => memory.get(key) ?? null, setItem: (key, value) => { memory.set(key, value) } },
         nextId: () => `test-${++sequence}`,
     }
-    return { sessions, navigation, options, refs, add, publish, phase, slow, deferred, renamed, actions, memory, disposeMain: () => main?.release() }
+    return { sessions, navigation, options, refs, add, project, publish, phase, slow, deferred, renamed, actions, memory, disposeMain: () => main?.release() }
 }
+
+test('creation hand-off observes only explicit creation success after opening the exact resource', async () => {
+    const source = fixture()
+    source.add('existing')
+    const controller = new WorkspaceController(source.options), created: string[] = []
+    const stop = controller.subscribeCreated(id => {
+        const focused = controller.store.focusedPane().resource
+        assert.equal(focused.kind === 'chat' ? focused.sessionId : null, id)
+        created.push(id)
+    })
+    controller.openSession('existing')
+    assert.deepEqual(created, [])
+    const id = await controller.createSession('local', '/actual/workspace', 'new')
+    assert.deepEqual(created, [id])
+    controller.openSession(id)
+    assert.deepEqual(created, [id])
+    controller.openCreatedSession('existing')
+    assert.deepEqual(created, [id, 'existing'])
+    stop(); controller.openCreatedSession(id)
+    assert.equal(created.length, 2)
+    controller.dispose(); source.disposeMain()
+})
+
+test('successor navigation requires an exact same-Hub source pair and delegates draft handling before opening', async () => {
+    const source = fixture(); source.add('old-display'); source.add('new-display'); source.add('foreign-display')
+    source.project('old-display', { hapi: { hubId: 'hub-one', hapiSessionId: 'old-original' } } as never)
+    source.project('new-display', { hapi: { hubId: 'hub-one', hapiSessionId: 'new-original' } } as never)
+    source.project('foreign-display', { hapi: { hubId: 'hub-two', hapiSessionId: 'new-original' } } as never)
+    const controller = new WorkspaceController(source.options), pairs: string[] = []
+    controller.openSession('old-display')
+    const off = controller.installSuccessorHandler(async (from, to) => {
+        const focused = controller.store.focusedPane().resource
+        assert.equal(focused.kind === 'chat' && focused.sessionId, 'old-display')
+        pairs.push(`${from.hubId}:${from.sessionId}->${to.hubId}:${to.sessionId}`)
+        controller.openSession(to.displayId)
+    })
+    await assert.rejects(controller.openSuccessorSession('old-display', 'foreign-display'), /original Hub/)
+    await assert.rejects(controller.openSuccessorSession('old-display', 'unlisted'), /not yet listed/)
+    assert.deepEqual(pairs, [])
+    await controller.openSuccessorSession('old-display', 'new-display')
+    assert.deepEqual(pairs, ['hub-one:old-original->hub-one:new-original'])
+    off(); controller.dispose(); source.disposeMain()
+})
 
 test('switching windows, focus and zoom retains exact pane references; closing only releases the view', async () => {
     const source = fixture()
@@ -120,6 +171,84 @@ test('official mainView navigation opens the matching pane without recursive ret
     source.publish()
     assert.equal(controller.store.focusedPane().resource.kind, 'empty')
     controller.dispose(); source.disposeMain()
+})
+
+test('original source pin and lifecycle metadata stay independent of official display bookmarks', () => {
+    const source = fixture(); source.add('native'); source.add('dsh')
+    source.project('native', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'hub' } } as never)
+    source.options.workspaceState = { getSnapshot: () => ({ archivedSessionIds: ['native'], pinnedSessionIds: ['dsh', 'native'] }), subscribe: () => () => {} }
+    const controller = new WorkspaceController(source.options)
+    controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'logical', displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner', engine: 'codex', title: 'Native', cwd: '/repo', pinMode: 'project' }])
+    assert.equal(controller.getSnapshot().catalog.byId.native!.archived, false)
+    assert.equal(controller.getSnapshot().catalog.byId.native!.sourcePinMode, 'project')
+    assert.equal(controller.getSnapshot().catalog.byId.native!.pinned, true)
+    assert.equal(controller.getSnapshot().catalog.byId.dsh!.pinned, true)
+    controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'logical', displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner', engine: 'codex', title: 'Native', cwd: '/repo', pinMode: 'none' }])
+    assert.equal(controller.getSnapshot().catalog.byId.native!.pinned, false)
+    assert.equal(controller.getSnapshot().catalog.byId.dsh!.sourcePinMode, undefined)
+    controller.dispose(); source.disposeMain()
+})
+
+test('source timestamps and new-in-directory context retain actual machine identity through the engine chooser only', () => {
+    const source = fixture(); source.add('native', 'Native', 10, '/source/project'); source.add('dsh', 'Official', 20, '/host/project')
+    source.project('native', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'original-hub', machineId: 'source-machine' } } as never)
+    const controller = new WorkspaceController(source.options)
+    controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'logical', displayRevision: 0, hapiSessionId: 'original-source',
+        machineId: 'source-machine', engine: 'codex', title: 'Native', cwd: '/source/project', updatedAt: 900 }])
+    assert.equal(controller.getSnapshot().catalog.byId.native!.updatedAt, 900)
+    assert.equal(controller.getSnapshot().catalog.byId.dsh!.updatedAt, 20)
+    controller.requestNewSessionInDirectory('native')
+    const expected = { hostId: 'local', directory: '/source/project', sourceSessionId: 'original-source', sourceHubId: 'original-hub', machineId: 'source-machine', engine: 'codex' }
+    assert.equal(controller.getSnapshot().creation, 'choose')
+    assert.deepEqual(controller.getSnapshot().creationContext, expected)
+    controller.requestNewSession('codex')
+    assert.deepEqual(controller.getSnapshot().creationContext, expected)
+    controller.closeNewSession()
+    assert.equal(controller.getSnapshot().creationContext, null)
+    controller.requestNewSessionInDirectory('native'); controller.requestNewSession()
+    assert.equal(controller.getSnapshot().creationContext, null)
+    controller.requestNewSessionInDirectory('dsh')
+    assert.deepEqual(controller.getSnapshot().creationContext, { hostId: 'local', directory: '/host/project' })
+    controller.openNativeLibrary()
+    assert.equal(controller.getSnapshot().creationContext, null)
+    controller.dispose(); source.disposeMain()
+})
+
+test('remote official folder creation stays on its Host and never pretends to be a HAPI source machine', () => {
+    const source = fixture(), remote = fixture()
+    remote.add('official', 'Remote', 20, 'C:\\Projects\\actual')
+    const controller = new WorkspaceController(source.options)
+    const remove = controller.addHost({ id: 'linux-host', label: 'Remote', sessions: remote.sessions, navigation: remote.navigation, renderConversation: () => null })
+    controller.requestNewSessionInDirectory(sessionResourceId('linux-host', 'official'))
+    assert.deepEqual(controller.getSnapshot().creationContext, { hostId: 'linux-host', directory: 'C:\\Projects\\actual' })
+    const row = controller.getSnapshot().catalog.byId[sessionResourceId('linux-host', 'official')]!
+    const { cwd: _cwd, ...withoutDirectory } = row
+    assert.equal(sessionCreationContext(withoutDirectory), null)
+    assert.equal(sessionCreationContext({ ...row, projectionValues: { hapiObserved: { sidechain: { rootSessionId: 'root' } } } as never }), null)
+    remove(); controller.dispose(); remote.disposeMain(); source.disposeMain()
+})
+
+test('source search and worktree folder context preserve the original base directory without changing the session cwd', () => {
+    const source = fixture(), remote = fixture()
+    source.add('native', 'Source', 10, '/source/project.worktrees/task')
+    remote.add('native', 'Official same ID', 20, '/host/project')
+    source.project('native', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'original-hub', machineId: 'source-machine' } } as never)
+    const controller = new WorkspaceController(source.options)
+    const remove = controller.addHost({ id: 'remote', label: 'Remote', sessions: remote.sessions, navigation: remote.navigation, renderConversation: () => null })
+    controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'logical', displayRevision: 0, hapiSessionId: 'original-source',
+        machineId: 'source-machine', engine: 'codex', title: 'Source', cwd: '/source/project.worktrees/task', sourceSummary: 'Fix delivery ledger races',
+        sourceWorktree: { name: 'task', basePath: '/source/project', branch: 'feat/task' }, sourceSubagentSearch: ['reviewer'] }])
+    const native = controller.getSnapshot().catalog.byId.native!, official = controller.getSnapshot().catalog.byId[sessionResourceId('remote', 'native')]!
+    assert.equal(native.cwd, '/source/project.worktrees/task')
+    assert.equal(sessionFolder(native).path, '/source/project')
+    assert.equal(native.sourceWorktree?.worktreePath, undefined)
+    assert.equal(official.sourceSummary, undefined)
+    assert.equal(sessionFolder(official).path, '/host/project')
+    assert.deepEqual(filterSessions([official, native], 'ledger reviewer source-machine').map(row => row.id), ['native'])
+    controller.requestNewSessionInDirectory(native.id, sessionFolder(native).path)
+    assert.deepEqual(controller.getSnapshot().creationContext, { hostId: 'local', directory: '/source/project', sourceSessionId: 'original-source',
+        sourceHubId: 'original-hub', machineId: 'source-machine', engine: 'codex' })
+    remove(); controller.dispose(); source.disposeMain(); remote.disposeMain()
 })
 
 test('late readiness of a released binding cannot replace the new pane binding', async () => {
@@ -312,4 +441,132 @@ test('one sidebar searches title, native identity, machine and engine without fa
     assert.deepEqual(filterSessions(rows, 'api lab').map(row => row.id), ['one'])
     assert.deepEqual(filterSessions(rows, '', 'dsh').map(row => row.id), ['two'])
     assert.deepEqual(filterSessions(rows, 'thread1', '', 'lab').map(row => row.id), ['one'])
+})
+
+const legacyLayout = { schemaVersion: 2, revision: 4, workspaces: [{ id: 'legacy-window', name: 'Existing', root: { type: 'pane', id: 'legacy-pane', resource: { kind: 'chat', sessionId: 'original-source' } } }] }
+const turn = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+test('a pane plugin can veto close and replacement without blocking movement, and its disposer restores close', () => {
+    const source = fixture(); source.add('a'); source.add('b')
+    const controller = new WorkspaceController(source.options)
+    controller.openSession('a')
+    const paneId = controller.store.focusedPane().id
+    let calls = 0
+    const release = controller.registerPaneCloseGuard(paneId, () => { calls++; return false })
+    controller.store.movePaneToNewWindow(paneId)
+    assert.equal(calls, 0, 'Moving preserves the plugin graph and its draft')
+    controller.store.closePane(paneId)
+    assert.equal(calls, 1)
+    assert.equal(controller.store.focusedPane().id, paneId)
+    controller.openSession('b')
+    assert.equal(calls, 2)
+    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'a' })
+    release(); controller.store.closePane(paneId)
+    assert.equal(controller.store.focusedPane().resource.kind, 'empty')
+    controller.dispose(); source.disposeMain()
+})
+
+test('first installation imports source geometry once and unavailable source retains its identity until catalog arrives', async () => {
+    const source = fixture()
+    let imported = 0
+    const writes: unknown[] = []
+    const controller = new WorkspaceController({ ...source.options,
+        persistence: { load: async () => null, save: async value => { writes.push(value) } },
+        legacy: async () => { imported++; return legacyLayout },
+    })
+    await turn()
+    assert.equal(imported, 1)
+    assert.equal(controller.store.active().id, 'legacy-window')
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.waitingForCatalog, true)
+    assert.equal(source.refs.length, 0, 'unmapped HAPI ids must never be retained as guessed DSH sessions')
+    source.add('display')
+    source.project('display', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'hub' } } as SessionSummary['projectionValues'])
+    await turn()
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.sessionId, 'display')
+    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'display', sourceSessionId: 'original-source', sourceHubId: 'hub' })
+    assert.ok(writes.length > 0)
+    controller.dispose(); source.disposeMain()
+    const restored = new WorkspaceController({ ...source.options, persistence: { load: async () => null, save: async () => {} }, legacy: async () => { imported++; return legacyLayout } })
+    await turn(); assert.equal(imported, 1, 'an existing plugin document must not be overwritten by legacy import')
+    restored.dispose(); source.disposeMain()
+})
+
+test('an explicit source deep link waits for catalog and opens the real mapped session', async () => {
+    const source = fixture()
+    const controller = new WorkspaceController({ ...source.options, sourceSessionQuery: 'original-source' })
+    assert.equal(source.refs.length, 0)
+    source.add('real-display')
+    source.project('real-display', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'hub' } } as SessionSummary['projectionValues'])
+    controller.setSourceCatalog([], 'hub')
+    await turn()
+    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'real-display' })
+    controller.dispose(); source.disposeMain()
+})
+
+test('notification and initial deep links keep both Hub and source identities', async () => {
+    const source = fixture()
+    const controller = new WorkspaceController({ ...source.options, sourceSessionQuery: 'shared-original', sourceHubQuery: 'hub-beta' })
+    const selected = () => { const resource = controller.store.focusedPane().resource; return resource.kind === 'chat' ? resource.sessionId : undefined }
+    source.add('alpha-display')
+    source.project('alpha-display', { hapi: { engine: 'codex', hapiSessionId: 'shared-original', hubId: 'hub-alpha' } } as never)
+    assert.equal(controller.store.focusedPane().resource.kind, 'empty', 'an early wrong-Hub hit must not consume the pending link')
+    source.add('beta-display')
+    source.project('beta-display', { hapi: { engine: 'codex', hapiSessionId: 'shared-original', hubId: 'hub-beta' } } as never)
+    assert.equal(selected(), 'beta-display')
+    await controller.openSourceSession({ hubId: 'hub-alpha', sessionId: 'shared-original' })
+    assert.equal(selected(), 'alpha-display')
+    await assert.rejects(controller.openSourceSession({ hubId: 'hub-missing', sessionId: 'shared-original' }), /requested source Hub/u)
+    assert.equal(selected(), 'alpha-display')
+    await assert.rejects(controller.openSourceSession({ hubId: '', sessionId: 'shared-original' }), /both its Hub and session/u)
+    controller.dispose(); source.disposeMain()
+})
+
+test('a legacy source-only deep link waits for the configured primary Hub instead of guessing from conflicting rows', () => {
+    const source = fixture()
+    for (const hub of ['alpha', 'beta']) {
+        source.add(`${hub}-display`)
+        source.project(`${hub}-display`, { hapi: { engine: 'codex', hapiSessionId: 'shared-original', hubId: hub } } as never)
+    }
+    const controller = new WorkspaceController({ ...source.options, sourceSessionQuery: 'shared-original' })
+    assert.equal(controller.store.focusedPane().resource.kind, 'empty')
+    assert.equal(source.refs.length, 0)
+    controller.setSourceCatalog([], 'beta')
+    const resource = controller.store.focusedPane().resource
+    assert.equal(resource.kind === 'chat' && resource.sessionId, 'beta-display')
+    controller.dispose(); source.disposeMain()
+})
+
+test('app badge uses eligible sidebar roots and source bookmarks, retaining uncertainty during loading or failed reads', () => {
+    const source = fixture(); source.add('a'); source.add('b')
+    const controller = new WorkspaceController(source.options), notifications = createWorkspaceNotifications(controller)
+    let changed = 0
+    const stop = notifications.subscribeUnread(() => { changed++ })
+    assert.equal(notifications.getUnreadCount(), null)
+    notifications.readStatus('ready')
+    assert.equal(notifications.getUnreadCount(), 0, 'existing rows keep the sidebar first-load baseline')
+    controller.sidebar.markUnread('a', 1)
+    assert.equal(notifications.getUnreadCount(), 1)
+    controller.sidebar.change({ engine: 'codex', filter: 'running' })
+    assert.equal(notifications.getUnreadCount(), 1, 'transient list filters do not clear the OS badge')
+    source.phase('pending'); assert.equal(notifications.getUnreadCount(), null)
+    source.phase('ready'); assert.equal(notifications.getUnreadCount(), 1)
+    notifications.readStatus('error'); assert.equal(notifications.getUnreadCount(), null)
+    notifications.readStatus('ready'); controller.sidebar.markSeen('a', 1)
+    assert.equal(notifications.getUnreadCount(), 0)
+    assert.ok(changed > 4)
+    stop(); notifications.dispose(); controller.dispose(); source.disposeMain()
+})
+
+test('window and pane navigation saves local view state without producing shared geometry mutations', async () => {
+    const source = fixture(); source.add('a'); source.add('b')
+    const writes: unknown[] = []
+    const controller = new WorkspaceController({ ...source.options, persistence: { load: async () => null, save: async value => { writes.push(value) } } })
+    await turn()
+    controller.openSession('a'); controller.openSession('b', 'horizontal')
+    await turn(); const count = writes.length
+    controller.store.cyclePane(1); controller.store.toggleZoom(); controller.store.cyclePane(-1)
+    await turn()
+    assert.equal(writes.length, count)
+    assert.equal(JSON.parse(source.memory.get(source.options.storageKey)!).zoomed[controller.store.active().id], true)
+    controller.dispose(); source.disposeMain()
 })

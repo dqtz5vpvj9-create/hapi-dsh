@@ -82,7 +82,7 @@ test('native session creation keeps runner defaults absent and includes explicit
         machineId: 'runner', directory: '/code/project', requestId: 'attempt-identity', sessionType: 'worktree', worktreeName: 'review', model: 'codex', modelReasoningEffort: 'high', codexHome: '/codex-home',
     })
     assert.throws(() => nativeCreationRequest({ ...defaults, directory: ' ' }, 'id'), /directory/)
-    assert.throws(() => nativeCreationRequest({ ...defaults, worktree: true }, 'id'), /worktree/)
+    assert.deepEqual(nativeCreationRequest({ ...defaults, worktree: true }, 'id'), { machineId: 'runner', directory: '/code/project', requestId: 'id', sessionType: 'worktree' })
 })
 
 test('an older creation poll cannot erase a newer recovered native identity', () => {

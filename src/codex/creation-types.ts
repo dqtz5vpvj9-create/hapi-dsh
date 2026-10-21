@@ -8,6 +8,8 @@ export const createNativeSessionSchema = z.strictObject({
   machineId: id, directory: z.string().trim().min(1).max(4096), requestId,
   model: z.string().min(1).max(256).optional(), modelReasoningEffort: z.string().min(1).max(64).optional(),
   codexHome: z.string().min(1).max(4096).optional(),
+  /** Runner-local selectors only. Authentication secrets never cross this contract. */
+  codexAccountId: z.string().min(1).max(128).optional(), codexKeyProfileId: z.string().min(1).max(128).optional(),
   permissionMode: z.enum(['default', 'read-only', 'yolo']).optional(),
   collaborationMode: z.enum(['default', 'plan']).optional(), serviceTier: z.enum(['fast', 'standard']).optional(),
   sessionType: z.enum(['simple', 'worktree']).optional(), worktreeName: z.string().max(200).optional(),

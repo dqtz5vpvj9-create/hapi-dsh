@@ -1,12 +1,26 @@
 import { build } from 'esbuild';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { resolve } from 'node:path';
 
 await mkdir('dist', { recursive: true });
-const entryPoints = { index: 'src/index.ts', cli: 'src/cli/index.ts', 'session-controller': 'src/codex/session-controller.ts', 'runner/index': 'src/runner/index.ts' };
+const fingerprint = createHash('sha256');
+async function includeSources(directory) {
+    for (const name of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = `${directory}/${name.name}`;
+        if (name.isDirectory()) await includeSources(path);
+        else if (name.isFile()) { fingerprint.update(path); fingerprint.update(await readFile(path)); }
+    }
+}
+await includeSources('src'); await includeSources('config'); fingerprint.update(await readFile('package-lock.json'));
+const buildIdentity = JSON.stringify(fingerprint.digest('hex'));
+const entryPoints = { index: 'src/index.ts', cli: 'src/cli/index.ts', 'session-controller': 'src/codex/session-controller.ts', 'workspace-files': 'src/hapi/workspace-files.ts', 'file-references': 'src/hapi/file-references.ts', 'terminal-controller': 'src/hapi/terminal-controller.ts', 'subagent-controller': 'src/hapi-agent/subagent-controller.ts', 'runner/index': 'src/runner/index.ts' };
 await build({
     entryPoints, outdir: 'dist', bundle: true, format: 'esm', platform: 'node',
     target: 'node24', packages: 'external', sourcemap: true,
+    define: { __HAPI_DSH_BUILD_ID__: buildIdentity },
     banner: { js: '// hapi-dsh: compiled from the accompanying AGPL-3.0-only source.' },
 });
 // The official store is a Web platform seed, not a downloadable graph entry.
@@ -20,7 +34,14 @@ const storeRuntime = await build({
 const result = await build({
     entryPoints: ['src/client/index.ts'], bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
     write: false, jsx: 'automatic', legalComments: 'inline',
-    define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text) },
+    define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text), __HAPI_DSH_BUILD_ID__: buildIdentity },
+    plugins: [{ name: 'style-text', setup(builder) {
+        builder.onResolve({ filter: /\?text$/ }, args => {
+            const id = args.path.slice(0, -5);
+            return { path: id.startsWith('.') ? resolve(args.resolveDir, id) : createRequire(import.meta.url).resolve(id), namespace: 'hapi-style-text' };
+        });
+        builder.onLoad({ filter: /.*/, namespace: 'hapi-style-text' }, async args => ({ contents: await readFile(args.path, 'utf8'), loader: 'text' }));
+    } }],
     external: [
         'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
         'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store',
@@ -31,7 +52,7 @@ const body = result.outputFiles[0].text;
 await writeFile('dist/client.js', `window.__ModuleLoader__.load({id:"hapi-dsh",factory:function(require){var module={exports:{}};var exports=module.exports;\n${body}\nreturn module.exports;}});\n`);
 // Host and Client have different Cordis service declarations; emit them in separate TS programs.
 for (const [name, include] of [
-    ['host', ['src/index.ts', 'src/client-api.ts', 'src/hapi/**/*.ts', 'src/codex/**/*.ts', 'src/shared/**/*.ts', 'src/hub/**/*.ts', 'src/runner/**/*.ts', 'src/cli/**/*.ts']],
+    ['host', ['src/index.ts', 'src/client-api.ts', 'src/hapi/**/*.ts', 'src/hapi-agent/**/*.ts', 'src/codex/**/*.ts', 'src/shared/**/*.ts', 'src/hub/**/*.ts', 'src/runner/**/*.ts', 'src/cli/**/*.ts']],
     ['client', ['src/client/**/*.ts', 'src/client/**/*.tsx', 'src/client-api.ts']],
 ]) {
     const path = `tsconfig.build-${name}.json`;

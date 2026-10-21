@@ -13,8 +13,12 @@ import RemoteAccessService, { type RemoteAccessBinding } from '@deepseek-ai/dsh-
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionController } from '@deepseek-ai/dsh-api-session-controller'
+import { TYPERT } from '@deepseek-ai/dsh-api-session-controller/typert'
+import { validateTypertManifest } from '@deepseek-ai/dsh-typert-loader'
+import type { SessionControlFrame, SessionListValue } from '@deepseek-ai/dsh-api-session-controller/types'
 import { RemoteError, remoteMethods, type PeerId, type PeerScope, type Principal } from '@deepseek-ai/dsh-typert-protocol'
-import NativeAwareSessionController, { isNativeDisplayId } from '../src/codex/session-controller.ts'
+import NativeAwareSessionController, { isNativeDisplayId, isObservedDisplayId } from '../src/codex/session-controller.ts'
+import { HapiObservedChild } from '../src/hapi-agent/children.js'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface PrincipalMap { 'native-control-fixture': { kind: 'native-control-fixture' } }
@@ -26,7 +30,7 @@ class FixtureQuery extends SessionQueryEngine {
   override searchEvents(): Promise<never> { throw new Error('No fixture full-text search backend') }
 }
 
-async function mount(Controller: typeof SessionController = NativeAwareSessionController) {
+async function mount(Controller: typeof SessionController | typeof NativeAwareSessionController = NativeAwareSessionController) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
@@ -38,7 +42,8 @@ async function mount(Controller: typeof SessionController = NativeAwareSessionCo
   // These protocol fixtures are only the external services the official
   // controller asks for. The controller, gateway, registry, sessions,
   // projections, title handling and resource authorization remain real DSH.
-  ctx.provide('fileUploads', { registerAgentResolver: () => () => {}, retirePrompt: () => {} } as unknown as Context['fileUploads'])
+  let resolverRegistrations = 0
+  ctx.provide('fileUploads', { registerAgentResolver: () => { resolverRegistrations++; return () => {} }, retirePrompt: () => {} } as unknown as Context['fileUploads'])
   ctx.provide('llm', {
     listProviders: () => [{ id: 'fixture-provider', name: 'Fixture' }],
     listModels: async () => [{ id: 'fixture-model', name: 'Fixture model' }],
@@ -52,15 +57,30 @@ async function mount(Controller: typeof SessionController = NativeAwareSessionCo
   const renames: unknown[] = []
   ctx.provide('hapi', {
     renameNativeSession: async (request: unknown) => { renames.push(request); return { title: 'Observed source title', seq: SessionSeq(9) } },
+    renameObservedSession: async (request: unknown) => { renames.push(request); return { title: 'Original engine title', seq: SessionSeq(11) } },
   } as unknown as Context['hapi'])
-  const controller = new Controller(ctx, { nativeOpen: false, listWorkSliceMs: 16 })
+  const config = { nativeOpen: false, listWorkSliceMs: 16 }
+  // Only Loader entry discovery is a fixture here. The isolated official
+  // constructor, Cordis service tracing, Remote metadata and Gateway are real.
+  const privateScope = Symbol('official Session controller fixture')
+  const original = new SessionController(Controller === SessionController ? ctx : ctx.isolate('sessionController', privateScope), config)
+  const entry = { options: { id: 'session-controller', name: '@deepseek-ai/dsh-api-session-controller', isolate: { sessionController: true } },
+    disabled: false, fiber: { config }, realm: { access: () => privateScope } }
+  ctx.provide('loader', { *entries() { yield entry } } as unknown as Context['loader'])
+  // In production this registration belongs to the active official package
+  // root. The wrapper neither supplies another artifact nor installs readers.
+  ctx.typert.register(validateTypertManifest('@deepseek-ai/dsh-api-session-controller', TYPERT))
+  let controller: SessionController | NativeAwareSessionController = original
+  if (Controller !== SessionController) await ctx.plugin(Object.assign((owner: Context) => {
+    controller = new NativeAwareSessionController(owner, config)
+  }, { inject: NativeAwareSessionController.inject }))
   const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}))
-  function ordinaryAgent(id: string) {
+  function ordinaryAgent(id: string, agentContext = ctx.extend()) {
     const session = ctx.sessions.create(SessionId(id), { meta: { cwd: '/workspace/fixture' } })
     const queued: UserMessage[] = [createUserMessage({ content: [{ type: 'text', text: 'Fixture queued input' }], source: { kind: 'user' } })]
     const cancellations: unknown[] = []
     const agent = {
-      id: session.id, session, ctx: ctx.extend(), status: 'idle',
+      id: session.id, session, ctx: agentContext, status: 'idle',
       inbox: {
         nextTurn: queued, nextStep: [],
         remove: (itemId: string) => { const index = queued.findIndex(item => item.id === itemId); if (index < 0) return false; queued.splice(index, 1); return true },
@@ -74,30 +94,74 @@ async function mount(Controller: typeof SessionController = NativeAwareSessionCo
     const peer: PeerScope = { id: 'native-controller-fixture' as PeerId, ctx, principal, interactions: 'answer', signal: new AbortController().signal, dispose: async () => {} }
     return gateway.invoke({ peer, namespace: 'session', method, args })
   }
-  return { ctx, controller, ordinaryAgent, invoke, saved, renames, close: () => ctx.fiber.dispose() }
+  function stream(method: string, args: Readonly<Record<string, unknown>>, principal: Principal, signal: AbortSignal): Promise<AsyncIterable<unknown>> {
+    const peer: PeerScope = { id: 'native-controller-stream-fixture' as PeerId, ctx, principal, interactions: 'answer', signal, dispose: async () => {} }
+    return gateway.stream({ peer, namespace: 'session', method, args })
+  }
+  return { ctx, controller, original, ordinaryAgent, invoke, stream, saved, renames, entry,
+    get resolverRegistrations() { return resolverRegistrations }, close: () => ctx.fiber.dispose() }
 }
 
 const nativeId = SessionId(`hapi-codex-${'a'.repeat(32)}`)
 
-test('public provider replacement inherits official Remote metadata and registers the exact official wire artifact', async () => {
+test('public composition retains one isolated official constructor and the exact official Remote contract', async () => {
   const app = await mount()
   const official = await mount(SessionController)
   try {
-    assert.deepEqual(NativeAwareSessionController.inject, [...SessionController.inject, 'hapi'])
+    assert.deepEqual(NativeAwareSessionController.inject, ['loader', 'hapi'])
     assert.equal(NativeAwareSessionController.Config, SessionController.Config)
-    assert.deepEqual(remoteMethods(app.controller), remoteMethods(official.controller))
+    const describe = (controller: object) => remoteMethods(controller).map(({ resources, ...value }) => ({ ...value,
+      resources: Object.keys(resources ?? {}) })).sort((a, b) => a.method.localeCompare(b.method))
+    assert.deepEqual(describe(app.controller), describe(official.controller))
+    assert.equal(app.resolverRegistrations, 1)
+    assert.equal(app.controller instanceof SessionController, false)
+    assert.equal(app.original instanceof SessionController, true)
     const contract = app.ctx.typert.getPackage('@deepseek-ai/dsh-api-session-controller', 'host')
     assert.ok(contract)
     assert.ok(contract.model.services.some(service => service.key === 'sessionController'))
-    const own = new Set(['constructor', 'selectModel', 'fork', 'updateQueue', 'rename'])
-    assert.deepEqual(new Set(Object.getOwnPropertyNames(NativeAwareSessionController.prototype)
-      .filter(key => typeof Object.getOwnPropertyDescriptor(NativeAwareSessionController.prototype, key)?.value === 'function')), own)
-    for (const key of Object.getOwnPropertyNames(SessionController.prototype)) {
-      if (!own.has(key) && typeof Object.getOwnPropertyDescriptor(SessionController.prototype, key)?.value === 'function') {
-        assert.equal(Reflect.get(NativeAwareSessionController.prototype, key), Reflect.get(SessionController.prototype, key), `official ${key} is inherited unchanged`)
-      }
-    }
+    assert.equal(app.controller.canOpenWorkspacePath(), false)
+    app.entry.disabled = true
+    assert.throws(() => app.controller.canOpenWorkspacePath(), /active isolated package-root/)
+    app.entry.disabled = false
   } finally { await app.close(); await official.close() }
+})
+
+test('delegation preserves the current non-owner Invocation for ordinary list filtering and control streams', async () => {
+  const app = await mount(), abort = new AbortController()
+  try {
+    app.ordinaryAgent('visible'); app.ordinaryAgent('private')
+    app.ctx.remoteAccess.registerPolicy('native-control-fixture', { bindings: () => [
+      { role: { name: 'fixture list', resource: 'global', actions: ['session/list', 'session/control'] }, resource: { kind: 'global' } },
+      { role: { name: 'fixture visible', resource: 'session', actions: ['session/list', 'session/control'] }, resource: { kind: 'session', id: SessionId('visible') } },
+    ] })
+    const principal: Principal = { kind: 'native-control-fixture' }
+    const visible = await app.invoke('list', { _request: {} }, principal) as SessionListValue
+    assert.deepEqual(visible.items.map(row => row.sessionId), ['visible'])
+    const all = await app.invoke('list', { _request: {} }) as SessionListValue
+    assert.equal(all.items.length, 2)
+    const stream = await app.stream('control', {}, principal, abort.signal)
+    const iterator = stream[Symbol.asyncIterator]()
+    const baseline = (await iterator.next()).value as SessionControlFrame
+    assert.equal(baseline.type, 'baseline')
+    assert.ok(baseline.type === 'baseline')
+    assert.deepEqual(Object.keys(baseline.value.projections), ['visible'])
+    await iterator.return?.()
+    assert.equal(app.resolverRegistrations, 1)
+  } finally { abort.abort(); await app.close() }
+})
+
+test('the composed history readers authorize the exact child resource, not only the named parent', async () => {
+  const app = await mount(), abort = new AbortController()
+  try {
+    const held: RemoteAccessBinding[] = [{ role: { name: 'parent history', resource: 'session', actions: ['session/page', 'session/follow'] },
+      resource: { kind: 'session', id: SessionId('parent') } }]
+    app.ctx.remoteAccess.registerPolicy('native-control-fixture', { bindings: () => held })
+    const principal: Principal = { kind: 'native-control-fixture' }
+    const request = { address: { kind: 'subagent', parentSessionId: 'parent', childSessionId: 'ungranted-child', mode: 'unknown' } }
+    const denied = (error: unknown) => error instanceof RemoteError && error.code === 'remote-access/denied'
+    await assert.rejects(app.invoke('page', { request: { ...request, throughSeq: 0 } }, principal), denied)
+    await assert.rejects(app.stream('follow', { request }, principal, abort.signal), denied)
+  } finally { abort.abort(); await app.close() }
 })
 
 test('native generic model/fork/queue controls refuse through the real official gateway without changing source shadow state', async () => {
@@ -135,6 +199,54 @@ test('provider replacement retains original resource authorization before dispat
     await assert.rejects(app.invoke('fork', { request }, principal), (error: unknown) => error instanceof RemoteError && error.code === 'hapi/request')
     await assert.rejects(app.invoke('fork', { request: { sessionId: `${nativeId}-r1` } }, principal), (error: unknown) => error instanceof RemoteError && error.code === 'remote-access/denied')
   } finally { await app.close() }
+})
+
+test('observed original engines reject generic loop controls and route rename through their actual owner', async () => {
+  const app = await mount(), id = SessionId(`hapi-observed-${'b'.repeat(32)}-r2`)
+  try {
+    const session = app.ctx.sessions.create(id), initial = session.seq
+    for (const [method, request, sourceCode] of [
+      ['selectModel', { sessionId: id, provider: 'fixture-provider', model: 'fixture-model' }, 'observed_model_control_required'],
+      ['fork', { sessionId: id }, 'observed_fork_control_required'],
+      ['updateQueue', { sessionId: id, itemId: 'pending', action: { kind: 'remove' } }, 'observed_queue_control_required'],
+    ] as const) await assert.rejects(app.invoke(method, { request }), (error: unknown) => error instanceof RemoteError
+      && error.code === 'hapi/request' && (error.details as { sourceCode?: string }).sourceCode === sourceCode)
+    assert.deepEqual(await app.invoke('rename', { request: { sessionId: id, title: 'Original title' } }), { title: 'Original engine title', seq: 11 })
+    assert.equal(app.renames.length, 1); assert.equal(session.seq, initial)
+    assert.equal(isObservedDisplayId(id), true); assert.equal(isObservedDisplayId('hapi-observed-ordinary'), false)
+  } finally { await app.close() }
+})
+
+test('source children retain original official subagent ownership rejection and never route writes to the source parent', async () => {
+  const app = await mount(), children: HapiObservedChild[] = []
+  try {
+    for (const prefix of ['hapi-codex', 'hapi-observed']) {
+      await app.ctx.plugin(Object.assign(async (ownerContext: Context) => {
+        const root = app.ordinaryAgent(`${prefix}-${'c'.repeat(32)}-r2`, ownerContext)
+        const child = await HapiObservedChild.create({ agent: root.agent, logicalSessionId: root.agent.id, displayRevision: 2,
+          content: () => undefined, state: () => ({ hubId: 'fixture', hapiSessionId: 'original-parent', flavor: 'claude',
+            machineId: 'fixture-machine', machineName: 'Fixture', path: '/fixture', active: true, connection: 'connected',
+            model: 'fixture-model', effort: null, permissionMode: null, error: null }) }, root.agent,
+        { scopeId: 'sdk-tool:child', kind: 'sdk', parentToolCallId: 'child', parentScopeId: null, sourceAgentId: null,
+          label: 'Original source child', status: 'observed', createdAt: 1000, updatedAt: 1000 }, [])
+        children.push(child)
+      }, { inject: ['sessions', 'agents', 'sessionProjections'] }))
+    }
+    for (const child of children) {
+      for (const [method, request] of [
+        ['selectModel', { sessionId: child.id, provider: 'fixture-provider', model: 'fixture-model' }],
+        ['fork', { sessionId: child.id }],
+        ['updateQueue', { sessionId: child.id, itemId: 'pending', action: { kind: 'remove' } }],
+        ['rename', { sessionId: child.id, title: 'Must not rename parent' }],
+      ] as const) await assert.rejects(app.invoke(method, { request }), (error: unknown) => error instanceof RemoteError && error.code === 'hapi/request')
+      await assert.rejects(app.invoke('prompt', { request: { sessionId: child.id, requestId: 'child-input', mode: 'queue',
+        content: [{ type: 'text', text: 'Must not execute' }] } }), (error: unknown) => error instanceof RemoteError
+        && error.code === 'session/agent-busy' && error.message.includes('subagent routing'))
+      await assert.rejects(app.invoke('cancel', { request: { sessionId: child.id } }), (error: unknown) => error instanceof RemoteError
+        && error.code === 'session/agent-busy' && error.message.includes('subagent routing'))
+    }
+    assert.equal(app.renames.length, 0); assert.equal(app.saved.length, 0)
+  } finally { for (const child of children.reverse()) await child.dispose(); await app.close() }
 })
 
 test('ordinary DSH selectModel, rename, fork validation, queue removal and cancellation retain official behavior', async () => {

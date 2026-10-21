@@ -41,3 +41,24 @@ test('independent official Client graph stores persist the same keys without tou
     assert.equal(storageB.getItem('dsh.sessions.current'), '{"sessionId":"source-b"}')
     assert.equal(storage.getItem('dsh.sessions.current'), '{"sessionId":"primary"}')
 })
+
+test('reload checkpoints detect failed or overwritten plugin writes without interpreting private storage formats', () => {
+    const data = new Map<string, string>(); let deny = false;
+    const storage: Storage = {
+        getItem: key => data.get(key) ?? null,
+        setItem: (key, value) => { if (deny) throw new Error('quota exhausted'); data.set(key, value) },
+        removeItem: key => { if (deny) throw new Error('storage denied'); data.delete(key) },
+        clear: () => { data.clear() }, key: index => [...data.keys()][index] ?? null,
+        get length() { return data.size },
+    }
+    const pane = graphStorage(storage, 'machine', 'pane');
+    pane.setItem('opaque-plugin-draft', 'first'); pane.checkpoint();
+    deny = true;
+    // Matches an upstream consumer swallowing a browser quota exception.
+    try { pane.setItem('opaque-plugin-draft', 'new unsaved text') } catch { /* plugin owns the exception */ }
+    assert.throws(() => pane.checkpoint(), /did not reach browser storage/u);
+    deny = false; pane.setItem('opaque-plugin-draft', 'new unsaved text'); pane.checkpoint();
+    storage.setItem('hapi-dsh:host:machine:pane:pane:opaque-plugin-draft', 'another browser tab');
+    assert.throws(() => pane.checkpoint(), /did not reach browser storage/u);
+    pane.removeItem('opaque-plugin-draft'); pane.checkpoint();
+});

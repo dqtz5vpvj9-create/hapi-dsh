@@ -3,10 +3,12 @@ import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { type AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { createUserMessage, freezeMessage, MessageId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import {
@@ -118,6 +120,7 @@ async function mount(fake: FakeHapi, directory: string, options: Partial<CodexSe
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(CommandRuntime)
   let service: CodexService | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => {
     service = new CodexService(owner, fake, { stateDirectory: directory, ...options })
@@ -127,6 +130,29 @@ async function mount(fake: FakeHapi, directory: string, options: Partial<CodexSe
   const mounted = service
   return { ctx, service: mounted, async close() { await mounted.dispose(); await ctx.fiber.dispose() } }
 }
+
+test('native scheduled delivery remains source-owned through abort, view closure and offline receipt recovery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-')), fake = new FakeHapi()
+  let app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!, operationId = randomUUID(), scheduledAt = Date.now() + 60_000
+    const original = agent.scheduleText({ operationId, text: 'Run when the original timer fires', scheduledAt })
+    await agent.journal.settled()
+    assert.equal(fake.sent[0]?.scheduledAt, scheduledAt)
+    await assert.rejects(agent.steerQueued(original.localId), /scheduled/)
+    await agent.abort(false); assert.deepEqual(fake.cancelCalls, [])
+    const aborts = fake.aborts
+    await app.close(); assert.equal(fake.aborts, aborts)
+    fake.source.active = false
+    app = await mount(fake, directory)
+    const restored = app.service.list()[0]!
+    fake.emit({ type: 'connection-changed', data: { status: 'disconnected' } }); await app.service.settled()
+    assert.equal(restored.scheduleReceipt(operationId)?.localId, original.localId)
+    assert.equal(restored.scheduleReceipt(operationId)?.scheduledAt, scheduledAt)
+    assert.equal(restored.scheduleReceipt('missing'), null); assert.equal(fake.sent.length, 1)
+    assert.throws(() => restored.scheduleText({ operationId, text: 'Run when the original timer fires', scheduledAt }), /available|writable|inactive/)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
 
 test('native discovery uses detail facts missing from HAPI summaries and registers real DSH sessions', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-'))
@@ -162,6 +188,194 @@ test('native discovery uses detail facts missing from HAPI summaries and registe
     assert.equal(app.ctx.sessionProjections.snapshot(agent.session).values.hapi?.nativeId, THREAD)
     assert.equal(fake.sent.length, 0)
     assert.equal(fake.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('official command scope sends native control lines through the existing durable queue, without executing a global DSH handler', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-commands-'))
+  const fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    let globalCalls = 0
+    app.ctx.commands.register({ name: 'compact', description: 'DSH-only compaction', handler: () => {
+      globalCalls++; return { kind: 'success', text: 'DSH compaction ran' }
+    } })
+    assert.equal(app.ctx.commands.find(agent, 'compact')?.definitionId, 'hapi-dsh/native-codex/compact')
+    const execution = await app.ctx.commands.execute(agent, '/compact', [], new AbortController().signal)
+    assert.equal(execution?.result.kind, 'success')
+    assert.match(execution?.result.text ?? '', /Submitted.*outcome/)
+    await agent.journal.settled()
+    assert.equal(globalCalls, 0)
+    assert.equal(fake.sent.length, 1)
+    assert.equal(fake.sent[0]?.text, '/compact')
+    assert.equal(fake.sent[0]?.localId, `dsh:native-command:${execution?.commandId}`)
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length, 0)
+    await agent.dispose()
+    assert.equal(app.ctx.commands.find(agent, 'compact')?.definitionId, undefined)
+    assert.equal(app.ctx.commands.find(agent, 'compact')?.description, 'DSH-only compaction')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native source notices, usage, and goal state survive a history refresh without inventing model turns or replaying commands', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-observations-'))
+  const fake = new FakeHapi()
+  fake.source.agentState = { threadGoal: { threadId: THREAD, objective: 'Finish the native task', status: 'paused', tokensUsed: 5 } }
+  let app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    const status: HapiMessage = { id: 'hub-event-status', localId: null, seq: 88, createdAt: 2500,
+      content: { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Codex model: native-test-model' } } } }
+    const usage = agentBody('token_count', { model: 'model-at-native-turn', info: {
+      last: { inputTokens: 100, outputTokens: 10, cachedInputTokens: 60 },
+      total: { inputTokens: 10000, outputTokens: 2000, cachedInputTokens: 6000 }, modelContextWindow: 128000,
+    } }, 'usage')
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: status })
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: status })
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: usage })
+    await app.service.settled()
+    assert.equal(agent.projection.notices.length, 1)
+    assert.equal(agent.projection.notices[0]?.text, 'Codex model: native-test-model')
+    assert.equal(agent.projection.usage?.contextTokens, 100)
+    assert.equal(agent.projection.usage?.cachedInputTokens, 60)
+    assert.equal(agent.projection.usage?.total?.inputTokens, 10000)
+    assert.equal(agent.projection.usage?.model, 'model-at-native-turn')
+    assert.equal(agent.projection.threadGoal?.status, 'paused')
+    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length, 0)
+    // Native REST history omits Hub-only status events. They are not a rewind.
+    await agent.refresh(true)
+    assert.equal(app.service.list()[0]?.id, agent.id)
+    assert.equal(agent.projection.notices.length, 1)
+    fake.source.agentStateVersion++
+    fake.source.agentState = { threadGoal: null }
+    await agent.refresh()
+    assert.equal(agent.projection.threadGoal, null)
+    await app.close()
+    app = await mount(fake, directory)
+    assert.equal(app.service.list()[0]?.projection.notices.length, 1)
+    assert.equal(app.service.list()[0]?.projection.usage?.contextTokens, 100)
+    assert.equal(fake.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('actual native error text reaches the official terminal error and remains available as a source notice', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-errors-'))
+  const fake = new FakeHapi()
+  fake.rows = [user(), agentBody('error', { message: 'Codex error: native capacity is unavailable' }, 'failure'), terminal('failed')]
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    const end = agent.session.snapshotEvents().find(event => event.type === 'turn/end')
+    assert.equal(end?.type, 'turn/end')
+    if (end?.type === 'turn/end') {
+      assert.equal(end.data.reason.kind, 'error')
+      if (end.data.reason.kind === 'error') assert.equal(end.data.reason.error.message, 'Codex error: native capacity is unavailable')
+    }
+    assert.equal(agent.projection.notices[0]?.kind, 'error')
+    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('source-confirmed identity rotation retires old native display admission and binds the new native thread', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-rotate-'))
+  const fake = new FakeHapi()
+  fake.rows = [user(), terminal()]
+  const app = await mount(fake, directory)
+  try {
+    const original = app.service.list()[0]!
+    const prompt = original.session.snapshotEvents().find(event => event.type === 'user/message')
+    assert.ok(prompt?.type === 'user/message')
+    assert.equal(original.resolveRewindLocalId(prompt.data.id), 'native-input-1')
+    assert.equal(original.resolveRewindLocalId('item:native-input-1'), undefined)
+    assert.equal(original.resolveRewindLocalId('hapi:not-a-user'), undefined)
+    fake.source.metadataVersion++
+    fake.source.metadata = { ...fake.source.metadata!, codexSessionId: 'replacement-native-thread', codexHome: '/runner/other-home', codexHomeId: 'home-2' }
+    fake.rows = []
+    const replacement = await app.service.reconcileSource(fake.source.id)
+    assert.ok(replacement)
+    assert.equal(replacement.logicalSessionId, original.logicalSessionId)
+    assert.notEqual(replacement.id, original.id)
+    assert.equal(replacement.binding.threadId, 'replacement-native-thread')
+    assert.equal(replacement.binding.homeId, 'home-2')
+    assert.equal(replacement.resolveRewindLocalId(prompt.data.id), undefined)
+    assert.throws(() => original.followup(createUserMessage({ content: [{ type: 'text', text: 'Never retarget this old view' }], source: { kind: 'user' } })), /detached/)
+    replacement.followup(createUserMessage({ content: [{ type: 'text', text: 'New source only' }], source: { kind: 'user' } }))
+    await replacement.journal.settled()
+    assert.equal(fake.sent.length, 1)
+    assert.equal(fake.sent[0]?.text, 'New source only')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native lifecycle reconciliation refuses an unversioned identity change and keeps source-not-ready sessions read-only', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-unready-'))
+  const fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    fake.source.metadata = { ...fake.source.metadata!, codexSessionId: 'unversioned-native-thread' }
+    await assert.rejects(app.service.reconcileSource(fake.source.id), /without advancing/)
+    assert.equal(agent.projection.readOnly, true)
+    fake.source.metadataVersion++
+    delete fake.source.metadata.codexSessionId
+    assert.equal(await app.service.reconcileSource(fake.source.id), undefined)
+    assert.equal(agent.projection.readOnly, true)
+    assert.equal(fake.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a replacement native identity never inherits the prior thread unknown deliveries or approval receipts', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-bound-receipts-'))
+  const fake = new FakeHapi()
+  fake.source.agentState = { requests: { permission: { tool: 'CodexBash', arguments: { command: 'pwd' } } } }
+  let app = await mount(fake, directory)
+  try {
+    const original = app.service.list()[0]!
+    fake.sendFailure = new HapiRequestError('Source delivery acknowledgement was lost', 'indeterminate')
+    original.followup(createUserMessage({ content: [{ type: 'text', text: 'Original thread only' }], source: { kind: 'user' } }))
+    await original.journal.settled()
+    fake.answerFailure = new HapiRequestError('Source approval acknowledgement was lost', 'indeterminate')
+    await assert.rejects(original.answerApproval('permission', { decision: 'approved' }), /acknowledgement was lost/)
+    assert.equal(original.projection.delivery[0]?.state, 'indeterminate')
+    assert.equal(original.projection.pendingRequests[0]?.stage, 'indeterminate')
+    fake.source.metadataVersion++
+    fake.source.metadata = { ...fake.source.metadata!, codexSessionId: 'replacement-thread-with-independent-queue' }
+    fake.source.agentStateVersion++
+    // Native request IDs are not globally unique across thread lifetimes.
+    fake.source.agentState = { requests: { permission: { tool: 'CodexBash', arguments: { command: 'whoami' } } } }
+    const replacement = await app.service.reconcileSource(fake.source.id)
+    assert.ok(replacement)
+    assert.equal(replacement.projection.delivery.length, 0)
+    assert.equal(replacement.projection.pendingRequests[0]?.stage, 'pending')
+    await app.close()
+    app = await mount(fake, directory)
+    const restored = app.service.list()[0]!
+    assert.equal(restored.projection.delivery.length, 0)
+    assert.equal(restored.projection.pendingRequests[0]?.stage, 'pending')
+    assert.equal(fake.sent.length, 1)
+    assert.equal(fake.answers.length, 1)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('queued rich input from another native frontend retains official image/file blocks in the DSH inbox', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-external-queue-'))
+  const fake = new FakeHapi()
+  const pending = user('other-frontend-input', false, 'Examine the attachment')
+  pending.content = { role: 'user', content: { type: 'text', text: 'Examine the attachment', parts: [
+    { type: 'text', text: 'Examine the attachment' },
+    { type: 'artifact', artifact: { id: 'native-queued-file', fileName: 'notes.txt', mimeType: 'text/plain' } },
+  ] }, meta: { isNativeQueuedMessage: true } }
+  fake.rows = [pending]
+  const app = await mount(fake, directory, { importArtifact: async () => ({
+    type: 'file', attachment: { attachmentId: AttachmentId('queued-notes'), bytes: 12, name: 'notes.txt' },
+  }) })
+  try {
+    const agent = app.service.list()[0]!
+    assert.equal(agent.inbox.nextTurn.length, 1)
+    assert.deepEqual(agent.inbox.nextTurn[0]?.content.map(block => block.type), ['text', 'file'])
+    assert.equal(agent.projection.delivery[0]?.localId, 'other-frontend-input')
+    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message').length, 0)
+    assert.equal(fake.sent.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 

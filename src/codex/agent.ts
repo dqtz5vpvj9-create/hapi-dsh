@@ -20,6 +20,16 @@ import { NativeContent, type NativeArtifactImporter } from './content.js'
 import { assertBinding, bindingFor, nativeSessionId, parseNativeRow, type NativeBinding, type NativeRow } from './native.js'
 import { NativeHistoryChangedError, NativeProjector } from './projector.js'
 import type { DeliveryView, HapiProjection } from './projection-types.js'
+import { NativeObservations } from './observations.js'
+import { nativeThreadGoalSchema } from './observation-types.js'
+import { bindNativeCommands } from './commands.js'
+import { nativeStateDirectory } from './state-directory.js'
+import { ObservedContent } from '../hapi-agent/content.js'
+import { ObservedChildren } from '../hapi-agent/children.js'
+import { ObservedScopeIndex } from '../hapi-agent/scopes.js'
+import { parseObservedHistory, parseObservedMessage } from '../hapi-agent/parser.js'
+import { sourceTeamProjection, acceptSourceStructuredState } from '../source-collaboration-types.js'
+import { queuedEditCandidate as readQueuedEditCandidate } from './queued-edit-candidate.js'
 
 export interface NativeCodexOptions {
   stateDirectory: string
@@ -78,6 +88,10 @@ export class NativeCodexAgent implements Agent {
   private readonly projector: NativeProjector
   private readonly cache: NativeHistoryCache
   private readonly content: NativeContent
+  private readonly observations: NativeObservations
+  private readonly childContent: ObservedContent
+  private readonly childScopes = new ObservedScopeIndex()
+  private readonly children: ObservedChildren
   private source: HapiSession
   private readonly queued = new Map<string, { row: NativeRow & { kind: 'user' }; raw: HapiMessage }>()
   private readonly idleWaiters = new Set<{ resolve(): void; reject(error: Error): void }>()
@@ -112,12 +126,23 @@ export class NativeCodexAgent implements Agent {
     })
     this.dispatch = agentEvents(this.ctx, this)
     this.inbox = new NativeInbox(this)
-    this.cache = new NativeHistoryCache(config.stateDirectory, this.logicalSessionId)
-    this.content = new NativeContent(config.stateDirectory, this.logicalSessionId, source.id, config.importArtifact)
-    this.journal = new DeliveryJournal(config.stateDirectory, this.logicalSessionId, source.id, transport, () => {
+    const stateDirectory = nativeStateDirectory(config.stateDirectory, this.logicalSessionId, this.binding)
+    this.cache = new NativeHistoryCache(stateDirectory, this.logicalSessionId)
+    this.content = new NativeContent(stateDirectory, this.logicalSessionId, source.id, config.importArtifact)
+    this.observations = new NativeObservations(stateDirectory, this.logicalSessionId, this.binding)
+    this.childContent = new ObservedContent(stateDirectory, this.logicalSessionId, source.id, config)
+    this.children = new ObservedChildren({ agent: this, logicalSessionId: this.logicalSessionId, displayRevision: this.displayRevision,
+      content: item => this.childContent.get(item), state: () => ({
+        hubId: this.binding.hubId, hapiSessionId: this.binding.hapiSessionId, flavor: 'codex',
+        machineId: this.binding.machineId, machineName: this.source.metadata?.host ?? this.binding.machineId,
+        path: this.source.metadata?.path ?? '/', active: this.source.active, connection: this.connected ? 'connected' : 'disconnected',
+        model: this.source.model ?? this.source.metadata?.codexModel ?? null, effort: this.source.modelReasoningEffort ?? null,
+        permissionMode: this.source.permissionMode ?? null, error: this.fault,
+      }) })
+    this.journal = new DeliveryJournal(stateDirectory, this.logicalSessionId, source.id, transport, () => {
       if (!this.disposed && !this.initializing) { this.syncInbox(); this.publishProjection() }
     }, config.resolveAttachments)
-    this.approvals = new NativeApprovals(config.stateDirectory, this.logicalSessionId, source.id, transport, () => {
+    this.approvals = new NativeApprovals(stateDirectory, this.logicalSessionId, source.id, transport, () => {
       if (!this.disposed && !this.initializing) this.publishProjection()
     })
     this.projector = new NativeProjector(this.session, {
@@ -158,8 +183,10 @@ export class NativeCodexAgent implements Agent {
       agent.publishProjection()
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
+      bindNativeCommands(agent)
       agent.ctx.sessions.announce(agent.session)
       await agent.ctx.agents.announce(agent, 'startup')
+      await agent.children.mount()
       return agent
     } catch (error) { await agent.dispose(); throw error }
   }
@@ -174,11 +201,16 @@ export class NativeCodexAgent implements Agent {
   get session(): Session { return this.currentSession }
   get status(): AgentStatus { return this.sourceRunning ? 'running' : 'idle' }
   get sourceSession(): HapiSession { return this.source }
+  get childSessions() { return this.children.list() }
   get titleEvent(): { title: string; seq: SessionSeq } | undefined { return this.lastTitleEvent }
 
   resolveForkBoundary(messageId: string) { return this.projector.forkBoundary(messageId) }
+  resolveRewindLocalId(messageId: string): string | undefined { return this.projector.rewindLocalId(messageId) }
+  resolveRewindLocalIdAtSeq(seq: number): string | undefined { return this.projector.rewindLocalIdAtSeq(seq) }
+  resolveSourceMessageDisplaySeq(id: string): number | undefined { return this.projector.sourceMessageDisplaySeq(id) }
 
   get projection(): NonNullable<HapiProjection> {
+    const goal = nativeThreadGoalSchema.safeParse(this.source.agentState?.threadGoal)
     return {
       engine: 'codex', hubId: this.binding.hubId, hapiSessionId: this.binding.hapiSessionId,
       logicalSessionId: this.logicalSessionId, displayRevision: this.displayRevision,
@@ -191,9 +223,13 @@ export class NativeCodexAgent implements Agent {
       model: this.source.model ?? this.source.metadata?.codexModel ?? null,
       reasoningEffort: this.source.modelReasoningEffort ?? null,
       planId: typeof this.source.agentState?.codexPlanProposalId === 'string' ? this.source.agentState.codexPlanProposalId : null,
+      threadGoal: goal.success && goal.data.threadId === this.binding.threadId ? goal.data : null,
+      notices: this.observations.notices, usage: this.observations.usage,
       execution: this.source.execution ?? null,
       pendingRequests: this.approvals.pending(), resolvedRequests: this.approvals.resolved(),
       delivery: this.deliveries(), error: this.fault,
+      sidechains: this.children.summaries,
+      ...sourceTeamProjection(this.source),
     }
   }
 
@@ -203,6 +239,28 @@ export class NativeCodexAgent implements Agent {
     this.journal.submit(message, target === 'next-step' ? 'steer' : 'queue')
   }
   followup(message: UserMessage): void { this.send(message, 'next-turn', true) }
+  scheduleText(input: { operationId: string; text: string; scheduledAt: number }): DeliveryView {
+    this.assertWritable()
+    if (!input.operationId.trim() || !input.text.trim()) throw new Error('Scheduled messages require a stable operation id and nonempty text')
+    const entry = this.journal.submit(freezeMessage({
+      id: MessageId(`hapi-schedule:${input.operationId}`), role: 'user', source: { kind: 'user', rpcId: `scheduled:${input.operationId}` },
+      content: [{ type: 'text', text: input.text }],
+    }), 'queue', input.scheduledAt)
+    const { message: _message, ...view } = entry
+    return view
+  }
+  /** Read an already recorded schedule without requiring a live writable owner. */
+  scheduleReceipt(operationId: string): DeliveryView | null {
+    const entry = this.journal.findByMessageId(`hapi-schedule:${operationId}`)
+    if (!entry) return null
+    const { message: _message, ...view } = entry
+    return view
+  }
+  retryRejectedDelivery(localId: string): DeliveryView {
+    this.assertWritable()
+    const { message: _message, ...view } = this.journal.retryRejected(localId)
+    return view
+  }
   steer(message: UserMessage): void { this.send(message, 'next-step', true) }
   inject(_message: UserMessage): void { throw new Error('Native Codex does not expose silent model-context injection through HAPI') }
   cancel(cause: AgentCancelCause, options?: { keepInbox?: boolean }): void {
@@ -212,7 +270,7 @@ export class NativeCodexAgent implements Agent {
   }
   async abort(keepInbox = true): Promise<void> {
     this.assertWritable()
-    if (!keepInbox) await Promise.all(this.deliveries().map(delivery => this.cancelQueued(delivery.localId)))
+    if (!keepInbox) await Promise.all(this.deliveries().filter(delivery => !delivery.scheduledAt).map(delivery => this.cancelQueued(delivery.localId)))
     await this.transport.abortSession(this.binding.hapiSessionId)
     // Cancellation acknowledgement is not an observed native terminal event.
     await this.refresh()
@@ -239,8 +297,15 @@ export class NativeCodexAgent implements Agent {
     this.syncInbox(); this.publishProjection()
     return result
   }
+  queuedEditCandidate(localId: string) {
+    const value = this.queued.get(localId)
+    return value ? readQueuedEditCandidate(value.raw, value.row.text) : undefined
+  }
   async steerQueued(localId: string): Promise<HapiSteerResult> {
     this.assertWritable()
+    if (this.deliveries().some(delivery => delivery.localId === localId && delivery.scheduledAt && delivery.scheduledAt > Date.now())) {
+      throw new Error('A scheduled source message cannot be steered before it matures')
+    }
     const result = await this.transport.steerQueuedMessage(this.binding.hapiSessionId, localId)
     if (result.status === 'invoked') await this.applyRows([result.message])
     // 'steered' is an acknowledgement; messages-consumed or queued-state owns retirement.
@@ -263,7 +328,7 @@ export class NativeCodexAgent implements Agent {
   }
 
   async handleEvent(event: HapiEvent): Promise<void> {
-    if (this.disposed) return
+    if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       this.connected = event.data?.status === 'connected'
       if (this.connected) await this.refresh(true)
@@ -327,6 +392,7 @@ export class NativeCodexAgent implements Agent {
     const execution = acceptExecution(previous, snapshot)
     const source = {
       ...snapshot,
+      ...acceptSourceStructuredState(previous, snapshot),
       metadata: snapshot.metadataVersion >= previous.metadataVersion ? snapshot.metadata : previous.metadata,
       metadataVersion: Math.max(snapshot.metadataVersion, previous.metadataVersion),
       agentState: snapshot.agentStateVersion >= previous.agentStateVersion ? snapshot.agentState : previous.agentState,
@@ -368,6 +434,11 @@ export class NativeCodexAgent implements Agent {
   }
 
   private async applyRows(messages: readonly HapiMessage[], authoritative = false): Promise<void> {
+    this.observations.observe(messages)
+    this.childScopes.update(messages, authoritative)
+    const children = (authoritative ? parseObservedHistory(messages, this.childScopes)
+      : messages.flatMap(message => parseObservedMessage(message, this.childScopes))).filter(item => item.scopeId !== null)
+    await this.childContent.prepare(children)
     const parsed = messages.flatMap(message => {
       const row = parseNativeRow(message, this.binding)
       return row ? [{ row, message }] : []
@@ -383,6 +454,7 @@ export class NativeCodexAgent implements Agent {
     }
     // Project the transcript before retiring optimistic/native pending input.
     this.projector.apply(parsed.map(item => item.row))
+    await this.children.apply(children, this.childScopes.scopes(), authoritative)
     for (const { row, message } of parsed) {
       if (row.kind !== 'user' || !row.localId) continue
       if (row.invoked) { this.journal.update(row.localId, 'invoked'); this.queued.delete(row.localId) }
@@ -398,9 +470,11 @@ export class NativeCodexAgent implements Agent {
     const entries = new Map(this.journal.view().map(entry => [entry.localId, entry]))
     for (const [localId, { row, raw }] of this.queued) if (!entries.has(localId)) entries.set(localId, {
       localId, messageId: raw.id, text: row.text, mode: row.mode, createdAt: raw.createdAt,
+      scheduledAt: raw.scheduledAt ?? null,
       state: raw.deliveryState ?? 'queued', error: null,
     })
-    return [...entries.values()].sort((a, b) => a.createdAt - b.createdAt)
+    return [...entries.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined }))
+      .sort((a, b) => a.createdAt - b.createdAt)
   }
 
   private syncInbox(): void {
@@ -408,7 +482,10 @@ export class NativeCodexAgent implements Agent {
     const step: UserMessage[] = []
     for (const delivery of this.deliveries()) {
       const message = this.journal.get(delivery.localId)?.message ?? freezeMessage({
-        id: MessageId(`hapi:${delivery.localId}`), role: 'user', content: [{ type: 'text', text: delivery.text }], source: { kind: 'user' },
+        id: MessageId(`hapi:${delivery.localId}`), role: 'user',
+        content: this.queued.has(delivery.localId) ? this.content.get(this.queued.get(delivery.localId)!.row)
+          ?? [{ type: 'text', text: delivery.text }] : [{ type: 'text', text: delivery.text }],
+        source: { kind: 'user' },
       })
       ;(delivery.mode === 'steer' ? step : turn).push(message)
     }
@@ -417,6 +494,7 @@ export class NativeCodexAgent implements Agent {
 
   private publishProjection(): void {
     if (this.disposed || !this.approvals) return
+    this.children.publishOwner()
     const value = this.projection
     const fingerprint = JSON.stringify(value)
     if (fingerprint === this.projectionFingerprint) return
@@ -443,6 +521,7 @@ export class NativeCodexAgent implements Agent {
     this.disposed = true
     this.rejectIdleWaiters('The native Codex observation was detached')
     this.projector?.abandonStream()
+    await this.children?.dispose()
     this.detachAgent?.()
     this.detachSession?.()
     await this.journal?.settled()

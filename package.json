@@ -31,6 +31,22 @@
       "types": "./dist/types/codex/session-controller.d.ts",
       "default": "./dist/session-controller.js"
     },
+    "./workspace-files": {
+      "types": "./dist/types/hapi/workspace-files.d.ts",
+      "default": "./dist/workspace-files.js"
+    },
+    "./file-references": {
+      "types": "./dist/types/hapi/file-references.d.ts",
+      "default": "./dist/file-references.js"
+    },
+    "./terminal-controller": {
+      "types": "./dist/types/hapi/terminal-controller.d.ts",
+      "default": "./dist/terminal-controller.js"
+    },
+    "./subagent-controller": {
+      "types": "./dist/types/hapi-agent/subagent-controller.d.ts",
+      "default": "./dist/subagent-controller.js"
+    },
     "./package.json": "./package.json",
     "./config/cordis.patch.yml": "./config/cordis.patch.yml",
     "./locale/*.json": "./locale/*.json"
@@ -60,11 +76,14 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-files",
+        "@deepseek-ai/dsh-api-terminal-controller",
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-layout",
         "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-workspace",
         "@deepseek-ai/dsh-client-ui-session"
       ],
@@ -84,30 +103,49 @@
     "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-remotes": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-terminal-controller": "0.2.1-rc.2",
     "@deepseek-ai/dsh-api-workspace-controller": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.2",
     "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2",
     "@deepseek-ai/dsh-attachment": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-connection": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-file-upload": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-locale": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-modules": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-session": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-file-reference": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-file-reference-local": "0.2.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.2.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
     "@deepseek-ai/dsh-scope": "0.2.1-rc.2",
     "@deepseek-ai/dsh-session": "0.2.1-rc.2",
     "@deepseek-ai/dsh-session-projection": "0.2.1-rc.2",
     "@deepseek-ai/dsh-session-title": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-subagent": "0.2.1-rc.2",
     "@deepseek-ai/dsh-typert-loader": "0.2.1-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
     "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-util-time": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-util-workspace-path": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "3.18.5",
+    "@elevenlabs/react": "0.13.0",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0",
+    "html2canvas-pro": "2.2.4",
+    "socket.io-client": "4.8.3",
     "ws": "8.21.0",
     "yaml": "2.8.2",
     "zod": "4.4.3"
@@ -118,7 +156,8 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/dsh-client-store": "0.2.1-rc.2",
-    "@playwright/test": "1.56.1",
+    "@playwright/test": "1.64.1",
+    "@tanstack/react-virtual": "3.14.10",
     "@types/node": "24.10.1",
     "@types/react": "18.3.27",
     "@types/react-dom": "18.3.7",
@@ -127,6 +166,7 @@
     "immer": "10.1.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "socket.io": "4.8.3",
     "tsx": "4.20.6",
     "typescript": "5.9.3",
     "zustand": "4.5.7"

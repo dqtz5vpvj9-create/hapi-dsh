@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { nativeNoticeSchema, nativeThreadGoalSchema, nativeUsageSchema } from './observation-types.js'
+import { observedSidechainSummarySchema } from '../hapi-agent/sidechain-types.js'
+import { sourceTeamSchema } from '../source-collaboration-types.js'
 
 export const deliveryStateSchema = z.enum([
   'dispatching', 'accepted', 'queued', 'invoked', 'indeterminate', 'rejected', 'cancelled',
@@ -11,6 +14,9 @@ export const deliveryViewSchema = z.object({
   mode: z.enum(['queue', 'steer']),
   state: deliveryStateSchema,
   createdAt: z.number(),
+  scheduledAt: z.number().finite().nullable().optional(),
+  /** True only for a real source queue row whose original payload can be retained before cancellation. */
+  editable: z.boolean().optional(),
   error: z.string().nullable(),
 })
 export type DeliveryState = z.infer<typeof deliveryStateSchema>
@@ -50,6 +56,9 @@ export const hapiProjectionSchema = z.object({
   reasoningEffort: z.string().nullable(),
   /** The source's currently actionable native plan, independent of tool approvals. */
   planId: z.string().nullable().default(null),
+  threadGoal: nativeThreadGoalSchema.nullable().default(null),
+  notices: z.array(nativeNoticeSchema).default([]),
+  usage: nativeUsageSchema.nullable().default(null),
   execution: z.object({
     owner: z.string(),
     generation: z.string(),
@@ -64,6 +73,8 @@ export const hapiProjectionSchema = z.object({
   pendingRequests: z.array(approvalViewSchema),
   resolvedRequests: z.array(resolvedApprovalSchema),
   delivery: z.array(deliveryViewSchema),
+  sidechains: z.array(observedSidechainSummarySchema).optional(),
+  team: sourceTeamSchema.nullable().optional(), teamRevision: z.number().nullable().optional(), teamError: z.string().nullable().optional(),
   error: z.string().nullable(),
 }).nullable()
 

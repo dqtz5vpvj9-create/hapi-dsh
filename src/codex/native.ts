@@ -96,7 +96,7 @@ export type NativeRow = NativeBase & (
 )
 
 /** Flatten only HAPI's documented transport wrappers, without interpreting arbitrary JSON. */
-function envelopeFor(value: unknown): Record<string, unknown> | undefined {
+export function envelopeFor(value: unknown): Record<string, unknown> | undefined {
   const direct = record(value)
   if (!direct) return undefined
   if (typeof direct.role === 'string') return direct
@@ -110,7 +110,7 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
   if (!envelope || !content) return undefined
   const data = record(content.data)
   // Child traces are separate native threads, never flatten them into the parent.
-  if (data?.type === 'agent-run-trace' || data?.type === 'agent-run-update') return undefined
+  if (data?.type === 'agent-run-trace' || data?.type === 'agent-run-update' || data?.type === 'agent-run-start') return undefined
   const execution = executionFor(record(envelope.meta)?.nativeExecution ?? data?.nativeExecution)
   if (execution && execution.threadId !== binding.threadId) {
     throw new Error(`Native message ${row.id} belongs to a different Codex thread`)

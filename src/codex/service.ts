@@ -7,7 +7,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { HapiEvent, HapiMessage, HapiSession, HapiTransport } from './contracts.js'
 import { NativeCodexAgent, type NativeCodexOptions } from './agent.js'
 import { NativeHistoryChangedError } from './projector.js'
-import { nativeSessionId, record } from './native.js'
+import { bindingFor, canonicalJson, nativeSessionId, record } from './native.js'
+import { readNativeHistory } from './history.js'
 import { hapiProjectionDefinition } from './projection-state.js'
 
 export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRevision' | 'onHistoryChanged'> {
@@ -56,6 +57,45 @@ export class CodexService {
   byHapiSession(sessionId: string): NativeCodexAgent | undefined { return this.agents.get(sessionId) }
   failures(): ReadonlyMap<string, string> { return this.errors }
 
+  /**
+   * Reconcile an explicit source lifecycle operation. A versioned identity
+   * change retires the old display/Agent before entering a new generation;
+   * old references cannot silently send to the replacement thread or home.
+   */
+  reconcileSource(sourceId: string): Promise<NativeCodexAgent | undefined> {
+    const previous = this.eventWork.get(sourceId) ?? Promise.resolve()
+    const work = previous.then(async () => {
+      if (this.disposed) throw new Error('The Codex service was disposed')
+      const existing = this.agents.get(sourceId)
+      if (!existing) return this.attach(sourceId)
+      const source = await this.transport.getSession(sourceId)
+      if (source.metadataVersion < existing.sourceSession.metadataVersion) return existing
+      if (source.metadata?.flavor !== 'codex' || source.metadata.codexNativeSession !== true || !source.metadata.codexSessionId) {
+        existing.reportError(new Error('The HAPI native identity is not source-ready after its lifecycle change'))
+        return undefined
+      }
+      const nextBinding = bindingFor(this.transport.hubId, source)
+      if (canonicalJson(nextBinding) !== canonicalJson(existing.binding)) {
+        if (source.metadataVersion === existing.sourceSession.metadataVersion) {
+          throw new Error('HAPI changed native identity without advancing its metadata version')
+        }
+        // Disable admission while reading a newly identified native history.
+        existing.reportError(new Error('The HAPI source changed native identity; acquiring its new display generation'))
+        const rows = await readNativeHistory(this.transport, sourceId)
+        await this.replaceDisplay(existing, rows, source)
+      } else await existing.refresh(true)
+      this.errors.delete(sourceId)
+      return this.agents.get(sourceId)
+    })
+    const tracked = work.then(() => {}, error => {
+      this.agents.get(sourceId)?.reportError(error)
+      this.report(error, sourceId)
+    })
+    this.eventWork.set(sourceId, tracked)
+    void tracked.then(() => { if (this.eventWork.get(sourceId) === tracked) this.eventWork.delete(sourceId) })
+    return work
+  }
+
   async refreshCatalog(): Promise<void> {
     if (this.catalogRefresh) return this.catalogRefresh
     const work = (async () => {
@@ -102,7 +142,7 @@ export class CodexService {
     }, rows)
   }
 
-  private async replaceDisplay(previous: NativeCodexAgent, rows: HapiMessage[]): Promise<void> {
+  private async replaceDisplay(previous: NativeCodexAgent, rows: HapiMessage[], source?: HapiSession): Promise<void> {
     if (this.disposed || this.agents.get(previous.binding.hapiSessionId) !== previous) return
     const revision = previous.displayRevision + 1
     this.revisions.set(previous.logicalSessionId, revision)
@@ -113,14 +153,14 @@ export class CodexService {
     await previous.dispose()
     this.agents.delete(sourceId)
     if (this.disposed) return
-    const current = await this.createAgent(await this.transport.getSession(sourceId), rows)
+    const current = await this.createAgent(source ?? await this.transport.getSession(sourceId), rows)
     if (this.disposed) { await current.dispose(); return }
     this.agents.set(sourceId, current)
     await this.options.onDisplayReset?.(previous.id, current.id)
   }
 
   private enqueue(event: HapiEvent): void {
-    if (this.disposed) return
+    if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       for (const agent of this.agents.values()) this.queueFor(agent.binding.hapiSessionId, event)
       if (event.data?.status === 'connected') void this.refreshCatalog().catch(error => this.report(error))

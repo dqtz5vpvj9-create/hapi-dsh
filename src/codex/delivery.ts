@@ -24,8 +24,10 @@ function isUserMessage(value: unknown): value is UserMessage {
     })
 }
 
+export const deliveryMessageSchema = z.custom<UserMessage>(isUserMessage, 'An identified user message with durable attachment references is required')
 const entrySchema = deliveryViewSchema.extend({
-  message: z.custom<UserMessage>(isUserMessage, 'An identified user message with durable attachment references is required'),
+  scheduledAt: z.number().finite().nullable().default(null),
+  message: deliveryMessageSchema,
 })
 const journalSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema) })
 export type DeliveryEntry = z.infer<typeof entrySchema>
@@ -78,7 +80,7 @@ export class DeliveryJournal {
    * Records dispatch synchronously for DSH's synchronous Agent API. The actual
    * send is attempted once. Returning here never marks the prompt invoked.
    */
-  submit(message: UserMessage, mode: 'queue' | 'steer'): DeliveryEntry {
+  submit(message: UserMessage, mode: 'queue' | 'steer', scheduledAt: number | null = null): DeliveryEntry {
     if (!isUserMessage(message)) throw new Error('Native Codex delivery requires identified human input')
     if (message.content.some(block => block.type !== 'text') && !this.resolveAttachments) {
       throw new Error('Native Codex attachment upload is not configured')
@@ -90,14 +92,20 @@ export class DeliveryJournal {
     const previous = this.entries.get(localId)
     const text = message.content.map(block => block.type === 'text' ? block.text : '').join('\n')
     if (previous) {
-      if (JSON.stringify(previous.message.content) !== JSON.stringify(message.content) || previous.mode !== mode) {
+      if (JSON.stringify(previous.message.content) !== JSON.stringify(message.content) || previous.mode !== mode || previous.scheduledAt !== scheduledAt) {
         throw new Error('A native delivery identity cannot be reused for different input')
       }
       return previous
     }
+    if (scheduledAt !== null) {
+      if (!Number.isSafeInteger(scheduledAt) || scheduledAt <= 0 || scheduledAt < Date.now() - 30_000 || scheduledAt > Date.now() + 7 * 24 * 60 * 60 * 1000) {
+        throw new Error('Choose a scheduled time at most seven days away; minute-resolution input has a 30-second grace period')
+      }
+      if (mode !== 'queue' || message.content.some(block => block.type !== 'text')) throw new Error('Scheduled source messages support text in the next-turn queue only')
+    }
     const entry: DeliveryEntry = {
       localId, messageId: message.id, text, mode, state: 'dispatching',
-      createdAt: Date.now(), error: null, message: freezeMessage(message),
+      createdAt: Date.now(), scheduledAt, error: null, message: freezeMessage(message),
     }
     this.entries.set(localId, entry)
     // A failed fsync rejects the DSH synchronous acceptance, before network I/O.
@@ -117,6 +125,7 @@ export class DeliveryJournal {
       sendStarted = true
       await this.transport.sendMessage(this.sourceSessionId, {
         text: entry.text, localId: entry.localId, deliveryMode: entry.mode,
+        ...(entry.scheduledAt === null ? {} : { scheduledAt: entry.scheduledAt }),
         ...(attachments?.length ? { attachments } : {}),
       })
       const current = this.entries.get(entry.localId)
@@ -131,6 +140,21 @@ export class DeliveryJournal {
         !sendStarted || error instanceof HapiRequestError && error.outcome === 'rejected' ? 'rejected' : 'indeterminate',
         error instanceof Error ? error.message : 'Native delivery outcome is unknown')
     }
+  }
+
+  /** Explicit recovery only after this journal recorded a confirmed rejection. */
+  retryRejected(localId: string): DeliveryEntry {
+    const previous = this.entries.get(localId)
+    if (!previous || previous.state !== 'rejected') throw new Error('Only a confirmed rejected delivery can be retried with the same message identity')
+    if (this.inFlight.has(localId)) throw new Error('The original delivery is still settling')
+    const entry: DeliveryEntry = { ...previous, state: 'dispatching', error: null }
+    this.entries.set(localId, entry)
+    try { this.persist() } catch (error) { this.entries.set(localId, previous); throw error }
+    this.changed()
+    const dispatch = this.dispatch(entry)
+    this.inFlight.set(localId, dispatch)
+    void dispatch.then(() => { this.inFlight.delete(localId) }, () => { this.inFlight.delete(localId) })
+    return entry
   }
 
   update(localId: string, state: DeliveryState, error: string | null = null): void {

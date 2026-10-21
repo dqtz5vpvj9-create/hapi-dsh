@@ -2,9 +2,23 @@
 
 把 HAPI 的跨机器会话与 tmux 式工作区，组合进 **未经修改的官方 DSH Web**。
 
-所有聊天仍出现在同一个侧边栏。窗格可以并排打开本机 DSH、远端 DSH 和 HAPI 原生 Codex 会话；聊天正文使用官方 Conversation。工作区负责窗口、分屏、会话路由和布局保存，执行与审批继续由会话原来的引擎负责。
+所有聊天仍出现在同一个侧边栏。窗格可以并排打开本机 DSH、远端 DSH、HAPI 原生 Codex 和其他 HAPI 引擎会话；完整聊天界面使用官方 Conversation，包含会话头部、视图切换、消息、输入框及各处插件扩展点。工作区负责窗口、分屏、会话路由和布局保存，执行与审批继续由会话原来的引擎负责。
 
 这是普通 DSH 插件组合：主机安装 `hapi-dsh`，远端 DSH 主机安装包内独立的 `hapi-dsh-runner` Host 插件。没有 DSH fork、源码补丁、iframe 机器页面或另一套插件管理器。
+
+完整替代的对照基准是原 HAPI 的实际功能和使用体验。已实现能力、尚有差距的行为及对应证据逐项记录在[功能与 UX 对照表](docs/feature-parity.md)；当前源码不能据此宣称已完成全部替代。
+
+## 工作区与官方插件
+
+文件、文档和终端属于插件视图。工作区保存它们真实的会话身份、资源地址、标签实例和导航参数；官方 Files、DocumentPreview、Terminal 负责显示。文件读取、写入和终端输入通过公开 provider 转发到这个窗格所属的原 HAPI Runner。普通 DSH 会话继续使用原 provider。
+
+支持将官方右栏标签放到独立窗格，与聊天并排使用。切换窗口会保留已经挂载的视图；移动和关闭工作区窗格不会结束源会话或 PTY。插件可通过公开 `hapiWorkspacePane` 获取自己的焦点、可见性及资源导航能力，并登记未保存内容的关闭保护。
+
+源文件的编辑、冲突核对、上传、文件管理、搜索及 Git diff 通过官方公共 slots 扩展。文档保留官方解析和预览能力；HAPI 独有的 artifact 和 Markdown 本地图片增加来源适配，避免把 Runner 路径解释成 Hub 路径。终端保留官方渲染器及原控制租约、输出序号和输入回执。
+
+每个聊天窗格保留官方 `main → ConversationRoot` 的完整组件树。团队快捷入口等 `conversation.session.header.utilities` 贡献与第三方头部按钮走同一公开注册路径；原生审批和队列控件进入 `conversation.input.dock`。源会话已有的身份、连接与执行状态记录另外提供“源会话状态”视图，使没有本地 DSH Workspace 的远端空线程也有真实业务内容，不制造聊天消息或本地目录。
+
+兼容性取决于插件使用的接口。依赖公开 Session、资源、tab 和 provider 的插件可以进入这一工作区；直接操作 Host 文件系统、Host 进程或原 DSH AgentLoop 内部状态的插件需要相应源适配。项目不自动宣称任意第三方插件支持任意 HAPI 引擎。
 
 ## 固定版本
 
@@ -122,7 +136,7 @@ Hub 自动重新加载配对策略并断开该机器。断线时已发送请求�
 
 ## 架构与验证
 
-每个远端 DSH Host 有自己的官方 Client Context、插件图和会话对象。统一侧边栏聚合目录，窗格交给该会话所属 Context 的官方 UI 渲染。这样插件仍在它所属机器的运行环境中执行，窗口也可以混排不同机器的会话。HAPI Codex 在主 Host 注册原生会话适配器，同样进入官方 Conversation。
+每个窗格加载所属 Host 的真实官方 Client Context、插件图和会话对象。本机也采用相同机制，防止两个分屏共用官方单活动会话、右栏和对话框状态。模块加载和同一 Host 的插件事件连接可以共享；窗格状态保持独立。统一侧边栏聚合所有 Host 和源引擎目录。HAPI Codex 与其他 HAPI 引擎在主 Host 注册源会话适配器，同样进入官方 Conversation。
 
 详见[架构与扩展边界](docs/architecture.md)、[可复现验证](docs/validation.md)和[维护者分发流程](docs/distribution.md)。测试区分模型桩、真实传输和真实官方 DSH 进程。发布前仍需使用实际 HAPI、原生 Codex app-server 和模型凭据做部署验收；自动化 fixture 不能证明这项验收已经完成。
 

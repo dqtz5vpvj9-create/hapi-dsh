@@ -3,6 +3,7 @@ import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-c
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { HapiProjection } from '../codex/projection-types.ts'
 import type { WorkspaceTranslate } from './locales.ts'
+import type {} from '../hapi-agent/projection-types.ts'
 
 /** Use the official composer admission face, preserving other plugins' blocks. */
 export function installNativeComposerAdmission(
@@ -23,11 +24,13 @@ export function installNativeComposerAdmission(
         const needed = new Set<SessionId>()
         for (const row of Object.values(sessions.list.getSnapshot().byId)) {
             const projection: HapiProjection | undefined = row.projectionValues?.hapi
-            if (!projection || projection.engine !== 'codex' || (!projection.readOnly && projection.nativeConnection === 'attached')) continue
+            const observed = row.projectionValues?.hapiObserved
+            if (!(projection && (projection.readOnly || projection.nativeConnection !== 'attached')) && !(observed && observed.readOnly)) continue
             const id = row.id
             needed.add(id)
-            const reason = locale.t(projection.nativeConnection === 'disconnected' ? 'nativeReconnecting'
-                : projection.nativeConnection === 'history' ? 'nativeResumeToSend' : 'nativeReadOnly')
+            const reason = locale.t(observed ? observed.controlledByUser ? 'sourceLocallyControlled' : observed.connection === 'disconnected' ? 'sourceReconnecting' : 'sourceReadOnly'
+                : projection?.nativeConnection === 'disconnected' ? 'nativeReconnecting'
+                    : projection?.nativeConnection === 'history' ? 'nativeResumeToSend' : 'nativeReadOnly')
             const store = blocks.storeFor(id)
             let entry = entries.get(id)
             if (entry && entry.store !== store) { remove(id, entry); entry = undefined }

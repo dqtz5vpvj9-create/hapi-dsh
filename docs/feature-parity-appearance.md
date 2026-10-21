@@ -1,0 +1,64 @@
+# Original HAPI appearance in official DSH views
+
+Baseline: HAPI `0f8ef697` and DSH `687f282e` / npm `0.2.1-rc.2`. The adapter does not modify upstream packages, duplicate a chat renderer, replace the official header, or reorder another plugin's controls.
+
+## Implemented contracts
+
+| Original HAPI key | Source behavior | Adapter |
+| --- | --- | --- |
+| `hapi-appearance` | System, light, dark, OLED | Public `theme.setTheme` for the scheme; own token layer for the original OLED palette. The original Codex/OLED combination has a pure black background. Other named palettes retain the original HAPI values. |
+| `hapi-color-theme` | 18 named palettes; missing or invalid selects Codex | Original palette data and color arithmetic in `src/client/appearance/palettes.ts`, with AGPL attribution; public `theme.overrideTokens`. |
+| `hapi-theme-colors` | Seven colors independently for light/dark/OLED | Strict six-digit hex parser; background, surface, text, hint, accent, border and user bubble map to public DSH tokens. Unknown properties never become arbitrary CSS. Per-field and per-scheme reset preserve other schemes. |
+| `hapi-font-scale` | 80, 90, 100, 110 or 120 percent | Public content/code and UI typography tokens scale the official role sizes, including fractional results. Changing DSH's own font-size control changes the base size; the ratio is not compounded. |
+| `hapi-terminal-font-size` | 9, 11, 13, 15 or 17 px | The existing leaf terminal slot composes the original `TerminalBodyInjected.hooks.theme` observable. The official terminal sets xterm's real font size and performs its normal fit/resize. No private terminal engine or replacement renderer. Missing value follows DSH. |
+| `hapi-user-message-bg` | Default, three soft tints, custom tint | Original HAPI blend coefficients and scheme bases mapped to `--dsw-specific-bubble`. The unchanged official user-message component renders the bubble. |
+| `hapi-session-header-metadata` | Labels, agent, model, reasoning, fast, machine, last-active, created, updated, worktree | An additive `conversation.session.header.utilities` contribution. All original header actions, Team contribution, lineage and view tabs remain. Individual switches use the original key and defaults. |
+
+All pane graphs consume one explicitly shared preference capability. The original keys remain in root browser storage; ordinary per-graph DSH/private plugin stores remain isolated. Reading old preferences neither rewrites nor deletes them. A failed storage write remains effective for the current page and displays a persistence error instead of claiming it was saved.
+
+`hapi-dsh-appearance-enabled` controls whether this plugin applies its theme layer. Existing original appearance keys enable migration by default. Without original appearance keys, the official DSH theme remains unchanged. Disabling the layer retains the old values for later use. An explicit official Appearance choice stays authoritative; changing font size does not silently erase OLED. Disposal removes only this plugin's tokens and subscriptions.
+
+## Source header identity
+
+The pane bridge exposes read-only catalog data, never a `SessionReference` from another graph. Header fields are accepted only when the catalog's original Hub and HAPI session identity match the active source projection. Source children retain official lineage and do not inherit their parent's mutable metadata or timestamps.
+
+`sourceCreatedAt` is the actual source session's `createdAt`. Last-active uses the original HAPI rule: finite `metadata.codexUpdatedAt` for Codex, otherwise source `updatedAt`, then source `createdAt`. These fields never fall back to the display proxy's creation time. Worktree branch and service tier come from the catalog's existing explicit whitelist; unavailable values stay absent. Mobile metadata uses HAPI's original priority: machine, last-active, model, reasoning, fast, created, updated, worktree.
+
+## Validation
+
+- `tests/workspace-appearance.test.ts` evaluates the unchanged official npm ThemeRuntime and verifies original-key migration, OLED/custom colors, fractional scaling, official theme/font changes, third-party token retention, disposal, terminal snapshot identity/subscriptions, source identity/timestamps and storage-failure feedback.
+- `tests/client-terminal-slot.test.ts` uses the real official SlotCore. It verifies 9/17 px injection, unchanged view/keyed hooks/other hooks, plugin reload and exact restoration of the previous official seat.
+- `e2e/appearance.spec.ts` passed against shared build `31690` in the real official Web: original-key migration, OLED/custom palette and user-bubble colors, fractional font scale, source header fields/timestamps, shared preferences, reload, and the official xterm measurement element at 9 px. A MutationObserver also verifies that a source conversation never briefly exposes a serving-Host desktop opener while its projection loads. The appearance and source-admin browser tests both passed in that run (44.7 s combined). HAPI execution/PTY transport is explicitly a source-wire fixture, not a claim about a physical device or real shell.
+
+## Remaining exact parity work
+
+The following original values are retained and allowed through the narrow shared preference capability, but are **not presented as implemented**:
+
+- `hapi-composer-toolbar-layout`: the original 11 control IDs and drag/hide/left/right layout do not correspond one-to-one to official DSH control ownership. Only this plugin's own contributions may be reorganized. Hiding or replacing the entire official composer would discard other plugins.
+- `hapi-reasoning-collapsed`, `hapi-codex-exploration-collapsed`, `hapi-terminal-tool-display-mode`: DSH's transcript presets are broader than these independent HAPI toggles. Published row-disclosure hooks offer a possible adapter, but do not independently control the enclosing process group or reproduce the original compact card. No preference migration is claimed; the precise public seams and remaining ownership questions are recorded below.
+- `hapi-tool-group-bg`: there is no verified unique public token for only the old HAPI tool group. Changing a shared DSH background token would also recolor unrelated plugin content, so this preference is preserved for a precise adapter.
+- `hapi-open-external-links-in-new-tab`: DSH supports sidebar browser/new-tab, whereas the original false value allows same-browser-tab navigation. They are different behaviors. This adapter does not claim that retaining DSH's default sidebar browser migrates the original setting.
+
+Original sources: `web/src/hooks/useTheme.ts`, `useColorTheme.ts`, `useThemeColors.ts`, `useFontScale.ts`, `useTerminalFontSize.ts`, `useChatSurfaceColors.ts`, `useSessionHeaderMetadata.ts`, `useComposerToolbarLayout.ts`, `useReasoningCollapse.ts`, `useCodexExplorationCollapse.ts`, `useTerminalToolDisplayMode.ts`, `useOpenExternalLinksInNewTab.ts`, `components/SessionHeader.tsx`, and `lib/sessionHeaderMobileMetadata.ts`.
+
+## U05 / I08 public-interface audit — not implemented
+
+This section records source review against the pinned versions. It is a plan for a later adapter, not successful UI validation or a reason to count these preferences as complete.
+
+### Enter inserts a newline
+
+Original HAPI stores `hapi-composer-enter-behavior` as `send` or `newline`. Its `HappyComposer` gives IME and Shift+Enter priority, lets a visible suggestion consume Enter, then uses Ctrl/Cmd+Enter to send in newline mode. See the pinned [preference hook](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/hooks/useComposerEnterBehavior.ts) and [composer key handling](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/components/AssistantChat/HappyComposer.tsx#L1371).
+
+The official DSH [keymap](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-conversation/src/client/input/editor/keymap.ts) handles Enter inside Lexical at critical priority. A window-level bubbling shortcut observer runs too late to prevent that send. `ComposerKeyboard` and the operations in `ComposerBarInjected` are explicitly package-private; their presence in a retained entry is not permission to call them. The [published InputActions](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-conversation/src/client/contract/input.ts#L241) instead expose selection/revision capture, one undoable plain-text insertion, and ordinary submission.
+
+A possible adapter can live in the public `conversation.input.right` slot and use its own mounted occurrence to attach native capture listeners to that composer's contenteditable. It would let Shift+Enter and IME completion retain their original behavior, track composition end's short Safari guard, and consult the public `ctx.inputTriggers.sessionOf(sessionContext).arbitrate('enter', false)` before replacing a plain Enter with `inputActions.insertText('\n', inputActions.captureInsertion())`. A handled event must not also reach Lexical. Ctrl/Cmd+Enter would call ordinary `inputActions.submit()` exactly once; leaving it to the original keymap selects accelerated delivery and would not preserve the original HAPI preference. The trigger controller and its arbitration method are published in [ui-input-trigger/client](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-input-trigger/src/client/index.ts) and [controller.ts](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-input-trigger/src/client/controller.ts#L255).
+
+Submission still needs the real owner's admission state: the exact editor must be editable, the public input phase must accept the operation, and the draft or attachments must be nonempty. File-upload readiness can be observed through the existing public `ComposerAttachmentsProps` seat (`attachments`, `uploads`, `canAcceptDrop`), not the private bar hooks. An unavailable owner or pending upload must preserve the draft. This design needs actual browser coverage for selection replacement, reference chips, undo, slash/reference menus, composition closing, repeated keys, disabled/source-child states, attachment upload errors and pane disposal before it can be accepted. No listener or preference control has been installed by this audit.
+
+### Independent reasoning and tool disclosure
+
+The public [Chat slot contract](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/contract/slots.ts#L154) exposes `UseDisclosure`, `ChatNodeHookContext.disclosureReset` and the `conversation.chat.node` disclosure hook. The official `assistant-step` entry passes this hook through `AssistantNodeView` to `ReasoningRow`; the original row calls its `expanded` and `toggle` capabilities. Similarly, [ToolCallCommonProps](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-tool/src/client/contract/slots.ts#L64) exposes `useDisclosure` to each `tool.call.toolview`. These are candidate seams for preference-controlled initial/reset disclosure while retaining each official renderer and manual toggling.
+
+That is not yet a valid wrapper implementation. The original `assistant-step` registration owns child-slot declarations and its injected presentation source; another registration cannot simply duplicate its `children`, store or hook ownership. The public SlotCore registration/disposal mechanism must first be exercised with the actual entry, including hot reload and exact restoration. No private constructor, Hook, component import or React-fiber access is an acceptable substitute.
+
+There are also two separate presentation layers. The official [ChatGroupSeat](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/chat/ChatGroupSeat.tsx) owns its group disclosure locally and uses `ChatPresentationPolicy.foldCompletedTurns` and `stepGrouping` for enclosing visibility. Opening a reasoning row does not reveal a parent process group or a whole folded turn. The published [policy](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/presentation-policy.ts) offers general transcript modes, not a separate Codex-exploration preference. Changing a tool's initial disclosure also does not reproduce HAPI's distinct compact terminal card. These remaining boundaries must be resolved and tested without copying the generic chat or tool renderers; they are not covered by the appearance tests above.

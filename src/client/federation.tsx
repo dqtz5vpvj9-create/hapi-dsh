@@ -13,11 +13,24 @@ import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import { z } from 'zod'
 import { remoteValue, type FederationHost } from '../client-api.ts'
 import { errorMessage, parseSessionResourceId, sessionResourceId, type WorkspaceController, type WorkspaceRenderOptions } from './controller.ts'
-import { panes } from './model.ts'
+import { panes, type PaneResource } from './model.ts'
 import { installRemotePane } from './remote-pane.tsx'
+import { installSourceVoice } from './source-voice/index.tsx'
+import { installTurnSharing } from './turn-share.tsx'
+import { installShareReceiver } from './share-receiver.tsx'
+import { installSourceAppearance } from './appearance/index.tsx'
+import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
 import { createGraphStore, graphStorage, GRAPH_STORE_MODULE } from './runtime-store.ts'
+import type { WorkspacePaneNavigation } from './pane-navigation.ts'
+import type {} from './native-integration.tsx'
+import { createPaneInputRouter } from './pane-input.ts'
+import { createPaneRetention } from './pane-retention.ts'
+import { isPluginEventsRequest, pluginEventsOverWebSocket, SharedPluginEvents } from './plugin-events.ts'
+import { documentPaneTarget } from '../workspace/artifacts.ts'
+import { createWorkspaceUiBridge } from './workspace-ui.ts'
+import { browserValue } from './browser-value.ts'
 
 const PLATFORM_MODULES = [
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -35,6 +48,7 @@ const bootstrapSchema = z.object({
 type Bootstrap = z.infer<typeof bootstrapSchema>
 
 export function hostRequestUrl(basePath: string, input: string, origin: string): string {
+    if (basePath === '/') return new URL(input, `${origin}/`).href
     if (!basePath.startsWith('/hapi-dsh/machine/') || !basePath.endsWith('/')) throw new Error('Invalid federated Host base path')
     const url = new URL(input, `${origin}/`)
     if (url.origin !== origin) return url.href
@@ -55,6 +69,7 @@ interface HostResources {
     staticModules: Record<string, unknown>
     /** Share immutable bytes, never factories, Contexts, references, or browser globals. */
     artifacts: Map<string, Promise<string>>
+    events: SharedPluginEvents
 }
 
 function transport(host: FederationHost, signal: AbortSignal): typeof fetch {
@@ -70,18 +85,25 @@ async function loadHostResources(root: Context, host: FederationHost, signal: Ab
     const response = await transport(host, signal)('hapi-dsh/bootstrap', { cache: 'no-store' })
     if (!response.ok) throw new Error(`${host.label}: DSH bootstrap returned HTTP ${response.status}`)
     const payload = bootstrapSchema.parse(await response.json())
-    if (payload.graph.entries.some(row => row.id === 'hapi-dsh')) throw new Error('A Runner must use the Host-only hapi-dsh-runner bundle')
+    if (host.id !== 'local' && payload.graph.entries.some(row => row.id === 'hapi-dsh')) throw new Error('A Runner must use the Host-only hapi-dsh-runner bundle')
     const modulesExport = await root.modules.import(MODULES_ID, '', {}) as HostResources['modulesExport']
     if (typeof modulesExport.createClientModuleSystem !== 'function') throw new Error('The official DSH module bootstrap is unavailable')
     const staticModules = Object.fromEntries(await Promise.all(PLATFORM_MODULES.map(async id => [id, await root.modules.import(id, '', {})])))
-    return { payload, modulesExport, staticModules, artifacts: new Map() }
+    const eventsUrl = new URL('/hapi-dsh/plugin-events', window.location.origin)
+    eventsUrl.protocol = eventsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
+    eventsUrl.searchParams.set('host', host.id)
+    const eventsFetch: typeof fetch = (_input, init) => pluginEventsOverWebSocket(eventsUrl, init?.signal)
+    return { payload, modulesExport, staticModules, artifacts: new Map(), events: new SharedPluginEvents(eventsFetch, 'plugins/events', signal) }
 }
 
 /** Public Loader and module-system instances execute unchanged upstream bundle bytes. */
-async function bootGraph(root: Context, host: FederationHost, resources: HostResources, surface: HTMLElement, instanceId: string, signal: AbortSignal): Promise<GraphRuntime> {
+async function bootGraph(root: Context, host: FederationHost, resources: HostResources, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation): Promise<GraphRuntime> {
     const origin = window.location.origin
     const baseUrl = new URL(host.basePath, origin).href
-    const hostFetch = transport(host, signal)
+    const directFetch = transport(host, signal)
+    const hostFetch: typeof fetch = (input, init) => isPluginEventsRequest(input, init, origin)
+        ? resources.events.response(AbortSignal.any([signal, ...(init?.signal ? [init.signal] : []), ...(input instanceof Request ? [input.signal] : [])]))
+        : directFetch(input, init)
     const target: ClientModuleLoaderTarget = {
         mode: 'queue', pendingQueue: [], load(registration) { this.pendingQueue.push(registration) },
         create(options) { return resources.modulesExport.createClientModuleSystem(this, { id: MODULES_ID, exports: resources.modulesExport as unknown as Record<string, unknown> }, options) },
@@ -89,12 +111,33 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     const keyboard: KeyboardRegistration[] = []
     const captured = new WeakSet<KeyboardEvent>()
     const bubbled = new WeakSet<KeyboardEvent>()
-    const registrations: Array<{ target: EventTarget; type: string; listener: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = []
+    const registrations: Array<{ target: EventTarget; type: string; listener: EventListenerOrEventListenerObject; installed: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = []
+    const input = createPaneInputRouter({
+        surface, visible: () => navigation?.state.getSnapshot().visible !== false && !surface.hidden,
+        activeElement: () => document.activeElement,
+        resetDrag() {
+            // The original plugin owns the cleanup callback. Invoke only this
+            // graph's global drag-end listeners when its drag leaves the pane.
+            const event = new Event('dragend')
+            for (const entry of [...registrations]) if (entry.target === window && entry.type === 'dragend') {
+                if (typeof entry.listener === 'function') entry.listener.call(window, event)
+                else entry.listener.handleEvent(event)
+            }
+        },
+    })
+    const unvisibility = navigation?.state.subscribe(() => { if (!navigation.state.getSnapshot().visible) input.reset() })
+    const blur = (): void => { input.reset() }
+    window.addEventListener('blur', blur)
     const addEvent = (eventTarget: Window | Document, targetName: 'window' | 'document', type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void => {
         const capture = typeof options === 'boolean' ? options : options?.capture === true
         if (type === 'keydown') { keyboard.push({ listener, capture, target: targetName }); return }
-        eventTarget.addEventListener(type, listener, options)
-        registrations.push({ target: eventTarget, type, listener, ...(options === undefined ? {} : { options }) })
+        const installed = targetName === 'document' ? (event: Event): void => {
+            if (!input.accepts(event)) return
+            if (typeof listener === 'function') listener.call(documentFacade, event)
+            else listener.handleEvent(event)
+        } : listener
+        eventTarget.addEventListener(type, installed, options)
+        registrations.push({ target: eventTarget, type, listener, installed, ...(options === undefined ? {} : { options }) })
     }
     const removeEvent = (eventTarget: Window | Document, targetName: 'window' | 'document', type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void => {
         const capture = typeof options === 'boolean' ? options : options?.capture === true
@@ -103,11 +146,14 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
             if (index !== -1) keyboard.splice(index, 1)
             return
         }
-        eventTarget.removeEventListener(type, listener, options)
         const index = registrations.findIndex(entry => entry.target === eventTarget && entry.type === type && entry.listener === listener)
-        if (index !== -1) registrations.splice(index, 1)
+        if (index !== -1) { eventTarget.removeEventListener(type, registrations[index]!.installed, options); registrations.splice(index, 1) }
     }
     const localStorageFacade = graphStorage(window.localStorage, host.id, instanceId)
+    const stopCheckpoint = navigation?.updates.register(`${host.label} · ${instanceId}`, async () => {
+        await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+        localStorageFacade.checkpoint()
+    }, 'verify')
     // Keep browser-owned theme/title writes local. Disposing a remote theme
     // presenter must not retract the main shell's variables or attributes.
     const documentFacade = new Proxy(document, {
@@ -116,13 +162,16 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
             if (property === 'title') return host.label
             if (property === 'addEventListener') return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => addEvent(document, 'document', type, listener, options)
             if (property === 'removeEventListener') return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => removeEvent(document, 'document', type, listener, options)
-            const value: unknown = Reflect.get(current, property, current)
-            return typeof value === 'function' ? value.bind(current) : value
+            return browserValue(current, property)
         },
         set(_current, property) { return property === 'title' },
     })
     const socket = (input: string, protocols?: string | string[]): WebSocket => {
         const upstream = new URL(input, baseUrl)
+        if (host.id === 'local') {
+            upstream.protocol = upstream.protocol === 'https:' || upstream.protocol === 'wss:' ? 'wss:' : 'ws:'
+            return new WebSocket(upstream, protocols)
+        }
         const path = upstream.pathname.startsWith(host.basePath) ? `/${upstream.pathname.slice(host.basePath.length)}${upstream.search}` : `${upstream.pathname}${upstream.search}`
         const url = new URL('/hapi-dsh/socket', origin)
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -130,7 +179,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         return new WebSocket(url, protocols)
     }
     const overrides: Record<PropertyKey, unknown> = {
-        ...resources.payload.globals, __ModuleLoader__: target, __DSH_BOOT__: resources.payload.graph,
+        ...resources.payload.globals, __ModuleLoader__: target, __DSH_BOOT__: resources.payload.graph, __HAPI_DSH_PANE__: true,
         localStorage: localStorageFacade, fetch: hostFetch, document: documentFacade,
         addEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => addEvent(window, 'window', type, listener, options),
         removeEventListener: (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => removeEvent(window, 'window', type, listener, options),
@@ -139,8 +188,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         get(_target, property) {
             if (property === 'window' || property === 'globalThis' || property === 'self') return facade
             if (Object.hasOwn(overrides, property)) return overrides[property]
-            const value: unknown = Reflect.get(window, property)
-            return typeof value === 'function' ? value.bind(window) : value
+            return browserValue(window, property)
         },
         set(_target, property, value) { overrides[property] = value; return true },
         has(_target, property) { return Object.hasOwn(overrides, property) || property in window },
@@ -168,13 +216,18 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     const modules: ClientModuleSystem = target.create({ boot: resources.payload.graph as WebBootGraph,
         staticModules: { ...resources.staticModules, [GRAPH_STORE_MODULE]: createGraphStore(localStorageFacade) }, loadBundle })
     const ctx = new Context()
+    if (navigation) {
+        ctx.reflect.provide('hapiWorkspacePane', navigation)
+        ctx.reflect.provide('hapiWorkspaceUi', navigation)
+    }
     let stopped = false
     const stop = async (): Promise<void> => {
         if (stopped) return
         stopped = true
+        input.reset(); stopCheckpoint?.(); unvisibility?.(); window.removeEventListener('blur', blur)
         keyboard.length = 0
         try { await ctx.fiber.dispose() } finally {
-            for (const entry of registrations) entry.target.removeEventListener(entry.type, entry.listener, entry.options)
+            for (const entry of registrations) entry.target.removeEventListener(entry.type, entry.installed, entry.options)
             registrations.length = 0
         }
     }
@@ -206,7 +259,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
 }
 
 /** One catalog graph per Host and one independently owned UI graph per editable pane. */
-async function bootHost(root: Context, workspace: WorkspaceController, host: FederationHost, signal: AbortSignal): Promise<HostRuntime> {
+async function bootHost(root: Context, workspace: WorkspaceController, host: FederationHost, signal: AbortSignal, sharedUi: ReturnType<typeof createWorkspaceUiBridge>): Promise<HostRuntime> {
     const resources = await loadHostResources(root, host, signal)
     const catalogSurface = document.createElement('div')
     catalogSurface.hidden = true; catalogSurface.dataset.hapiCatalogHost = host.id
@@ -217,13 +270,15 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     // pane, hiding a window, or visiting a primary Host plugin page must preserve
     // its editor, dialogs, Client Context, and SessionReference. The layout owns
     // these roots; component unmount only parks their DOM.
-    interface PaneRuntime { sourceId: string; surface: HTMLDivElement; stop(): Promise<void> }
+    type Resource = Exclude<PaneResource, { kind: 'empty' }>
+    interface PaneRuntime { sourceId: string; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; stop(force?: boolean): Promise<void> }
     const activePanes = new Map<string, PaneRuntime>()
+    const allPanes = new Set<PaneRuntime>()
     const parking = document.createElement('div')
     parking.hidden = true; parking.dataset.hapiParkedHost = host.id
     document.body.append(parking)
     let unsubscribeLayout: (() => void) | undefined
-    const createPane = (paneId: string, sourceId: string): PaneRuntime => {
+    const createPane = (paneId: string, sourceId: string, resource: Resource, initial: WorkspaceRenderOptions): PaneRuntime => {
         const surface = document.createElement('div')
         surface.className = 'hapi-remote-pane'
         surface.dataset.hapiHost = host.id; surface.dataset.hapiPaneInstance = paneId
@@ -235,20 +290,61 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         surface.append(mount); parking.append(surface)
         const renderer = createRoot(mount)
         let disposed = false
+        let retired = false
         let lifetime: AbortController | undefined
         let runtime: GraphRuntime | undefined
         let reference: SessionReference | undefined
         let pane: ReturnType<typeof installRemotePane> | undefined
         let unsubscribe: (() => void) | undefined
         let unshortcut: (() => void) | undefined
+        let voiceScope: ReturnType<Context['inject']> | undefined
         let generation = 0
+        let currentResource = resource
+        let presentation = { focused: initial.focused, visible: initial.visible !== false }
+        const presentationListeners = new Set<() => void>()
+        const resourceId = sessionResourceId(host.id, sourceId)
+        const ui = sharedUi.createScope()
+        const navigation: WorkspacePaneNavigation = {
+            paneId, hostId: host.id, preferences: ui.preferences, voice: ui.voice, sourceSummaries: ui.sourceSummaries,
+            shareInbox: ui.shareInbox, handoffs: ui.handoffs, sourceScheduleDrafts: ui.sourceScheduleDrafts, updates: ui.updates,
+            readLegacyScratchlist: ui.readLegacyScratchlist,
+            registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
+            retainForDraftTransfer: () => retention.retain(),
+            openSuccessor: displaySessionId => workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, displaySessionId), paneId),
+            state: { getSnapshot: () => presentation, subscribe(listener) { presentationListeners.add(listener); return () => { presentationListeners.delete(listener) } } },
+            catalog: { getSnapshot: () => workspace.getSnapshot().catalog.byId[resourceId], subscribe: workspace.subscribe },
+            revealConversation: () => {
+                workspace.store.focus(paneId)
+                workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation')
+                runtime?.ctx.layout.selectPanel(null)
+                if (runtime?.ctx.sidebarRight.isExpanded()) runtime.ctx.sidebarRight.toggleExpanded()
+            },
+            openResource: (address, options = {}) => workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openTab: (kind, options = {}) => workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openPanel: (panelId, options = {}) => workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openView: (target, options = {}) => workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+        }
+        const draw = (): void => {
+            if (!pane || !reference || disposed) return
+            try {
+                let target = currentResource.kind === 'view' ? currentResource.target : undefined
+                if (currentResource.kind === 'document') target = currentResource.target ?? documentPaneTarget(sourceId, currentResource.document,
+                    currentResource.sourceSessionId ? { sourceSessionId: currentResource.sourceSessionId,
+                        ...(currentResource.sourceHubId ? { sourceHubId: currentResource.sourceHubId } : {}),
+                        ...(currentResource.document.kind === 'file' && currentResource.document.machineId ? { machineId: currentResource.document.machineId } : {}),
+                    } : undefined)
+                renderer.render(pane.renderView(reference, { target, ...presentation }))
+            } catch (error) { renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(error)}</p></div>) }
+        }
         const capture = (event: KeyboardEvent): void => { runtime?.dispatch(event, true) }
         const bubble = (event: KeyboardEvent): void => { runtime?.dispatch(event, false) }
         surface.addEventListener('keydown', capture, true)
         surface.addEventListener('keydown', bubble)
         const release = async (): Promise<void> => {
+            await ui.stopOwnedVoice().catch(workspace.report)
             lifetime?.abort(); unsubscribe?.(); unsubscribe = undefined
             unshortcut?.(); unshortcut = undefined
+            await voiceScope?.dispose(); voiceScope = undefined
             pane?.dispose(); pane = undefined
             reference?.release(); reference = undefined
             const graph = runtime; runtime = undefined
@@ -266,7 +362,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(reason)}</p><button type="button" onClick={() => { void start() }}>Retry</button></div>)
             }
             try {
-                const graph = await bootGraph(root, host, resources, surface, paneId, activeSignal)
+                const graph = await bootGraph(root, host, resources, surface, paneId, activeSignal, navigation)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) { await graph.stop(); return }
                 runtime = graph
                 // Every official hook and SessionProvider is bound to this
@@ -281,7 +377,22 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 graph.ctx.uiWorkspace.openSession(sourceId as SessionId)
                 const shortcuts = graph.ctx.get('shortcuts')
                 if (shortcuts) unshortcut = installNewSessionShortcut(shortcuts, workspace.requestNewSession)
-                pane = installRemotePane(graph.ctx, { hostLabel: host.label, keyboard: {
+                const integration = graph.ctx.get('hapiPaneNative')
+                // An ordinary remote DSH Host need not install HAPI's source
+                // plugin. The shared Hub supplies voice credentials/transport,
+                // while the voice tool owner uses this graph's own binding.
+                if (!integration) {
+                    voiceScope = graph.ctx.inject(['slots', 'locale', 'sessions', 'uiSession', 'uiConversation', 'conversation', 'sidebarRight', 'hapiWorkspaceUi'],
+                        owner => {
+                            const disposers = [installSourceVoice(owner, root.remote.hapi), installTurnSharing(owner), installShareReceiver(owner), installSourceAppearance(owner), installSourceTerminalActions(owner, root.remote.hapi)]
+                            return () => { for (const dispose of disposers.reverse()) dispose() }
+                        })
+                    await voiceScope
+                    if (disposed || currentGeneration !== generation || activeSignal.aborted) return
+                }
+                pane = installRemotePane(graph.ctx, { hostLabel: host.label,
+                    ...(integration ? { native: integration.native, localeInstalled: true } : {}),
+                    navigated: (target, title) => workspace.updateView(paneId, target, title), keyboard: {
                     capture: event => graph.dispatch(event, true), bubble: event => graph.dispatch(event, false),
                 } })
                 let currentMain = sourceId
@@ -293,32 +404,54 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     workspace.store.focus(paneId)
                     workspace.openSession(sessionResourceId(host.id, next))
                 })
-                renderer.render(pane.renderConversation(reference))
+                draw()
             } catch (reason) { fail(reason) }
         }
-        const result: PaneRuntime = { sourceId, surface, async stop() {
+        const retention = createPaneRetention(() => {
+            retired = true
+            surface.hidden = true; surface.dataset.hapiFocused = 'false'; surface.dataset.hapiVisible = 'false'
+            presentation = { focused: false, visible: false }
+            for (const listener of presentationListeners) listener()
+            unsubscribe?.(); unsubscribe = undefined; unshortcut?.(); unshortcut = undefined
+            void ui.stopOwnedVoice().catch(workspace.report)
+            parking.append(surface)
+        }, async () => {
             if (disposed) return
             disposed = true; generation++
             surface.removeEventListener('keydown', capture, true)
             surface.removeEventListener('keydown', bubble)
             surface.remove(); renderer.unmount()
-            await release()
-        } }
+            presentationListeners.clear()
+            try { await release(); await ui.dispose().catch(workspace.report) }
+            finally { allPanes.delete(result) }
+        })
+        const result: PaneRuntime = { sourceId, surface, update(resource, options) {
+            if (retired) return
+            currentResource = resource
+            const next = { focused: options.focused, visible: options.visible !== false }
+            surface.dataset.hapiFocused = next.focused ? 'true' : 'false'
+            surface.dataset.hapiVisible = next.visible ? 'true' : 'false'
+            if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
+                presentation = next; for (const listener of presentationListeners) listener()
+            }
+            draw()
+        }, stop: retention.stop }
+        allPanes.add(result)
         void start()
         return result
     }
-    const getPane = (paneId: string, sourceId: string): PaneRuntime => {
+    const getPane = (paneId: string, sourceId: string, resource: Resource, options: WorkspaceRenderOptions): PaneRuntime => {
         const current = activePanes.get(paneId)
-        if (current?.sourceId === sourceId) return current
+        if (current?.sourceId === sourceId) { current.update(resource, options); return current }
         if (current) void current.stop()
-        const next = createPane(paneId, sourceId)
+        const next = createPane(paneId, sourceId, resource, options)
         activePanes.set(paneId, next)
         return next
     }
     const reconcilePanes = (): void => {
         const desired = new Map<string, string>()
         for (const window of workspace.store.getSnapshot().windows) for (const pane of panes(window.root)) {
-            if (pane.resource.kind !== 'chat') continue
+            if (pane.resource.kind === 'empty') continue
             try {
                 const source = parseSessionResourceId(pane.resource.sessionId)
                 if (source.hostId === host.id) desired.set(pane.id, source.sessionId)
@@ -329,45 +462,53 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }
     }
     try {
-        catalog = await bootGraph(root, host, resources, catalogSurface, 'catalog', signal)
-        function RemoteSession({ sourceId, options }: { sourceId: string; options?: WorkspaceRenderOptions }) {
+        if (host.id !== 'local') catalog = await bootGraph(root, host, resources, catalogSurface, 'catalog', signal)
+        function RemoteSession({ sourceId, resource, options }: { sourceId: string; resource: Resource; options: WorkspaceRenderOptions }) {
             const mount = useRef<HTMLDivElement>(null)
-            const paneId = options?.paneId ?? sourceId
+            const paneId = options.paneId
             useLayoutEffect(() => {
                 const target = mount.current!
-                const view = getPane(paneId, sourceId)
+                const view = getPane(paneId, sourceId, resource, options)
                 target.append(view.surface)
                 return () => {
+                    view.update(resource, { ...options, visible: false, focused: false })
                     if (view.surface.parentElement === target) parking.append(view.surface)
                 }
             }, [sourceId, paneId])
-            useLayoutEffect(() => { const view = activePanes.get(paneId); if (view) view.surface.dataset.hapiFocused = options?.focused ? 'true' : 'false' }, [paneId, options?.focused])
+            useLayoutEffect(() => { activePanes.get(paneId)?.update(resource, options) }, [paneId, resource, options.focused, options.visible])
             return <div ref={mount} className="hapi-remote-mount" style={{ minHeight: 0, height: '100%', width: '100%' }}/>
         }
-        removeHost = workspace.addHost({
-            id: host.id, label: host.label, sessions: catalog.ctx.sessions, navigation: catalog.ctx.uiWorkspace, workspaces: catalog.ctx.workspaces, workspaceState: catalog.ctx.workspaces.list,
-            renderConversation: (reference, options) => <RemoteSession sourceId={reference.sessionId} {...(options ? { options } : {})}/>,
+        const renderPane: NonNullable<import('./controller.ts').WorkspaceHost['renderPane']> = (reference, resource, options) => <RemoteSession sourceId={reference.sessionId} resource={resource} options={options}/>
+        removeHost = host.id === 'local' ? workspace.bindRenderer('local', renderPane) : workspace.addHost({
+            id: host.id, label: host.label, sessions: catalog!.ctx.sessions, navigation: catalog!.ctx.uiWorkspace, workspaces: catalog!.ctx.workspaces, workspaceState: catalog!.ctx.workspaces.list,
+            renderPane, renderConversation: (reference, options) => <RemoteSession sourceId={reference.sessionId} resource={{ kind: 'chat', sessionId: sessionResourceId(host.id, reference.sessionId) }} options={options ?? { paneId: reference.sessionId, focused: true }}/>,
         })
         unsubscribeLayout = workspace.store.subscribe(reconcilePanes)
-        await catalog.ctx.sessions.refresh()
+        await catalog?.ctx.sessions.refresh()
         let stopped = false
         return { async stop() {
             if (stopped) return
             stopped = true; unsubscribeLayout?.(); removeHost?.()
-            await Promise.allSettled([...activePanes.values()].map(graph => graph.stop()))
+            await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
             activePanes.clear()
             await catalog?.stop(); catalogSurface.remove(); parking.remove()
         } }
     } catch (error) {
         unsubscribeLayout?.(); removeHost?.()
-        await Promise.allSettled([...activePanes.values()].map(graph => graph.stop()))
+        await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
         await catalog?.stop(); catalogSurface.remove(); parking.remove(); throw error
     }
 }
 
 /** Reconcile paired Hosts and native display revisions in the single workspace. */
-export function installFederation(ctx: Context, workspace: WorkspaceController): () => void {
+export function installFederation(ctx: Context, workspace: WorkspaceController): () => Promise<void> {
     const lifetime = new AbortController()
+    let preferenceStorage: Storage | undefined
+    let windowStorage: Storage | undefined
+    try { preferenceStorage = localStorage } catch { /* The public preference face can remain in memory. */ }
+    try { windowStorage = sessionStorage } catch { /* In-memory share ownership is still distinct for this window. */ }
+    const sharedUi = createWorkspaceUiBridge(preferenceStorage, window, windowStorage)
+    const unprovideUi = ctx.reflect.provide('hapiWorkspaceUi', sharedUi.root)
     const running = new Map<string, { abort: AbortController; runtime?: HostRuntime }>()
     const logical = new Map<string, string>()
     const reported = new Map<string, string>()
@@ -381,17 +522,25 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     }
     document.addEventListener('keydown', containShortcuts)
     let polling = false
+    const local: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
+    running.set('local', local)
+    void bootHost(ctx, workspace, { id: 'local', label: 'DSH', online: true, basePath: '/' }, AbortSignal.any([lifetime.signal, local.abort.signal]), sharedUi).then(async runtime => {
+        if (lifetime.signal.aborted) await runtime.stop()
+        else local.runtime = runtime
+    }).catch(error => { if (!lifetime.signal.aborted) workspace.report(error) })
     const poll = async (): Promise<void> => {
         if (polling || lifetime.signal.aborted) return
         polling = true
         try {
             const catalog = remoteValue(await ctx.remote.hapi.catalog())
+            workspace.setMachines(catalog.machines)
+            workspace.setSourceCatalog(catalog.sessions, catalog.hubId)
             for (const session of catalog.sessions) {
                 const previous = logical.get(session.logicalSessionId)
                 if (previous && previous !== session.id) workspace.replaceSession(previous, session.id)
                 logical.set(session.logicalSessionId, session.id)
             }
-            const online = new Set(catalog.hosts.filter(host => host.online).map(host => host.id))
+            const online = new Set(['local', ...catalog.hosts.filter(host => host.online).map(host => host.id)])
             for (const [id, entry] of running) if (!online.has(id)) {
                 running.delete(id); entry.abort.abort(); await entry.runtime?.stop()
             }
@@ -399,7 +548,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                 if (!host.online || running.has(host.id)) continue
                 const entry: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
                 running.set(host.id, entry)
-                void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal])).then(async runtime => {
+                void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi).then(async runtime => {
                     if (entry.abort.signal.aborted || lifetime.signal.aborted) { await runtime.stop(); return }
                     entry.runtime = runtime; reported.delete(host.id)
                 }).catch(error => {
@@ -414,10 +563,12 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     }
     void poll()
     const timer = setInterval(() => { void poll() }, 3000)
-    return () => {
+    return async () => {
         lifetime.abort(); clearInterval(timer)
         document.removeEventListener('keydown', containShortcuts)
-        for (const entry of running.values()) { entry.abort.abort(); void entry.runtime?.stop() }
+        for (const entry of running.values()) entry.abort.abort()
+        await Promise.allSettled([...running.values()].map(entry => entry.runtime?.stop()))
         running.clear()
+        try { await sharedUi.dispose() } finally { await unprovideUi() }
     }
 }

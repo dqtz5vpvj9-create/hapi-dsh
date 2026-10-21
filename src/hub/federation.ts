@@ -20,7 +20,7 @@ export interface FederationMount {
 }
 
 interface RunnerState { machine: FederatedMachine; tunnel: Tunnel; credentialHash: string }
-interface HttpChannel { owner: Tunnel; request: IncomingMessage; response: ServerResponse; timer: ReturnType<typeof setTimeout>; done: boolean }
+interface HttpChannel { owner: Tunnel; request: IncomingMessage; response: ServerResponse; writer: ResponseWriter; timer: ReturnType<typeof setTimeout>; done: boolean }
 interface SocketChannel {
     owner: Tunnel;
     request: IncomingMessage;
@@ -41,6 +41,39 @@ function rawHeaders(request: IncomingMessage): WireHeaders {
 
 function rejectUpgrade(socket: Duplex, status: number): void {
     socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
+/**
+ * The official compression middleware preserves write()/drain backpressure,
+ * but does not forward write callbacks. One drain listener per response also
+ * stays bounded when that middleware forwards it to a compression stream.
+ */
+class ResponseWriter {
+    private closed = false;
+    private wake: (() => void) | undefined;
+    private readonly drained = (): void => { const wake = this.wake; this.wake = undefined; wake?.(); };
+    private readonly ended = (): void => { this.closed = true; this.drained(); };
+    constructor(private readonly response: ServerResponse) {
+        response.on('drain', this.drained);
+        response.once('close', this.ended);
+        response.once('error', this.ended);
+    }
+    async write(data: Buffer): Promise<void> {
+        if (this.closed || this.response.destroyed || this.response.writableEnded) return;
+        await new Promise<void>(resolve => {
+            this.wake = resolve;
+            try { if (this.response.write(data)) this.drained(); }
+            catch { this.ended(); this.response.destroy(); }
+            // A synchronous close/error must not leave a newly installed waiter.
+            if (this.closed || this.response.destroyed || this.response.writableEnded) this.drained();
+        });
+    }
+    dispose(): void {
+        this.ended();
+        this.response.off('drain', this.drained);
+        this.response.off('close', this.ended);
+        this.response.off('error', this.ended);
+    }
 }
 
 /** Authenticated, identity-preserving proxy for complete official DSH Web transports. */
@@ -182,7 +215,7 @@ export class FederationHub {
         const path = validateUpstreamPath(`${slash < 0 ? '/' : relative.slice(slash)}${url.search}`);
         const channelId = randomUUID();
         response.on('error', () => {});
-        const channel: HttpChannel = { owner: state.tunnel, request, response, done: false, timer: setTimeout(() => {
+        const channel: HttpChannel = { owner: state.tunnel, request, response, writer: new ResponseWriter(response), done: false, timer: setTimeout(() => {
             this.failHttp(channelId, 504);
             void state.tunnel.send({ type: 'http-cancel', id: channelId }).catch(() => {});
         }, this.options.httpIdleTimeoutMs ?? 300_000) };
@@ -310,7 +343,7 @@ export class FederationHub {
         } else if (frame.type === 'data' && frame.lane === 'response' && http) {
             http.timer.refresh();
             if (!http.response.headersSent) throw new Error('Runner sent body before response headers');
-            if (!http.response.destroyed) await new Promise<void>((resolve, reject) => http.response.write(Buffer.from(frame.data, 'base64'), (error) => error ? reject(error) : resolve()));
+            await http.writer.write(Buffer.from(frame.data, 'base64'));
         } else if (frame.type === 'http-end' && frame.lane === 'response' && http) {
             this.removeHttp(frame.id);
             http.response.end();
@@ -332,7 +365,7 @@ export class FederationHub {
 
     private removeHttp(id: string): HttpChannel | undefined {
         const channel = this.http.get(id);
-        if (channel) { channel.done = true; clearTimeout(channel.timer); this.http.delete(id); }
+        if (channel) { channel.done = true; channel.writer.dispose(); clearTimeout(channel.timer); this.http.delete(id); }
         return channel;
     }
 

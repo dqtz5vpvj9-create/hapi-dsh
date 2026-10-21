@@ -43,6 +43,7 @@ const storedBlockSchema = z.discriminatedUnion('type', [
     ...(value.attachment.originalDimensions === undefined ? {} : { originalDimensions: value.attachment.originalDimensions }),
   },
 })
+export const sourceArtifactBlockSchema = storedBlockSchema
 const cacheSchema = z.object({ version: z.literal(1), refs: z.record(z.string(), storedBlockSchema) })
 
 function linkedText(label: string, uri: string): ContentBlock {

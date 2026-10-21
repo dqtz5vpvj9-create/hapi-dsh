@@ -24,14 +24,17 @@ export interface HapiClientOptions {
 export interface SpawnSessionInput {
     requestId: string;
     directory: string;
-    agent: 'codex' | 'dsh';
+    agent: 'agy' | 'claude' | 'codex' | 'dsh' | 'copilot' | 'cursor' | 'grok' | 'kimi' | 'opencode' | 'pi' | 'qoder';
     model?: string;
+    effort?: string;
     modelReasoningEffort?: string;
+    yolo?: boolean;
     permissionMode?: string;
     sessionType?: 'simple' | 'worktree';
     worktreeName?: string;
     serviceTier?: 'fast' | 'standard';
     collaborationMode?: string;
+    copilotAgentMode?: 'interactive' | 'plan' | 'autopilot';
     startingMode?: 'remote' | 'pty';
     codexHome?: string;
     codexAccountId?: string;
@@ -62,6 +65,12 @@ export class HapiClient implements HapiTransport {
     private closed = false;
     private connected = false;
     private needsSnapshot = false;
+    // A daemon is not a visible browser. Only live, expiring UI leases may
+    // suppress original Hub Web Push in favour of foreground toast delivery.
+    private visibility: 'visible' | 'hidden' = 'hidden';
+    private subscriptionId: string | undefined;
+    private appliedVisibility: { id: string; state: 'visible' | 'hidden' } | undefined;
+    private visibilityTask: Promise<void> | undefined;
 
     constructor(private readonly options: HapiClientOptions) {
         const url = new URL(options.url);
@@ -76,6 +85,41 @@ export class HapiClient implements HapiTransport {
     }
 
     get isConnected(): boolean { return this.connected; }
+
+    /** Publish the aggregate presence of real browsers to the original SSE subscription. */
+    async setVisibility(state: 'visible' | 'hidden'): Promise<void> {
+        if (state !== 'visible' && state !== 'hidden') throw new HapiRequestError('Invalid browser visibility', 'rejected');
+        if (this.closed) throw new HapiRequestError('HAPI client has closed', 'rejected');
+        this.visibility = state;
+        await this.synchronizeVisibility();
+    }
+
+    private synchronizeVisibility(): Promise<void> {
+        if (this.visibilityTask) return this.visibilityTask.then(() => this.synchronizeVisibility());
+        const task = this.flushVisibility();
+        this.visibilityTask = task;
+        void task.finally(() => { if (this.visibilityTask === task) this.visibilityTask = undefined; }).catch(() => {});
+        return task;
+    }
+
+    private async flushVisibility(): Promise<void> {
+        for (;;) {
+            const id = this.subscriptionId, state = this.visibility;
+            if (!id || this.closed || this.appliedVisibility?.id === id && this.appliedVisibility.state === state) return;
+            try {
+                await this.request('/api/visibility', { method: 'POST', body: { subscriptionId: id, visibility: state }, timeoutMs: 5000 });
+            } catch (error) {
+                // An unconfirmed hide must not leave the daemon suppressing
+                // Push forever. Tear down this original subscription; its next
+                // connection starts with the latest real-browser visibility.
+                if (this.subscriptionId === id && this.visibility === 'hidden') this.stream?.abort();
+                throw error;
+            }
+            if (this.subscriptionId === id) this.appliedVisibility = { id, state };
+            // A visible/hidden transition may have arrived while the POST was
+            // in flight. Serialize the latest state after that response.
+        }
+    }
 
     private async readBody(response: Response, maxBytes: number): Promise<Uint8Array> {
         const declaredSize = Number(response.headers.get('content-length'));
@@ -146,17 +190,22 @@ export class HapiClient implements HapiTransport {
     }
 
     async request(path: string, options: RequestOptions = {}): Promise<unknown> {
-        if (!path.startsWith('/api/') || path.includes('://')) throw new Error('Invalid HAPI API path');
         const method = (options.method ?? 'GET').toUpperCase();
+        // The original additive capability advertisement is the one public
+        // route outside /api/. It is read-only and cannot broaden proxy paths.
+        if (!(path.startsWith('/api/') || path === '/health' && method === 'GET') || path.includes('://')) throw new Error('Invalid HAPI API path');
         const readOnly = method === 'GET' || method === 'HEAD';
+        const multipart = options.body instanceof FormData;
         for (let attempt = 0; attempt < 2; attempt++) {
             const token = await this.authenticate();
             let response: Response;
             try {
                 response = await this.fetcher(`${this.baseUrl}${path}`, {
                     method, redirect: 'manual', cache: 'no-store',
-                    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-                    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+                    // A FormData boundary belongs to fetch. Setting JSON headers or
+                    // serializing it would silently discard recorded audio.
+                    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(options.body === undefined || multipart ? {} : { 'Content-Type': 'application/json' }) },
+                    ...(options.body === undefined ? {} : { body: multipart ? options.body as FormData : JSON.stringify(options.body) }),
                     signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(options.timeoutMs ?? this.timeoutMs), ...(options.signal ? [options.signal] : [])]),
                 });
             } catch {
@@ -177,7 +226,7 @@ export class HapiClient implements HapiTransport {
                 const code = z.object({ code: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional() }).safeParse(value);
                 throw new HapiRequestError(`HAPI request returned HTTP ${response.status}`,
                     response.status >= 400 && response.status < 500 ? 'rejected' : 'indeterminate',
-                    response.status, code.success ? code.data.code : undefined);
+                    response.status, code.success ? code.data.code : undefined, value);
             }
             return value;
         }
@@ -235,6 +284,14 @@ export class HapiClient implements HapiTransport {
     async listMachines(): Promise<schema.HapiMachine[]> {
         return (await this.validated<{ machines: schema.HapiMachine[] }>('/api/machines?includeOffline=true', z.object({ machines: z.array(schema.machineSchema) }))).machines;
     }
+    async listSlashCommands(id: string): Promise<readonly { name: string; description: string; source?: string; content?: string }[]> {
+        const result = await this.validated<{ success: boolean; commands?: { name: string; description: string; source?: string; content?: string }[]; error?: string }>(
+            `${this.sessionPath(id)}/slash-commands`, z.object({ success: z.boolean(), commands: z.array(z.object({
+                name: z.string().min(1), description: z.string().default(''), source: z.string().optional(), content: z.string().optional(),
+            })).optional(), error: z.string().optional() }));
+        if (!result.success) throw new HapiRequestError(result.error ?? 'The original session command catalog is unavailable', 'rejected');
+        return result.commands ?? [];
+    }
     async spawnSession(machineId: string, input: SpawnSessionInput): Promise<SpawnSessionResponse> {
         // A spawn_outcome_unknown response can already own a reserved source
         // row and a live child. Preserve its durable identity and proof fields.
@@ -249,6 +306,85 @@ export class HapiClient implements HapiTransport {
             { method: 'POST', body: { filename, mimeType, content: Buffer.from(data).toString('base64') }, timeoutMs: 120_000 });
         if (!result.success || !result.path) throw new HapiRequestError('HAPI Runner did not accept the attachment', 'rejected');
         return { id: randomUUID(), filename, mimeType, size: data.byteLength, path: result.path };
+    }
+    /** Server-side terminal bridge only. Never include this result in a Remote response or browser config. */
+    async socketAuthentication(): Promise<{ url: string; path: string; token: string }> {
+        const base = new URL(this.baseUrl);
+        return { url: base.origin, path: `${base.pathname.replace(/\/+$/, '')}/socket.io/`, token: await this.authenticate() };
+    }
+    /** Exact owner-only backup endpoint. Stream the snapshot without buffering the database or replaying a POST. */
+    async downloadSqliteBackup(signal: AbortSignal): Promise<Response> {
+        const token = await this.authenticate();
+        let response: Response;
+        try {
+            response = await this.fetcher(`${this.baseUrl}/api/storage/sqlite/backup`, {
+                method: 'POST', redirect: 'manual', cache: 'no-store',
+                headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.sqlite3' },
+                signal: AbortSignal.any([this.lifetime.signal, signal, AbortSignal.timeout(30 * 60 * 1000)]),
+            });
+        } catch { throw new HapiRequestError('The source backup connection ended before its response', 'indeterminate'); }
+        if (!response.ok) {
+            await response.body?.cancel();
+            if (response.status === 401 && this.token?.value === token) this.token = undefined;
+            throw new HapiRequestError(response.status === 403 ? 'Only the original HAPI Hub owner can download its database backup'
+                : response.status === 409 ? 'The original Hub is already creating a backup; wait before requesting another snapshot'
+                : `The original Hub backup returned HTTP ${response.status}`,
+                response.status >= 400 && response.status < 500 ? 'rejected' : 'indeterminate', response.status);
+        }
+        if (!response.body || response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/vnd.sqlite3') {
+            await response.body?.cancel();
+            throw new HapiRequestError('The original Hub did not return a SQLite backup', 'indeterminate', 502);
+        }
+        return response;
+    }
+    /** Bounded source-owned bytes. This method never follows bearer credentials to a redirect target. */
+    async readBinary(path: string, options: {
+        signal?: AbortSignal; timeoutMs?: number; maxBytes?: number; headers?: { Range?: string };
+    } = {}): Promise<{ data: Uint8Array; mimeType: string; fileName: string; status: number; headers: Record<string, string> }> {
+        const url = new URL(`${this.baseUrl}${path}`);
+        const prefix = `${new URL(this.baseUrl).pathname.replace(/\/+$/, '')}/api/`;
+        if (!path.startsWith('/api/') || path.includes('://') || /[\r\n\0#]/.test(path)
+            || url.origin !== new URL(this.baseUrl).origin || !url.pathname.startsWith(prefix)) throw new Error('Invalid HAPI binary API path');
+        const maxBytes = options.maxBytes ?? 32 * 1024 * 1024;
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 128 * 1024 * 1024) throw new Error('Invalid native binary size limit');
+        const range = options.headers?.Range;
+        if (range !== undefined && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) throw new Error('Invalid native byte range');
+        for (let attempt = 0; attempt < 2; attempt++) {
+            const token = await this.authenticate();
+            let response: Response;
+            try {
+                response = await this.fetcher(url, {
+                    method: 'GET', redirect: 'manual', cache: 'no-store',
+                    headers: { Authorization: `Bearer ${token}`, Accept: '*/*', ...(range ? { Range: range } : {}) },
+                    signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(options.timeoutMs ?? 120_000), ...(options.signal ? [options.signal] : [])]),
+                });
+            } catch { throw new HapiRequestError('The native resource could not be read', 'indeterminate'); }
+            if (response.status === 401 && attempt === 0) {
+                await response.body?.cancel();
+                if (this.token?.value === token) this.token = undefined;
+                continue;
+            }
+            if (!response.ok) {
+                await response.body?.cancel();
+                throw new HapiRequestError(`Native resource returned HTTP ${response.status}`,
+                    response.status >= 400 && response.status < 500 ? 'rejected' : 'indeterminate', response.status);
+            }
+            const data = await this.readBody(response, maxBytes);
+            const mimeType = (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0]!.trim().toLowerCase();
+            const disposition = response.headers.get('content-disposition') ?? '';
+            const encodedName = /(?:^|;)\s*filename\*=UTF-8''([^;]*)/i.exec(disposition)?.[1]
+                ?? /(?:^|;)\s*filename="([^"]*)"/i.exec(disposition)?.[1];
+            let fileName = 'native-resource';
+            if (encodedName) { try { fileName = decodeURIComponent(encodedName); } catch { fileName = encodedName; } }
+            fileName = fileName.replace(/[\r\n\0]/g, '').split(/[\\/]/).at(-1) || 'native-resource';
+            const headers: Record<string, string> = {};
+            for (const key of ['content-range', 'content-length', 'accept-ranges', 'etag', 'last-modified', 'x-document-version']) {
+                const value = response.headers.get(key);
+                if (value !== null) headers[key] = value;
+            }
+            return { data, mimeType, fileName, status: response.status, headers };
+        }
+        throw new HapiRequestError('Native resource authentication failed', 'rejected', 401);
     }
     /** Read an opaque artifact only through its owning Hub; never resolve native paths or arbitrary URLs. */
     async readArtifact(id: string, artifactId: string): Promise<{ data: Uint8Array; mimeType: string; fileName: string }> {
@@ -325,7 +461,8 @@ export class HapiClient implements HapiTransport {
             const streamSignal = AbortSignal.any([signal, this.lifetime.signal, idle.signal]);
             try {
                 const token = await this.authenticate();
-                const response = await this.fetcher(`${this.baseUrl}/api/events?all=true&messageMode=full&visibility=visible`, {
+                const initialVisibility = this.visibility;
+                const response = await this.fetcher(`${this.baseUrl}/api/events?all=true&messageMode=full&visibility=${initialVisibility}`, {
                     redirect: 'manual', cache: 'no-store', signal: streamSignal,
                     headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream', ...(this.cursor ? { 'Last-Event-ID': this.cursor } : {}) },
                 });
@@ -353,6 +490,9 @@ export class HapiClient implements HapiTransport {
                         const event = parsed.data as HapiEvent;
                         if (event.type === 'connection-changed') {
                             this.connected = event.data?.status === 'connected';
+                            this.subscriptionId = this.connected ? event.data?.subscriptionId : undefined;
+                            this.appliedVisibility = this.subscriptionId ? { id: this.subscriptionId, state: initialVisibility } : undefined;
+                            if (this.subscriptionId && this.visibility !== initialVisibility) void this.synchronizeVisibility().catch(() => {});
                             if (this.connected && this.needsSnapshot) {
                                 event.data = { ...event.data!, resume: 'gap' };
                                 this.needsSnapshot = false;
@@ -374,7 +514,7 @@ export class HapiClient implements HapiTransport {
                     backoff = this.options.reconnectMinMs ?? 500;
                 }
             } catch { /* Reads reconnect; mutations are never replayed here. */ }
-            finally { clearTimeout(idleTimer!); }
+            finally { clearTimeout(idleTimer!); this.subscriptionId = undefined; this.appliedVisibility = undefined; }
             this.connected = false;
             if (signal.aborted || this.closed) break;
             this.publish({ type: 'connection-changed', data: { status: 'disconnected' } });

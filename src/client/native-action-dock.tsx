@@ -1,0 +1,37 @@
+import type { Context } from '@deepseek-ai/cordis'
+import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { NativeActions, ObservedActions, type NativeActionsApi } from './native-actions.tsx'
+import { installSourceStateView } from './source-state-view.tsx'
+import type { HapiRemoteApi } from '../client-api.ts'
+import { useSourceQueuedEditing } from './source-queued-edit.tsx'
+
+type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
+
+/**
+ * Source approvals, queue receipts and settings are additive composer content.
+ * The original Conversation owns its whole header and chat/input subtree.
+ */
+export function installNativeActionDock(ctx: Context, native: NativeActionsApi, api: HapiRemoteApi): () => void {
+    const sourceView = installSourceStateView(ctx)
+    const SourceDock = (props: SourceDockProps) => {
+        const { sessionId, useProjection, t } = props
+        const queued = useSourceQueuedEditing(ctx, api, props)
+        const actions: NativeActionsApi = { ...native, ...(queued.actions ? { queuedEditing: queued.actions } : {}) }
+        const projection = useProjection('hapi'), observed = useProjection('hapiObserved')
+        sourceView.useSourceState(sessionId, Boolean(projection || observed))
+        if (!(projection || observed)) return null
+        const scope = `.hapi-host-frame [data-conversation-session="${CSS.escape(sessionId)}"]`
+        return <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
+            <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}${native.branchLabel ? `${scope} [data-turn-tail] [data-clock="end"] button[aria-label="${CSS.escape(native.branchLabel())}"]{display:none!important}` : ''}`}</style>
+            <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t}/>
+            <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t}/>
+            {queued.panel}
+        </div>
+    }
+    const stopDock = ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+        name: 'conversation.input.dock', id: 'hapi.source-controls', order: -100, locale: 'hapiWorkspace',
+    }, SourceDock))
+    const style = document.createElement('style'); style.textContent = `.hapi-queued-edit-recovery{font-size:12px;min-width:0;padding:8px;border:1px solid var(--border-secondary,#8884);border-radius:8px}.hapi-queued-edit-recovery pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:150px;overflow:auto}.hapi-queued-edit-recovery section{padding:8px 0;border-top:1px solid var(--border-secondary,#8884)}.hapi-queued-edit-recovery small{display:block;overflow-wrap:anywhere}.hapi-queued-edit-recovery button{cursor:pointer;margin:4px 4px 4px 0}.hapi-queued-edit-recovery button:disabled{opacity:.5;cursor:default}`; document.head.append(style)
+    return () => { stopDock(); sourceView.dispose(); style.remove() }
+}

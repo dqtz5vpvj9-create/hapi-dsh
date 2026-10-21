@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { adjacentPane, initialWorkspace, paneRectangles, panes, parseWorkspaceState, splitBoundaries, WorkspaceStore, type WorkspaceState } from '../src/client/model.ts'
-import { PrefixKeys, runWorkspaceCommand } from '../src/client/shortcuts.ts'
+import { PrefixKeys, runWorkspaceCommand, WORKSPACE_PREFIX_TIMEOUT_MS } from '../src/client/shortcuts.ts'
 
 function workspace() {
     let sequence = 0
@@ -153,7 +153,12 @@ test('tmux prefix handles timeout, send-prefix, composition and mapped actions',
     assert.equal(keys.key(key('b', true), 5).armed, true)
     assert.equal(keys.key(key('b', true), 6).consumed, false)
     keys.key(key('b', true), 10)
-    assert.equal(keys.key(key('c'), 4000).command, undefined)
+    assert.equal(WORKSPACE_PREFIX_TIMEOUT_MS, 1500)
+    assert.equal(keys.key(key('c'), 1509).command, 'newWindow')
+    keys.key(key('b', true), 2000)
+    assert.equal(keys.key(key('c'), 3500).command, undefined)
+    keys.key(key('b', true), 3600)
+    assert.deepEqual(keys.key(key('a'), 3601), { consumed: true, armed: false })
     assert.equal(keys.key({ ...key('b', true), isComposing: true }, 4001).consumed, false)
     const store = workspace()
     runWorkspaceCommand(store, 'splitHorizontal', () => {})

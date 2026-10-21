@@ -92,6 +92,19 @@ export class NativeCreation {
     return this.run(state, true)
   }
 
+  private async validateAccountHome(request: CreateNativeSession): Promise<void> {
+    if (!request.codexAccountId || !request.codexHome) return
+    const response = z.object({ success: z.boolean(), error: z.string().optional(), homes: z.array(z.object({
+      id: z.string(), label: z.string(), path: z.string(), official: z.boolean().optional(),
+    })).optional() }).parse(await this.transport.request(`/api/machines/${encodeURIComponent(request.machineId)}/codex-homes`, { timeoutMs: this.readTimeout }))
+    if (!response.success || !response.homes) throw new HapiRequestError(response.error ?? 'The Runner could not validate the selected account home', 'rejected', undefined, 'codex_home_unavailable')
+    const selected = response.homes.find(home => home.path === request.codexHome)
+    if (selected && selected.official !== true) throw new HapiRequestError(
+      `Codex account switching is only available on an official home; ${selected.label} is isolated`, 'rejected', undefined, 'codex_account_home_conflict')
+    // Only the Runner can expand its ~, resolve relative paths and determine
+    // its default home. Unrecognized spellings retain its authoritative check.
+  }
+
   async operation(input: NativeCreationOperation): Promise<NativeCreationState> {
     const request = nativeCreationOperationSchema.parse(input)
     const state = this.entries.get(request.requestId)
@@ -121,13 +134,18 @@ export class NativeCreation {
   private async dispatch(state: NativeCreationState): Promise<void> {
     state.status = 'submitting'; state.message = null; state.updatedAt = Date.now()
     this.persist()
+    let spawnStarted = false
     try {
       const { machineId, ...input } = state.request
+      if (input.codexAccountId && input.codexHome) await this.validateAccountHome(state.request)
+      spawnStarted = true
       const response = spawnSessionResponseSchema.parse(await this.transport.spawnSession(machineId, {
         requestId: input.requestId, directory: input.directory, agent: 'codex', startingMode: 'remote',
         ...(input.model === undefined ? {} : { model: input.model }),
         ...(input.modelReasoningEffort === undefined ? {} : { modelReasoningEffort: input.modelReasoningEffort }),
         ...(input.codexHome === undefined ? {} : { codexHome: input.codexHome }),
+        ...(input.codexAccountId === undefined ? {} : { codexAccountId: input.codexAccountId }),
+        ...(input.codexKeyProfileId === undefined ? {} : { codexKeyProfileId: input.codexKeyProfileId }),
         ...(input.permissionMode === undefined ? {} : { permissionMode: input.permissionMode }),
         ...(input.collaborationMode === undefined ? {} : { collaborationMode: input.collaborationMode }),
         ...(input.serviceTier === undefined ? {} : { serviceTier: input.serviceTier }),
@@ -150,7 +168,7 @@ export class NativeCreation {
         state.message = response.message
       }
     } catch (error) {
-      state.status = error instanceof HapiRequestError && error.outcome === 'rejected' && [400, 403, 404].includes(error.status ?? 0) ? 'rejected' : 'indeterminate'
+      state.status = !spawnStarted || error instanceof HapiRequestError && error.outcome === 'rejected' && [400, 403, 404].includes(error.status ?? 0) ? 'rejected' : 'indeterminate'
       state.message = text(error)
       state.sourceCode = error instanceof HapiRequestError ? error.code ?? null : null
     }

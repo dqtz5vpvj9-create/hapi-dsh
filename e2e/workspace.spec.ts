@@ -70,7 +70,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         const approval = page.locator('[data-native-request="approval-e2e"]');
         await expect(approval).toBeVisible();
         await approval.getByRole('button', { name: 'Approve', exact: true }).click();
-        await expect(approval).toContainText('Answer sent; waiting for Codex');
+        await expect(approval).toContainText('Answer sent; waiting for source confirmation');
         expect(environment.hapi.approvals).toHaveLength(1);
         await expect(approval.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
         environment.hapi.settleApproval('native-alpha');
@@ -112,10 +112,10 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         const notice = page.getByRole('dialog', { name: 'Preview Notice' });
         if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
         await page.locator('.hapi-session-open').filter({ hasText: 'DSH remote conversation' }).click();
-        await expect(page.locator('.hapi-remote-shell')).toBeVisible();
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
-        await expect(page.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
         const remotePane = page.getByRole('region', { name: 'Pane: DSH remote conversation', exact: true });
+        await expect(remotePane.locator('.hapi-remote-shell')).toBeVisible();
+        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
         const composer = remotePane.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions' });
         await expect(composer).toBeVisible();
         await composer.fill('A real remote DSH composer turn');
@@ -207,7 +207,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await page.getByRole('menuitemradio', { name: 'E2E fixture model', exact: true }).click();
         await pane.getByRole('textbox', { name: 'Describe what you want to build, / commands, @ files or sessions' }).fill('A local DSH session created from the unified sidebar');
         await pane.getByRole('button', { name: 'Send message', exact: true }).click();
-        await expect(pane.locator('.hapi-conversation-content').getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
+        await expect(pane.locator('[data-conversation-content]').getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
         await expect(page.locator('.hapi-session-sidebar')).toHaveCount(1);
         await expect(page.locator('iframe')).toHaveCount(0);
         expect(errors).toEqual([]);

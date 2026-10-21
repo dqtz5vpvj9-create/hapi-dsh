@@ -1,23 +1,20 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { createContext, useContext, useState, useSyncExternalStore } from 'react'
+import { createContext, useContext, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
-import { resolveSlotLabel, type PropsLocale, type PropsRenderFactories, type PropsRenderSlots, type PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { resolveSlotLabel, type PropsLocale, type PropsRenderSlots, type PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SettingsLauncherOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { NativeActionsApi } from './native-actions.tsx'
-import { NativeActionLedger } from './native-state.ts'
 import { en, zh } from './locales.ts'
-import { ConversationPane } from './ui.tsx'
+import { installPaneBridge, targetForTab, type PaneBridgeSource, type PaneBridgeState } from './pane-bridge.tsx'
+import type { DshPaneTarget } from '../workspace/dsh-view.ts'
+import type { SidebarRightTabMenuOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type {} from './pane-navigation.ts'
 
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-    interface SlotMap { 'hapi.remote.conversation': { kind: 'single'; scope: 'session' } }
-}
-
-type RemoteRootProps = PropsRuntime<'main'> & PropsRenderSlots<'hapi.remote.conversation'>
-type RemotePaneProps = PropsRuntime<'hapi.remote.conversation'> & PropsRenderFactories & PropsLocale<'hapiWorkspace'>
+type BridgeSeatProps = PropsRuntime<'shell.overlay'> & PropsRenderSlots<'hapi.remote.bridge'>
 
 /**
  * Retain the official AppFrame's global overlays and plugin pages. One isolated
@@ -26,28 +23,43 @@ type RemotePaneProps = PropsRuntime<'hapi.remote.conversation'> & PropsRenderFac
  */
 export function installRemotePane(ctx: Context, options: {
     native?: NativeActionsApi; hostLabel?: string
+    localeInstalled?: boolean
+    navigated?: (target: DshPaneTarget, title: string) => void
     keyboard?: { capture(event: KeyboardEvent): void; bubble(event: KeyboardEvent): void }
 } = {}): {
     renderConversation(reference: SessionReference): ReturnType<Context['slots']['renderSlot']>
+    renderView(reference: SessionReference, state: PaneBridgeState): ReturnType<Context['slots']['renderSlot']>
     dispose(): void
 } {
-    const unavailable = async (): Promise<never> => { throw new Error('Native HAPI actions are not configured on this Host') }
-    const native: NativeActionsApi = options.native ?? {
-        ledger: new NativeActionLedger(), answer: unavailable, cancel: unavailable, steer: unavailable, retry: unavailable, resume: unavailable,
-    }
     const disposers: Array<() => void> = []
-    disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
+    if (!options.localeInstalled) disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     const Reference = createContext<SessionReference | undefined>(undefined)
     const SettingsTarget = createContext<HTMLSpanElement | null>(null)
     const listeners = new Set<() => void>()
     let toolsRevision = 0
     const changed = (): void => { toolsRevision++; for (const listener of listeners) listener() }
+    let state: PaneBridgeState = { target: undefined, visible: true, focused: true }
+    let error: string | null = null
+    const stateListeners = new Set<() => void>()
+    const publish = (): void => { for (const listener of stateListeners) listener(); changed() }
+    const bridge: PaneBridgeSource = {
+        getSnapshot: () => state,
+        subscribe(listener) { stateListeners.add(listener); return () => { stateListeners.delete(listener) } },
+        navigated(target, title) {
+            if (JSON.stringify(state.target) !== JSON.stringify(target)) { state = { ...state, target }; publish() }
+            options.navigated?.(target, title)
+        },
+        failed(reason) {
+            const next = reason === null ? null : reason instanceof Error ? reason.message : String(reason)
+            if (error !== next) { error = next; changed() }
+        },
+    }
     disposers.push(ctx.slots.subscribe('sidebar.panellist', changed))
     disposers.push(ctx.locale.subscribe(changed))
     const Tools = ({ settingsTarget }: { settingsTarget: (target: HTMLSpanElement | null) => void }) => {
         useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener) }, () => toolsRevision)
         const panel = useSyncExternalStore(listener => ctx.layout.panelInfo.subscribe(listener), () => ctx.layout.panelInfo.getSnapshot())
-        const [error, setError] = useState<string | null>(null)
+        const [toolError, setError] = useState<string | null>(null)
         const t = ctx.locale.bind('hapiWorkspace')
         const panels = ctx.slots.entriesOfSlot('sidebar.panellist').map(entry => ({
             id: entry.options.id as MainPanelId, label: resolveSlotLabel(entry.options.label) ?? String(entry.options.id), order: entry.options.order ?? 0,
@@ -55,11 +67,22 @@ export function installRemotePane(ctx: Context, options: {
         return <div className="hapi-host-tools">
             <span title={options.hostLabel}>{options.hostLabel ?? 'DSH'}</span>
             <select value={panel.activePanelId ?? ''} aria-label={t('hostTools')} onChange={event => {
-                try { ctx.layout.selectPanel(event.currentTarget.value ? event.currentTarget.value as MainPanelId : null); setError(null) }
+                try {
+                    const id = event.currentTarget.value
+                    if (state.target) bridge.navigated(id ? { type: 'panel', panelId: id } : { type: 'conversation' }, id || t('conversation'))
+                    ctx.layout.selectPanel(id ? id as MainPanelId : null); setError(null)
+                }
                 catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
             }}><option value="">{t('conversation')}</option>{panels.map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select>
             <span ref={settingsTarget}/>
-            {error && <span role="alert" className="hapi-error">{error}</span>}
+            <button type="button" onClick={() => {
+                try {
+                    if (state.target) bridge.navigated({ type: 'tab', kind: 'guide' }, t('pluginViews'))
+                    ctx.layout.selectPanel(null); ctx.sidebarRight.openTab('guide'); setError(null)
+                }
+                catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+            }}>{t('pluginViews')}</button>
+            {(error || toolError) && <span role="alert" className="hapi-error">{error ?? toolError}</span>}
         </div>
     }
     const Launcher = ({ openSettings, settingsOpen, t }: SettingsLauncherOwnerProps & PropsLocale<'hapiWorkspace'>) => {
@@ -68,22 +91,46 @@ export function installRemotePane(ctx: Context, options: {
     }
     const Shell = ({ reference }: { reference: SessionReference }) => {
         const [target, setTarget] = useState<HTMLSpanElement | null>(null)
+        const pane = useSyncExternalStore(bridge.subscribe, bridge.getSnapshot)
+        useLayoutEffect(() => {
+            if (pane.target?.type === 'panel') {
+                try { ctx.layout.selectPanel(pane.target.panelId as MainPanelId) } catch (reason) { bridge.failed(reason) }
+            } else if (pane.target) ctx.layout.selectPanel(null)
+        }, [pane.target?.type, pane.target?.type === 'panel' ? pane.target.panelId : null])
         return <Reference.Provider value={reference}><SettingsTarget.Provider value={target}>
-            <div className="hapi-remote-shell" onKeyDownCapture={event => options.keyboard?.capture(event.nativeEvent)} onKeyDown={event => options.keyboard?.bubble(event.nativeEvent)}><Tools settingsTarget={setTarget}/><div className="hapi-host-frame">{ctx.slots.renderSlot('root', {})}</div></div>
+            <div className={`hapi-remote-shell${pane.target && pane.target.type !== 'panel' && pane.target.type !== 'conversation' ? ' hapi-plugin-view-shell' : ''}`} data-hapi-view-visible={pane.visible}
+                onKeyDownCapture={event => options.keyboard?.capture(event.nativeEvent)} onKeyDown={event => options.keyboard?.bubble(event.nativeEvent)}><Tools settingsTarget={setTarget}/><div className="hapi-host-frame">{ctx.slots.renderSlot('root', {})}</div></div>
         </SettingsTarget.Provider></Reference.Provider>
     }
-    const Main = ({ SessionProvider, renderSlot }: RemoteRootProps) => {
+    const BridgeSeat = ({ SessionProvider, renderSlot }: BridgeSeatProps) => {
         const reference = useContext(Reference)
-        return reference ? <SessionProvider session={reference}>{renderSlot('hapi.remote.conversation', {})}</SessionProvider> : null
+        return reference ? <SessionProvider session={reference}>
+            {renderSlot('hapi.remote.bridge', {})}
+        </SessionProvider> : null
     }
-    const Pane = (props: RemotePaneProps) => <ConversationPane {...props} native={native}/>
-    disposers.push(ctx.slots.inject('main', () => ctx.slots.register({
-        name: 'main', key: 'conversation', priority: -100,
-        children: { 'hapi.remote.conversation': { kind: 'single', scope: 'session' } },
-    }, Main)))
-    disposers.push(ctx.slots.inject('hapi.remote.conversation', () => ctx.slots.register({
-        name: 'hapi.remote.conversation', locale: 'hapiWorkspace',
-    }, Pane)))
+    // The official main entry owns its complete ConversationRoot: header,
+    // lineage, actions, utilities, view tabs, content factory and width controls.
+    // Do not shadow it or attempt to redeclare those owned children. This
+    // invisible additive shell seat only restores provider-owned resources.
+    disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+        name: 'shell.overlay', id: 'hapi.workspace.pane-bridge',
+        children: { 'hapi.remote.bridge': { kind: 'single', scope: 'session' } },
+    }, BridgeSeat)))
+    disposers.push(installPaneBridge(ctx, bridge))
+    const OpenInWorkspace = ({ sessionId, tab, dismiss, t }: PropsRuntime<'sidebar.right.tab.menu.item'> & SidebarRightTabMenuOwnerProps & PropsLocale<'hapiWorkspace'>) => {
+        const navigation = ctx.get('hapiWorkspacePane')
+        if (!navigation) return null
+        return <button type="button" onClick={() => {
+            try {
+                const params = ctx.sidebarRight.tabDomain.occurrence(sessionId, tab).navigation.getSnapshot().params
+                navigation.openView(targetForTab(tab, params), { beside: 'horizontal', title: tab.title })
+                dismiss()
+            } catch (reason) { bridge.failed(reason) }
+        }}>{t('openInWorkspacePane')}</button>
+    }
+    disposers.push(ctx.slots.inject('sidebar.right.tab.menu.item', () => ctx.slots.register({
+        name: 'sidebar.right.tab.menu.item', id: 'hapi.workspace.open-pane', order: 100, locale: 'hapiWorkspace',
+    }, OpenInWorkspace)))
     // The official settings owner supplies its real open action. The portal
     // moves only that launcher out of the hidden sidebar; its modal, sections,
     // permissions, and plugin contributions keep their original ownership.
@@ -96,12 +143,17 @@ export function installRemotePane(ctx: Context, options: {
             if (disposed) throw new Error('The remote Conversation renderer is disposed')
             return <Shell reference={reference}/>
         },
+        renderView(reference, next) {
+            if (disposed) throw new Error('The DSH pane renderer is disposed')
+            if (JSON.stringify(state) !== JSON.stringify(next)) { state = next; publish() }
+            return <Shell reference={reference}/>
+        },
         dispose() {
             if (disposed) return
             disposed = true
             for (const dispose of disposers.reverse()) dispose()
             listeners.clear()
-            if (!options.native) native.ledger.clear()
+            stateListeners.clear()
         },
     }
 }

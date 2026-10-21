@@ -8,8 +8,9 @@ declare const __HAPI_DSH_OFFICIAL_STORE_SOURCE__: string
 
 export const GRAPH_STORE_MODULE = '@deepseek-ai/dsh-client-store'
 
-export function graphStorage(storage: Storage, hostId: string, instanceId: string): Storage {
+export function graphStorage(storage: Storage, hostId: string, instanceId: string): Storage & { checkpoint(): void } {
     const prefix = `hapi-dsh:host:${hostId}:pane:${instanceId}:`
+    const writes = new Map<string, string | null>()
     const keys = (): string[] => {
         const result: string[] = []
         for (let index = 0; index < storage.length; index++) {
@@ -20,11 +21,19 @@ export function graphStorage(storage: Storage, hostId: string, instanceId: strin
     }
     return {
         getItem: key => storage.getItem(`${prefix}${key}`),
-        setItem: (key, value) => storage.setItem(`${prefix}${key}`, value),
-        removeItem: key => storage.removeItem(`${prefix}${key}`),
-        clear: () => { for (const key of keys()) storage.removeItem(key) },
+        setItem: (key, value) => { writes.set(key, value); storage.setItem(`${prefix}${key}`, value) },
+        removeItem: key => { writes.set(key, null); storage.removeItem(`${prefix}${key}`) },
+        clear: () => { for (const key of keys()) { writes.set(key.slice(prefix.length), null); storage.removeItem(key) } },
         key: index => keys()[index]?.slice(prefix.length) ?? null,
         get length() { return keys().length },
+        checkpoint() {
+            // Upstream store deliberately swallows quota errors. The embedding
+            // capability can still verify its own writes without inspecting or
+            // changing any plugin's private storage format.
+            for (const [key, expected] of writes) {
+                if (storage.getItem(`${prefix}${key}`) !== expected) throw new Error('A plugin draft or preference did not reach browser storage. The page has not been reloaded.')
+            }
+        },
     }
 }
 

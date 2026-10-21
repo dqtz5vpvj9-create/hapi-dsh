@@ -5,8 +5,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createConfig, DSH_VERSION } from '../src/cli/config.ts';
-import { installProfile, runtimeEnvironment, startArguments, verifyBundleArtifacts, type Command, type CommandRunner } from '../src/cli/runtime.ts';
+import { assertProfileProviders, installProfile, runtimeEnvironment, startArguments, verifyBundleArtifacts, type Command, type CommandRunner } from '../src/cli/runtime.ts';
 import { checkHapi } from '../src/cli/doctor.ts';
+import { parseDocument, stringify } from 'yaml';
+import { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include';
+import { OFFICIAL_PROVIDERS, OFFICIAL_PROVIDER_PACKAGES, ROUTING_PROVIDERS } from '../src/shared/official-provider.ts';
+
+const providerNames = Object.keys(OFFICIAL_PROVIDERS) as Array<keyof typeof OFFICIAL_PROVIDERS>;
+const validDump = stringify([
+    ...providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name], isolate: { [OFFICIAL_PROVIDERS[name]]: true } })),
+    ...providerNames.map(name => ({ id: `hapi-dsh-${ROUTING_PROVIDERS[name]}`, name: `hapi-dsh/${ROUTING_PROVIDERS[name]}` })),
+    { id: 'hapi-dsh', name: 'hapi-dsh' },
+]);
 
 async function fixture(directory: string): Promise<string> {
     const root = join(directory, 'package with spaces');
@@ -43,7 +53,7 @@ test('official profile setup uses launcher flags and safe argv, and preserves ex
             if (!manifest.dsh.profile.bundles.includes('hapi-dsh')) manifest.dsh.profile.bundles.push('hapi-dsh');
             await writeFile(manifestPath, JSON.stringify(manifest));
         }
-        return { exitCode: 0, stdout: '- id: hapi-dsh\n  name: hapi-dsh\n', stderr: '' };
+        return { exitCode: 0, stdout: validDump, stderr: '' };
     };
     const options = { command: { executable: 'fixture-dsh', args: [] }, run: fake, env: {} };
     await installProfile(config, join(directory, 'config.json'), packageRoot, options);
@@ -53,6 +63,29 @@ test('official profile setup uses launcher flags and safe argv, and preserves ex
     await installProfile(config, join(directory, 'config.json'), packageRoot, options);
     assert.ok(calls.every((call) => !call.args.includes('--from-default-profile')));
     assert.equal(await readFile(patchPath, 'utf8'), '# custom user overlay\n');
+});
+
+test('the installed bundle retains official Client roots and isolates their Host delegates using real patch semantics', async () => {
+    const original = providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name] }));
+    const patch = parseDocument(await readFile(new URL('../config/cordis.patch.yml', import.meta.url), 'utf8'), { logLevel: 'silent' }).toJS() as Parameters<typeof applyEntryPatches>[1];
+    const warnings: string[] = [];
+    const combined = applyEntryPatches(original, patch, message => warnings.push(message));
+    assert.deepEqual(warnings, []);
+    assert.doesNotThrow(() => assertProfileProviders(stringify(combined)));
+    assert.deepEqual(original, providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name] })));
+    const mistakenRename = applyEntryPatches(original, [{ id: 'workspace-files', name: 'hapi-dsh/workspace-files' }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(mistakenRename)), /did not activate/);
+    assert.throws(() => assertProfileProviders(validDump.replace('sessionController: true', 'sessionController: false')), /did not activate/);
+    const disabled = applyEntryPatches(combined, [{ id: 'session-controller', disabled: true }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(disabled)), /did not activate/);
+    const subagentDisabled = applyEntryPatches(combined, [{ id: 'subagent', disabled: true }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(subagentDisabled)), /subagent provider/);
+    const subagentNotIsolated = applyEntryPatches(combined, [{ id: 'subagent', isolate: { subagents: false } }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(subagentNotIsolated)), /subagent provider/);
+    const fileReferencesDisabled = applyEntryPatches(combined, [{ id: 'file-reference-local', disabled: true }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(fileReferencesDisabled)), /file-reference-local provider/);
+    const fileReferencesUnisolated = applyEntryPatches(combined, [{ id: 'file-reference-local', isolate: { fileReferences: false } }], () => {});
+    assert.throws(() => assertProfileProviders(stringify(fileReferencesUnisolated)), /file-reference-local provider/);
 });
 
 test('an incomplete existing profile is never reset by setup', async (t) => {

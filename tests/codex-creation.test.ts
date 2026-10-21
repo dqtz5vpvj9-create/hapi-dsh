@@ -10,7 +10,7 @@ import { HapiRequestError, type HapiSession } from '../src/codex/contracts.ts'
 import { bindingFor, nativeSessionId } from '../src/codex/native.ts'
 import { writeDurableJson } from '../src/codex/durable-file.ts'
 import type { NativeControlAgent, NativeControlSessions } from '../src/hapi/native-control.ts'
-import type { CreateNativeSession } from '../src/codex/creation-types.ts'
+import { createNativeSessionSchema, type CreateNativeSession } from '../src/codex/creation-types.ts'
 
 /** Protocol fixture for HAPI's durable spawn response and eventual thread metadata. */
 class CreationFixture implements NativeCreationTransport, NativeControlSessions {
@@ -29,6 +29,7 @@ class CreationFixture implements NativeCreationTransport, NativeControlSessions 
   readyAfter = Infinity
   generation = 0
   readError: Error | undefined
+  homes: Array<{ id: string; label: string; path: string; official?: boolean }> = [{ id: 'official', label: 'Official', path: '/runner/home', official: true }]
   get(): NativeControlAgent | undefined { return undefined }
   makeReady(): void {
     Object.assign(this.source.metadata!, { codexNativeSession: true, codexNativeConnection: 'attached', codexSessionId: 'original-native-thread',
@@ -41,6 +42,7 @@ class CreationFixture implements NativeCreationTransport, NativeControlSessions 
     return structuredClone(this.response)
   }
   async request(path: string, options: { timeoutMs?: number } = {}): Promise<unknown> {
+    if (path === '/api/machines/machine-one/codex-homes') return { success: true, homes: this.homes }
     assert.equal(path, '/api/sessions/reserved-source-session')
     assert.ok(options.timeoutMs && options.timeoutMs <= 1500, 'Metadata reads have an explicit bounded transport budget')
     this.reads++
@@ -109,6 +111,25 @@ test('bounded readiness remains accepted, survives observer restart and recovers
     assert.equal(recovered.sessionId, `${nativeSessionId(source.hubId, source.source.id)}-r2`)
     assert.equal(source.spawns.length, 1, 'An accepted source uses reads even for explicit reconciliation')
     await assert.rejects(restarted.create({ ...request, directory: '/other' }), /immutable launch intent/)
+  })
+})
+
+test('native launch preserves bounded account and key-profile selectors and rejects a source-declared isolated account home', async () => {
+  await fixture(async (source, _directory, creation) => {
+    source.makeReady()
+    const request = { ...launch(), codexAccountId: 'runner-account', codexKeyProfileId: 'runner-key-profile' }
+    const ready = await creation.create(request)
+    assert.equal(ready.status, 'ready')
+    assert.equal(source.spawns[0]?.input.codexAccountId, 'runner-account')
+    assert.equal(source.spawns[0]?.input.codexKeyProfileId, 'runner-key-profile')
+    assert.equal('credentials' in source.spawns[0]!.input, false)
+    source.homes = [{ id: 'isolated', label: 'Isolated', path: '/isolated' }]
+    const conflict = await creation.create({ ...request, requestId: randomUUID(), codexHome: '/isolated' })
+    assert.equal(conflict.status, 'rejected'); assert.match(conflict.message!, /isolated/)
+    assert.equal(source.spawns.length, 1)
+    assert.equal(createNativeSessionSchema.safeParse({ ...request, codexAccountId: 'x'.repeat(129) }).success, false)
+    assert.equal(createNativeSessionSchema.safeParse({ ...request, credentials: 'not-an-authorized-selector' }).success, false)
+    await creation.create(request); assert.equal(source.spawns.length, 1)
   })
 })
 

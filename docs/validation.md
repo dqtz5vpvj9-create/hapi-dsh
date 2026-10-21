@@ -1,79 +1,75 @@
 # 可复现验证与验收边界
 
-本项目把业务 fixture、真实传输、真实官方进程和真实模型执行分开记录。某一层通过不能替代下一层。
+这份记录区分原始 HAPI/Runner 协议 fixture、真实传输、未修改的官方 DSH 进程、真实浏览器与实际账号执行。某一层通过不能替代下一层。功能和 UX 尚未等价的项目继续列在 [功能对照表](feature-parity.md)，不因构建或单测通过而自动标成完成。
 
-## 本地命令
+## 当前代码验证
+
+运行环境为 Linux、Node 24.19.0，DSH 固定 `0.2.1-rc.2`。上游源码与已发布 bundle 均未修改，具体来源见 [UPSTREAMS.json](../UPSTREAMS.json)。浏览器测试使用 Playwright 1.64.1 与 Chrome for Testing 156.0.8078.4；后者具备固定上游 PDF.js 所需的原生浏览器 API，没有给上游加 polyfill。
+
+| 检查 | 本轮结果与边界 |
+| --- | --- |
+| Host TypeScript | `npx tsc -p tsconfig.host.json --noEmit` 通过 |
+| Client TypeScript | `npx tsc -p tsconfig.client.json --noEmit` 通过 |
+| E2E TypeScript | `npx tsc -p tsconfig.e2e.json --noEmit` 通过 |
+| 全部代码与传输测试 | `npm test` 实际执行 633 项，632 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
+| 显式官方 federation 集成 | 独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流 |
+| 构建 | Host、Client、CLI、Runner、五个 source-aware providers 与类型声明构建通过 |
+
+`npm test` 使用 Node 的 `--test-isolation=none`，报告的是实际 case 数；测试文件进程退出成功不作为其内部断言已执行的证明。测试绑定本机回环端口，需要运行环境允许本地监听。官方进程集成单独使用 `HAPI_DSH_OFFICIAL_TESTS=1`，不能把默认 skip 写成已通过。
+
+### 已在实际官方浏览器中确认的交互
+
+这一组测试加载官方 DSH 页面、原始插件 Loader 和官方 Conversation / Files / DocumentPreview / Terminal。它们运行本仓库的生产插件和真实本地网络通道，HAPI、Runner 文件/PTY与模型返回值由测试中明确命名的协议 fixture 提供。
+
+| 专项 | 实际界面确认的行为 |
+| --- | --- |
+| `workspace.spec.ts`，5 条 | 统一侧栏和两类官方 Conversation、tmux 几何与刷新、跨机器官方插件/Settings、原生设置/精确历史分支/创建、普通 DSH 新建首次发送、计划实施丢回执不重复。 |
+| `draft-handoff.spec.ts`，2 条 | 真实源恢复接口返回新 source ID 后，原文字和 File 对象明确交接；原草稿按 revision/identity CAS 清理，Done 前完成持久屏障，刷新恢复原字节。目标已有草稿仅显式追加，同窗口 ready 分享跟随新源，零聊天提交、零重放。 |
+| `sidebar-actions.spec.ts`，3 条 | 鼠标、真实键盘焦点和移动触摸长按；准确身份复制、两种置顶、下方分屏与原草稿保留、标题建议与源 JSON 导出。重启/删除先确认，取消不提交，导航零聊天写入、零页面异常。 |
+| `appearance.spec.ts`，1 条 | 原偏好迁移、OLED/色板/气泡色、两 pane 页头字段与真实 xterm 9 px；实际 reload 保留。MutationObserver 断言源会话恢复期间没有短暂挂载 Hub 本机 opener，页面及控制台无错误。 |
+| `admin.spec.ts`，1 条 | 同一源机器 CPU/RAM/负载/运行时长在统一侧栏与官方 Settings 正确显示；机器改名、源 profile、重启丢 ACK 后仅查询、用量与真实 SQLite 下载路径。 |
+| `file-references.spec.ts`，1 条 | 官方 `@文件` 菜单、引用 chip、带空格文件精确提交与目录钻取；两个源机器不互串候选，源身份精确。 |
+| `incoming-share.spec.ts`，3 条 | fragment 分享隐私、已有草稿追加与不同 pane 隔离；真实 Service Worker multipart Share Target、原始 File Blob 恢复；取消新建保留分享、随后明确交接到新会话。官方 Settings 的“保存草稿后刷新”实际 reload 后恢复原附件字节及两个独立草稿，均未自动发送。 |
+| `cursor-launch.spec.ts`，1 条 | 原 Cursor base / variant 双选择、未完成选择刷新保留；改目录保留模型、换 Runner 清除旧模型；最终 source spawn 保留精确 wire ID。 |
+| `plugin-workspace.spec.ts` 的 source file actions | 官方文件树与文档扩展入口中的搜索、Git diff、创建/复制/重命名/移动/删除、上传与 hash CAS 编辑；另一个机器不变。保存回执丢失后实际 reload 仍保留原正文、原 hash 与未知状态，没有重新写源文件；未保存关闭被否决。 |
+| `legacy-terminal.spec.ts`，1 条 | 原 SessionTerminal 的同一 source/terminalId、双排键盘、一次与锁定修饰键、原 `terminal:write` 命令、隐藏宏与共享字号；reload 无输入重放。关闭仅 detach，没有 `terminal:close`、没有新 machine TerminalHost 请求。 |
+| `queued-edit.spec.ts`，3 条 | 源排队编辑的竞争窗口、取消确认后显式恢复草稿、跨 pane 绝对定时草稿恢复；未知取消结果只读取源确认，不重新发送操作或自动覆盖输入。 |
+| `plugin-workspace.spec.ts` 的 trusted terminal touch | 实际触摸 9→18 px 与 PTY grid、600 行历史拖动/惯性、ACK 和屏幕模式切换停止；TUI 仅发送合法 SGR wheel，不产生惯性残留输入；移动端 Close pane 不终止原 PTY，不创建替代 shell。 |
+| `dsh-children.spec.ts`，3 条 | HAPI DSH 子会话在原官方 Conversation 中保留真实 parent/child 身份；显式 `/child` 与 `/child-steer` 走实际源操作回执；丢 ACK 刷新不重发；空 child 首次输入。普通 DSH 的子代理行为继续由官方服务承担。 |
+
+这几项定向结果不代表整套 Playwright 在本轮每次修改后都重跑过。其余已验证产品路径、具体测试文件与仍缺少的验证在功能对照表及各专项文档逐项记录。最后一项生产增量是菜单完成可见布局后再聚焦，三条侧栏用例已在该构建独立通过；此前通过的 handoff 生产逻辑未随该修复变化。
+
+## 验证层次
+
+| 层次 | 真实运行的部分 | 明确替代的部分 | 能证明的边界 |
+| --- | --- | --- | --- |
+| 状态与协议测试 | 生产投影器、CAS、队列、草稿、资源地址、布局与源控制状态机 | 已标注的源事实输入 | 给定事实下的身份、请求、持久化和错误行为 |
+| 官方接口组合 | 固定版本 Cordis、SlotCore、ThemeRuntime、Remote gateway、Source / Session / Subagent 等公开服务 | 不需要模型的会话事实 | 公开接口准入、原 principal/权限传递、依赖启动/卸载/重新提供和服务生命周期 |
+| Hub/Runner transport | TCP、HTTP、WebSocket、真实生产反向通道 | 小型源业务服务器 | 字节与子协议保真、认证隔离、撤销、超时、断线不盲目重放 |
+| 官方 federation 集成 | 官方 npm 进程、Web profile、plugin CLI、生产 Runner | 简单 Hub 路由与测试身份 | 未修改官方运行时的插件图、bundle、Session RPC 与事件通道 |
+| 官方浏览器 | 原始 Web、Loader、renderer、生产插件、真实浏览器输入 | HAPI/Runner/model 协议 fixture；媒体/系统 API fixture 均逐项注明 | 页面组合、独立窗格状态、真实交互、刷新与跨窗格行为 |
+| 实际账号部署 | 用户的 HAPI Hub/Runner、Codex app-server、提供方账号、真实磁盘与 PTY | 无 | 指定环境能完成真实任务；本地协议 fixture 不构成此层证据 |
+
+源操作坚持以下边界：提交不等于应用，接受不等于执行完成，取消发出不等于源队列已移除，丢回执不是自动重发的理由。草稿迁移必须由源确认的新会话身份触发；无法确认时保留原数据和未知状态。
+
+## 运行命令
 
 ```bash
-npm install --global pnpm@11.28.5
 npm ci
-npm run check
+npm run typecheck
+npm test
 HAPI_DSH_OFFICIAL_TESTS=1 node --import tsx --test --test-isolation=none tests/federation-official.test.ts
-npm exec -- playwright install --with-deps chromium
+npm run build
+npx playwright install --with-deps chromium
 npm run test:e2e
-node scripts/distribution-pack.mjs
-node scripts/distribution-smoke.mjs
 ```
 
-测试需要允许绑定本机回环端口。`npm test` 使用 Node 的 `--test-isolation=none`，确保 TypeScript 测试被实际执行并报告 case 数；不要把测试文件进程退出成功当成所有断言已经执行。官方进程测试默认跳过，必须显式设置 `HAPI_DSH_OFFICIAL_TESTS=1`。
+需要使用指定的 Chrome for Testing 时，可通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/absolute/path/to/chrome-headless-shell` 运行 `npm run test:e2e`。测试默认单 worker，浏览器输出目录可以通过 Playwright `--output` 设置。不要在实际浏览器流程运行期间重建其共享 `dist`。
 
-## 覆盖层次
+本轮优先完成产品代码，没有重新执行 tarball 打包、干净安装 smoke 或把它们计入产品功能完成度。已有安装说明仍可参考，但发行包版本和当前源码验收不是同一个结论。
 
-| 层次 | 真实运行的部分 | 使用 fixture 的部分 | 能证明什么 |
-| --- | --- | --- | --- |
-| 配置 / profile 单元测试 | 文件权限、原子更新、参数解析、安装状态机 | DSH launcher 返回值、HAPI auth 响应 | 安装不会覆盖既有 profile；凭据不进 argv 或公共视图 |
-| Federation transport | 本机 TCP、HTTP、WebSocket、生产 Hub/Runner 实现 | 小型模拟 DSH 业务服务器 | 字节保真、子协议、认证隔离、流超时、撤销与断线不重放 |
-| 官方 federation 集成 | 固定官方 DSH npm 包、官方 Web profile、官方 plugin CLI、生产 Runner 插件 | Hub 侧仅使用简单路由适配器 | 未修改官方运行时可完成安装、图读取、bundle 读取、Session RPC、事件 WS |
-| Native / workspace 单元测试 | 本仓库的投影、投递状态机、审批状态机与布局逻辑 | 原生桥历史/队列/审批事实 | 既定契约及错误分支符合预期 |
-| 原生历史与官方 Conversation | 已发布官方 bundle 内的真实 `ConversationNodeAssembler`、本仓库投影器 | 原生历史输入；不调用浏览器渲染服务 | 延后补写的元数据不会产生假步骤、破坏最终回答的边界 |
-| Playwright E2E | 浏览器、构建后的插件、官方 DSH 页面 | 测试文件明确声明的 HAPI/模型输入 | 页面集成、统一工作区交互与真实浏览器行为 |
-| 发行包安装 | 干净目录中的 npm 运行依赖、已打包 CLI、官方主/Runner profile | 不联网的 HAPI 地址与临时配对身份 | 安装包不依赖开发目录，配置与配对 CLI 可复现 |
-| 部署验收 | 实际 HAPI Hub/Runner、Codex app-server、模型提供方 | 无 | 指定机器、凭据、模型、文件系统与网络组合能完成真实任务 |
+## 已知上游日志与实际部署范围
 
-## 本次执行结果
+固定 DSH 的 sidebar 在异步 retain 尚未完成时被正常释放，可能输出 `Sidebar Session opening failed: … is released`。这与真正的会话打开失败必须按发生时点和可见结果区分；不能吞掉全部 console error。本项目不为消除它而修改官方代码。
 
-在 Linux、Node 24.19.0、固定官方 DSH `0.2.1-rc.2` 上完成以下检查。浏览器使用 Playwright 1.56.1 的 Chromium；所有官方 DSH 代码均来自锁定的原始发行包。
-
-| 命令 / 检查 | 结果 |
-| --- | --- |
-| `npm run typecheck` | Host、Client 和 E2E 三个 TypeScript 项目通过 |
-| `npm test` | 146 项：145 通过，0 失败，1 项官方进程测试因需显式启用而跳过 |
-| 显式启用 `tests/federation-official.test.ts` | 1 通过，0 跳过 |
-| `npm run build` | Host、Client、独立 Runner、CLI 和类型声明构建通过 |
-| `npm run test:e2e` | 5 条浏览器流程通过，0 失败；最终完整运行 55.6 秒 |
-| `node scripts/distribution-pack.mjs` | 163 个包内文件审计通过；生成 `hapi-dsh-0.1.0.tgz` 与 `SHA256SUMS`，包含完整源码、构建入口及上游许可证 |
-| `node scripts/distribution-smoke.mjs` | 干净临时目录安装发行包及运行依赖通过；已打包入口导入、官方主/Runner profile 安装、离线 doctor、配对凭据脱敏及撤销全部通过 |
-
-测试覆盖私有文件权限、并发身份迁移、进程退出后的锁接管、profile 保护、代理 trust/TLS 参数、原生操作的持久回执与未知结果、布局 CAS 冲突，以及真实官方 store 的跨 graph 存储隔离。原生历史回归直接使用官方 `ConversationNodeAssembler`，确认辅助元数据不会制造假步骤或隐藏最终回答。
-
-Federation transport 测试覆盖超过 1 MiB 的原始字节传输、插件路径、双向文本/二进制 WebSocket、非首选子协议、握手拒绝后的通道释放、持续事件流、断线不重发和凭据撤销。单独启用的官方集成测试实际复制 Web profile、安装 Host-only Runner、读取真实插件图及 Conversation bundle、调用 Session list 并打开 `$events`。Runner 图没有误装根工作区 Client。
-
-发行包安装测试先验证 SHA256，再清空 `NODE_PATH`、`DSH_HOME` 和 HAPI 配置环境变量，以 `npm install --omit=dev` 安装实际 tarball。主插件、SessionController provider 和 Runner 三个已打包 Host 入口可独立导入；官方 CLI 创建主 profile 与仅 Host 的 Runner profile，离线 doctor 检查固定 DSH 版本、构建文件和安装状态。临时配对凭据未出现在公开配置中，撤销后配对表为空，测试结束清除临时安装目录。该步骤没有连接真实 HAPI 或调用模型。
-
-### 五条真实浏览器流程
-
-1. 同一个侧边栏列出原生 Codex 与远端 DSH；官方 Conversation 同时渲染两种会话，分屏尺寸和布局刷新后恢复。审批提交与原生最终解决分开，SSE 重连后可取消排队输入、发送并展示原生响应。
-2. 远端窗格经过生产反向通道调用真实官方 AgentLoop；打开所属 Host 的官方 Settings、用 Escape 关闭、切换 Plugins 页面，再返回 Conversation。
-3. 原生推理强度和服务级别设置、映射到真实 native 边界的分支，以及带机器/home/目录的新建流程；空原生 thread 可以直接从官方 composer 发出第一条消息。
-4. 官方 New Session 入口进入统一创建界面，在目标 Host 登记 Workspace 并创建普通 DSH 会话；选择模型、提交 prompt，并在官方 Conversation 展示 AgentLoop 响应。
-5. 对源发布的 Codex 计划提案执行一次；刷新后仍恢复同一排队回执，不重复提交；源消费队列后显示已调用状态及响应。
-
-浏览器断言检查统一侧边栏、没有 iframe、可见回答和未捕获页面异常。DSH 的模型输入来自明确标记的测试 provider；HAPI 原生桥和 Codex 事件也来自 fixture。真实官方进程、浏览器、生产插件及 Hub/Runner 通道不会因此变成真实 Codex app-server 或真实模型执行的证据。
-
-启动恢复或切换焦点时，固定版本的官方右栏偶尔会打印 `Sidebar Session opening failed: … is released`：这是 `sidebarView` 在打开完成前被正常取消后的日志。工作区窗格持有独立引用，以上流程确认可见会话仍能发送与恢复；本插件没有为消除该日志修改或拦截上游代码。
-
-当前分发不宣称已经使用用户的 Codex 登录、实际 app-server 和模型凭据完成在线部署验收，也不宣称全部第三方 DSH 插件都通过兼容认证。后续提交的精确结果以对应 CI artifact 为准。
-
-## 真实部署验收清单
-
-发布候选版本至少在一套实际 HAPI/DSH 环境中验证以下用户路径，并把版本、平台及结果附到 release notes：
-
-1. 同一侧边栏同时列出本机 DSH、远端 DSH 与原生 Codex；跨机器同名或相同原始 ID 的会话保持独立。
-2. 在一个工作区分屏混排不同引擎会话，关闭、恢复、切换窗格后实际执行继续；刷新浏览器后布局恢复。
-3. 原生 Codex 启动真实 turn，正确展示文本、工具、文件/图片；审批答案最终由原生事件确认。
-4. 运行期间发送排队输入、steer、cancel，核对实际 app-server 状态；人工制造响应丢失时界面显示不确定结果，不重复执行。
-5. 中断 HAPI 与 DSH Runner 网络，再恢复；目录和视图恢复，未确认操作不会被后台盲目重发。
-6. 用官方插件管理器安装实际要分发的插件，验证它在所属 Host 的会话、设置与 Remote API 上运行；依赖页面级注入的插件单独记录。
-7. 从 GitHub Release 的 `.tgz` 在干净机器安装，完成 init、doctor、主 Host 启动、配对、Runner 启动及撤销。
-
-CI 自动完成可无凭据复现的门槛。真实凭据验收由部署操作者执行，不把令牌或用户会话录制进公共测试产物。
+未使用用户的 Codex 登录、实际 app-server 或第三方模型/语音账号完成线上任务验收，也不预先宣称所有第三方 DSH 插件兼容。实际部署需覆盖：原生 turn 与最终审批、真实排队/steer/cancel、网络中断恢复、不同机器同名路径、旧终端原 ID 恢复，以及将要分发的插件在自己的 Host、Session 和官方设置页中运行。提供方数据和账号凭据不得进入公共测试产物。

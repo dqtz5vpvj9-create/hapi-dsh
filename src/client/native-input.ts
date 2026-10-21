@@ -70,6 +70,20 @@ export function questionAnswered(question: NativeQuestion, answer: NativeQuestio
     return question.inputType === 'editor' || answer.userNote.trim().length > 0
 }
 
+/** The native URL challenge requires its exact advertised confirmation option. */
+export function nativeUrlConfirmed(parsed: NativeQuestions, values: Record<string, NativeQuestionAnswer>): boolean {
+    return Boolean(parsed.url && parsed.questions.some(question => question.id === '__mcp_url_confirmation'
+        && question.options.some(option => values[question.id]?.selected.includes(option.label) && option.description === parsed.url)))
+}
+
+/** Synchronous popup creation remains inside the operator's submit gesture. */
+export function openNativeInputUrl(url: string, open: typeof window.open = window.open.bind(window)): boolean {
+    const popup = open('about:blank', '_blank')
+    if (!popup) return false
+    try { popup.opener = null; popup.location.replace(url); return true }
+    catch { popup.close(); return false }
+}
+
 /** Preserve native option labels and editor whitespace; this is Codex's nested wire format. */
 export function formatNativeAnswers(questions: NativeQuestion[], values: Record<string, NativeQuestionAnswer>): Record<string, { answers: string[] }> {
     const answers: Record<string, { answers: string[] }> = {}

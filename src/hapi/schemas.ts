@@ -78,6 +78,7 @@ export const eventSchema = z.discriminatedUnion('type', [
     z.object({ type: z.enum(['messages-indeterminate', 'messages-dispatching', 'messages-requeued']), sessionId: z.string(), localIds: strings }),
     z.object({ type: z.literal('message-cancelled'), sessionId: z.string(), messageId: z.string(), localId: z.string().optional() }),
     z.object({ type: z.literal('connection-changed'), data: z.object({ status: z.string(), subscriptionId: z.string().optional(), resume: z.enum(['ok', 'gap']).optional() }).optional() }),
+    z.object({ type: z.literal('toast'), data: z.object({ title: z.string().max(2048), body: z.string().max(32_768), sessionId: z.string().min(1).max(256), url: z.string().max(8192) }) }),
 ]);
 
 export const machineSchema = z.object({

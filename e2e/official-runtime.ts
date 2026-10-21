@@ -21,9 +21,15 @@ export interface OfficialEnvironment {
     remoteRpc?: Rpc;
     remoteSessionId?: string;
     directory: string;
+    /** Sanitized local fixture process output for failed official-plugin activation diagnostics. */
+    diagnostics(): string;
     close(): Promise<void>;
 }
-function sanitize(value: string): string { return value.replace(/([?&]token=)[^\s&]+/g, '$1[redacted]'); }
+function sanitize(value: string, secrets: readonly string[] = []): string {
+    let safe = value.replace(/([?&]token=)[^\s&]+/g, '$1[redacted]');
+    for (const secret of secrets) if (secret) safe = safe.replaceAll(secret, '[redacted]');
+    return safe;
+}
 
 async function rpcClient(launchUrl: string, prefix = ''): Promise<{ rpc: Rpc; cookie: string; origin: string }> {
     const initial = await fetch(launchUrl, { redirect: 'manual' });
@@ -47,6 +53,7 @@ async function invoke<T>(origin: string, cookie: string, prefix: string, method:
 export async function startOfficialEnvironment(remote = false): Promise<OfficialEnvironment> {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-browser-'));
     const children: ChildProcess[] = [];
+    const processOutput: Array<() => string> = [];
     const hapi = new HapiWireFixture();
     const close = async (): Promise<void> => {
         for (const child of [...children].reverse()) {
@@ -87,6 +94,7 @@ export async function startOfficialEnvironment(remote = false): Promise<Official
             const child = spawn(runtime.executable, [...runtime.args, ...args], { env: { ...env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
             children.push(child);
             let output = '';
+            processOutput.push(() => sanitize(output, [hapi.accessToken, ...(pairToken ? [pairToken] : [])]));
             const capture = (chunk: Buffer): void => { output = (output + chunk.toString()).slice(-100_000); };
             child.stdout!.on('data', capture); child.stderr!.on('data', capture);
             const deadline = Date.now() + 60_000;
@@ -102,7 +110,7 @@ export async function startOfficialEnvironment(remote = false): Promise<Official
         await addProvider(config.dsh.profile, env);
         const launchUrl = await start(command, ['--profile', config.dsh.profile, '--host', '127.0.0.1', '--port', '0', '--no-open'], env);
         const client = await rpcClient(launchUrl);
-        const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory, close };
+        const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory, diagnostics: () => processOutput.map(read => read()).join('\n'), close };
         if (remote && pairToken) {
             const runner = createRunnerConfig(client.origin, { id: 'runner-one', token: pairToken, dshHome: join(directory, 'runner-home') });
             const runnerFile = join(directory, 'runner.json');

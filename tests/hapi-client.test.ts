@@ -9,6 +9,18 @@ const json = (value: unknown, status = 200): Response => new Response(JSON.strin
 const auth = (): Response => json({ token: 'fixture-jwt' });
 const base = { hubId: 'fixture-hub', url: 'http://127.0.0.1:39091', token: 'fixture-access-token', reconnectMinMs: 2, reconnectMaxMs: 5 };
 
+test('the original health capability route is read-only and does not broaden proxy destinations', async () => {
+    const calls: string[] = [], client = new HapiClient({ ...base, fetch: async input => {
+        calls.push(String(input)); return String(input).endsWith('/auth') ? auth() : json({ capabilities: { titleSuggestion: true } });
+    } });
+    try {
+        assert.deepEqual(await client.request('/health'), { capabilities: { titleSuggestion: true } });
+        for (const path of ['/health?other=1', '//other.example/health', '/private', 'https://other.example/health']) await assert.rejects(client.request(path), /Invalid HAPI/);
+        await assert.rejects(client.request('/health', { method: 'POST' }), /Invalid HAPI/);
+        assert.deepEqual(calls, [`${base.url}/api/auth`, `${base.url}/health`]);
+    } finally { await client.close(); }
+});
+
 test('a connection failure after a mutation is indeterminate and is never retried automatically', async () => {
     const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
     const client = new HapiClient({ ...base, fetch: async (input, init) => {
@@ -79,6 +91,43 @@ test('stale approvals are rejected; server failure remains indeterminate without
             assert.equal(submissions, 1);
         } finally { await client.close(); }
     }
+});
+
+test('voice multipart keeps original recording bytes and lets fetch choose the boundary', async () => {
+    const form = new FormData(); form.append('file', new Blob([Uint8Array.of(0, 127, 255)], { type: 'audio/webm' }), 'recording.webm');
+    form.append('provider', 'openai');
+    let submissions = 0;
+    const client = new HapiClient({ ...base, fetch: async (input, init) => {
+        if (String(input).endsWith('/auth')) return auth();
+        submissions++; assert.equal(init?.redirect, 'manual');
+        assert.equal(new Headers(init?.headers).get('Content-Type'), null);
+        assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer fixture-jwt');
+        assert.equal(init?.body, form);
+        const request = new Request(String(input), init);
+        assert.match(request.headers.get('Content-Type')!, /^multipart\/form-data; boundary=/);
+        const uploaded = await request.formData(); const recording = uploaded.get('file') as File;
+        assert.equal(recording.name, 'recording.webm'); assert.equal(recording.type, 'audio/webm');
+        assert.deepEqual(new Uint8Array(await recording.arrayBuffer()), Uint8Array.of(0, 127, 255));
+        return json({ text: 'transcribed words' });
+    } });
+    try {
+        assert.deepEqual(await client.request('/api/voice/transcription', { method: 'POST', body: form }), { text: 'transcribed words' });
+        assert.equal(submissions, 1);
+    } finally { await client.close(); }
+});
+
+test('a multipart 401 never resubmits a recording whose outcome is unknown', async () => {
+    let submissions = 0; let authentication = 0;
+    const client = new HapiClient({ ...base, fetch: async (input) => {
+        if (String(input).endsWith('/auth')) { authentication++; return auth(); }
+        submissions++; return json({ error: 'authentication or downstream error' }, 401);
+    } });
+    const form = new FormData(); form.append('file', new Blob(['recording']), 'clip.webm');
+    try {
+        await assert.rejects(client.request('/api/voice/transcription', { method: 'POST', body: form }),
+            (error: unknown) => error instanceof HapiRequestError && error.outcome === 'indeterminate' && error.status === 401);
+        assert.equal(submissions, 1); assert.equal(authentication, 1);
+    } finally { await client.close(); }
 });
 
 test('authentication is shared by concurrent reads and request redirects are not followed', async () => {
