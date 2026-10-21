@@ -107,6 +107,7 @@ test('all existing non-native HAPI flavors enter real official Sessions with ori
     for (const agent of app.service.list()) {
       assert.equal(app.ctx.agents.get(agent.id), agent); assert.equal(app.ctx.sessions.get(agent.id), agent.session)
       assert.equal(agent.projection.ownership, 'hapi-runner'); assert.equal(agent.projection.engine, 'hapi')
+      assert.equal(agent.session.header.agentPreset, undefined, 'an observed source engine is not a DSH preset composition')
       assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
       assert.equal(agent.resolveRewindLocalId('hapi-observed:user:input'), 'input')
       const seq = agent.resolveSourceMessageDisplaySeq('input'); assert.notEqual(seq, undefined)

@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Lossless import of HAPI v1 scratchlists and original HAPI session exports. */
-import { randomId } from './random-id.ts';
 import { z } from 'zod';
 import { remoteValue, type SessionExtrasApi, type SourceNote, type WorkbenchSource } from '../client-api.ts';
 import { sourceAttachmentSchema, sourceNoteSchema } from '../session-extras-types.ts';

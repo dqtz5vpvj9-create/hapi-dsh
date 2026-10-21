@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createContext, useContext, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { resolveSlotLabel, type PropsLocale, type PropsRenderSlots, type PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -16,6 +17,8 @@ import type {} from './pane-navigation.ts'
 import { installWorkspaceLinkSettings } from './workspace-links.tsx'
 
 type BridgeSeatProps = PropsRuntime<'shell.overlay'> & PropsRenderSlots<'hapi.remote.bridge'>
+const emptySubscribe = (): (() => void) => () => {}
+const noMenuTarget = (): null => null
 
 /**
  * Retain the official AppFrame's global overlays and plugin pages. One isolated
@@ -24,6 +27,8 @@ type BridgeSeatProps = PropsRuntime<'shell.overlay'> & PropsRenderSlots<'hapi.re
  */
 export function installRemotePane(ctx: Context, options: {
     native?: NativeActionsApi; hostLabel?: string
+    /** An outlet owned by the workspace chrome, never an official slot's DOM. */
+    toolsTarget?: ObservableSnapshot<HTMLElement | null>
     localeInstalled?: boolean
     navigated?: (target: DshPaneTarget, title: string) => void
     keyboard?: { capture(event: KeyboardEvent): void; bubble(event: KeyboardEvent): void }
@@ -61,30 +66,28 @@ export function installRemotePane(ctx: Context, options: {
     const Tools = ({ settingsTarget }: { settingsTarget: (target: HTMLSpanElement | null) => void }) => {
         useSyncExternalStore(listener => { listeners.add(listener); return () => listeners.delete(listener) }, () => toolsRevision)
         const panel = useSyncExternalStore(listener => ctx.layout.panelInfo.subscribe(listener), () => ctx.layout.panelInfo.getSnapshot())
-        const [toolError, setError] = useState<string | null>(null)
         const t = ctx.locale.bind('hapiWorkspace')
         const panels = ctx.slots.entriesOfSlot('sidebar.panellist').map(entry => ({
             id: entry.options.id as MainPanelId, label: resolveSlotLabel(entry.options.label) ?? String(entry.options.id), order: entry.options.order ?? 0,
         })).sort((a, b) => a.order - b.order)
-        return <div className="hapi-host-tools">
-            <span title={options.hostLabel}>{options.hostLabel ?? 'DSH'}</span>
-            <select value={panel.activePanelId ?? ''} aria-label={t('hostTools')} onChange={event => {
-                try {
-                    const id = event.currentTarget.value
-                    if (state.target) bridge.navigated(id ? { type: 'panel', panelId: id } : { type: 'conversation' }, id || t('conversation'))
-                    ctx.layout.selectPanel(id ? id as MainPanelId : null); setError(null)
-                }
-                catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
-            }}><option value="">{t('conversation')}</option>{panels.map(item => <option value={item.id} key={item.id}>{item.label}</option>)}</select>
-            <span ref={settingsTarget}/>
+        const select = (id: MainPanelId | null, label: string): void => {
+            try {
+                if (state.target) bridge.navigated(id ? { type: 'panel', panelId: id } : { type: 'conversation' }, label)
+                ctx.layout.selectPanel(id); bridge.failed(null)
+            } catch (reason) { bridge.failed(reason) }
+        }
+        return <div className="hapi-host-tools" role="group" aria-label={t('hostTools')}>
+            <span className="hapi-host-tools-heading">{t('hostTools')}{options.hostLabel && options.hostLabel !== 'DSH' ? ` · ${options.hostLabel}` : ''}</span>
+            <button type="button" aria-pressed={panel.activePanelId === null} onClick={() => select(null, t('conversation'))}>{t('conversation')}</button>
+            {panels.map(item => <button type="button" key={item.id} aria-pressed={panel.activePanelId === item.id} onClick={() => select(item.id, item.label)}>{item.label}</button>)}
+            <span className="hapi-host-settings-launcher" ref={settingsTarget}/>
             <button type="button" onClick={() => {
                 try {
                     if (state.target) bridge.navigated({ type: 'tab', kind: 'guide' }, t('pluginViews'))
-                    ctx.layout.selectPanel(null); ctx.sidebarRight.openTab('guide'); setError(null)
+                    ctx.layout.selectPanel(null); ctx.sidebarRight.openTab('guide'); bridge.failed(null)
                 }
-                catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)) }
+                catch (reason) { bridge.failed(reason) }
             }}>{t('pluginViews')}</button>
-            {(error || toolError) && <span role="alert" className="hapi-error">{error ?? toolError}</span>}
         </div>
     }
     const Launcher = ({ openSettings, settingsOpen, t }: SettingsLauncherOwnerProps & PropsLocale<'hapiWorkspace'>) => {
@@ -94,14 +97,21 @@ export function installRemotePane(ctx: Context, options: {
     const Shell = ({ reference }: { reference: SessionReference }) => {
         const [target, setTarget] = useState<HTMLSpanElement | null>(null)
         const pane = useSyncExternalStore(bridge.subscribe, bridge.getSnapshot)
+        const menuTarget = useSyncExternalStore(options.toolsTarget?.subscribe ?? emptySubscribe, options.toolsTarget?.getSnapshot ?? noMenuTarget)
+        const visibleError = useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => error)
         useLayoutEffect(() => {
             if (pane.target?.type === 'panel') {
                 try { ctx.layout.selectPanel(pane.target.panelId as MainPanelId) } catch (reason) { bridge.failed(reason) }
             } else if (pane.target) ctx.layout.selectPanel(null)
         }, [pane.target?.type, pane.target?.type === 'panel' ? pane.target.panelId : null])
         return <Reference.Provider value={reference}><SettingsTarget.Provider value={target}>
+            {menuTarget && createPortal(<Tools settingsTarget={setTarget}/>, menuTarget)}
             <div className={`hapi-remote-shell${pane.target && pane.target.type !== 'panel' && pane.target.type !== 'conversation' ? ' hapi-plugin-view-shell' : ''}`} data-hapi-view-visible={pane.visible}
-                onKeyDownCapture={event => options.keyboard?.capture(event.nativeEvent)} onKeyDown={event => options.keyboard?.bubble(event.nativeEvent)}><Tools settingsTarget={setTarget}/><div className="hapi-host-frame">{ctx.slots.renderSlot('root', {})}</div></div>
+                onKeyDownCapture={event => options.keyboard?.capture(event.nativeEvent)} onKeyDown={event => options.keyboard?.bubble(event.nativeEvent)}>
+                {!options.toolsTarget && <details className="hapi-menu hapi-standalone-host-menu"><summary aria-label={ctx.locale.bind('hapiWorkspace')('hostTools')}>⋯</summary><div className="hapi-menu-content"><Tools settingsTarget={setTarget}/></div></details>}
+                {visibleError && <div className="hapi-pane-tool-error" role="alert">{visibleError}</div>}
+                <div className="hapi-host-frame">{ctx.slots.renderSlot('root', {})}</div>
+            </div>
         </SettingsTarget.Provider></Reference.Provider>
     }
     const BridgeSeat = ({ SessionProvider, renderSlot }: BridgeSeatProps) => {

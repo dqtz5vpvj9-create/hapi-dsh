@@ -36,11 +36,6 @@ export interface ObservedProjectorOptions {
 export class ObservedProjector {
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
-  private seedRecords: PluginRecordMap['plugin:hapi-dsh-observed/item'][] = []
-  private seedSummaries: SourceNotifySummary[] = []
-  private seedMedia: SourceGeneratedMediaRecord[] = []
-  private seedProgress: SourceToolProgress[] = []
-  private seedReviews: SourceCodexReviewRecord[] = []
   private readonly committed = new Map<string, string>()
   private readonly rowKeys = new Set<string>()
   private readonly rewindIds = new Map<string, string>()
@@ -70,21 +65,21 @@ export class ObservedProjector {
   finishHistorySeed(session: Session): void {
     if (!this.seed || session.id !== this.session.id || session.firstLiveSeq !== this.seed.length) throw new Error('Observed history seed does not match the prepared Session')
     this.current = session; this.seed = undefined
-    for (const value of this.seedRecords) appendPluginRecord(session, 'plugin:hapi-dsh-observed/item', value)
-    for (const summary of this.seedSummaries) appendPluginRecord(session, 'plugin:hapi-dsh/notify-summary', summary)
-    for (const media of this.seedMedia) appendPluginRecord(session, 'plugin:hapi-dsh/generated-media', media)
-    for (const progress of this.seedProgress) appendPluginRecord(session, 'plugin:hapi-dsh/tool-progress', progress)
-    for (const review of this.seedReviews) appendPluginRecord(session, 'plugin:hapi-dsh/codex-review', review)
-    this.seedRecords = []
-    this.seedSummaries = []
-    this.seedMedia = []
-    this.seedProgress = []
-    this.seedReviews = []
   }
   private append<T extends SessionEventType>(type: T, data: SessionEventMap[T], ...intent: T extends SurfaceEventType ? [SurfaceIntent<T>] : []): SessionEvent<T> {
     const event = this.session.append(type, data, ...intent)
     if (this.seed) this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
     return event
+  }
+
+  /** Source records share the same bounded page and chronology as their body. */
+  private appendRecord<K extends Extract<keyof PluginRecordMap, `plugin:${string}`>>(type: K, data: PluginRecordMap[K]): void {
+    const seq = appendPluginRecord(this.session, type, data)
+    if (this.seed) {
+      const event = this.session.eventAt(seq)
+      if (!event) throw new Error('The source annotation was not committed to its detached Session')
+      this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
+    }
   }
 
   apply(items: readonly ObservedItem[]): void {
@@ -148,8 +143,7 @@ export class ObservedProjector {
         if (media.files.length) {
           const record: SourceGeneratedMediaRecord = { messageId: event.data.message.id, sourceRowId: item.rowId, surfaceSeq: event.seq,
             turn: event.data.turn, step: event.data.step, files: media.files }
-          if (this.seed) this.seedMedia.push(record)
-          else appendPluginRecord(this.session, 'plugin:hapi-dsh/generated-media', record)
+          this.appendRecord('plugin:hapi-dsh/generated-media', record)
         }
         this.closeStep(step)
       } else if (item.kind === 'tool-call') {
@@ -212,8 +206,7 @@ export class ObservedProjector {
       createdAt: item.createdAt, turn: call.step.turn, step: call.step.step, phase: 'progress', payload: parsed.data })
   }
   private recordProgress(record: SourceToolProgress): void {
-    if (this.seed) this.seedProgress.push(record)
-    else appendPluginRecord(this.session, 'plugin:hapi-dsh/tool-progress', record)
+    this.appendRecord('plugin:hapi-dsh/tool-progress', record)
   }
   private assistant(item: ObservedItem, content = this.content(item)): AssistantMessage {
     return freezeMessage({ id: MessageId(`hapi-observed:${item.key}`), role: 'assistant', content,
@@ -225,22 +218,19 @@ export class ObservedProjector {
     if (!this.sourceSeqs.has(item.rowId)) this.sourceSeqs.set(item.rowId, surfaceSeq)
     const value = { key: item.key, sourceRowId: item.rowId, sourceLocalId: item.localId, sourceSeq: item.seq,
       scopeId: item.scopeId, parentToolCallId: item.parentToolCallId, surfaceSeq }
-    if (this.seed) this.seedRecords.push(value)
-    else appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/item', value)
+    this.appendRecord('plugin:hapi-dsh-observed/item', value)
   }
   private recordSummary(item: ObservedItem, event: SessionEvent<'assistant/message'>, display: ReturnType<typeof projectNotifySummaries>): void {
     if (!display.summaries.length) return
     const record: SourceNotifySummary = { messageId: event.data.message.id, sourceRowId: item.rowId, surfaceSeq: event.seq,
       turn: event.data.turn, step: event.data.step, originalText: display.originalText, summaries: display.summaries }
-    if (this.seed) this.seedSummaries.push(record)
-    else appendPluginRecord(this.session, 'plugin:hapi-dsh/notify-summary', record)
+    this.appendRecord('plugin:hapi-dsh/notify-summary', record)
   }
   private recordReview(item: ObservedItem, event: SessionEvent<'assistant/message'>): void {
     if (item.kind !== 'assistant' || item.live || item.reasoning || !item.review) return
     const record: SourceCodexReviewRecord = { messageId: event.data.message.id, sourceRowId: item.rowId, surfaceSeq: event.seq,
       turn: event.data.turn, step: event.data.step, review: item.review }
-    if (this.seed) this.seedReviews.push(record)
-    else appendPluginRecord(this.session, 'plugin:hapi-dsh/codex-review', record)
+    this.appendRecord('plugin:hapi-dsh/codex-review', record)
   }
   private updateLive(item: ObservedItem & { kind: 'assistant' }): void {
     this.responseInTurn = true

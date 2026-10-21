@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official Settings and plugin transport; HAPI execution replies are explicit wire fixtures. */
 import { test, expect, type Page } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -9,9 +10,7 @@ test.describe('original source bulk actions in the unified Settings', () => {
     async function settings(page: Page) {
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.getByRole('button', { name: 'Account menu', exact: true }).click();
         await page.getByRole('menuitem', { name: 'Settings', exact: false }).click();
         const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });

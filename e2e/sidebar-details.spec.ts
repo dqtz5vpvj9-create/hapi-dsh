@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Unchanged official DSH UI with explicit HAPI catalog fixtures; no model calls. */
 import { test, expect, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
@@ -5,9 +6,7 @@ import { startOfficialEnvironment, type OfficialEnvironment } from './official-r
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-    await expect(notice).toBeVisible()
-    await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
 }
 const dayValue = (day: number): string => {
     const now = new Date()

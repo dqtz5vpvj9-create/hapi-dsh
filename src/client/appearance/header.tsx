@@ -19,6 +19,23 @@ export const HEADER_LABELS: Record<HeaderField, [string, string]> = {
     createdAt: ['Created', '创建时间'], updatedAt: ['Updated', '更新时间'], worktree: ['Worktree', '工作树'],
 }
 export interface HeaderFact { key: Exclude<HeaderField, 'showLabels'>; value: string; absolute?: number }
+/** HAPI's DSH model identifier is an opaque [provider, model] pair. Only its
+ * display label is formatted; selection and execution keep the original id. */
+export function sourceHeaderModel(value: string | null, flavor: string): string | null {
+    if (value === null || flavor !== 'dsh') return value
+    try {
+        const pair: unknown = JSON.parse(value)
+        if (Array.isArray(pair) && pair.length === 2 && pair.every(part => typeof part === 'string')) {
+            const [provider, model] = pair as [string, string]
+            return `${model.replace(/^deepseek/i, 'DeepSeek').replace(/-v(\d)/i, '-V$1').replace(/-flash$/i, '-Flash')} · ${provider}`
+        }
+    } catch { /* Bare source model ids remain valid. */ }
+    return value
+}
+const SOURCE_AGENT_LABELS: Readonly<Record<string, string>> = {
+    codex: 'Codex', claude: 'Claude', dsh: 'DSH', pi: 'Pi', gemini: 'Gemini', cursor: 'Cursor',
+    'cursor-acp': 'Cursor ACP', qoder: 'Qoder', opencode: 'OpenCode', 'kimi-cli': 'Kimi CLI',
+}
 export function sourceHeaderFacts(native: HapiProjection, observed: HapiObservedProjection, catalog: WorkspaceCatalogRow | undefined,
     preferences: HeaderPreferences, locale: string, now = Date.now()): HeaderFact[] {
     const source = native ?? observed
@@ -27,9 +44,10 @@ export function sourceHeaderFacts(native: HapiProjection, observed: HapiObserved
     const row = identity?.hubId === source.hubId && identity.sessionId === source.hapiSessionId ? catalog : undefined
     const facts: HeaderFact[] = []
     const add = (key: HeaderFact['key'], value: string | null | undefined): void => { if (preferences[key] && value) facts.push({ key, value }) }
-    add('agent', native ? 'Codex' : observed?.flavor)
+    const flavor = native ? 'codex' : observed?.flavor ?? ''
+    add('agent', SOURCE_AGENT_LABELS[flavor] ?? flavor)
     add('machine', source.machineName ?? source.machineId)
-    add('model', source.model)
+    add('model', sourceHeaderModel(source.model, flavor))
     add('reasoning', native?.reasoningEffort ?? observed?.effort)
     if (row?.sourceRowState?.serviceTier === 'fast') add('fastMode', 'FAST')
     const lastActive = row?.sourceLastActiveAt

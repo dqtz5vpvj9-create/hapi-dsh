@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Browser-local source editor recovery; content never enters workspace geometry. */
-import { randomId } from './random-id.ts';
 import { z } from 'zod';
 import { MAX_EDITABLE_BYTES, nativeDocumentSchema } from '../workbench-types.ts';
 import type { NativeDocumentDraft } from './workbench-drafts.ts';

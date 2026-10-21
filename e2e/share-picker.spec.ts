@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official DSH graphs, ServiceWorker, IndexedDB and composer. HAPI sessions
  * and the DSH model are explicit protocol fixtures, not real model execution. */
 import { test, expect, type Locator, type Page } from '@playwright/test'
@@ -10,8 +11,7 @@ const dateKey = (value: number): string => { const valueDate = day(value); retur
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
 }
 async function search(dialog: Locator, value: string): Promise<void> {
     if (!await dialog.getByRole('searchbox').isVisible()) await dialog.getByRole('button', { name: /^Search conversations/ }).click()

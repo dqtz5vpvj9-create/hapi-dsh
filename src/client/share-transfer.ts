@@ -1,6 +1,5 @@
+import { randomId } from './random-id.ts'
 /** HAPI's original browser-only Web Share Target transfer format (AGPL-3.0). */
-import { randomId } from './random-id.ts';
-
 export const SHARE_DATABASE = 'hapi-share-transfers';
 export const SHARE_STORE = 'transfers';
 export const SHARE_TTL = 60 * 60 * 1000;

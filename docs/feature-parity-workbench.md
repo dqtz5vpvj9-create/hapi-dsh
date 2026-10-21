@@ -10,6 +10,16 @@
 
 对应代码：`src/shared/official-provider.ts`、`src/hapi/workspace-files.ts`、`src/hapi/terminal-controller.ts`、`config/cordis.patch.yml`。
 
+### 文档读取与目录管理的区别
+
+原 HAPI 的 `/api/sessions/:id/file`、`/file-info` 是文档读取接口。Hub 根据原 session 找到所属机器，Runner 在其 browse roots 内授权读取；会话 cwd 用于解析相对路径，并不是所有文档的唯一可读根。聊天进程已离线时，所属 Runner 仍可提供已授权文件。
+
+官方 WorkspaceFiles 的文档 `stat`、`read`、`readBytes` 和文件变化订阅现使用这一原读取契约。之前先调用 `/filesystem/entry` 再 `/filesystem/download`，误用了要求会话在线且限定 cwd 的管理契约，导致旧工作区的合法外部文档显示 Access denied。现在文件元数据先检查传输上限，内容按原 hash/大小验证；Markdown 相对图片使用源返回的规范文件路径解析，仍逐文件交源授权。预览和下载不访问 Host 文件系统。
+
+目录树、`@文件` 候选及写操作保留各自原接口的范围。离线文档可以读取，但不会显示可提交的编辑权限。二进制读取上限仍为 64 MiB；原读取协议不支持 range，适配器有界解码后向官方 viewer 返回请求窗口。短期缓存只保留最多 16 MiB / 8 个已完成的小文件读取，避免 `stat` 和内容读取立即重复传输；它不改变源归属检查。
+
+相应的源授权、离线读取、Windows 路径、字节/哈希不一致、源拒绝及取消回归见 `tests/hapi-workspace-files.test.ts`、`tests/hapi-workbench.test.ts`。真实官方 Markdown/PDF 与刷新验证见 `e2e/source-document-policy.spec.ts`，源磁盘数据和权限由明确 fixture 提供。
+
 ### 输入框的 `@文件` 发现
 
 `@文件` 不经过 `workspaceFiles`。固定 DSH 的官方 `fileReferences/list` Remote 会把已授权的精确 Agent 交给 `ctx.fileReferences`；原 `file-reference-local` provider 直接访问 Host 文件系统。因此仅适配 Files 面板，不能保证原生会话的输入候选来自源机器。
@@ -46,6 +56,10 @@
 | 关闭保护 | 源操作未结束时保留视图；未知文件管理结果需核对；未保存草稿由公开 pane close guard 保护 |
 | 下载和打开本机应用 | 源文件从已认证 Host 桥接下载；源路径不会交给 Hub 的桌面应用打开器 |
 
+创建、复制、移动、重命名、删除和上传现在把原请求及有界回执先提交到 IndexedDB，再向源端发送。共享 owner 按原 Hub/session/machine 定位，不随某个窗格 graph 销毁；源历史更正引起 display generation 更换后仍能读取原操作。Web Locks 与存储 CAS 共同保护同一浏览器来源的多个窗口。恢复只检查原路径与目标路径；用户明确核对可以解除本地阻挡，但不被标记成源端确认，不自动重发操作，也不保存另一份上传文件字节。
+
+文件写操作需要可用 IndexedDB 和受信 HTTPS/localhost 上的 Web Locks；不具备条件时显示原因，源文件读取、预览、下载和直接检查仍可使用。这一边界、不同设备之间的限制及未知回执的处理见[文件操作恢复](source-file-recovery.md)。
+
 官方 Files 是会话 `cwd` 的页面，公开定义明确不声明资源地址。创建子目录后不伪装成已改变官方树根；操作对话框会切到该明确子目录，上传目的地独立显示。文件依然由官方 preview 打开。
 
 ### 文件验证
@@ -60,7 +74,7 @@
 
 关闭外层 pane 只释放 view；终止必须通过原终端的明确关闭动作，并等待源退出确认。原 schemaVersion 2 的 SessionTerminal 与新 machine TerminalHost 协议不同，旧 ID 保留原恢复路径，不静默改 ID 或生成新 shell。
 
-旧 SessionTerminal 已接共享触控栏、自定义键与宏、锁定修饰键、命令输入和原字号偏好；其原协议浏览器验收、恢复边界与仍未合并的能力单独记录在 [旧会话终端兼容说明](legacy-session-terminal.md)，不与下述 machine TerminalHost 测试合并计数。
+旧 SessionTerminal 也进入官方 `ClientTerminals.view()`、Terminal body/title 与原 tab 生命周期。原自绘浏览器 xterm 和独立输入路径已经移除；Host 适配器把原 Socket.IO 回放转成官方帧，并保留原 10,000 行 scrollback 默认值。旧终端使用独立的公开 `hapi-legacy-terminal` kind，避免普通终端 tab 的显式 close 语义终止旧 PTY。它复用共享触控栏、自定义键与宏、锁定修饰键、命令输入、复制和原字号偏好；原协议验收、稳定地址恢复与具体限制单独记录在[旧会话终端兼容说明](legacy-session-terminal.md)，不与下述 machine TerminalHost 测试合并计数。
 
 对应代码：`src/hapi/machine-terminals.ts`、`src/hapi/terminal-controller.ts`。适配器归属及生命周期回归见 `tests/hapi-machine-terminals.test.ts`，真实 Socket.IO ACK/断线测试见 `tests/hapi-machine-terminal-transport.test.ts`。官方 Files/Terminal 双机器浏览器用例已验证输入、重载保留原 PTY、关闭 pane 不发 terminate。用例的 PTY 为显式模拟，不执行系统 shell。
 

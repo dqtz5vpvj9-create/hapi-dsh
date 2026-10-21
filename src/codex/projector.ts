@@ -69,9 +69,6 @@ export class NativeProjector {
   private revision = 0
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
-  private seedRecords: PluginRecordMap['plugin:hapi-dsh/native-item'][] = []
-  private seedSummaries: SourceNotifySummary[] = []
-  private seedReviews: SourceCodexReviewRecord[] = []
 
   constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {}
 
@@ -95,12 +92,6 @@ export class NativeProjector {
     }
     this.currentSession = session
     this.seed = undefined
-    for (const record of this.seedRecords) appendPluginRecord(this.session, 'plugin:hapi-dsh/native-item', record)
-    for (const summary of this.seedSummaries) appendPluginRecord(this.session, 'plugin:hapi-dsh/notify-summary', summary)
-    for (const review of this.seedReviews) appendPluginRecord(this.session, 'plugin:hapi-dsh/codex-review', review)
-    this.seedRecords = []
-    this.seedSummaries = []
-    this.seedReviews = []
   }
 
   private append<T extends SessionEventType>(
@@ -111,6 +102,18 @@ export class NativeProjector {
     // cannot distribute a generic T through the mapped SessionEvent union.
     if (this.seed) this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
     return event
+  }
+
+  /** Keep source annotations beside their messages, including detached seeds.
+   * Deferring them until after the whole seed made every initial/older page
+   * carry annotations for the entire transcript instead of its own window. */
+  private appendRecord<K extends Extract<keyof PluginRecordMap, `plugin:${string}`>>(type: K, data: PluginRecordMap[K]): void {
+    const seq = appendPluginRecord(this.session, type, data)
+    if (this.seed) {
+      const event = this.session.eventAt(seq)
+      if (!event) throw new Error('The native annotation was not committed to its detached Session')
+      this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
+    }
   }
 
   get projectedKeys(): ReadonlySet<string> { return this.rawKeys }
@@ -212,8 +215,7 @@ export class NativeProjector {
         if (review) {
           const record: SourceCodexReviewRecord = { messageId: event.data.message.id, sourceRowId: row.rowId, surfaceSeq: event.seq,
             turn: event.data.turn, step: event.data.step, review }
-          if (this.seed) this.seedReviews.push(record)
-          else appendPluginRecord(this.session, 'plugin:hapi-dsh/codex-review', record)
+          this.appendRecord('plugin:hapi-dsh/codex-review', record)
         }
         if (current) {
           this.options.stream({ type: 'end', attemptId: current.attemptId, revision: current.revision,
@@ -272,13 +274,12 @@ export class NativeProjector {
         key: row.key, fingerprint: row.fingerprint, surfaceSeq: event.seq,
         // Official Conversation treats top-level `turn` / `step` fields on
         // every event as timeline coordinates, including ignorable records.
-        // Seed metadata is appended after history and must not invent a late
-        // Step 0 that replaces the final answer's real latest Step.
+        // An annotation must not invent a Step 0 that replaces the final
+        // answer's real latest Step in the official location index.
         displayTurn: step?.turn ?? turn.number, displayStep: step?.step ?? 0,
         nativeTurnId: turnId, nativeItemId: row.execution?.itemId ?? null,
       }
-      if (this.seed) this.seedRecords.push(nativeRecord)
-      else appendPluginRecord(this.session, 'plugin:hapi-dsh/native-item', nativeRecord)
+      this.appendRecord('plugin:hapi-dsh/native-item', nativeRecord)
     }
   }
 
@@ -315,8 +316,7 @@ export class NativeProjector {
     if (!display.summaries.length) return
     const record: SourceNotifySummary = { messageId: event.data.message.id, sourceRowId, surfaceSeq: event.seq,
       turn: event.data.turn, step: event.data.step, originalText: display.originalText, summaries: display.summaries }
-    if (this.seed) this.seedSummaries.push(record)
-    else appendPluginRecord(this.session, 'plugin:hapi-dsh/notify-summary', record)
+    this.appendRecord('plugin:hapi-dsh/notify-summary', record)
   }
 
   private updateStream(row: NativeRow & { kind: 'assistant' }, step: Step): void {

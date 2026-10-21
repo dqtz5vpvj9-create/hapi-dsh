@@ -37,6 +37,7 @@ import { ObservedControlLedger } from './observed-controls.tsx'
 import { installSourcePathActions } from './source-path-actions.tsx'
 import { installSourceFileActions } from './source-file-actions.tsx'
 import { installSourceTerminalActions } from './source-terminal-actions.tsx'
+import { installLegacyTerminalView } from './legacy-terminal-view.tsx'
 import { installArtifactPreview } from './artifact-preview.tsx'
 import { installSourceMarkdown } from './source-markdown.tsx'
 import { installNotifySummaryDisplay } from './notify-summary-display.tsx'
@@ -62,6 +63,9 @@ export { installRemotePane } from './remote-pane.tsx'
 export type { WorkspacePaneNavigation } from './pane-navigation.ts'
 export type { WorkspaceUpdatePreparations } from './update-preparation.ts'
 export type { DshPaneTarget, NavigationValue } from '../workspace/dsh-view.ts'
+export { LEGACY_TERMINAL_TAB_KIND, LEGACY_TERMINAL_SEAT_ID, legacyTerminalPaneTarget, legacyTerminalNavigationParams, canOpenLegacyTerminalAddress } from './legacy-session-terminal.tsx'
+export type { LegacyTerminalParams } from './legacy-session-terminal.tsx'
+export type { LegacyTerminalInjected, LegacyTerminalBodyProps, LegacyTerminalTitleProps, LegacyTerminalOccurrence, LegacyTerminalViewState } from './legacy-terminal-view.tsx'
 
 declare module '@deepseek-ai/cordis' {
     interface Context { hapiWorkspace: WorkspaceController }
@@ -145,13 +149,15 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installWorkspaceMenus(document))
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     disposers.push(installHapiTabs(ctx, api))
-    disposers.push(installSourceAdmin(ctx, api))
+    const administration = installSourceAdmin(ctx, api)
+    disposers.push(administration)
     disposers.push(installSourceCompanion(ctx, api))
     disposers.push(installSourceAppearance(ctx))
     disposers.push(installWorkspaceLinkSettings(ctx))
     disposers.push(installSourcePathActions(ctx, api))
     disposers.push(installSourceFileActions(ctx, api))
     disposers.push(installSourceTerminalActions(ctx, api))
+    disposers.push(installLegacyTerminalView(ctx, api))
     disposers.push(installArtifactPreview(ctx, api))
     disposers.push(installSourceMarkdown(ctx))
     disposers.push(installNotifySummaryDisplay(ctx, api))
@@ -175,7 +181,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
         if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error(tr('Wait for the incoming share to finish preparing.', '请等待正在接收的分享完成准备。'))
         await ui.updates.checkpoint()
     }
-    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture })
+    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation' | 'runnerSkew'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture, runnerSkew: createElement(administration.RunnerSkew) })
     const Sidebar = (props: Omit<SessionSidebarProps, 'controller' | 'controls' | 'api'>) => createElement(SessionSidebar, { ...props, controller, controls, api })
     stage = 'register workspace slots'
     // Shadow one existing main cell while preserving official shell, plugin

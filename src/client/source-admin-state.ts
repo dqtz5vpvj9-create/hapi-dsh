@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { remoteValue } from '../client-api.ts';
 import { sourceAdminOperationSchema, sourceAdminReceiptSchema, type SourceAdminAction, type SourceAdminApi, type SourceAdminOperation, type SourceAdminReceipt } from '../source-admin-types.ts';
 

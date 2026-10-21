@@ -14,7 +14,9 @@
 
 支持将官方右栏标签放到独立窗格，与聊天并排使用。切换窗口会保留已经挂载的视图；移动和关闭工作区窗格不会结束源会话或 PTY。插件可通过公开 `hapiWorkspacePane` 获取自己的焦点、可见性及资源导航能力，并登记未保存内容的关闭保护。
 
-源文件的编辑、冲突核对、上传、文件管理、搜索及 Git diff 通过官方公共 slots 扩展。文档保留官方解析和预览能力；HAPI 独有的 artifact 和 Markdown 本地图片增加来源适配，避免把 Runner 路径解释成 Hub 路径。终端保留官方渲染器及原控制租约、输出序号和输入回执。
+源文件的编辑、冲突核对、上传、文件管理、搜索及 Git diff 通过官方公共 slots 扩展。文档保留官方解析和预览能力；HAPI 独有的 artifact 和 Markdown 本地图片增加来源适配，避免把 Runner 路径解释成 Hub 路径。采用 machine TerminalHost 的终端保留官方渲染器及源控制租约、输出序号和输入回执。
+
+旧 HAPI 布局的 SessionTerminal 同样使用真实官方 `ClientTerminals` 和 Terminal body，通过独立的公开标签类型保留原 source/terminal ID、10,000 行滚动缓冲、触控栏、宏和共享字号。旧源协议是 attach-or-create，且没有逐条输入 ACK；适配器明确保留这些限制，关闭标签只 detach。愿意替换旧终端视图的插件可使用 `hapi-dsh/client` 导出的 kind、seat 和注入契约。工作区内切换到其他插件页面的地址和参数也会保存，几何、原终端身份与当前视图分别保留。详见[旧终端兼容边界](docs/legacy-terminal-protocol.md)。
 
 每个聊天窗格保留官方 `main → ConversationRoot` 的完整组件树。团队快捷入口等 `conversation.session.header.utilities` 贡献与第三方头部按钮走同一公开注册路径；原生审批和队列控件进入 `conversation.input.dock`。源会话已有的身份、连接与执行状态记录另外提供“源会话状态”视图，使没有本地 DSH Workspace 的远端空线程也有真实业务内容，不制造聊天消息或本地目录。
 
@@ -139,6 +141,8 @@ Hub 自动重新加载配对策略并断开该机器。断线时已发送请求�
 每个窗格加载所属 Host 的真实官方 Client Context、插件图和会话对象。本机也采用相同机制，防止两个分屏共用官方单活动会话、右栏和对话框状态。模块加载和同一 Host 的插件事件连接可以共享；窗格状态保持独立。统一侧边栏聚合所有 Host 和源引擎目录。HAPI Codex 与其他 HAPI 引擎在主 Host 注册源会话适配器，同样进入官方 Conversation。
 
 详见[架构与扩展边界](docs/architecture.md)、[可复现验证](docs/validation.md)和[维护者分发流程](docs/distribution.md)。测试区分模型桩、真实传输和真实官方 DSH 进程。发布前仍需使用实际 HAPI、原生 Codex app-server 和模型凭据做部署验收；自动化 fixture 不能证明这项验收已经完成。
+
+针对实际部署截图中的源会话恢复、目录外文档、聊天事件和界面问题，代码修复、16 条实际官方浏览器专项及仍未定因的原生空白问题记录在[现场修复说明](docs/live-site-fixes.md)。线上验收新增实际源聊天正文检查；离线诊断只输出结构计数，详见[历史诊断](docs/source-history-diagnostics.md)。
 
 ## 许可证与来源
 

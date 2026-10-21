@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Review-shaped HAPI transcript fixtures. Official DSH Conversation,
  * Clipboard and source-aware file plugins run real production code. */
 import { test, expect, type Page, type Locator } from '@playwright/test'
@@ -11,9 +12,7 @@ function review(path: string): string {
 async function openWorkspace(page: Page, environment: OfficialEnvironment) {
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: environment.origin })
     await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
 }
 async function source(page: Page, name: string): Promise<Locator> {
     await page.locator('.hapi-session-open').filter({ hasText: name }).click()

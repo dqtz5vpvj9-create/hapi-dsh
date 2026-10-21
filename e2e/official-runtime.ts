@@ -98,6 +98,9 @@ export async function startOfficialEnvironment(remote = false, options: { compan
             processOutput.push(() => sanitize(output, [hapi.accessToken, ...(pairToken ? [pairToken] : [])]));
             const capture = (chunk: Buffer): void => { output = (output + chunk.toString()).slice(-100_000); };
             child.stdout!.on('data', capture); child.stderr!.on('data', capture);
+            child.on('exit', (code, signal) => {
+                output = (output + `\n[official fixture process exited: code=${code ?? 'none'}, signal=${signal ?? 'none'}]\n`).slice(-100_000);
+            });
             const deadline = Date.now() + 60_000;
             for (;;) {
                 const match = /dsh web: (https?:\/\/[^\s\u001b]+)/.exec(output);

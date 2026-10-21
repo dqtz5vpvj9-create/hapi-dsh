@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
-import { randomId } from './random-id.ts';
 import type { ISessions, SessionListState, SessionReference, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
@@ -13,6 +13,7 @@ import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '..
 import type { DockPosition } from '../workspace/drag.ts'
 import { buildSidebarSearchIndex, compareSidebarSearch, type SidebarSearchIndex } from '../workspace/sidebar-search.ts'
 import { CatalogDiscovery, type WorkspaceCatalogDiscovery } from '../workspace/catalog-discovery.ts'
+import { sourceResolutionFailure, type SourceResolutionFailure, type SourceResolutionStatus } from './source-session-state.ts'
 
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
     interface SessionReferenceSourceMap { hapiWorkspace: unknown }
@@ -59,7 +60,14 @@ export interface WorkspaceHost {
     readonly renderPane?: (reference: SessionReference, resource: Exclude<PaneResource, { kind: 'empty' }>, options: WorkspaceRenderOptions) => ReactNode
 }
 
-export interface WorkspaceRenderOptions { paneId: string; focused: boolean; visible?: boolean }
+export interface WorkspaceRenderOptions {
+    paneId: string
+    focused: boolean
+    visible?: boolean
+    /** The workspace's own menu outlet. The pane's official actions keep
+     * their original graph owner when their launcher is placed here. */
+    toolsTarget?: HTMLElement | null
+}
 
 export interface WorkspaceViewOptions {
     sessionId?: string
@@ -115,6 +123,8 @@ export interface PaneLease {
     readonly error?: string
     /** Catalog arrival can recover this lease without a user retry. */
     readonly waitingForCatalog?: boolean
+    /** Localized original-Hub loading and failure states, independent of directory size. */
+    readonly sourceResolution?: SourceResolutionStatus
 }
 
 export interface WorkspaceSnapshot {
@@ -201,6 +211,17 @@ export function errorMessage(error: unknown): string {
     return String(error)
 }
 
+type OriginalSource = { hubId: string; sourceSessionId: string }
+interface SourceResolution {
+    source: OriginalSource
+    abort: AbortController
+    phase: 'opening' | 'ready' | 'failed'
+    work: Promise<void>
+    error?: string
+    failure?: SourceResolutionFailure
+}
+const originalSourceKey = (source: OriginalSource): string => JSON.stringify([source.hubId, source.sourceSessionId])
+
 /**
  * Own references at plugin scope, not React mount scope. Opening an official
  * plugin page, switching windows, zooming, and resizing therefore preserve the
@@ -236,6 +257,9 @@ export class WorkspaceController {
     private sharedSignature: string
     private pendingSourceSession: { sessionId: string; hubId?: string } | null
     private primarySourceHubId: string | null = null
+    private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<void>) | undefined
+    private readonly sourceResolutions = new Map<string, SourceResolution>()
+    private readonly sourceRequests = new Map<string, number>()
 
     constructor(readonly options: WorkspaceOptions) {
         const nextId = options.nextId ?? (() => randomId())
@@ -337,6 +361,9 @@ export class WorkspaceController {
         for (const session of sessions) this.sourceCatalog.set(session.id, session)
         this.discovery.observe(discovery?.hosts ?? [], discovery?.connected ?? true)
         this.publish({ catalog: this.aggregateCatalog() })
+        const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
+        if (rebound !== state) this.store.replace(rebound)
+        else this.reconcileLeases()
         this.openPendingSource()
     }
     sourceCatalogFailed(error: unknown): void { this.discovery.sourceFailed(errorMessage(error)); this.publish() }
@@ -347,6 +374,70 @@ export class WorkspaceController {
         this.publish({ nativePanel: { kind: 'session', sessionId, ...(initialAction ? { initialAction } : {}) }, pickingSession: false }); this.options.reveal?.()
     }
     closeNativePanel = (): void => { this.publish({ nativePanel: null }) }
+
+    /** One original-Hub loader; all saved panes share its exact source request. */
+    installSourceResolver(resolve: (source: OriginalSource, signal: AbortSignal) => Promise<void>): () => void {
+        if (this.sourceResolver) throw new Error('The original session resolver is already installed')
+        this.sourceResolver = resolve
+        this.reconcileLeases(); this.openPendingSource()
+        return () => {
+            if (this.sourceResolver !== resolve) return
+            this.sourceResolver = undefined
+            for (const entry of this.sourceResolutions.values()) entry.abort.abort()
+            this.sourceResolutions.clear()
+        }
+    }
+
+    private originalSource(resource: Exclude<PaneResource, { kind: 'empty' }>): OriginalSource | undefined {
+        const hubId = resource.sourceHubId ?? this.primarySourceHubId
+        return resource.sourceSessionId && hubId ? { hubId, sourceSessionId: resource.sourceSessionId } : undefined
+    }
+
+    private sourceBindingScope(): { primaryHubId?: string; requireHub: true } {
+        return { requireHub: true, ...(this.primarySourceHubId ? { primaryHubId: this.primarySourceHubId } : {}) }
+    }
+
+    private resolveSource(source: OriginalSource): SourceResolution | undefined {
+        const resolver = this.sourceResolver
+        if (!resolver || this.disposed) return undefined
+        const key = originalSourceKey(source), current = this.sourceResolutions.get(key)
+        if (current) return current
+        const entry: SourceResolution = { source: Object.freeze({ ...source }), abort: new AbortController(), phase: 'opening', work: Promise.resolve() }
+        this.sourceResolutions.set(key, entry)
+        const active = (): boolean => !this.disposed && !entry.abort.signal.aborted && this.sourceResolutions.get(key) === entry
+        entry.work = Promise.resolve().then(() => {
+            entry.abort.signal.throwIfAborted()
+            return resolver(entry.source, AbortSignal.any([this.lifetime.signal, entry.abort.signal]))
+        }).then(() => {
+            if (!active()) return
+            entry.phase = 'ready'
+            const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
+            if (rebound !== state) this.store.replace(rebound)
+            else this.reconcileLeases()
+            this.openPendingSource()
+        }, error => {
+            if (!active()) return
+            entry.phase = 'failed'; entry.error = errorMessage(error); entry.failure = sourceResolutionFailure(error)
+            this.reconcileLeases()
+            throw error
+        })
+        // Restored panes are background callers; explicit navigation still awaits work.
+        void entry.work.catch(() => {})
+        return entry
+    }
+
+    private pruneSourceResolutions(resources: Iterable<Exclude<PaneResource, { kind: 'empty' }>>): void {
+        const needed = new Set(this.sourceRequests.keys())
+        for (const resource of resources) {
+            const source = this.originalSource(resource)
+            if (source) needed.add(originalSourceKey(source))
+        }
+        const pendingHub = this.pendingSourceSession?.hubId ?? this.primarySourceHubId
+        if (this.pendingSourceSession && pendingHub) needed.add(originalSourceKey({ hubId: pendingHub, sourceSessionId: this.pendingSourceSession.sessionId }))
+        for (const [key, entry] of this.sourceResolutions) if (!needed.has(key)) {
+            this.sourceResolutions.delete(key); entry.abort.abort()
+        }
+    }
 
     private publish(patch: Partial<WorkspaceSnapshot> = {}): void {
         if (this.disposed) return
@@ -379,26 +470,31 @@ export class WorkspaceController {
         this.publish({ catalog })
         if (this.navigationGuard || this.reconciling) return
         const current = this.store.getSnapshot()
-        const rebound = bindSourceResources(current, catalog.byId)
+        const rebound = bindSourceResources(current, catalog.byId, this.sourceBindingScope())
         if (current !== rebound) this.store.replace(rebound)
         if (this.openPendingSource()) return
         this.reconcileLeases()
         const focused = this.store.focusedPane().resource
-        if (focused.kind === 'chat' && focused.sessionId === this.pendingNavigationResource) {
+        if (focused.kind !== 'empty' && focused.sessionId === this.pendingNavigationResource) {
             try {
                 if (parseSessionResourceId(focused.sessionId).hostId === hostId) {
                     // Restoration owns this selection until its own catalog
-                    // arrives. An initial official main-view restore must not
-                    // replace the saved workspace while it is still loading.
+                    // arrives and confirms its main reference. An initial
+                    // official main-view restore must not replace any saved
+                    // terminal, document or plugin resource with a chat pane.
                     this.syncNavigation()
                     return
                 }
             } catch { /* Invalid saved addresses already have a failed lease. */ }
         }
         const mainId = this.selectedMain(hostId)
-        if (mainId === this.hostMainIds.get(hostId)) return
+        // Releasing an old main reference before an asynchronous replacement
+        // arrives is not a navigation command or a request to clear a pane.
+        if (!mainId || mainId === this.hostMainIds.get(hostId)) return
         this.hostMainIds.set(hostId, mainId)
-        if (mainId) this.store.openSession(sessionResourceId(hostId, mainId))
+        const resourceId = sessionResourceId(hostId, mainId)
+        if (focused.kind !== 'empty' && focused.sessionId === resourceId) return
+        this.store.openSession(resourceId)
     }
 
     private aggregateCatalog(): WorkspaceCatalog {
@@ -504,6 +600,7 @@ export class WorkspaceController {
         try {
             const expected = new Map(this.store.getSnapshot().windows.flatMap(window => panes(window.root))
                 .flatMap(pane => pane.resource.kind !== 'empty' ? [[pane.id, pane.resource] as const] : []))
+            this.pruneSourceResolutions(expected.values())
             // Release only retired occurrences. No cancel, abort, or archive call.
             for (const [id, lease] of this.leases) {
                 if (expected.get(id)?.sessionId !== sessionResourceId(lease.hostId, lease.sessionId)) {
@@ -518,9 +615,16 @@ export class WorkspaceController {
                 let hostId = 'local'
                 let sessionId = resourceId
                 try {
-                    if (resource.sourceSessionId && !sourceRow(resource, this.snapshot.catalog.byId)) {
-                        this.leases.set(paneId, { hostId, sessionId, status: 'failed', waitingForCatalog: true,
-                            error: `Original HAPI session ${resource.sourceSessionId} is not available yet. Its pane and source identity are preserved; it will attach when the source becomes available.` })
+                    const source = this.originalSource(resource)
+                    if (resource.sourceSessionId && (!source || !sourceRow({ ...resource, sourceHubId: source.hubId }, this.snapshot.catalog.byId))) {
+                        const matches = source ? this.sourceMatches({ sessionId: source.sourceSessionId, hubId: source.hubId }) : []
+                        const resolution = matches.length === 0 && source ? this.resolveSource(source) : undefined
+                        const opening = resolution?.phase === 'opening' || resolution?.phase === 'ready' || Boolean(this.sourceResolver && !source)
+                        this.leases.set(paneId, { hostId, sessionId, status: opening ? 'opening' : 'failed', waitingForCatalog: true,
+                            sourceResolution: opening ? 'loading' : resolution?.failure ?? (matches.length > 1 ? 'ambiguous' : 'not-ready'),
+                            ...(!opening ? { error: resolution?.error ?? (matches.length > 1
+                                ? 'This original session has multiple display bindings. Choose its Host in the unified sidebar.'
+                                : `Original HAPI session ${resource.sourceSessionId} is not available yet. Its pane and source identity are preserved; it will attach when the source becomes available.`) } : {}) })
                         continue
                     }
                     ;({ hostId, sessionId } = parseSessionResourceId(resourceId))
@@ -565,23 +669,32 @@ export class WorkspaceController {
             this.pendingNavigationResource = focused.resource.sessionId
             return
         }
-        this.pendingNavigationResource = null
-        if (this.hostMainIds.get(hostId) === id) return
+        const confirmed = (): boolean => (host.sessions.list.getSnapshot().byId[id as SessionId]?.retainedBy.mainView ?? 0) > 0
+        if (this.hostMainIds.get(hostId) === id) {
+            this.pendingNavigationResource = confirmed() ? null : focused.resource.sessionId
+            return
+        }
         const previous = this.hostMainIds.get(hostId)
+        // openSession starts an asynchronous public SessionReference. Keep
+        // the restore intent until the catalog observes that actual reference.
+        this.pendingNavigationResource = focused.resource.sessionId
         this.hostMainIds.set(hostId, id)
         this.navigationGuard = true
         try { host.navigation.openSession(id as SessionId) }
         catch (error) { this.hostMainIds.set(hostId, previous); this.publish({ notice: errorMessage(error) }) }
-        finally { this.navigationGuard = false }
+        finally {
+            this.navigationGuard = false
+            if (this.hostMainIds.get(hostId) === id && confirmed()) this.pendingNavigationResource = null
+        }
     }
 
     openSession(sessionId: string, beside?: SplitAxis): void {
         const source = sourceIdentity(this.snapshot.catalog.byId[sessionId])
         const existing = source && this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.resource.kind === 'chat'
-            && pane.resource.sourceSessionId === source.sessionId && (!pane.resource.sourceHubId || pane.resource.sourceHubId === source.hubId))
+            && pane.resource.sourceSessionId === source.sessionId && (pane.resource.sourceHubId ?? this.primarySourceHubId) === source.hubId)
         if (existing) {
             const state = this.store.getSnapshot()
-            const rebound = bindSourceResources(state, this.snapshot.catalog.byId)
+            const rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
             if (rebound !== state) this.store.replace(rebound)
             this.store.focus(existing.id)
         } else this.store.openSession(sessionId, beside)
@@ -623,6 +736,20 @@ export class WorkspaceController {
     async openSourceSession(source: { hubId: string; sessionId: string }): Promise<void> {
         if (!source.hubId.trim() || !source.sessionId.trim()) throw new Error('A source conversation requires both its Hub and session identity')
         let matches = this.sourceMatches(source)
+        if (matches.length === 0 && this.sourceResolver) {
+            const original = { hubId: source.hubId, sourceSessionId: source.sessionId }, key = originalSourceKey(original)
+            const failed = this.sourceResolutions.get(key)
+            if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
+            this.sourceRequests.set(key, (this.sourceRequests.get(key) ?? 0) + 1)
+            try { await this.resolveSource(original)!.work }
+            finally {
+                const count = (this.sourceRequests.get(key) ?? 1) - 1
+                if (count) this.sourceRequests.set(key, count)
+                else this.sourceRequests.delete(key)
+            }
+            matches = this.sourceMatches(source)
+        }
+        if (this.disposed) throw new Error('The workspace is closed')
         if (matches.length !== 1) { await this.refresh(); matches = this.sourceMatches(source) }
         if (this.disposed) throw new Error('The workspace is closed')
         if (matches.length !== 1) throw new Error(matches.length > 1
@@ -644,7 +771,7 @@ export class WorkspaceController {
         if (!row) return
         const source = sourceIdentity(row)
         const existing = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.resource.kind === 'chat'
-            && (pane.resource.sessionId === sessionId || source && pane.resource.sourceSessionId === source.sessionId && (!pane.resource.sourceHubId || pane.resource.sourceHubId === source.hubId)))
+            && (pane.resource.sessionId === sessionId || source && pane.resource.sourceSessionId === source.sessionId && (pane.resource.sourceHubId ?? this.primarySourceHubId) === source.hubId))
         if (existing) { this.openSession(sessionId); return }
         this.store.dockResource({ kind: 'chat', sessionId, ...(source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : {}) }, targetPaneId, position)
         this.closeSessionPicker(); this.options.reveal?.()
@@ -700,7 +827,10 @@ export class WorkspaceController {
         if (!hubId) return false
         const matches = this.sourceMatches({ ...this.pendingSourceSession, hubId })
         // Notification links always include their Hub and never take a first hit.
-        if (matches.length !== 1) return false
+        if (matches.length !== 1) {
+            if (matches.length === 0) this.resolveSource({ hubId, sourceSessionId: this.pendingSourceSession.sessionId })
+            return false
+        }
         const row = matches[0]!
         this.pendingSourceSession = null
         this.openSession(row.id)
@@ -747,6 +877,12 @@ export class WorkspaceController {
         if (!lease || lease.status !== 'failed') return
         this.leases.delete(paneId)
         lease.reference?.release()
+        const resource = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)?.resource
+        const source = resource && resource.kind !== 'empty' ? this.originalSource(resource) : undefined
+        if (source) {
+            const key = originalSourceKey(source), failed = this.sourceResolutions.get(key)
+            if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
+        }
         this.reconcileLeases()
     }
 
@@ -788,7 +924,7 @@ export class WorkspaceController {
             const loaded = await this.options.persistence!.load(this.lifetime.signal)
             if (this.disposed) return
             if (loaded !== null) {
-                const restored = bindSourceResources(parseWorkspaceState(loaded), this.snapshot.catalog.byId)
+                const restored = bindSourceResources(parseWorkspaceState(loaded), this.snapshot.catalog.byId, this.sourceBindingScope())
                 if (!this.restoredLocal && this.store.getSnapshot().revision === initialRevision) this.store.replace(keepLocalView(restored, this.store.getSnapshot()))
                 else if (sharedWorkspaceSignature(restored) !== sharedWorkspaceSignature(this.store.getSnapshot())) {
                     this.queuedSave = sharedWorkspaceState(this.store.getSnapshot())
@@ -797,7 +933,7 @@ export class WorkspaceController {
             } else if (!this.restoredLocal && this.options.legacy && this.store.getSnapshot().revision === initialRevision) {
                 const legacy = await this.options.legacy(this.lifetime.signal)
                 if (!this.disposed && this.store.getSnapshot().revision === initialRevision) {
-                    const migrated = importLegacyWorkspace(legacy, this.snapshot.catalog.byId)
+                    const migrated = importLegacyWorkspace(legacy, this.snapshot.catalog.byId, this.sourceBindingScope())
                     if (migrated) this.store.replace(migrated)
                 }
             }
@@ -847,6 +983,8 @@ export class WorkspaceController {
         if (this.disposed) return
         this.disposed = true
         this.lifetime.abort()
+        for (const entry of this.sourceResolutions.values()) entry.abort.abort()
+        this.sourceResolutions.clear(); this.sourceRequests.clear(); this.sourceResolver = undefined
         for (const unsubscribe of this.unsubscribers) unsubscribe()
         for (const subscriptions of this.hostUnsubscribers.values()) for (const unsubscribe of subscriptions) unsubscribe()
         this.hostUnsubscribers.clear()

@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -14,9 +15,7 @@ test.describe('original HAPI administration in the unchanged official Settings s
             environment.hapi.admin.machines[0]!.health = { collectedAt: Date.now(), cpuCount: 8, load1m: 2.4, cpuPercent: 72, memoryPercent: 91, uptimeSeconds: 6540 };
             await page.goto(environment.launchUrl);
             await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-            const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-            await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-            if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+            await acknowledgePreviewNotice(page, environment)
             await page.locator('.hapi-sidebar-native > details > summary').click();
             const machineRow = page.locator('[data-source-machine="machine-alpha"]');
             await expect(machineRow).toContainText('CPU 72%'); await expect(machineRow).toContainText('RAM 91%');

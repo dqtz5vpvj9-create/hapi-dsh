@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Adapt the official sidebar through Cordis's public service-isolation seam. */
-import { randomId } from './random-id.ts';
 import { Context } from '@deepseek-ai/cordis'
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/cordis-plugin-loader'

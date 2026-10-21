@@ -33,10 +33,10 @@
 | W04 | `Ctrl B` 前缀后 `%`、`"`、`c/w/n/p/o/x/z`、数字和方向键；双前缀透传 | **已实现**：按固定原源码使用 1.5 秒前缀寿命，未知后缀消耗、IME/repeat 不打断；额外帮助和恢复键 | `workspace-model.test.ts` 覆盖 1499/1500ms 边界与双前缀；`workspace-interactions.spec.ts` 真浏览器通过未知后缀不进草稿、前缀到期后正常键入、数字选窗 |
 | W05 | 窗格跨窗口移动、不重建聊天草稿和执行 | **已实现**：窗格 graph 与 DOM 随视图保留；移动只换位置 | 单测验证引用不变；真浏览器验证跨窗拖动时同一个官方 DOM/editor 与草稿保留，重载后草稿恢复；移动时各第三方弹框仍需专项验收 |
 | W06 | 从侧栏拖入会话、窗格拖动 docking | **已实现**：原 session MIME、四边 docking、空窗格填充、窗格和窗口 tab 拖放；占用中心不覆盖 | `workspace-drag.test.ts` 验证真实 resource/occurrence 和 close guard；`workspace-interactions.spec.ts` 原生 HTML dragTo 验证侧栏到边缘、窗格换轴、跨 window tab，不合成假业务事件 |
-| W07 | 相同会话/文档/终端的资源去重、已有窗格定位 | **已实现**：`resourceKey`、`sessionDestinations` | 真源 identity 和 Windows 路径规则有单测；插件视图保存真实 occurrence，而非猜测标签 |
+| W07 | 相同会话/文档/终端的资源去重、已有窗格定位 | **已实现**：`resourceKey`、`sessionDestinations` | 真源 identity 和 Windows 路径规则有单测；旧终端使用 Hub + 原 source session + terminal ID，不合并不同源的同名终端，display successor 保持原资源；插件视图保存真实 occurrence |
 | W08 | 自动窗口名称、手工名称、W/P 位置和最强活动状态 | **已实现**：`workspace/presentation.ts` | 覆盖错误、审批、输入、运行等优先级；仍需完整视觉回归 |
 | W09 | Hub 共享布局，浏览器本地焦点/zoom；CAS 冲突 | **已实现**：`persistence.ts`、`workspace/legacy.ts` | 原 HAPI workspace API 不接受 DSH ID，因此插件用独立 CAS 文档；不写坏原数据 |
-| W10 | 原 schemaVersion 2 chat/terminal/document 几何恢复 | **已实现**：首次安装只读导入、保留原 source ID、未知会话不删窗格 | `workspace-parity/controller.test.ts`；旧 artifact 与旧 terminal 的具体 renderer 见文件/终端表 |
+| W10 | 原 schemaVersion 2 chat/terminal/document 几何恢复 | **已实现**：首次安装只读导入、保留原 source ID、未知会话不删窗格；精确源解析不等待全目录 | 154 源与跨 Hub 先到/迟到有定向回归；`catalog-source-recovery.spec.ts` 实际 404→用户重试→原聊天和文档恢复，保留身份及 3:2 几何，零模型启动/写入；旧 artifact 与旧 terminal 的具体 renderer 见文件/终端表 |
 | W11 | 窗口切换、插件页面切换时保留隐藏视图 | **已实现**：`federation.tsx` 停放已挂载 DOM，graph 不重建 | 官方插件 settings/返回聊天已有浏览器路径；各插件自行管理私有 state |
 | W12 | 关闭文档时不丢未保存内容 | **已实现**：`hapiWorkspacePane.registerCloseGuard`、源编辑器草稿保护与刷新检查点 | 官方 source actions 浏览器通过关闭否决、丢保存 ACK 后真实 reload 保留正文/原 hash/未知结果且不再写源；IndexedDB、双窗口 CAS 和草稿对比有 6 项定向回归 |
 
@@ -80,7 +80,7 @@
 | N09 | launch 初始 Codex account、权限、plan mode、fast tier | **已实现参数与入口**：源 accounts/key profiles/home/models，冻结 launch 意图 | 同浏览器验证 read-only、plan、fast 到原 spawn 请求及成功偏好；真实账号登录/付费模型没有被 fixture 冒充验收 |
 | N10 | 关闭/重启恢复表单草稿、成功后保存 machine+agent 偏好 | **已实现核心**：`launch-drafts.ts` 与 initial-task 分开保留未提交字段、附件、未知 intent，成功清任务并保存选项 | 两条 `initial-task.spec.ts` 官方浏览器通过；未知 intent 不因重开表单产生新会话/新消息 |
 | N11 | 原生历史搜索/分页、批量导入、直接连接既有线程 | **已实现核心**：原生 library 与 source history/migration tabs | `history.spec.ts` 三条官方浏览器已通过 Pi 导入丢 ACK 后恢复同一分支、Codex home 迁移未知结果不冒充成功、Cursor 精确源拒绝及明确迁移；真实历史库和账号仍须部署验收 |
-| N12 | 在线/离线机器、Runner 版本差异、机器健康/受限根目录 | **已实现主要机器信息**：真实 source health 白名单、CPU/RAM/负载/运行时长/采样时间、离线最后数据、Runner 版本与根目录 | 9 项 health/admin 定向测试与 `admin.spec.ts` 真实浏览器通过侧栏及官方 Settings 同一源样本；缺失数据不冒充 0。版本 skew 提示、setup hints 和全部 shared-root 交互仍需逐项核对 |
+| N12 | 在线/离线机器、Runner 版本差异、机器健康/受限根目录 | **已实现主要信息与兼容提示**：源 health 白名单、CPU/RAM/负载/运行时长/采样时间、离线最后数据、Runner 版本/根目录；按真实能力显示根工作区 banner，保留最小化与一小时隐藏 | `runner-skew.spec.ts` 两条与 `admin.spec.ts` 在同一官方 UI 检查点 3/3 通过；覆盖移动布局、原偏好、回滚、仅符合条件的 Restart、与 Settings 共享未知结果且只读核对。源和 supervisor 为明确 fixture，原平台 haptics 与全部 shared-root 交互仍未声称等价，见 [专项说明](runner-compatibility.md) |
 
 ## 4. 聊天、原生控制与历史
 
@@ -127,17 +127,17 @@
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |
-| F01 | 机器正确的文件树、文件元信息、文本/二进制读取 | **已实现官方 provider**：`hapi/workspace-files.ts` | 真实官方 Files 双源读取/刷新恢复已走通；不是改写文件树 |
+| F01 | 机器正确的文件树、文件元信息、文本/二进制读取 | **已实现官方 provider**：`hapi/workspace-files.ts`；文档遵循原 Runner browse roots，管理操作保留 cwd/active 契约 | 官方 Files 双源读取/刷新恢复；inactive 源的授权目录外 Markdown/相对图片/PDF、下载原字节、自动更新与拒绝范围有实际浏览器验证，见 `source-document-policy.spec.ts` |
 | F02 | 官方 plugins 可替换文件树/preview/terminal，并在 pane 打开 | **已实现组合**：`pane-bridge.tsx`、真实 tab occurrence、view 资源 | `workspace-plugin-views` 单测；需实际安装不同第三方插件验收，不预先保证所有插件 |
 | F03 | preview 多 renderer、tab params、keepMounted/multiple、菜单扩展 | **已实现公开机制** | 不复制 provider 私有状态；header 菜单 stacking 修复后官方 Files/Terminal 浏览器通过 |
-| F04 | 文件搜索、git status/diff、编辑 CAS、上传、创建/复制/移动/删除 | **已实现官方扩展**：真实 source API + 官方 files/document slots 动作；不重写树或 preview | `plugin-workspace.spec.ts` source actions 真浏览器通过搜索/Git diff、创建/复制/重命名/移动/删除、子目录上传和编辑，验证原 sourceId/path 且第二机器不变；源文件系统为显式协议 fixture |
-| F05 | 未保存文件、hash 冲突、unknown save、关闭保护 | **已实现**：草稿/source CAS 与公开 pane close guard | 同 source actions 浏览器通过 expectedHash 保存、并发冲突、ACK 丢失仅一次投递、拒绝关闭并恢复草稿；unknown 不显示已保存、不自动重发 |
+| F04 | 文件搜索、git status/diff、编辑 CAS、上传、创建/复制/移动/删除 | **已实现官方扩展与持久操作回执**：真实 source API + 官方 files/document slots；写操作先持久化，原 Hub/session/machine 共享 journal | 既有 source actions 真浏览器通过搜索/Git diff、创建/复制/重命名/移动/删除、子目录上传和编辑；`source-file-recovery.spec.ts` 两条验证实际旧 graph 断开后换代恢复、reload、仅检查与本地 review，源 mutation 始终一次。写操作要求 IndexedDB 和 HTTPS/localhost Web Locks；源文件系统为显式 fixture，见 [恢复边界](source-file-recovery.md) |
+| F05 | 未保存文件、hash 冲突、unknown save、关闭保护 | **已实现**：草稿/source CAS、公开 pane close guard、文件管理未知回执跨 graph 与刷新恢复 | source actions 浏览器通过 expectedHash 保存、并发冲突、ACK 丢失仅一次投递、拒绝关闭并恢复草稿；管理回执通过同源 Web Lock 与 revision CAS 防止跨窗口覆盖。unknown 不显示已保存、不自动重发，本地 review 不冒充源 ACK |
 | F06 | HTML/PDF/image/code/markdown/Office/Excel 普通文件 | **已实现官方 renderer 组合** | 实际源 workspaceFiles provider；各种格式的源路径及依赖文件读需继续浏览器覆盖 |
 | F07 | `session-file:` artifact →真实文件，opaque Codex artifact | **已实现适配**：严格 UTF-8/base64url 真路径解析，opaque resource 保留原 ID；复用官方 PDF/Text/HTML bodies 与 ImageLightbox/CodeBlock/MarkdownText | `artifact-plugins.spec.ts` 两条真浏览器通过 source Markdown 相对/绝对图片、拒绝无基址 opaque 图片、PDF/Image/Code/sandbox HTML、Office 转 PDF 后原件下载、布局重载；实际 Office 转换服务在 fixture 中显式替代，不冒充真实转换引擎 |
 | F08 | 下载、打开本机应用、路径复制的机器正确性 | **已实现 guard**：source open-in-app 不调用 Hub 桌面，文档改为认证源下载；普通 DSH opener 保留 | 官方 slots/快捷键与下载回归通过；`appearance.spec.ts` 真实 MutationObserver 验证 source 投影尚未恢复时也不短暂挂载 Hub desktop opener。源端系统桌面打开不被伪装为 Hub 桌面打开 |
 | F09 | 新终端真实 PTY、多 viewer、输出游标、断线恢复 | **已实现官方 terminal provider**：`machine-terminals.ts`、`terminal.ts` | Gateway/WS 测试已过；双源浏览器输入、重载和 pane 关闭保留 PTY 已通过 |
 | F10 | 关闭 pane 只 detach，显式关闭终端等待退出 ACK | **已实现语义** | 不调用官方 tab close hook 来关闭工作区视图；不能用发出 terminate 冒充已终止 |
-| F11 | 原 v2 terminalId 继续连同一旧 SessionTerminal | **已实现原协议兼容视图**：原 ID/协议/输出游标恢复，不替换 shell；复用双排键盘、宏和共享字号偏好 | `legacy-terminal.spec.ts` 真浏览器通过同source/terminalId、命令与修饰键、9→15字号、隐藏宏/重载、输入不重放、关闭仅detach；零 `terminal:close` 与 machine TerminalHost 请求。实际用户旧终端仍须部署验收 |
+| F11 | 原 v2 terminalId 继续连同一旧 SessionTerminal | **已实现官方模型与视图适配**：独立公开 kind、真实 `ClientTerminals` / Terminal body/title、10,000 行滚动缓冲；旧自绘 renderer 已移除 | `legacy-terminal.spec.ts` 最终同一构建连续 2/2 通过：原输入/拒绝保草稿/复制/字号/宏、两源同 ID 隔离、官方改名、旧 tab→文件→刷新→旧 tab→聊天→刷新→文件、原资源与 1:2 几何、关闭零 kill。Host 13 项原协议、Client 12 项和 Controller 33 项定向通过。原协议 attach-or-create、无 Runner 输入 ACK、有限 replay 仍保留；一次未定因测试 Host 退出及复测结果见[视图记录](legacy-session-terminal.md)，协议见[说明](legacy-terminal-protocol.md) |
 | F12 | 移动端 terminal touch bar、键组合编辑、选择覆盖、手势 | **已实现主要输入/复制/手势适配**：公开 Terminal body + 原 `view.write` owner、双排键盘/锁定修饰/长按/宏/偏好、源只读快照；实际终端 view 的缩放和滚动 | 原420px输入/宏/复制/重载与450行快照浏览器已通过；新增可信触摸真浏览器通过9→18px/PTy grid、600行拖动/惯性、ACK与mode切换停止、TUI合法SGR wheel、移动Close pane保留原PTY。具体平台边界见 [专项说明](feature-parity-workbench.md) |
 
 ## 7. 移动端、外观和页面级行为
@@ -146,7 +146,7 @@
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |
-| U01 | 640 px 窄屏单焦点窗格、窗口列表、底部 pane 切换 | **已实现**：`workspace/viewport.ts` 与 `ui.tsx` | 保留已访问 DOM、hidden/inert 防隐形输入；真实设备旋转/软键盘验收仍需 |
+| U01 | 640 px 窄屏单焦点窗格、窗口列表、底部 pane 切换 | **已实现**：`workspace/viewport.ts` 与 `ui.tsx`；Host 工具进入当前 pane 的底部菜单 | 保留已访问 DOM、hidden/inert 防隐形输入；420 px 实际官方浏览器验证正文高度、菜单/Settings/插件入口和暂存草稿，无水平溢出；真实设备旋转/软键盘验收仍需 |
 | U02 | 移动端统一会话选择层和安全区域 | **已实现基础** | 浏览器窄屏覆盖未完备；旧列表快速切换与返回手势仍需对照 |
 | U03 | CN/EN 与浅/深色主题 | **已实现核心外观适配**：原 18 色板/按模式七色自定义/OLED/80–120% 字体/9–17 px 终端字号，公开 ThemeRuntime 与原 Terminal hook | 原键读取、真实 ThemeRuntime/SlotCore 单测及 `appearance.spec.ts` 真官方浏览器通过；跨 pane 色板、16.8 px 聊天字体、真实 xterm 四种字形 9 px 与 reload 保留均有断言。见 [外观专项](feature-parity-appearance.md) |
 | U04 | 页面级 modal/focus trap/Escape 与 pane 隔离 | **已实现核心**：官方 AppFrame/overlay 保留，各 pane graph 独立 | Remote Settings/Escape 已过官方浏览器；同时多 pane modal/第三方 portal 继续验收 |
@@ -182,7 +182,7 @@
 
 每个待补项关闭前需要：保留固定 HAPI 来源路径或行为测试；生产代码入口；真实 source API/资源归属说明；关键失败模式单测；受影响的官方 DSH 浏览器流程。未知结果只读恢复、隐藏窗格不写已读、关视图不终止执行、相同路径跨机器不串读，属于持续门槛。不能靠删掉原入口、修改测试放宽断言或只写能力说明来关闭差距。
 
-## 本轮验证入口
+## 功能验证入口
 
 - `tests/workspace-model.test.ts`、`workspace-controller.test.ts`：几何、租约、恢复竞态、Host 身份、创建成员关系、close guard。
 - `tests/workspace-parity.test.ts`、`workspace-read-sync.test.ts`：legacy source 保留、W/P、活动、读状态 CAS、child/root 边界。
@@ -197,6 +197,9 @@
 - `e2e/workspace-interactions.spec.ts`：五条通过，真实拖放、同 editor DOM/草稿与 reload、prefix 行为、74 条 source catalog 日期/范围及 Recent/Folders 独立滚动恢复、两个源目录的 New here 创建上下文。S08/S11 原活动分组、preview batching、必需行与原偏好重载均已通过；S12 的 182 项虚拟列表在前插 20 项后保持位置，selected/menu 保留原 DOM，无聊天发送。
 - `e2e/title.spec.ts`、`composer-parking.spec.ts`：源标题建议与原备忘录 parking 已通过官方浏览器；`notify-summary.spec.ts` 验证官方 chat 附加摘要呈现与 Hub 偏好。
 - `e2e/admin.spec.ts`：官方 Settings 内源 Hub 选项、机器改名/Runner profile、restart 未知结果恢复、usage 与 SQLite 下载整条通过。
+- `e2e/runner-skew.spec.ts`：两条通过，根工作区兼容提示、原偏好、在线能力判断、回滚与受监督重启、共享未知结果核对。
+- `e2e/legacy-terminal.spec.ts`：真实官方 Terminal body/title 与原 SessionTerminal 适配的两条完整流程通过，包含非活动 tab 恢复、保留插件导航和原 terminal 资源身份。
+- `e2e/source-file-recovery.spec.ts`：两条通过，真实 graph 断开/源 display 换代与页面刷新后保留同一未知回执；源只写一次，无 Web Locks 时明确拒绝写入但保留读取/检查。
 - `e2e/notes-migration.spec.ts`：原 local notes 合并到已有 Hub notes、附件、冲突、丢 ACK 恢复及重载不重发通过；0 chat 请求。
 - `tests/workspace-ui-bridge.test.ts`：scope 对麦克风占用的互斥、异步停止/失败、不会释放另一 pane 的 owner；固定原 notes key 只读迁移与存储拒绝。音频回调为显式 fake，不代表语音提供商已验收。
 

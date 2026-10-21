@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official DSH inputs, attachment callbacks and IDB; HAPI reopen is an
  * explicit wire fixture returning a different, catalogued original source id. */
 import { test, expect, type Page } from '@playwright/test';
@@ -8,9 +9,7 @@ const sourceRow = (page: Page, name: string) => page.locator('.hapi-session-row'
 const pane = (page: Page, name: string) => page.getByRole('region', { name: `Pane: ${name}`, exact: true });
 async function admit(page: Page, environment: OfficialEnvironment) {
     await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
 }
 function archive(environment: OfficialEnvironment) {
     const source = environment.hapi.require('native-alpha').session;

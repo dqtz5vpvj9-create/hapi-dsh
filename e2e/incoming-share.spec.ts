@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real ServiceWorker/IndexedDB and official DSH composer; source sessions are explicit HAPI fixtures. */
 import { test, expect, type Page } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -5,9 +6,7 @@ import { startOfficialEnvironment, type OfficialEnvironment } from './official-r
 const composerName = 'Message or run a task, / commands, @ files or sessions';
 async function openWorkspace(page: Page, environment: OfficialEnvironment) {
     await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
 }
 test.describe('incoming share through the unified workspace', () => {
     let environment: OfficialEnvironment;

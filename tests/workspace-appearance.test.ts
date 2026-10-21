@@ -10,7 +10,7 @@ import { AppearanceState, bindAppearanceTheme } from '../src/client/appearance/s
 import { DEFAULT_HEADER, parseColors, parseHeader, readAppearance } from '../src/client/appearance/preferences.ts'
 import { appearanceTokens, keyColors } from '../src/client/appearance/tokens.ts'
 import { terminalTheme } from '../src/client/appearance/terminal-theme.ts'
-import { sourceHeaderFacts } from '../src/client/appearance/header.tsx'
+import { sourceHeaderFacts, sourceHeaderModel } from '../src/client/appearance/header.tsx'
 import type { HapiProjection } from '../src/codex/projection-types.ts'
 import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
 
@@ -124,6 +124,15 @@ test('source header never fabricates creation/activity times from a display prox
     assert.equal(sourceHeaderFacts(source, null, wrong, header, 'en').some(row => row.absolute !== undefined || row.key === 'worktree' || row.key === 'fastMode'), false)
     assert.equal(sourceHeaderFacts(source, null, undefined, header, 'en').some(row => row.absolute !== undefined), false)
     assert.equal(sourceHeaderFacts(source, null, catalog, { ...header, model: false, machine: false }, 'en').some(row => row.key === 'model' || row.key === 'machine'), false)
+})
+
+test('source header presents the real DSH provider/model pair without changing its opaque identity', () => {
+    const model = JSON.stringify(['example-provider', 'deepseek-flash'])
+    assert.equal(sourceHeaderModel(model, 'dsh'), 'DeepSeek-Flash · example-provider')
+    assert.equal(sourceHeaderModel('custom-model', 'dsh'), 'custom-model')
+    assert.equal(sourceHeaderModel('["one"]', 'dsh'), '["one"]')
+    assert.equal(sourceHeaderModel(model, 'codex'), model)
+    assert.equal(sourceHeaderModel(null, 'dsh'), null)
 })
 
 test('storage failure keeps the new page appearance and exposes that it did not persist', () => {

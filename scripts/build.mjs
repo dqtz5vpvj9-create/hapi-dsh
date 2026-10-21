@@ -14,7 +14,10 @@ async function includeSources(directory) {
         else if (name.isFile()) { fingerprint.update(path); fingerprint.update(await readFile(path)); }
     }
 }
-await includeSources('src'); await includeSources('config'); fingerprint.update(await readFile('package-lock.json'));
+await includeSources('src'); await includeSources('config');
+for (const path of ['package.json', 'package-lock.json', 'scripts/build.mjs']) {
+    fingerprint.update(path); fingerprint.update(await readFile(path));
+}
 const buildIdentity = JSON.stringify(fingerprint.digest('hex'));
 const entryPoints = { index: 'src/index.ts', cli: 'src/cli/index.ts', 'session-controller': 'src/codex/session-controller.ts', 'workspace-files': 'src/hapi/workspace-files.ts', 'file-references': 'src/hapi/file-references.ts', 'terminal-controller': 'src/hapi/terminal-controller.ts', 'subagent-controller': 'src/hapi-agent/subagent-controller.ts', 'runner/index': 'src/runner/index.ts' };
 await build({
@@ -34,6 +37,7 @@ const storeRuntime = await build({
 const result = await build({
     entryPoints: ['src/client/index.ts'], bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
     write: false, jsx: 'automatic', legalComments: 'inline',
+    logOverride: { 'import-is-undefined': 'error' },
     define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text), __HAPI_DSH_BUILD_ID__: buildIdentity },
     plugins: [{ name: 'style-text', setup(builder) {
         builder.onResolve({ filter: /\?text$/ }, args => {
@@ -46,6 +50,9 @@ const result = await build({
         'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
         'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store',
         '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit',
+        // The published ClientTerminals entry is an official module factory,
+        // not an ESM file to inline. Let the unchanged DSH loader resolve it.
+        '@deepseek-ai/dsh-api-terminal-controller/client',
     ],
 });
 const body = result.outputFiles[0].text;

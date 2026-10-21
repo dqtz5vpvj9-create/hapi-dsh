@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official DSH shell, original HAPI SSE and real worker registration.
  * Browser-issued Push endpoints and OS badging below are explicit protocol fixtures. */
 import { test, expect, type Page } from '@playwright/test';
@@ -5,8 +6,7 @@ import { startOfficialEnvironment, type OfficialEnvironment } from './official-r
 
 async function admit(page: Page, environment: OfficialEnvironment) {
     await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const preview = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    if (await preview.isVisible()) await preview.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
 }
 async function settings(page: Page) {
     await page.getByRole('button', { name: 'Account menu', exact: true }).click();

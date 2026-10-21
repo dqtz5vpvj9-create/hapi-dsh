@@ -6,6 +6,7 @@ import { canonicalJson, nativeSessionId, record } from '../codex/native.ts';
 import { writeDurableJson } from '../codex/durable-file.ts';
 import type { HapiMachine } from './schemas.ts';
 import { sourceMachineHealth } from './source-machines.ts';
+import { cliBinaryUpdatedOnDisk } from '../source-runner-capabilities.ts';
 import {
     sourceAdminMachineSchema, sourceAdminOperationSchema, sourceAdminReceiptSchema, sourceDshBundlesSchema,
     sourceHubSettingsSchema, sourceStorageSchema, sourceUsageSchema, sourceUsageRequestSchema,
@@ -31,12 +32,11 @@ const string = (value: unknown) => typeof value === 'string' ? value : '';
 /** Explicit whitelist: runner environment, authentication and arbitrary metadata never leave the Host. */
 export function adminMachine(machine: HapiMachine): SourceAdminMachine {
     const metadata = record(machine.metadata), runner = record(machine.runnerState);
-    const started = finite(metadata?.startedCliMtimeMs), installed = finite(metadata?.installedCliMtimeMs);
     return { id: machine.id, displayName: string(metadata?.displayName), host: string(metadata?.host), platform: string(metadata?.platform),
         version: string(metadata?.happyCliVersion), online: machine.active, lastSeenAt: machine.activeAt, health: sourceMachineHealth(machine.health),
         homeDir: string(metadata?.homeDir) || null, workspaceRoots: Array.isArray(metadata?.workspaceRoots) ? metadata.workspaceRoots.filter((v): v is string => typeof v === 'string') : [],
         capabilities: Array.isArray(metadata?.capabilities) ? metadata.capabilities.filter((v): v is string => typeof v === 'string') : [],
-        restartRecommended: started !== null && installed !== null && installed > started, supervisedRestart: metadata?.supervisedRestart === true,
+        restartRecommended: cliBinaryUpdatedOnDisk(metadata), supervisedRestart: metadata?.supervisedRestart === true,
         runner: runner ? { status: string(runner.status), pid: finite(runner.pid), startedAt: finite(runner.startedAt) } : null };
 }
 function overlaps(a: SourceAdminAction, b: SourceAdminAction): boolean {

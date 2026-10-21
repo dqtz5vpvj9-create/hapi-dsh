@@ -2,11 +2,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
 import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore } from '../src/client/model.ts'
 import { commandForKey } from '../src/client/shortcuts.ts'
 import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../src/workspace/legacy.ts'
-import { sessionActivity, sessionDestinations, sessionFolder, stableSessionOrder, windowActivity, windowAlias, windowTitle } from '../src/workspace/presentation.ts'
+import { paneTitle, sessionActivity, sessionDestinations, sessionFolder, stableSessionOrder, windowActivity, windowAlias, windowTitle } from '../src/workspace/presentation.ts'
 import { SidebarState } from '../src/workspace/sidebar-state.ts'
 import { sidebarTree } from '../src/workspace/sidebar-tree.ts'
 
@@ -85,6 +86,26 @@ test('geometry sync never exports the active window, focused pane, or zoom and k
     assert.equal(restored.activeWindowId, local.activeWindowId)
     assert.deepEqual(restored.focused, local.focused); assert.deepEqual(restored.zoomed, { [first]: false, [local.activeWindowId]: true })
     assert.equal(parseWorkspaceState(restored).windows.length, 2)
+})
+
+test('a terminal pane navigated to a file follows only its source display successor and retains its current title', () => {
+    const layout = store()
+    layout.openResource({ kind: 'terminal', sessionId: 'display-one', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-pty' })
+    const paneId = layout.focusedPane().id
+    layout.updateView(paneId, { type: 'resource', address: sessionFileAddress('display-one', '/repo/readme.md'), params: { line: 7 } }, 'readme.md')
+    const next = native('display-two', 'source')
+    const rebound = bindSourceResources(layout.getSnapshot(), { 'display-two': next })
+    const pane = panes(rebound.windows[0]!.root)[0]!
+    assert.equal(pane.id, paneId)
+    assert.deepEqual(pane.resource, { kind: 'terminal', sessionId: 'display-two', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-pty',
+        target: { type: 'resource', address: sessionFileAddress('display-two', '/repo/readme.md'), params: { line: 7 } }, title: 'readme.md' })
+    assert.equal(paneTitle(pane, { 'display-two': next }, 'Empty'), 'readme.md')
+    assert.equal(windowTitle(rebound.windows[0]!, paneId, { 'display-two': next }, 'Empty'), 'readme.md')
+    layout.updateView(paneId, { type: 'tab', kind: 'third-party', address: 'sidebar://third-party/opaque-display-one', params: { opaque: 'display-one' } })
+    const opaque = bindSourceResources(layout.getSnapshot(), { 'display-two': next })
+    const resource = panes(opaque.windows[0]!.root)[0]!.resource
+    assert.ok(resource.kind === 'terminal')
+    assert.deepEqual(resource.target, { type: 'tab', kind: 'third-party', address: 'sidebar://third-party/opaque-display-one', params: { opaque: 'display-one' } })
 })
 
 test('documents and PTY occurrences deduplicate by true resource identity and closing a window can restore them', () => {

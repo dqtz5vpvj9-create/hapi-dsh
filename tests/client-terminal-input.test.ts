@@ -98,3 +98,41 @@ test('mobile, emulator, modifiers, paste, and repeats share one public write own
   controls.view.acknowledge(3); assert.deepEqual(acknowledged, [3])
   detach(); controls.dispose(); assert.equal(mounts, 1); assert.equal(detaches, 1); assert.equal(closes, 0)
 })
+
+test('command and paste drafts survive synchronous official input rejection without retrying after reconnection', () => {
+  // Public-model fixture: the pinned TerminalView reports write admission
+  // failures through state synchronously; its void write is not a source ACK.
+  let state = { phase: 'connected', writable: true, info: { state: 'running' } } as TerminalViewState
+  let reject = true
+  const listeners = new Set<() => void>(), attempts: string[] = [], admitted: string[] = []
+  const update = (patch: Partial<TerminalViewState>): void => {
+    state = { ...state, ...patch }; for (const listener of listeners) listener()
+  }
+  const original = {
+    id: 'input-admission-fixture',
+    state: { getSnapshot: () => state, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } } },
+    write: (data: string) => {
+      attempts.push(data)
+      if (reject) update({ phase: 'failed', writable: false, issue: 'inputFull' })
+      else admitted.push(data)
+    },
+  } as unknown as TerminalPublicView
+  const controls = new TerminalInputControls(original)
+  let command = 'echo keep my command', paste = 'keep my pasted text'
+  if (controls.command(command)) command = ''
+  assert.equal(command, 'echo keep my command'); assert.deepEqual(admitted, [])
+  assert.equal(controls.command(command), false, 'A disconnected input owner must not receive a second attempt')
+  assert.equal(attempts.length, 1)
+  update({ phase: 'connected', writable: true })
+  if (controls.paste(paste)) paste = ''
+  assert.equal(paste, 'keep my pasted text'); assert.equal(attempts.length, 2)
+  assert.deepEqual(admitted, [])
+  reject = false; update({ phase: 'connected', writable: true })
+  assert.equal(attempts.length, 2, 'Returning connectivity does not replay either draft')
+  if (controls.command(command)) command = ''
+  assert.equal(command, ''); assert.deepEqual(admitted, ['echo keep my command\r'])
+  update({ phase: 'disconnected', writable: false })
+  update({ phase: 'connected', writable: true })
+  assert.equal(attempts.length, 3, 'Lost later acknowledgement does not authorize re-sending an admitted command')
+  controls.dispose(); assert.equal(listeners.size, 0)
+})

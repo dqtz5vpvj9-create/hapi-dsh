@@ -28,6 +28,10 @@ function printable(value: unknown): string {
     try { return JSON.stringify(value, null, 2) ?? '' } catch { return String(value) }
 }
 
+function SourceNoticeText({ notice }: { notice: { text: string; details?: string | undefined } }) {
+    return <><pre>{notice.text}</pre>{notice.details && <details><summary>Details / 详情</summary><pre>{notice.details}</pre></details>}</>
+}
+
 function NativeRequest({ sessionId, request, api, disabled, t }: {
     sessionId: string; request: ApprovalView; api: NativeActionsApi; disabled: boolean; t: WorkspaceTranslate
 }) {
@@ -138,7 +142,7 @@ export function ObservedActions({ sessionId, projection, api, t }: { sessionId: 
             <div><dt>{t('inputTokens')}</dt><dd>{projection.usage.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.outputTokens.toLocaleString()}</dd></div>
             {projection.usage.cachedInputTokens !== null && <div><dt>{t('cachedTokens')}</dt><dd>{projection.usage.cachedInputTokens.toLocaleString()}</dd></div>}
         </dl></details>}
-        {projection.notices.length > 0 && <details className="hapi-native-notices" open><summary>{t('nativeNotices')} · {projection.notices.length}</summary>{projection.notices.map(notice => <section key={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><pre>{notice.text}</pre></section>)}</details>}
+        {projection.notices.length > 0 && <details className="hapi-native-notices" open={projection.notices.some(notice => notice.kind === 'error')}><summary>{t('nativeNotices')} · {projection.notices.length}</summary>{projection.notices.map(notice => <section key={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><SourceNoticeText notice={notice}/></section>)}</details>}
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
         {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
             {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} steer={projection.capabilities.steer} t={t}/>)}
@@ -177,8 +181,8 @@ export function NativeActions({ sessionId, projection, api, t }: {
         {projection.threadGoal && <details className="hapi-native-goal"><summary>{t('threadGoal')} · {projection.threadGoal.status}</summary><p>{projection.threadGoal.objective}</p>
             <dl><div><dt>{t('tokensUsed')}</dt><dd>{projection.threadGoal.tokensUsed.toLocaleString()}{projection.threadGoal.tokenBudget == null ? '' : ` / ${projection.threadGoal.tokenBudget.toLocaleString()}`}</dd></div><div><dt>{t('goalTime')}</dt><dd>{Math.round(projection.threadGoal.timeUsedSeconds)}s</dd></div></dl>
         </details>}
-        {(projection.notices?.length ?? 0) > 0 && <details className="hapi-native-notices" open><summary>{t('nativeNotices')} · {projection.notices.length}</summary>
-            {projection.notices.map(notice => <section key={notice.id} data-native-notice={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><pre>{notice.text}</pre></section>)}
+        {(projection.notices?.length ?? 0) > 0 && <details className="hapi-native-notices" open={projection.notices.some(notice => notice.kind === 'error')}><summary>{t('nativeNotices')} · {projection.notices.length}</summary>
+            {projection.notices.map(notice => <section key={notice.id} data-native-notice={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><SourceNoticeText notice={notice}/></section>)}
         </details>}
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
         {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate')}>

@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real original DSH Markdown anchors and workspace drafts; the linked page is
  * a Playwright route fixture, so the test never visits an external service. */
 import { test, expect } from '@playwright/test'
@@ -27,8 +28,7 @@ test.describe('workspace external links', () => {
         try {
             await page.goto(environment.launchUrl)
             await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-            const preview = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-            if (await preview.isVisible()) await preview.getByRole('button', { name: 'Continue', exact: true }).click()
+            await acknowledgePreviewNotice(page, environment)
             await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click()
             const alpha = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true })
             await expect(alpha.getByRole('link', { name: 'Workspace documentation', exact: true })).toBeVisible()
@@ -49,6 +49,8 @@ test.describe('workspace external links', () => {
             await popup.close()
             await expect(alphaInput).toHaveText('Alpha unsent before navigation')
             await expect(betaInput).toHaveText('Beta unsent before navigation')
+
+            await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
 
             await alpha.getByRole('button', { name: 'Host settings', exact: true }).click()
             const settings = page.getByRole('dialog', { name: 'Settings', exact: true })

@@ -141,7 +141,7 @@ export class HapiObservedAgent implements Agent {
       submittedMessage: id => this.journal.get(id)?.message, content: item => this.content.get(item),
       stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }) })
   }
-  private meta() { return { cwd: this.source.metadata?.path ?? '/', createdAt: this.source.createdAt, agentPreset: 'hapi-observed' } }
+  private meta() { return { cwd: this.source.metadata?.path ?? '/', createdAt: this.source.createdAt } }
   static async create(ctx: Context, transport: HapiObservedTransport, source: HapiSession, config: HapiObservedOptions, initialRows?: readonly HapiMessage[]): Promise<HapiObservedAgent> {
     const agent = new HapiObservedAgent(ctx, transport, source, config)
     try {

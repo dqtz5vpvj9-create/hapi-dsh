@@ -3,6 +3,7 @@ import { createElement, useEffect, useLayoutEffect, useMemo, useRef, useState, u
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
+import type { TerminalViewState } from '@deepseek-ai/dsh-api-terminal-controller/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from '../pane-navigation.ts'
 import { TerminalInputControls, type TerminalPublicView } from './input.ts'
@@ -18,7 +19,27 @@ import { readTerminalCopySnapshot, type TerminalSnapshotApi, type TerminalTextSn
 import { attachTerminalGestures } from './gestures.ts'
 
 type TerminalThemeHook = <T>(selector: (snapshot: ThemeSnapshot) => T) => T
-export type TerminalBodyFace = PropsRuntime<'sidebar.right.pane.tab'> & { view: (key: string) => TerminalPublicView; useTheme: TerminalThemeHook }
+export interface TerminalViewAccessoryState {
+  readonly view: TerminalPublicView
+  readonly state: TerminalViewState
+  readonly fontSize: number
+  readonly visible: boolean
+  setFontSize(size: number): void
+}
+/** Explicit source-specific accessories; neither path replaces the official body. */
+export interface TerminalViewAccessories {
+  readCopy?(local: { text: string; selected: boolean }, signal: AbortSignal): Promise<TerminalTextSnapshot>
+  toolbar?(state: TerminalViewAccessoryState): ReactNode
+}
+export type TerminalBodyFace = PropsRuntime<'sidebar.right.pane.tab'> & {
+  view: (key: string) => TerminalPublicView; useTheme: TerminalThemeHook
+  hapiTerminalActions?: TerminalViewAccessories | undefined
+}
+const composedBodies = new WeakSet<object>()
+/** Reusing the active keyed seat must not add a second toolbar or input owner. */
+export function hasTerminalControls(component: unknown): boolean {
+  return (typeof component === 'object' && component !== null || typeof component === 'function') && composedBodies.has(component)
+}
 function CopyText({ snapshot, t }: { snapshot: TerminalTextSnapshot; t: TerminalTranslate }) {
   const content = useRef<HTMLDivElement>(null), pre = useRef<HTMLPreElement>(null), previous = useRef<{ top: number; height: number } | null>(null)
   const [status, setStatus] = useState(''), [shown, setShown] = useState(200)
@@ -29,11 +50,12 @@ function CopyText({ snapshot, t }: { snapshot: TerminalTextSnapshot; t: Terminal
     element.scrollTop = previous.current ? previous.current.top + element.scrollHeight - previous.current.height : element.scrollHeight
     previous.current = null
   }, [shown])
-  return <div ref={content}><p className="hapi-terminal-hint">{t(snapshot.kind === 'selected' ? 'terminal.copy.selected' : snapshot.kind === 'source' ? 'terminal.copy.source' : 'terminal.copy.visible')}</p>
-    {snapshot.kind === 'source' && <>
-      <p className="hapi-terminal-hint">{t('terminal.copy.sourceBounded')}</p>
-      <p className="hapi-terminal-hint">{t('terminal.copy.captured').replace('{time}', new Date(snapshot.value.capturedAt).toLocaleTimeString()).replace('{sequence}', String(snapshot.value.sequence))}</p>
+  return <div ref={content}><p className="hapi-terminal-hint">{t(snapshot.kind === 'selected' ? 'terminal.copy.selected' : snapshot.kind === 'source' ? 'terminal.copy.source' : snapshot.kind === 'legacy' ? 'terminal.copy.legacy' : 'terminal.copy.visible')}</p>
+    {(snapshot.kind === 'source' || snapshot.kind === 'legacy') && <>
+      <p className="hapi-terminal-hint">{t(snapshot.kind === 'legacy' ? 'terminal.copy.legacyBounded' : 'terminal.copy.sourceBounded')}</p>
+      <p className="hapi-terminal-hint">{t(snapshot.kind === 'legacy' ? 'terminal.copy.legacyCaptured' : 'terminal.copy.captured').replace('{time}', new Date(snapshot.value.capturedAt).toLocaleTimeString()).replace('{sequence}', String(snapshot.value.sequence))}</p>
       {snapshot.value.localLimitReached && <p role="alert">{t('terminal.copy.localLimit')}</p>}
+      {snapshot.kind === 'legacy' && snapshot.value.replayIssue && <p role="alert">{t('terminal.copy.replayIssue').replace('{issue}', snapshot.value.replayIssue)}</p>}
     </>}
     <p className="hapi-terminal-hint">{t('terminal.copy.description')}</p>
     {remaining > 0 && <button type="button" onClick={() => {
@@ -116,21 +138,27 @@ export function composedTerminalBody(ctx: Context, Official: ComponentType<Termi
     const readCopy = (): void => {
       const selection = terminalSelection(root.current), abort = new AbortController()
       copyRequest.current?.abort(); copyRequest.current = abort; setCopy({ state: 'loading' }); blur()
-      void readTerminalCopySnapshot(api, native ?? observed, !!observed?.sidechain, original.id, selection, abort.signal)
+      const reading = props.hapiTerminalActions?.readCopy
+        ? props.hapiTerminalActions.readCopy(selection, abort.signal)
+        : readTerminalCopySnapshot(api, native ?? observed, !!observed?.sidechain, original.id, selection, abort.signal)
+      void reading
         .then(snapshot => { if (alive.current && !abort.signal.aborted) setCopy({ state: 'ready', snapshot }) })
         .catch(error => { if (alive.current && !abort.signal.aborted) setCopy({ state: 'failed', error: error instanceof Error ? error.message : String(error) }) })
     }
     const readPaste = (): void => {
       if (!writable) return
       if (!navigator.clipboard?.readText) { setPaste(''); blur(); return }
-      void navigator.clipboard.readText().then(text => { if (alive.current && controls.writable) { controls.paste(text); focus() } }).catch(() => { if (alive.current) { setPaste(''); blur() } })
+      void navigator.clipboard.readText().then(text => { if (alive.current && controls.paste(text)) focus() }).catch(() => { if (alive.current) { setPaste(''); blur() } })
     }
     const keys = saved.keys.filter(key => key.row === 0 && key.send || key.id.startsWith('custom-') && key.send)
-    return <div className="hapi-terminal-composed" ref={root} data-hapi-terminal-controls>
+    return <div className="hapi-terminal-composed" ref={root} data-hapi-terminal-controls data-terminal-font={localFont}>
+      {props.hapiTerminalActions?.toolbar?.({ view: original, state, fontSize: localFont, visible: tab.visible,
+        setFontSize: size => { if (Number.isFinite(size)) setPinchFont({ base: baseFont, size: Math.max(9, Math.min(28, size)) }) },
+      })}
       <div className="hapi-terminal-official" ref={officialBody}>{createElement(Official, { ...props, view: face, useTheme: useOccurrenceTheme })}</div>
       {!controls.modes.alternateBuffer && controls.modes.mouseWheelReporting && <p className="hapi-terminal-hint" data-hapi-terminal-touch-unavailable>{t('terminal.gesture.mouseCapture')}</p>}
       {commandMode && <form className="hapi-terminal-command" onSubmit={event => {
-        event.preventDefault(); if (!writable || !command) return; controls.command(command); setCommand('')
+        event.preventDefault(); if (!writable || !command) return; if (controls.command(command)) setCommand('')
       }}><input ref={commandInput} aria-label={t('terminal.command.inputLabel')} placeholder={t('terminal.command.placeholder')} value={command} onChange={event => setCommand(event.target.value)}
           autoCapitalize="none" autoComplete="off" autoCorrect="off" spellCheck={false}/><button type="submit" disabled={!writable || !command}>{t('terminal.command.run')}</button></form>}
       <TouchBar t={t} keys={saved.keys} disabled={!writable || !tab.visible} readOnlyActionsAvailable={tab.visible} settings={saved.settings} modifiers={keyboard.modifiers} lockedModifiers={keyboard.locked}
@@ -157,9 +185,11 @@ export function composedTerminalBody(ctx: Context, Official: ComponentType<Termi
       </TerminalDialog>
       <TerminalDialog open={paste !== null} title={t('terminal.paste.fallbackTitle')} description={t('terminal.paste.fallbackDescription')} closeLabel={t('button.close')} onClose={() => { setPaste(null); focus() }}>
         <textarea aria-label={t('terminal.paste.fallbackTitle')} placeholder={t('terminal.paste.placeholder')} value={paste ?? ''} onChange={event => setPaste(event.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false}/>
-        <button type="button" disabled={!writable || !paste} onClick={() => { if (paste && controls.writable) { controls.paste(paste); setPaste(null); focus() } }}>{t('button.paste')}</button>
+        <button type="button" disabled={!writable || !paste} onClick={() => { if (paste && controls.paste(paste)) { setPaste(null); focus() } }}>{t('button.paste')}</button>
       </TerminalDialog>
     </div>
   }
-  return props => typeof props.view === 'function' && typeof props.useTheme === 'function' ? <ComposedTerminal {...props}/> : createElement(Official, props)
+  const body = (props: TerminalBodyFace) => typeof props.view === 'function' && typeof props.useTheme === 'function' ? <ComposedTerminal {...props}/> : createElement(Official, props)
+  composedBodies.add(body)
+  return body
 }

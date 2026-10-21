@@ -10,8 +10,9 @@ import type { HapiRemoteApi } from '../client-api.ts'
 import type { NativeControlLedger } from './native-control-state.ts'
 import type { InitialFileUpload } from './initial-task.ts'
 import type { WorkspaceUiPreferences } from './ui-preferences.ts'
+import type { ReactNode } from 'react'
 
 export type WorkspaceRootProps = PropsRuntime<'main'>
-    & PropsLocale<'hapiWorkspace'> & { controller: WorkspaceController; api: HapiRemoteApi; language: string; uploadInitialFile: InitialFileUpload; preferences?: WorkspaceUiPreferences | undefined; prepareNavigation?: (() => Promise<void>) | undefined }
+    & PropsLocale<'hapiWorkspace'> & { controller: WorkspaceController; api: HapiRemoteApi; language: string; uploadInitialFile: InitialFileUpload; preferences?: WorkspaceUiPreferences | undefined; prepareNavigation?: (() => Promise<void>) | undefined; runnerSkew?: ReactNode }
 export type SessionSidebarProps = PropsRuntime<'sidebar.workspaces'> & PropsLocale<'hapiWorkspace'>
     & { wide: boolean; expandSidebar: () => void; controller: WorkspaceController; api: HapiRemoteApi; controls?: NativeControlLedger }

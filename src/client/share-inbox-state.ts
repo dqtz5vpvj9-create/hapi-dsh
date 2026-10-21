@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { BrowserShareTransfers, shareTargetKey, validateSharePayload, type ShareDelivery, type SharePayload, type ShareRecord, type ShareTarget, type ShareTransfers } from './share-transfer.ts';
 import type { HandoffAddress } from './draft-handoff.ts';
 

@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official DSH theme, Conversation and xterm; source facts/PTY use the
  * same explicit HAPI wire fixture as the other integration tests. */
 import { test, expect } from '@playwright/test'
@@ -44,9 +45,7 @@ test.describe('original HAPI appearance through official DSH plugin contracts', 
         try {
             await page.goto(environment.launchUrl)
             await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-            const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-            await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-            if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+            await acknowledgePreviewNotice(page, environment)
             await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click()
             const alpha = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true })
             await expect(alpha.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible()
@@ -66,6 +65,7 @@ test.describe('original HAPI appearance through official DSH plugin contracts', 
             const beta = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true })
             await expect(beta.getByText('Native history beta in the official DSH Conversation.', { exact: true })).toBeVisible()
             await expect(beta.getByLabel('Source session information').locator('[data-hapi-header-field="machine"]')).toContainText('Linux workstation')
+            await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
             await alpha.getByRole('button', { name: 'Host settings', exact: true }).click()
             const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
             await settings.getByRole('button', { name: 'HAPI appearance', exact: true }).click()

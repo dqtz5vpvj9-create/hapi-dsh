@@ -9,7 +9,7 @@ import type { NativeWorkbench } from './workbench.ts';
 import type { FederationMount } from '../hub/federation.ts';
 import { WORKBENCH_TERMINAL_PATH, terminalClientFrameSchema, terminalOutputStreamSchema, type TerminalServerFrame } from '../workbench-types.ts';
 
-interface Authentication { url: string; path: string; token: string }
+export interface NativeTerminalAuthentication { url: string; path: string; token: string }
 /** An injected transport keeps tests on the actual bridge protocol without a shell. */
 export interface NativeTerminalSocket {
     readonly connected: boolean;
@@ -20,7 +20,7 @@ export interface NativeTerminalSocket {
     connect(): void;
     disconnect(): void;
 }
-function createSocket(authentication: Authentication): NativeTerminalSocket {
+export function createNativeTerminalSocket(authentication: NativeTerminalAuthentication): NativeTerminalSocket {
     const manager = new Manager(authentication.url, {
         path: authentication.path, autoConnect: false, reconnection: false,
         transports: ['websocket'], timeout: 15_000,
@@ -44,16 +44,16 @@ const terminalExit = z.object({ terminalId: z.string(), sessionId: z.string().op
 const terminalError = z.object({ terminalId: z.string(), sessionId: z.string().optional(), message: z.string().max(8192) });
 
 export interface NativeTerminalBridgeOptions {
-    createSocket?: (authentication: Authentication) => NativeTerminalSocket;
+    createSocket?: (authentication: NativeTerminalAuthentication) => NativeTerminalSocket;
     maxConnections?: number;
 }
 export class NativeTerminalBridge {
     private readonly server = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 128 * 1024 });
     private dispose: (() => void) | undefined;
     private readonly sockets = new Set<WebSocket>();
-    private readonly factory: (authentication: Authentication) => NativeTerminalSocket;
+    private readonly factory: (authentication: NativeTerminalAuthentication) => NativeTerminalSocket;
     constructor(private readonly client: Pick<HapiClient, 'socketAuthentication'>, private readonly workbench: Pick<NativeWorkbench, 'resolveSource'>, private readonly options: NativeTerminalBridgeOptions = {}) {
-        this.factory = options.createSocket ?? createSocket;
+        this.factory = options.createSocket ?? createNativeTerminalSocket;
     }
     mount({ webServer, authorize }: FederationMount): void {
         if (this.dispose) throw new Error('Native terminal bridge is already mounted');

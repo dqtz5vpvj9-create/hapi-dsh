@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official DSH Web/Conversation/Agent path with explicit original HAPI
  * child protocol fixtures; no live model credentials or source process. */
 import { test, expect, type Page, type Locator } from '@playwright/test'
@@ -8,9 +9,7 @@ import type { NativeFixture } from './hapi-fixture.ts'
 const composerName = 'Message or run a task, / commands, @ files or sessions'
 async function ready(page: Page, environment: OfficialEnvironment) {
   await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-  const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-  await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-  if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+  await acknowledgePreviewNotice(page, environment)
 }
 async function openChild(page: Page, parent: string, child: string, beside = false): Promise<{ pane: Locator; id: string }> {
   const branch = page.getByRole('button', { name: `Subagents · ${parent}`, exact: true })

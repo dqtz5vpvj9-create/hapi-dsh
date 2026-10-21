@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiCatalog, type HapiRemoteApi } from '../client-api.ts'
 import { SOURCE_CREATION_FLAVORS, SOURCE_LAUNCH_PERMISSION_MODES, type SourceCreationFlavor, type SourceCreationState } from '../hapi-agent/creation-types.ts'

@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Actual official DSH DOM, browser canvas, PNG and clipboard. Source rows are fixtures. */
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
@@ -11,9 +12,7 @@ test.describe('turn sharing through the official Conversation message action', (
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: environment.origin });
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
         const alpha = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
         const composer = alpha.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true });

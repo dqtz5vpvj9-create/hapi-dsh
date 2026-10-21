@@ -168,6 +168,7 @@ test('native discovery uses detail facts missing from HAPI summaries and registe
     assert.equal(app.ctx.agents.get(agent.id), agent)
     assert.equal(app.ctx.sessions.get(agent.id), agent.session)
     assert.equal(agent.options.provider, 'hapi-codex-native')
+    assert.equal(agent.session.header.agentPreset, undefined, 'an externally owned Codex session is not a DSH preset composition')
     const events = agent.session.snapshotEvents()
     assert.equal(agent.session.header.createdAt, fake.source.createdAt)
     assert.deepEqual(events.map(event => event.seq), events.map((_event, index) => index))

@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { remoteValue } from '../client-api.ts'
 import { sourceHistoryOperationSchema, sourceHistoryReceiptSchema, type PiHistoryEntry, type SourceHistoryAction,

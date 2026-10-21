@@ -4,6 +4,7 @@ import { WorkspaceShareInbox } from './share-inbox-state.ts'
 import { createWorkspaceUpdatePreparations, type WorkspaceUpdatePreparations } from './update-preparation.ts'
 import { WorkspaceDraftHandoffs } from './draft-handoff.ts'
 import { createSourceScheduleDrafts, type SourceScheduleDrafts } from './schedule-draft.ts'
+import { createSourceFileMutations, type SourceFileMutationJournal } from './source-file-mutation-journal.ts'
 
 /** Microphone ownership is shared explicitly; ordinary plugin stores are not. */
 export interface WorkspaceVoice {
@@ -23,6 +24,7 @@ export interface WorkspaceUiScope {
     readonly shareInbox: WorkspaceShareInbox
     readonly handoffs: WorkspaceDraftHandoffs
     readonly sourceScheduleDrafts: SourceScheduleDrafts
+    readonly sourceFileMutations: SourceFileMutationJournal
     readonly updates: WorkspaceUpdatePreparations
     /** Read only the original HAPI scratchlist key for this source session. */
     readLegacyScratchlist(sourceSessionId: string): string | null
@@ -104,16 +106,17 @@ export function createWorkspaceUiBridge(storage?: Pick<Storage, 'getItem' | 'set
     const updates = createWorkspaceUpdatePreparations()
     const handoffs = new WorkspaceDraftHandoffs(shareInbox.owner, undefined, () => updates.checkpoint())
     const sourceScheduleDrafts = createSourceScheduleDrafts(storage, events)
+    const sourceFileMutations = createSourceFileMutations({ ...(events ? { events } : {}) })
     updates.register('Conversation draft transfer', () => handoffs.checkpoint())
     const readLegacyScratchlist = (sourceSessionId: string): string | null => {
         if (!sourceSessionId || sourceSessionId.length > 256 || /[\u0000-\u001f\u007f]/u.test(sourceSessionId)) throw new Error('Invalid original source session identity')
         if (!storage) throw new Error('Original HAPI browser storage is unavailable')
         return storage.getItem(`hapi.scratchlist.v1.${sourceSessionId}`)
     }
-    const createScope = (): WorkspaceUiLease => ({ preferences, sourceSummaries, shareInbox, handoffs, sourceScheduleDrafts, updates, readLegacyScratchlist, ...coordinator.createScope() })
+    const createScope = (): WorkspaceUiLease => ({ preferences, sourceSummaries, shareInbox, handoffs, sourceScheduleDrafts, sourceFileMutations, updates, readLegacyScratchlist, ...coordinator.createScope() })
     const root = createScope()
     return { root, createScope, async dispose(): Promise<void> {
-        try { await coordinator.dispose() } finally { updates.dispose(); handoffs.dispose(); shareInbox.dispose(); sourceScheduleDrafts.dispose(); sourceSummaries.dispose(); preferences.dispose() }
+        try { await coordinator.dispose() } finally { updates.dispose(); handoffs.dispose(); shareInbox.dispose(); sourceScheduleDrafts.dispose(); sourceFileMutations.dispose(); sourceSummaries.dispose(); preferences.dispose() }
     } }
 }
 

@@ -1,7 +1,7 @@
 /** Explicit HAPI wire fixture. It does not claim to execute a real Codex model. */
 import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import type { HapiEvent, HapiMessage, HapiSession, HapiSendMessage } from '../src/codex/contracts.ts';
+import type { HapiEvent, HapiMessage, HapiSession, HapiSendMessage, HapiMessagesPage } from '../src/codex/contracts.ts';
 import type { NativeForkReceipt } from '../src/codex/control-types.ts';
 import { WorkbenchWireFixture } from './workbench-fixture.ts';
 import { SessionExtrasWireFixture } from './session-extras-fixture.ts';
@@ -16,7 +16,7 @@ import type { LegacyWorkspaceSnapshot } from '../src/legacy-workspace-types.ts';
 
 const token = 'e2e-hapi-access-token';
 const jwt = 'e2e-hapi-jwt';
-export interface NativeFixture { session: HapiSession; rows: HapiMessage[] }
+export interface NativeFixture { session: HapiSession; rows: HapiMessage[]; readHistory?: (url: URL) => HapiMessagesPage }
 
 export class HapiWireFixture {
     readonly sessions = new Map<string, NativeFixture>();
@@ -27,6 +27,11 @@ export class HapiWireFixture {
     readonly cursorCatalogs = new Map<string, { availableModels: Array<{ modelId: string; name?: string }>; cliModelSkus: Array<{ modelId: string; name?: string }> }>();
     readonly cursorModelRequests: string[] = [];
     dropNextMessageReply = false;
+    /** Discovery can omit an original history while its exact GET remains
+     * available. Faults stay in effect until the test explicitly removes them. */
+    readonly omittedFromSessionList = new Set<string>();
+    readonly sessionReadErrors = new Map<string, { status: number; code: string }>();
+    readonly sessionReads: Array<{ sessionId: string; status: number }> = [];
     legacyWorkspaces: LegacyWorkspaceSnapshot = { schemaVersion: 2, revision: 0, workspaces: [] };
     readonly settingChanges: Array<{ sessionId: string; route: string; body: unknown }> = [];
     readonly forkRequests: Array<{ sessionId: string; body: Record<string, unknown> }> = [];
@@ -83,7 +88,7 @@ export class HapiWireFixture {
         return fixture;
     }
     /** SDK wire rows are explicit fixtures; no Claude/Pi process is launched here. */
-    addObserved(flavor: 'claude' | 'pi' | 'cursor', key: string, machineId = 'machine-alpha'): NativeFixture {
+    addObserved(flavor: 'claude' | 'pi' | 'cursor' | 'dsh', key: string, machineId = 'machine-alpha'): NativeFixture {
         const id = `source-${key}`, at = Date.now();
         const session: HapiSession = { id, namespace: 'e2e', seq: 1, createdAt: at, updatedAt: at,
             active: true, activeAt: at, thinking: false, thinkingAt: at, metadataVersion: 1, agentStateVersion: 1,
@@ -219,7 +224,7 @@ export class HapiWireFixture {
                 response.write(`id: fixture-${this.cursor}\ndata: ${JSON.stringify({ type: 'connection-changed', data: { status: 'connected', subscriptionId, resume: 'gap' } })}\n\n`);
                 return;
             }
-            if (url.pathname === '/api/sessions') { send({ sessions: [...this.sessions.values()].map(value => value.session), readStates: this.readStates }); return; }
+            if (url.pathname === '/api/sessions') { send({ sessions: [...this.sessions.values()].filter(value => !this.omittedFromSessionList.has(value.session.id)).map(value => value.session), readStates: this.readStates }); return; }
             if (url.pathname === '/api/workspaces') { send(this.legacyWorkspaces); return; }
             if (url.pathname === '/api/machines') {
                 send({ machines: ['alpha', 'beta'].map(key => ({ id: `machine-${key}`, active: true, activeAt: Date.now(), metadata: { host: key === 'alpha' ? 'Laptop' : 'Linux workstation' } })) }); return;
@@ -335,10 +340,16 @@ export class HapiWireFixture {
             }
             if (!tail) {
                 if (request.method === 'PATCH') { fixture.session.metadata!.name = body.name; fixture.session.metadataVersion++; this.emit({ type: 'session-updated', sessionId: id }); send({ ok: true }); }
-                else send({ session: fixture.session });
+                else {
+                    const error = this.sessionReadErrors.get(id);
+                    this.sessionReads.push({ sessionId: id, status: error?.status ?? 200 });
+                    if (error) send({ error: 'Explicit original-session read failure fixture', code: error.code }, error.status);
+                    else send({ session: fixture.session });
+                }
                 return;
             }
             if (tail === 'messages' && request.method === 'GET') {
+                if (fixture.readHistory) { send(fixture.readHistory(url)); return; }
                 send({ messages: fixture.rows, page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
                     nextBeforeSeq: null, nextBeforeAt: null, nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: null, snapshotHeadAt: null, hasMore: false } }); return;
             }

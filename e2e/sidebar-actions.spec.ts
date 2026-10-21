@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Unchanged official DSH UI plus explicit HAPI wire fixtures. Lifecycle tests
  * deliberately cancel confirmation; no physical Runner or user's data is changed. */
 import { test, expect, type Locator, type Page } from '@playwright/test'
@@ -7,9 +8,7 @@ import { startOfficialEnvironment, type OfficialEnvironment } from './official-r
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
 }
 const row = (page: Page, title: string) => page.locator('.hapi-session-row').filter({ has: page.locator('.hapi-session-open').filter({ hasText: title }) })
 const menu = (page: Page, title: string) => page.getByRole('menu', { name: `${title} · Conversation actions`, exact: true })

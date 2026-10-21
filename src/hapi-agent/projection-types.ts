@@ -8,7 +8,7 @@ export type { ObservedSidechain, ObservedSidechainSummary } from './sidechain-ty
 
 export const observedNoticeSchema = z.object({
   id: z.string(), createdAt: z.number(), kind: z.enum(['message', 'error', 'compact', 'summary', 'source-event']),
-  text: z.string(), scopeId: z.string().nullable(),
+  text: z.string(), details: z.string().optional(), scopeId: z.string().nullable(),
 })
 export type ObservedNotice = z.infer<typeof observedNoticeSchema>
 

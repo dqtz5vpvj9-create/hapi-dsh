@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Durable bytes around the published official composer attachment owner. */
-import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';

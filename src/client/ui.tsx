@@ -12,9 +12,9 @@ import { DshSessionForm } from './dsh-session.tsx'
 import { nativeProjection, observedProjection, paneTitle, sessionActivity, sessionDestinations, sessionFolder, windowActivity, windowAlias, windowTitle, type ActivityKind } from '../workspace/presentation.ts'
 import { useNarrowViewport } from '../workspace/viewport.ts'
 import type { WorkspaceCatalogRow } from './controller.ts'
+import type { SourceResolutionStatus } from './source-session-state.ts'
 import type { SidebarFilter } from '../workspace/sidebar-state.ts'
 import { projectSidebarRows, sidebarTree, type SidebarBranch, type SidebarTreeRow } from '../workspace/sidebar-tree.ts'
-import { LegacySessionTerminal } from './legacy-session-terminal.tsx'
 import type { WorkbenchSource } from '../workbench-types.ts'
 import { isSourceChild, sourceIdentity } from '../workspace/legacy.ts'
 import { NativeLibraryPanel, NativeSessionToolsPanel } from './native-library.tsx'
@@ -39,6 +39,10 @@ import { localDayKey, matchesSidebarTime, SidebarRecency, sidebarDayLabel, sideb
 import { nextSidebarPreview, previousSidebarPreview, sidebarActiveRoots, sidebarActivityBuckets, sidebarBranchFacts, sidebarPreview, sidebarSessionActive, type SidebarActivityBucket } from '../workspace/sidebar-sections.ts'
 
 const activityLabel: Record<ActivityKind, WorkspaceKey> = { error: 'activityError', permission: 'waitingPermission', input: 'waitingInput', running: 'running', background: 'background', idle: 'idle', offline: 'offline' }
+const sourceResolutionLabel: Record<SourceResolutionStatus, WorkspaceKey> = {
+    loading: 'sourceLoading', 'not-found': 'sourceNotFound', removed: 'sourceRemoved', denied: 'sourceDenied',
+    transport: 'sourceTransport', 'not-ready': 'sourceNotReady', ambiguous: 'sourceAmbiguous', identity: 'sourceIdentityMismatch', unknown: 'sourceResolveFailed',
+}
 function ActivityDot({ kind, pending, compacting, t }: { kind: ActivityKind; pending?: boolean; compacting?: boolean; t: WorkspaceTranslate }) {
     const title = t(compacting && kind === 'running' ? 'compacting' : activityLabel[kind])
     return <span className={`hapi-activity hapi-activity-${kind}`} data-activity={kind} title={title} aria-label={title}>
@@ -138,7 +142,7 @@ function ResizeHandle({ boundary, controller, stage, t }: { boundary: SplitBound
 
 function WorkspacePane({ pane, window, focused, hidden, style, controller, bind, create, t }: {
     pane: PaneNode; window: WorkspaceWindow; focused: boolean; hidden: boolean; style: CSSProperties;
-    controller: WorkspaceController; bind: (pane: PaneNode, visible: boolean) => ReactNode; create: () => void;
+    controller: WorkspaceController; bind: (pane: PaneNode, visible: boolean, toolsTarget: HTMLElement | null) => ReactNode; create: () => void;
     t: WorkspaceTranslate
 }) {
     const snapshot = controller.getSnapshot()
@@ -146,6 +150,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
     const location = sessionLocation(summary)
     const lease = snapshot.leases.get(pane.id)
     const element = useRef<HTMLElement>(null)
+    const [toolsTarget, setToolsTarget] = useState<HTMLDivElement | null>(null)
     const lastVisibleSize = useRef<{ width: number; height: number } | null>(null)
     const drop = useWorkspacePaneDrop(controller, pane, hidden)
     useLayoutEffect(() => {
@@ -167,7 +172,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         seen(); document.addEventListener('visibilitychange', seen)
         return () => { document.removeEventListener('visibilitychange', seen) }
     }, [hidden, focused, snapshot.pickingSession, summary?.id, summary?.updatedAt, controller, pane.resource])
-    const title = paneTitle(pane, snapshot.catalog.byId, t('newPane'))
+    const title = !summary && lease?.sourceResolution ? t('originalConversation') : paneTitle(pane, snapshot.catalog.byId, t('newPane'))
     return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { visibility: 'hidden', pointerEvents: 'none', ...(lastVisibleSize.current ?? {}) } : {}) }}
         data-pane-id={pane.id} data-session-id={pane.resource.kind === 'chat' ? pane.resource.sessionId : ''} aria-hidden={hidden}
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
@@ -178,25 +183,29 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
                 onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>{title}</span>
             {summary && <span className="hapi-pane-source" title={[location.machineName, location.machineId, location.nativeId].filter(Boolean).join(' · ')}>{location.machineName ? `${location.machineName} · ` : ''}{location.engine.toUpperCase()}</span>}
             <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
-            <PaneMenu pane={pane} window={window} controller={controller} t={t}/>
+            <PaneMenu pane={pane} window={window} controller={controller} t={t} toolsTarget={setToolsTarget}/>
             <IconButton label={t('closePane')} icon="close" onClick={() => controller.store.closePane(pane.id)}/>
         </header>
         <div className="hapi-pane-body">
             {pane.resource.kind === 'empty' ? <div className="hapi-empty"><WorkspaceIcon kind="grid" size={34}/><h2>{t('chooseSession')}</h2><p>{t('emptyHelp')}</p><button type="button" onClick={controller.requestSessionPicker}>{t('openConversation')}</button><button type="button" onClick={create}>{t('newSession')}</button><kbd>Ctrl B → %</kbd></div>
-                : lease?.status === 'failed' ? <div className="hapi-empty" role="alert"><h2>{t('openFailed')}</h2><p>{lease.error}</p><button type="button" onClick={() => controller.retryPane(pane.id)}>{t('retry')}</button></div>
-                : bind(pane, !hidden)}
+                : lease?.status === 'failed' ? <div className="hapi-empty" role="alert"><h2>{t('openFailed')}</h2>
+                    <p>{lease.sourceResolution ? t(sourceResolutionLabel[lease.sourceResolution]) : lease.error}</p>
+                    {lease.sourceResolution && lease.error && <details className="hapi-failure-details"><summary>{t('technicalDetails')}</summary><pre>{lease.error}</pre></details>}
+                    <button type="button" onClick={() => controller.retryPane(pane.id)}>{t('retry')}</button></div>
+                : bind(pane, !hidden, toolsTarget)}
         </div>
         {drop.position && <div className="hapi-dock-indicator" data-hapi-drop={drop.position} aria-hidden="true"/>}
     </section>
 }
 
-function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
+function PaneMenu({ pane, window, controller, t, toolsTarget }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate; toolsTarget?: (target: HTMLDivElement | null) => void }) {
     const layout = controller.getSnapshot().layout
     const row = pane.resource.kind === 'empty' ? undefined : controller.getSnapshot().catalog.byId[pane.resource.sessionId]
     const split = (axis: 'horizontal' | 'vertical'): void => { controller.store.focus(pane.id); controller.store.split(axis); controller.requestSessionPicker() }
     return <details className="hapi-menu hapi-pane-menu"><summary title={t('actions')} aria-label={t('actions')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
+        <div className="hapi-pane-tools-outlet" ref={toolsTarget}/>
         {pane.resource.kind !== 'empty' && <>
-            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('pluginViews')}</button>
+            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('pluginViewsBeside')}</button>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('projectFiles')}</button>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('terminal', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('terminal')}</button>
         </>}
@@ -211,7 +220,7 @@ function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: Wor
     </div></details>
 }
 
-export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile, preferences, prepareNavigation }: WorkspaceRootProps) {
+export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile, preferences, prepareNavigation, runnerSkew }: WorkspaceRootProps) {
     const links = useWorkspaceLinks(preferences, prepareNavigation)
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const { layout } = snapshot
@@ -220,6 +229,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     const [switcher, setSwitcher] = useState(false)
     const [rename, setRename] = useState<WorkspaceWindow | null>(null)
     const [prefix, setPrefix] = useState(false)
+    const [mobileToolsTarget, setMobileToolsTarget] = useState<HTMLDivElement | null>(null)
     const mobile = useNarrowViewport()
     const windowTabs = useRef<HTMLDivElement>(null)
     const paneTabs = useRef<HTMLDivElement>(null)
@@ -274,27 +284,13 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         return () => { window.removeEventListener('keydown', keydown, true); window.removeEventListener('blur', clear); if (timeout) clearTimeout(timeout) }
     }, [controller])
     const action = (operation: () => void): void => { try { operation() } catch (error) { controller.report(error) } }
-    const resourceSource = (pane: PaneNode): { sourceSessionId: string; sourceHubId?: string; sessionId: string; machineId?: string } | null => {
-        if (pane.resource.kind === 'empty') return null
-        const row = snapshot.catalog.byId[pane.resource.sessionId]
-        const source = sourceIdentity(row)
-        const sourceSessionId = pane.resource.sourceSessionId ?? source?.sessionId
-        if (!sourceSessionId || (row && row.hostId !== 'local')) return null
-        const sourceHubId = pane.resource.sourceHubId ?? source?.hubId
-        const machineId = sessionLocation(row).machineId
-        return { sessionId: pane.resource.sessionId, sourceSessionId, ...(sourceHubId ? { sourceHubId } : {}), ...(machineId ? { machineId } : {}) }
-    }
-    const bind = (pane: PaneNode, visible: boolean): ReactNode => {
-        if (pane.resource.kind === 'terminal') {
-            const source = resourceSource(pane)
-            return <LegacySessionTerminal resource={pane.resource} sourceSessionId={source?.sourceSessionId ?? null} {...(source?.sourceHubId ? { sourceHubId: source.sourceHubId } : {})}
-                focused={activePane.id === pane.id} visible={visible} language={language.startsWith('zh') ? 'zh' : 'en'} preferences={preferences}/>
-        }
+    const bind = (pane: PaneNode, visible: boolean, toolsTarget: HTMLElement | null): ReactNode => {
         const lease = snapshot.leases.get(pane.id)
-        if (!lease?.reference) return <div className="hapi-loading" role="status">{t('loading')}</div>
+        if (!lease?.reference) return <div className="hapi-loading" role="status">{t(lease?.sourceResolution === 'loading' ? 'sourceLoading' : 'loading')}</div>
         if (pane.resource.kind === 'empty') return null
         const host = controller.host(lease.hostId)
-        const options = { paneId: pane.id, focused: controller.store.focusedPane().id === pane.id, visible }
+        const focused = controller.store.focusedPane().id === pane.id
+        const options = { paneId: pane.id, focused, visible, toolsTarget: mobile ? focused ? mobileToolsTarget : null : toolsTarget }
         if (host?.renderPane) return host.renderPane(lease.reference, pane.resource, options)
         return <div className="hapi-loading" role="status">{t('loading')}</div>
     }
@@ -319,6 +315,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 <IconButton label={t('shortcuts')} icon="help" onClick={() => setHelp(true)}/>
             </div>
         </header>
+        {runnerSkew}
         {snapshot.notice && <div className="hapi-notice" role="alert"><span>{snapshot.notice}</span>{snapshot.conflict ? <><button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button><button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button></> : snapshot.persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retry')}</button>}<IconButton label={t('dismiss')} icon="close" onClick={controller.clearNotice}/></div>}
         <WorkspaceLinkNotice links={links} language={language}/>
         <div className="hapi-workspace-stage" ref={setStage}>
@@ -346,7 +343,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                     title={paneTitle(pane, snapshot.catalog.byId, t('newPane'))}><span>P{index + 1}</span><span>{paneTitle(pane, snapshot.catalog.byId, t('newPane'))}</span></button>)}
             </div>
             <button type="button" className="hapi-pane-add" aria-label={t('newPane')} onClick={() => { controller.store.split('horizontal'); controller.requestSessionPicker() }}>P+</button>
-            <PaneMenu pane={activePane} window={active} controller={controller} t={t}/>
+            <PaneMenu pane={activePane} window={active} controller={controller} t={t} toolsTarget={setMobileToolsTarget}/>
         </nav>}
         <footer className="hapi-statusbar">
             <div role="tablist" aria-label={t('window')} className="hapi-window-tabs" ref={windowTabs}>

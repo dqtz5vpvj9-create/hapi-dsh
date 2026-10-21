@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -9,9 +10,7 @@ test.describe('parking the original DSH composer in HAPI notes', () => {
     test('attachments, concurrent edits and an uncertain save survive without sending or duplicating a chat message', async ({ page }) => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
         const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
         const composer = pane.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true });

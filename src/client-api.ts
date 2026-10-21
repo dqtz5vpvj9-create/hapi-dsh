@@ -39,6 +39,10 @@ import { sourceHistoryInputs, sourceHistoryOutputs, type SourceHistoryApi } from
 export type * from './hapi-agent/history-types.ts';
 import { sourceAdminInputs, sourceAdminOutputs, type SourceAdminApi } from './source-admin-types.ts';
 import { sourceCompanionInputs, sourceCompanionOutputs, type SourceCompanionApi } from './source-companion-types.ts';
+import { legacyTerminalInputs, legacyTerminalOutputs, type LegacyTerminalApi } from './legacy-terminal-types.ts';
+export type * from './legacy-terminal-types.ts';
+import { legacyTerminalTextInputs, legacyTerminalTextOutputs, type LegacyTerminalTextApi } from './legacy-terminal-text-types.ts';
+export type * from './legacy-terminal-text-types.ts';
 export type * from './source-admin-types.ts';
 import { voiceInputs, voiceOutputs, type SourceVoiceApi } from './voice-types.ts';
 export type * from './voice-types.ts';
@@ -98,8 +102,9 @@ export interface WorkspaceWrite { expectedRevision: number; state: WorkspaceStat
 export interface WorkspaceWriteResult extends WorkspaceDocument { status: 'applied' | 'conflict' }
 export interface NativeQueueRequest { sessionId: string; localId: string }
 export interface NativeAnswerRequest { sessionId: string; requestId: string; answer: HapiApprovalAnswer; deny?: boolean }
-export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceCompanionApi, SourceVoiceApi, SourceNotificationsApi {
+export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceCompanionApi, LegacyTerminalApi, LegacyTerminalTextApi, SourceVoiceApi, SourceNotificationsApi {
     catalog(): Promise<RemoteResult<HapiCatalog>>;
+    sourceSessionResolve(request: { hubId: string; sourceSessionId: string }): Promise<RemoteResult<{ hubId: string; sourceSessionId: string; sessionId: string }>>;
     machineOptions(request: { machineId: string }): Promise<RemoteResult<MachineOptions>>;
     sourceMachineOptions(request: SourceMachineOptionsRequest): Promise<RemoteResult<SourceMachineOptions>>;
     sourceMachineDirectory(request: SourceDirectoryRequest): Promise<RemoteResult<SourceDirectory>>;
@@ -147,6 +152,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap { hapi: HapiRemoteApi }
     interface TypertRemoteMap {
         'hapi/catalog': HapiRemoteApi['catalog'];
+        'hapi/sourceSessionResolve': HapiRemoteApi['sourceSessionResolve'];
         'hapi/machineOptions': HapiRemoteApi['machineOptions'];
         'hapi/sourceMachineOptions': HapiRemoteApi['sourceMachineOptions'];
         'hapi/sourceMachineDirectory': HapiRemoteApi['sourceMachineDirectory'];
@@ -163,6 +169,10 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/sourceAdministration': HapiRemoteApi['sourceAdministration'];
         'hapi/sourceCompanionInfo': HapiRemoteApi['sourceCompanionInfo'];
         'hapi/sourceCompanionReveal': HapiRemoteApi['sourceCompanionReveal'];
+        'hapi/sourceLegacyTerminalOpen': HapiRemoteApi['sourceLegacyTerminalOpen'];
+        'hapi/sourceLegacyTerminalRead': HapiRemoteApi['sourceLegacyTerminalRead'];
+        'hapi/sourceLegacyTerminals': HapiRemoteApi['sourceLegacyTerminals'];
+        'hapi/sourceLegacyTerminalText': HapiRemoteApi['sourceLegacyTerminalText'];
         'hapi/sourceSessionBulk': HapiRemoteApi['sourceSessionBulk'];
         'hapi/sourceSessionBulkRead': HapiRemoteApi['sourceSessionBulkRead'];
         'hapi/sourceSummarySettings': HapiRemoteApi['sourceSummarySettings'];
@@ -266,8 +276,9 @@ const workspaceState = z.unknown().transform((value, context) => {
 const workspaceDocument = z.object({ revision: z.number().int().nonnegative(), state: workspaceState.nullable() });
 const looseJson = z.json();
 const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
-    ...nativeLibraryInputs, ...workbenchInputs, ...sessionExtrasInputs, ...sourceInitialTaskInputs, ...sourceHistoryInputs, ...sourceAdminInputs, ...sourceCompanionInputs, ...voiceInputs, ...notificationInputs,
+    ...nativeLibraryInputs, ...workbenchInputs, ...sessionExtrasInputs, ...sourceInitialTaskInputs, ...sourceHistoryInputs, ...sourceAdminInputs, ...sourceCompanionInputs, ...legacyTerminalInputs, ...legacyTerminalTextInputs, ...voiceInputs, ...notificationInputs,
     machineOptions: z.strictObject({ machineId: id }),
+    sourceSessionResolve: z.strictObject({ hubId: id, sourceSessionId: id }),
     sourceMachineOptions: sourceMachineOptionsRequestSchema,
     sourceMachineDirectory: sourceDirectoryRequestSchema, sourceMachinePaths: sourcePathsRequestSchema,
     sourceSessionTools: sessionRequest, sourceOperation: sourceOperationSchema, sourceOperationRead: sourceOperationReadSchema,
@@ -297,7 +308,7 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     workspacePut: z.strictObject({ expectedRevision: z.number().int().nonnegative(), state: workspaceState, operationId: id }),
 };
 const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
-    ...nativeLibraryOutputs, ...workbenchOutputs, ...sessionExtrasOutputs, ...sourceInitialTaskOutputs, ...sourceHistoryOutputs, ...sourceAdminOutputs, ...sourceCompanionOutputs, ...voiceOutputs, ...notificationOutputs,
+    ...nativeLibraryOutputs, ...workbenchOutputs, ...sessionExtrasOutputs, ...sourceInitialTaskOutputs, ...sourceHistoryOutputs, ...sourceAdminOutputs, ...sourceCompanionOutputs, ...legacyTerminalOutputs, ...legacyTerminalTextOutputs, ...voiceOutputs, ...notificationOutputs,
     catalog: z.object({
         hubId: id, connected: z.boolean(),
         machines: z.array(z.object({ id, label: z.string(), online: z.boolean(), homeDir: z.string().optional(), workspaceRoots: z.array(z.string()).optional(),
@@ -316,6 +327,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
         keyProfiles: z.array(z.object({ id, label: z.string(), homeId: z.string().optional() })).optional(),
         models: z.array(z.object({ id, name: z.string(), reasoningEfforts: z.array(z.string()) })), warnings: z.array(z.string()),
     }),
+    sourceSessionResolve: z.strictObject({ hubId: id, sourceSessionId: id, sessionId: id }),
     createSession: sessionRequest, resumeSession: sessionRequest,
     sourceMachineOptions: sourceMachineOptionsSchema,
     sourceMachineDirectory: sourceDirectorySchema, sourceMachinePaths: sourcePathsSchema,
@@ -344,7 +356,7 @@ export const HAPI_REMOTE: TypertRemoteContribution = {
     descriptors: (Object.keys(outputs) as Array<keyof HapiRemoteApi>).map((method): InvocationDescriptor => ({
         id: `hapi-dsh#hapi/${method}`, service: 'hapi', namespace: 'hapi', method,
         invocation: { kind: 'direct' },
-        ...(method === 'nativeTerminalText' || method in voiceInputs || method in notificationInputs ? { cancellation: { parameter: 'signal' as const } } : {}),
+        ...(method === 'nativeTerminalText' || method === 'sourceLegacyTerminalOpen' || method === 'sourceLegacyTerminalText' || method in voiceInputs || method in notificationInputs ? { cancellation: { parameter: 'signal' as const } } : {}),
         parameters: inputs[method] === undefined ? [] : [{ name: 'request', wire: 'request', source: 'json', codec: codec(`${method}Input`, inputs[method]!) }],
         result: codec(`${method}Output`, outputs[method]),
     })),

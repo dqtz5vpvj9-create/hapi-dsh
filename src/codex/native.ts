@@ -60,7 +60,7 @@ export interface NativeExecution {
   turn?: { status: 'inProgress' | 'completed' | 'failed' | 'interrupted'; started: boolean; ended: boolean }
 }
 
-function executionFor(value: unknown): NativeExecution | undefined {
+export function nativeExecutionFor(value: unknown): NativeExecution | undefined {
   const data = record(value)
   if (!data || typeof data.threadId !== 'string' || typeof data.turnId !== 'string') return undefined
   const turn = record(data.turn)
@@ -111,7 +111,7 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
   const data = record(content.data)
   // Child traces are separate native threads, never flatten them into the parent.
   if (data?.type === 'agent-run-trace' || data?.type === 'agent-run-update' || data?.type === 'agent-run-start') return undefined
-  const execution = executionFor(record(envelope.meta)?.nativeExecution ?? data?.nativeExecution)
+  const execution = nativeExecutionFor(record(envelope.meta)?.nativeExecution ?? data?.nativeExecution)
   if (execution && execution.threadId !== binding.threadId) {
     throw new Error(`Native message ${row.id} belongs to a different Codex thread`)
   }
@@ -133,6 +133,10 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
       mode: record(envelope.meta)?.deliveryMode === 'steer' ? 'steer' : 'queue',
       parts: Array.isArray(content.parts) ? content.parts : [],
     }
+  } else if (envelope.role === 'agent' && content.type === 'event' && execution?.turn) {
+    // The indexed native history represents an interrupted turn with an
+    // ordinary source stop event, not a codex/native-turn body.
+    result = { ...base, kind: 'turn' }
   } else if (envelope.role === 'agent' && content.type === 'codex' && data) {
     if ((data.type === 'message' || data.type === 'reasoning') && typeof data.message === 'string') {
       result = {
@@ -164,5 +168,6 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
 
 /** Page-order comparison shared by snapshot loading and reconnect reconciliation. */
 export function compareNativeMessages(left: HapiMessage, right: HapiMessage): number {
-  return left.createdAt - right.createdAt || (left.seq ?? 0) - (right.seq ?? 0) || left.id.localeCompare(right.id)
+  return (left.invokedAt ?? left.createdAt) - (right.invokedAt ?? right.createdAt)
+    || (left.seq ?? 0) - (right.seq ?? 0) || left.id.localeCompare(right.id)
 }

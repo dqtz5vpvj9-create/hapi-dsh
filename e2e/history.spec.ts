@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Official DSH browser integration with explicit HAPI wire fixtures, without model/CLI credentials. */
 import { test, expect, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
@@ -6,9 +7,7 @@ import type { SourceHistoryPiResult, SourceHistoryTools } from '../src/hapi-agen
 async function openWorkspace(page: Page, environment: OfficialEnvironment) {
   await page.goto(environment.launchUrl)
   await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-  const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-  await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-  if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+  await acknowledgePreviewNotice(page, environment)
 }
 async function openSource(page: Page, name: string, tab: string) {
   await page.locator('.hapi-session-open').filter({ hasText: name }).click()

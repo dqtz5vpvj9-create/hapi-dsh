@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { errorMessage, type WorkspaceCatalogRow, type WorkspaceController } from './controller.ts'

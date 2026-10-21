@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { test, expect } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
 
@@ -8,9 +9,7 @@ test.describe('original source titles inside official DSH Session plugins', () =
     test('a generated title requires review and uses the original Session while preserving the draft and native thread', async ({ page }) => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
         const original = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
         const paneId = await original.getAttribute('data-pane-id'); expect(paneId).toBeTruthy();

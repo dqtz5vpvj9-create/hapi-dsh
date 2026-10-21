@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -6,6 +6,10 @@ import { remoteValue } from '../client-api.ts';
 import { SOURCE_BACKUP_PATH, type SourceAdminApi, type SourceAdministration, type SourceAdminAction, type SourceAdminMachine,
     type SourceDshBundles, type SourceStorage, type SourceUsage, type SourceUsageRequest } from '../source-admin-types.ts';
 import { SourceAdminController } from './source-admin-state.ts';
+import { SourceAdministrationRuntime } from './source-admin-runtime.ts';
+import { RunnerSkewPreferences } from './runner-skew-state.ts';
+import { RunnerSkewBanner, runnerSkewStyles } from './runner-skew.tsx';
+import { missingRequiredCapabilities } from '../source-runner-capabilities.ts';
 import { SourceBulkPanel } from './source-bulk.tsx';
 import { notifySourceSummarySettings, type SourceSummarySettings } from './notify-summary-state.ts';
 import type {} from './workspace-ui.ts';
@@ -68,7 +72,8 @@ function RunnerSettings({ api, machine, controller, refresh, language }: {
             <label>{tr('Machine display name', '机器显示名称')}<input maxLength={64} value={name} onChange={event => setName(event.currentTarget.value)}/></label>
             <small>{tr('Leave empty to use its original host name.', '留空可恢复原主机名。')}</small><div className="hapi-button-row"><button type="submit" disabled={!controller.canRun(rename)}>{tr('Save machine name', '保存机器名称')}</button></div>
         </form>
-        {machine.restartRecommended && <p role="status">{tr('A newer CLI is installed. Restart the Runner to load it.', '已安装更新的 CLI。重启 Runner 后会加载新版本。')}</p>}
+        {machine.online && missingRequiredCapabilities(machine.capabilities).length > 0 && <p role="status">{tr('Missing required Runner capabilities', 'Runner 缺少所需能力')}: <code>{missingRequiredCapabilities(machine.capabilities).join(', ')}</code></p>}
+        {machine.restartRecommended && <p role="status">{tr('The installed CLI differs from the running binary. Restart the Runner to load it.', '已安装的 CLI 与运行中的二进制文件不同。重启 Runner 后会加载它。')}</p>}
         <button type="button" disabled={!machine.online || !machine.supervisedRestart || !controller.canRun(restart)} onClick={() => setConfirmation(true)}>{tr('Restart Runner', '重启 Runner')}</button>
         {!machine.supervisedRestart && <p><small>{tr('Restart is available when the original Runner has a supervisor configured to relaunch it.', '原 Runner 配置了自动拉起进程的 supervisor 后才支持此重启入口。')}</small></p>}
         {confirmation && <div role="group" aria-label={tr('Confirm Runner restart', '确认重启 Runner')}><p>{tr('Stop this Runner and let its configured supervisor relaunch it? Its connection will briefly go offline.', '停止此 Runner 并由已配置的 supervisor 重新拉起？连接会短暂离线。')}</p>
@@ -162,11 +167,9 @@ function UsagePanel({ api, hubId, language }: { api: SourceAdminApi; hubId: stri
     </div>;
 }
 
-function Administration({ api, data, refresh, language, onSummarySettings }: { api: SourceAdminApi; data: SourceAdministration; refresh(): Promise<void>; language: string; onSummarySettings(value: SourceSummarySettings): void }) {
+function Administration({ api, data, controller, refresh, language, onSummarySettings }: { api: SourceAdminApi; data: SourceAdministration; controller: SourceAdminController; refresh(): Promise<void>; language: string; onSummarySettings(value: SourceSummarySettings): void }) {
     const tr = words(language), [tab, setTab] = useState<'hub' | 'machines' | 'storage' | 'usage'>('hub'), [machineId, setMachineId] = useState('');
-    const controller = useMemo(() => new SourceAdminController(api, data.hubId, storage()), [api, data.hubId]);
     useSyncExternalStore(controller.subscribe, controller.getSnapshot);
-    useEffect(() => { controller.accept(data.operations); void controller.recover(); }, [controller, data.operations]);
     const machine = data.machines.find(row => row.id === machineId) ?? data.machines.find(row => row.online) ?? data.machines[0];
     return <><div className="hapi-button-row" role="tablist" aria-label={tr('HAPI administration', 'HAPI 管理')}>
         {([['hub', tr('Hub', 'Hub')], ['machines', tr('Machines', '机器')], ['storage', tr('Storage', '存储')], ['usage', tr('Usage', '用量')]] as const).map(([value, label]) => <button type="button" role="tab" key={value} aria-selected={tab === value} onClick={() => setTab(value)}>{label}</button>)}</div>
@@ -189,22 +192,33 @@ function Administration({ api, data, refresh, language, onSummarySettings }: { a
     </>;
 }
 
-/** Uses the unchanged official Settings shell and its additive public section slot. */
-export function installSourceAdmin(ctx: Context, api: SourceAdminApi): () => void {
+export interface SourceAdminInstallation { (): void; RunnerSkew: ComponentType }
+
+/** Uses the unchanged official Settings shell; the workspace mounts its in-flow banner. */
+export function installSourceAdmin(ctx: Context, api: SourceAdminApi): SourceAdminInstallation {
     const readLanguage = () => ctx.locale.getSnapshot().active;
+    const runtime = new SourceAdministrationRuntime(api, storage());
+    let session: Storage | undefined;
+    try { session = globalThis.sessionStorage; } catch { /* Dismissal and minimization remain available in memory. */ }
+    const preferences = new RunnerSkewPreferences(session);
     const onSummarySettings = (value: SourceSummarySettings) => notifySourceSummarySettings(ctx.get('hapiWorkspaceUi')?.sourceSummaries, value);
     const Section = (_props: PropsRuntime<'settings.section'>) => {
         const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), readLanguage), tr = words(language);
-        const state = useRead<SourceAdministration>('administration', async () => remoteValue(await api.sourceAdministration()));
+        const state = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot);
+        useEffect(() => { void runtime.refresh(); }, []);
         return <section className="hapi-source-panel hapi-administration" aria-label={tr('HAPI Hub and Runners', 'HAPI Hub 与 Runner')}><h2>{tr('HAPI Hub and Runners', 'HAPI Hub 与 Runner')}</h2>
             {state.loading && !state.data && <p role="status">{tr('Reading Hub state…', '正在读取 Hub 状态…')}</p>}{state.error && <p role="alert" className="hapi-error">{state.error}</p>}
-            {state.data && <Administration api={api} data={state.data} refresh={state.refresh} language={language} onSummarySettings={onSummarySettings}/>}
-            <div className="hapi-button-row"><button type="button" disabled={state.loading} onClick={() => { void state.refresh(); }}>{tr('Refresh Hub state', '刷新 Hub 状态')}</button></div>
+            {state.data && state.controller && <Administration api={api} data={state.data} controller={state.controller} refresh={runtime.revalidate} language={language} onSummarySettings={onSummarySettings}/>}
+            <div className="hapi-button-row"><button type="button" disabled={state.loading} onClick={() => { void runtime.refresh(); }}>{tr('Refresh Hub state', '刷新 Hub 状态')}</button></div>
         </section>;
     };
-    const style = document.createElement('style'); style.textContent = styles; document.head.append(style);
+    const RunnerSkew = () => {
+        const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), readLanguage);
+        return <RunnerSkewBanner runtime={runtime} preferences={preferences} language={language}/>;
+    };
+    const style = document.createElement('style'); style.textContent = styles + runnerSkewStyles; document.head.append(style);
     const unregister = ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'hapi-hub', order: 35, label: () => words(readLanguage())('HAPI Hub', 'HAPI Hub') }, Section));
-    return () => { unregister(); style.remove(); };
+    return Object.assign(() => { runtime.dispose(); preferences.dispose(); unregister(); style.remove(); }, { RunnerSkew });
 }
 const styles = `
 .hapi-administration{height:auto;min-height:0;padding:0;overflow:visible}.hapi-administration code{overflow-wrap:anywhere}

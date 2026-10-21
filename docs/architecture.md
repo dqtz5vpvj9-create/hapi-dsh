@@ -54,6 +54,8 @@ flowchart TD
 
 工作区保存一个视图的宿主、会话身份、资源地址或 tab/panel kind、导航参数与窗格几何。视图内容交给官方 SlotRenderer 和 TabDomain。插件可以通过公开的 `hapiWorkspacePane` 打开资源、tab 或 panel，也可以把现有右栏 tab 打开成独立窗格。它观察的是自己的可见性、焦点和生命周期，不能通过 DOM 猜测全局“当前会话”。
 
+旧终端 pane 也有可选的 `target` 和 `title`：未设置时恢复原终端，切换到文件、插件标签或 Conversation 时保存实际目标。原 source 和 terminal ID 不随视图切换而改变，移动与恢复窗口沿用同一个资源身份。原终端去重包含 Hub、原 source session 和 terminal ID，避免不同会话的同名终端被合并。源会话换代只重绑定公开文件协议中明确的 Session 范围；第三方的不透明地址和私有参数保持原样。
+
 | 责任 | 所属层 |
 | --- | --- |
 | 统一会话列表、窗口、分屏、焦点、缩放、移动与恢复 | HAPI 工作区插件 |
@@ -64,17 +66,41 @@ flowchart TD
 
 HAPI 文件路径只在经确认的源机器上解释。原官方“在 Host 应用中打开”的动作只有路径参数，没有 source machine 参数，因此不能直接用于 HAPI 会话。源路径动作通过公开 slot 改为源文件下载；普通 DSH 路径仍交原动作处理。尚未绑定或已被替换的源会话明确失败，不会回落到 Hub 的同名文件。
 
-终端复用官方 TerminalController 的完整接口。源端 PTY 身份、输出序号及控制租约通过原 HAPI Socket.IO 协议保存；刷新页面、移动或关闭窗格只结束视图保留。用户明确关闭终端才发送源端终止命令，输入丢失回执时不会自动重放。
+文档读取与文件管理遵循原 HAPI 的两套权限边界。预览、下载和文件变化订阅走原 `/file`、`/file-info` 读取接口，由源机器检查其已授权 browse roots；聊天离线但所属 Runner 在线时，已授权文档仍能打开，路径也不必位于聊天 cwd 内。目录管理、创建、写入、移动和删除继续走各自原接口与会话工作目录约束。适配器不会通过访问 Host 文件系统绕过源拒绝，也不会用管理接口的更窄权限拒绝原本可读的文档。
+
+采用 machine TerminalHost 的源终端复用官方 TerminalController 的完整接口。源端 PTY 身份、输出序号及控制租约通过原 HAPI Socket.IO 协议保存；刷新页面、移动或关闭窗格只结束视图保留。用户明确关闭终端才发送源端终止命令，输入丢失回执时不会自动重放。
 
 第三方插件若使用这些 Session、资源及 provider 契约，可以沿用同样的窗格模型。直接访问 Host 文件系统、启动 Host 进程、改变顶层页面或依赖 DSH AgentLoop 内部执行的插件，需要对应的源适配，不能因“它是插件”就推断其操作已在远端执行。
 
-旧 HAPI schemaVersion 2 的 SessionTerminal 与新 machine TerminalHost 属于不同源协议。导入的旧 terminal ID 继续走 `legacy-session-terminal.tsx` 的兼容视图，关闭仍只 detach；不能把旧 ID 当成新 shell 的 ID，否则会丢掉正在运行的进程。这是明确保留的兼容边界。重复的 NativeFiles/NativeDocument 已移除，文件与文档资源统一进入官方视图。
+兼容性分为“视图能否放入窗格”和“操作是否在正确来源执行”两个独立问题。插件通过官方注册表贡献视图，并不需要再向 HAPI 注册一遍；`hapiWorkspacePane` 只提供可选的工作区位置与生命周期能力，不承担插件安装、依赖解析或渲染注册。
+
+| 插件行为 | 与工作区的组合契约 |
+| --- | --- |
+| 官方资源、tab 或 panel | 继续注册到 DSH；用原地址、kind、导航参数恢复，不复制私有 store |
+| 把当前视图分到旁边 | 可调用 `hapiWorkspacePane.openResource`、`openTab`、`openPanel` 或 `openView`；会话与 Host 由当前 pane 绑定 |
+| 只在可见或聚焦时工作 | 订阅 `hapiWorkspacePane.state`；窗口切换先隐藏，移动保持原 graph 与组件实例 |
+| 未保存编辑或尚未确认操作 | 注册 `registerCloseGuard`，并通过 `updates.register` 完成持久化和复核；布局不会替插件序列化编辑内容 |
+| 文件或终端数据服务 | 使用当前 graph 的公开 provider；HAPI 来源由适配器路由到原 Hub/session/machine，普通 DSH 来源委托原服务 |
+| 替换公共 provider 或终端 close 行为 | 仍需履行原 provider 的完整接口与源身份、生命周期语义；只替换视觉组件不能改变执行归属 |
+| 依赖 `window` 单例、私有状态或 Host 本机路径 | 需要插件自身适配和逐项验收，独立 Context 不会自动修复这类假设 |
+
+安装和启停继续使用对应 Host 的 DSH 插件机制。工作区中显示哪个会话，不会把另一台 Host 的插件、会话引用或机器级 API 混入当前 graph。插件暂时缺失时保留保存的目标并提示不可用；注册恢复后通过官方解析器重试，不能悄悄替换成另一资源。
+
+旧 HAPI schemaVersion 2 的 SessionTerminal 与新 machine TerminalHost 属于不同源协议。旧布局仍保存原 source session 和 terminal ID，进入同样的官方窗格 graph；`legacy-terminal-view.tsx` 使用公开 `ClientTerminals.view()` 取得真实官方 model，再组合官方 Terminal body。Host 的 `LegacySessionTerminals` 保持原 Socket.IO 协议，并用一个共享的 headless terminal 将其有限回放转换为官方 snapshot/output/state 帧。浏览器不再为旧终端单独维护 xterm renderer 或输入 socket。
+
+旧终端使用独立的公开 tab kind，以保留关闭仅 detach 的行为。普通 `terminal` kind 的关闭处理会终止进程并持久保存关闭意图，不能直接套用。工作区仍只负责恢复地址和视图租约；愿意支持该旧协议的插件可以通过正常 slot 注册替换其视图，不能把仅注册普通 `terminal` kind 推断为已经支持旧终端。`hapi-dsh/client` 导出稳定的 kind、seat ID 和注入类型；插件仍通过 DSH 的 `sidebarRightTabs` 与 slots 注册。
+
+旧终端的字体、触控栏、宏、命令输入和复制作为视图附件组合，使用同一个官方输入 owner。源兼容屏幕保留原 HAPI 的 10,000 行 scrollback 默认值，不因官方 TerminalController 的普通 1,000 行默认值而缩短。复制优先使用这个视图的选区；无选区时，`sourceLegacyTerminalText` 在同一个输出 FIFO 上读取适配器已经解析的屏幕，并标注 `adapter-observed`、回放范围、采样序号和容量限制。它不连接源、转移输入权、补读已丢失历史或将旧 ID 交给 machine TerminalHost 快照接口。
+
+这条适配有明确的源协议限制：原 HAPI `terminal:create` 是 attach-or-create；原 PTY 仍存在时会复用同一 ID，已不存在时源端可能在该 ID 下新建。上游没有 existing-only 查询或写入 ACK，因此不能承诺“恢复必定连接仍存活的旧进程”，也不能把适配层的输入确认说成 Runner 已执行。源回放有保留上限，游标或 epoch 不一致时阻止输入；最后一个视图释放只断开连接，PTY 的空闲回收仍由原 HAPI 决定。详见[旧终端协议](legacy-terminal-protocol.md)。重复的 NativeFiles/NativeDocument 已移除，文件与文档资源统一进入官方视图。
 
 ### 编辑状态、附件与工作区更新
 
 布局只持久化导航身份和几何，不保存别的插件的私有 store。已打开编辑器可以在公开 `hapiWorkspacePane.updates` 或共享 `hapiWorkspaceUi.updates` 上注册保存准备，以及保存后的验证回调。工作区更新先执行所有准备，再执行所有验证；存储失败、编辑器变化或插件超时都会保留当前页面。原官方 store 的写入仍由官方实现完成，工作区的 Storage 容器只核验它收到的写入是否实际保存，不读取或修改私有序列化格式。
 
 源文件编辑器把正文、原始 hash 基线和未知保存结果保存到浏览器 IndexedDB。写入源文件前先完成本地检查点；跨浏览器窗口用 revision CAS 保护，两份草稿冲突时提供对比、下载及明确选择。它不会把旧 `expectedHash` 自动换成新源文件的 hash。
+
+创建、复制、移动、删除和上传等文件操作也有独立的持久回执。根工作区把同一个 source-bound journal 传给各 pane，journal 不保存某个 graph 的 API；graph 重建或 display 换代后读取原 Hub/session/machine 下的同一操作。写入前完成 IndexedDB 事务，并在浏览器 Web Lock 内重新检查未知操作与 revision。丢失回执后只读核对，明确的本地 review 不冒充源 ACK。不同设备仍依靠源 revision 处理竞争，见[文件操作恢复](source-file-recovery.md)。
 
 聊天附件使用官方公开附件 owner callbacks 保留原 File/Blob。恢复定位到精确 Host、pane 和源会话；正文相符且没有待处理提交时才自动恢复未发送的附件。官方 `pendingSubmissions` 会在正文发送时先清空输入框，因此空附件栏不能被直接解释为“用户删除了附件”。未确定的副本保留供核对，只有精确的 `rpcId` 在公开源历史或队列中出现才可清理相应提交副本；不会按相同文本猜测确认，也不会自动发送。正文仍由原官方 semantic draft store 保存，reference chips 不被重新拼成伪造文档。
 

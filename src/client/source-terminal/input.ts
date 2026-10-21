@@ -120,17 +120,29 @@ export class TerminalInputControls {
   press(data: string): void { this.write(this.resolve(data)) }
   /** Repeated keys retain the modifier sequence captured at pointer-down. */
   repeat(sequence: string): void { this.write(sequence) }
-  paste(text: string): void {
-    if (!this.writable) return
-    this.clear()
+  paste(text: string): boolean {
+    if (!this.writable || !text) return false
     const normalized = text.replace(/\r?\n/g, '\r')
-    this.write(this.modes.bracketedPaste ? `\x1b[200~${normalized}\x1b[201~` : normalized)
+    const accepted = this.write(this.modes.bracketedPaste ? `\x1b[200~${normalized}\x1b[201~` : normalized)
+    if (accepted) this.clear()
+    return accepted
   }
-  command(text: string): void { if (!this.writable || !text) return; this.clear(); this.write(text.replace(/\r?\n/g, '\r') + '\r') }
-  private write(data: string): void {
-    if (!this.writable || !data) return
+  /** True only means no synchronous rejection from the public input owner, never a source execution acknowledgement. */
+  command(text: string): boolean {
+    if (!this.writable || !text) return false
+    const accepted = this.write(text.replace(/\r?\n/g, '\r') + '\r')
+    if (accepted) this.clear()
+    return accepted
+  }
+  private write(data: string): boolean {
+    if (!this.writable || !data) return false
     this.original.write(data)
+    // The official void write API reports inputFull/carrier failures through
+    // its public observable state before returning. Preserve command/paste
+    // drafts in that case; later ACK loss must still never authorize replay.
+    if (!this.writable) return false
     this.publish({ modifiers: { ...this.state.locked } })
+    return true
   }
   private observe(state: TerminalViewState): void {
     const render = state.render

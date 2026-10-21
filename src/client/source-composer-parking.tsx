@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
@@ -75,7 +75,7 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
         return <Action key={props.sessionId} props={props} source={source}/>;
     };
     const style = document.createElement('style'); style.textContent = `
-.hapi-composer-parking{position:relative;display:inline-flex}.hapi-composer-parking button{border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,transparent);color:inherit;border-radius:6px;padding:3px 7px;font:inherit;font-size:12px;cursor:pointer}.hapi-composer-parking button:disabled{opacity:.5;cursor:default}
+.hapi-composer-parking{position:relative;display:inline-flex}.hapi-composer-parking button{border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,transparent);color:inherit;border-radius:6px;padding:3px 7px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.hapi-composer-parking button:disabled{opacity:.5;cursor:default}
 .hapi-parking-panel{position:absolute;bottom:calc(100% + 9px);inset-inline-start:0;z-index:40;width:min(340px,75vw);max-height:55vh;overflow:auto;padding:12px;border:1px solid var(--border-secondary,#8886);border-radius:9px;background:var(--bg-primary,#17191d);color:var(--text-primary,inherit);box-shadow:0 6px 24px #0003;font-size:13px}.hapi-parking-panel header{display:flex;justify-content:space-between;gap:8px}.hapi-parking-panel p{white-space:pre-wrap;overflow-wrap:anywhere}.hapi-parking-panel ul{padding-inline-start:18px}.hapi-parking-panel .hapi-button-row{display:flex;flex-wrap:wrap;gap:6px}.hapi-parking-panel .hapi-error{color:var(--text-error,#d45d62)}
 `; document.head.append(style);
     const dispose = ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/park-draft', order: 96 }, SourceAction));

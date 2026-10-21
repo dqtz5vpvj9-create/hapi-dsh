@@ -1,4 +1,4 @@
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /**
@@ -10,10 +10,14 @@ export function waitForCatalogSession(
     sessions: Pick<ISessions, 'list' | 'refresh'>,
     sessionId: SessionId,
     signal: AbortSignal,
-    options: { timeoutMs?: number; retryMs?: number } = {},
+    options: { timeoutMs?: number; retryMs?: number; accept?: (session: SessionSummary) => boolean } = {},
 ): Promise<void> {
     signal.throwIfAborted()
-    if (sessions.list.getSnapshot().byId[sessionId]) return Promise.resolve()
+    const available = (): boolean => {
+        const row = sessions.list.getSnapshot().byId[sessionId]
+        return row !== undefined && (options.accept?.(row) ?? true)
+    }
+    if (available()) return Promise.resolve()
     return new Promise<void>((resolve, reject) => {
         let done = false
         let retry: ReturnType<typeof setTimeout> | undefined
@@ -31,7 +35,7 @@ export function waitForCatalogSession(
         }
         const check = (): boolean => {
             if (done) return true
-            if (!sessions.list.getSnapshot().byId[sessionId]) return false
+            if (!available()) return false
             settle()
             return true
         }

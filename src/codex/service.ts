@@ -104,6 +104,7 @@ export class CodexService {
       // for Codex candidates before admitting their native identity.
       const candidates = sessions.filter(session => session.metadata?.flavor === 'codex')
       for (let index = 0; index < candidates.length; index += 4) {
+        if (this.disposed) return
         await Promise.all(candidates.slice(index, index + 4).map(async session => {
           try { await this.attach(session.id) } catch (error) { this.report(error, session.id) }
         }))
@@ -201,7 +202,7 @@ export class CodexService {
     if (this.disposed) return
     this.disposed = true
     this.unsubscribe?.()
-    await Promise.allSettled([...this.attaching.values(), ...this.eventWork.values()])
+    await Promise.allSettled([...this.attaching.values(), ...this.eventWork.values(), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
     await Promise.allSettled(this.list().map(agent => agent.dispose()))
     this.agents.clear()
     this.unregisterProjection?.()

@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { remoteValue, type HapiRemoteApi, type WorkbenchSource, type SourceAttachment, type SourceNote,
     type SourceOutline, type SessionExtrasResponse } from '../client-api.ts';

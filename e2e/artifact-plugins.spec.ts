@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { readFile } from 'node:fs/promises';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -29,9 +30,7 @@ const window = (id: string, name: string, sourceSessionId: string, document: Leg
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl);
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment, { initialView: 'existing-session' })
 }
 async function imageLoaded(image: Locator): Promise<void> {
     await expect(image).toBeVisible();

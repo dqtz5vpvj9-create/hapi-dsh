@@ -9,6 +9,7 @@ export class AdminWireFixture {
     readonly machines: HapiMachine[] = ['alpha', 'beta'].map(key => ({
         id: `machine-${key}`, active: true, activeAt: Date.now(), metadata: { host: key === 'alpha' ? 'Laptop' : 'Linux workstation',
             platform: 'linux', happyCliVersion: 'fixture-1.0', supervisedRestart: key === 'alpha',
+            capabilities: ['agent-availability', 'cursor-chat-store-status', 'stop-runner', 'machine-terminal'],
             startedCliMtimeMs: 10, installedCliMtimeMs: 20, privateEnvironment: { TOKEN: 'fixture-never-expose' } },
         runnerState: { status: 'running', pid: key === 'alpha' ? 101 : 201, startedAt: 1_760_000_000_000 },
     }));
@@ -20,6 +21,8 @@ export class AdminWireFixture {
             { name: 'source-tools', description: 'Optional original Runner tools', enabled: false, switchable: true }],
     }]));
     dropNextRestartReply = false;
+    /** A lost result can remain unknown until a later read observes a different source process. */
+    deferRestartObservation = false;
     backups = 0;
     readonly backupBytes = Buffer.concat([Buffer.from('SQLite format 3\0'), Buffer.alloc(128 * 1024, 7)]);
     handle(hapi: HapiWireFixture, url: URL, request: IncomingMessage, response: ServerResponse, body: Record<string, unknown>): boolean {
@@ -60,7 +63,7 @@ export class AdminWireFixture {
         if (match[2] === 'restart-runner' && request.method === 'POST') {
             this.mutations.push({ path, body });
             if (machine.metadata!.supervisedRestart !== true) { send({ error: 'Restart requires a supervised Runner' }, 502); return true; }
-            machine.runnerState = { status: 'running', pid: 102, startedAt: Date.now() };
+            if (!this.deferRestartObservation) machine.runnerState = { status: 'running', pid: 102, startedAt: Date.now() };
             hapi.emit({ type: 'machine-updated', machineId: machine.id });
             if (this.dropNextRestartReply) { this.dropNextRestartReply = false; response.destroy(); } else send({ message: 'Runner stop requested; supervisor will relaunch' });
             return true;

@@ -1,10 +1,10 @@
+import { randomId } from './random-id.ts'
 /**
  * Persistent pane geometry adapted from HAPI shared/src/workspaces.ts and
  * web/src/workspace/workspaceStore.ts at 0f8ef6970884c92fb2ddca3070be2ec56cb50333.
  * Copyright HAPI contributors. SPDX-License-Identifier: AGPL-3.0-only
  */
 
-import { randomId } from './random-id.ts';
 import { documentKey, parseDocumentRef, type DocumentRef } from '../workspace/documents.ts'
 import { parseDshPaneTarget, type DshPaneTarget } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
@@ -15,7 +15,7 @@ export type SplitAxis = 'horizontal' | 'vertical'
 export type SourceReference = { sourceSessionId?: string; sourceHubId?: string }
 export type PaneResource = { kind: 'empty' }
     | ({ kind: 'chat'; sessionId: string } & SourceReference)
-    | ({ kind: 'terminal'; sessionId: string; terminalId: string } & SourceReference)
+    | ({ kind: 'terminal'; sessionId: string; terminalId: string; target?: DshPaneTarget; title?: string } & SourceReference)
     | ({ kind: 'document'; sessionId: string; document: DocumentRef; target?: DshPaneTarget; title?: string } & SourceReference)
     | ({ kind: 'view'; sessionId: string; viewId: string; target: DshPaneTarget; title?: string } & SourceReference)
 export type PaneNode = { type: 'pane'; id: string; resource: PaneResource }
@@ -159,7 +159,12 @@ export function parsePaneResource(value: unknown): PaneResource {
     }
     const base = { sessionId: value.sessionId, ...source }
     if (value.kind === 'chat') return { kind: 'chat', ...base }
-    if (value.kind === 'terminal' && validId(value.terminalId)) return { kind: 'terminal', ...base, terminalId: value.terminalId }
+    if (value.kind === 'terminal' && validId(value.terminalId)) {
+        if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 2048)) throw new Error('Invalid terminal view title')
+        return { kind: 'terminal', ...base, terminalId: value.terminalId,
+            ...(value.target === undefined ? {} : { target: parseDshPaneTarget(value.target) }), ...(value.title === undefined ? {} : { title: value.title }),
+        }
+    }
     if (value.kind === 'document') {
         if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 2048)) throw new Error('Invalid document view title')
         return { kind: 'document', ...base, document: parseDocumentRef(value.document),
@@ -176,7 +181,7 @@ export function parsePaneResource(value: unknown): PaneResource {
 export function resourceKey(resource: PaneResource): string | null {
     if (resource.kind === 'empty') return null
     if (resource.kind === 'document') return documentKey(resource)
-    if (resource.kind === 'terminal') return JSON.stringify(['terminal', resource.sourceHubId ?? '', resource.terminalId])
+    if (resource.kind === 'terminal') return JSON.stringify(['terminal', resource.sourceHubId ?? '', resource.sourceSessionId ?? resource.sessionId, resource.terminalId])
     if (resource.kind === 'view') return JSON.stringify(['view', resource.viewId])
     return JSON.stringify(['chat', resource.sessionId])
 }
@@ -328,7 +333,7 @@ export class WorkspaceStore {
 
     updateView(paneId: string, target: DshPaneTarget, title?: string): void {
         const current = this.state.windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)
-        if (!current || current.resource.kind !== 'view' && current.resource.kind !== 'document') return
+        if (!current || current.resource.kind !== 'view' && current.resource.kind !== 'document' && current.resource.kind !== 'terminal') return
         const resource = parsePaneResource({ ...current.resource, target, ...(title === undefined ? {} : { title }) })
         if (JSON.stringify(resource) === JSON.stringify(current.resource)) return
         this.commit({ ...this.state, windows: this.state.windows.map(window => ({ ...window, root: updateNode(window.root, paneId, node => node.type === 'pane' ? { ...node, resource } : node) })) })

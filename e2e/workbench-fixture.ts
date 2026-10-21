@@ -32,9 +32,12 @@ const revision = (bytes: Uint8Array): string => createHash('sha256').update(byte
 export class WorkbenchWireFixture {
     readonly legacy: LegacyTerminalWireFixture;
     readonly files = new Map<string, Map<string, FileEntry>>();
+    /** Source machine browse roots are independent of a chat's mutable cwd. */
+    readonly browseRoots = new Map<string, readonly string[]>();
     readonly directories = new Map<string, Map<string, number>>();
     readonly fileWrites: Array<{ sessionId: string; machineId: string; route: string; body: Record<string, unknown> }> = [];
     loseNextSaveAcknowledgement = false;
+    loseNextMutationAcknowledgement = false;
     private readonly originals = new Map<string, Map<string, Buffer>>();
     readonly fileRequests: Array<{ sessionId: string; machineId: string; method: string; route: string; path: string }> = [];
     readonly terminalCommands: Array<{ machineId: string; command: MachineTerminalCommand }> = [];
@@ -95,10 +98,17 @@ export class WorkbenchWireFixture {
     handle(session: HapiSession, tail: string, url: URL, request: IncomingMessage, response: ServerResponse, body: Record<string, unknown> = {}): boolean {
         if (!['directory', 'filesystem/entry', 'filesystem/download', 'file-info', 'file', 'files', 'filesystem', 'filesystem/upload', 'git-status', 'git-diff-numstat', 'git-diff-file'].includes(tail)) return false;
         const send = (value: unknown, status = 200): void => { response.writeHead(status, { 'content-type': 'application/json' }); response.end(JSON.stringify(value)); };
+        const committed = (value: unknown): void => {
+            if (this.loseNextMutationAcknowledgement) { this.loseNextMutationAcknowledgement = false; response.destroy(); return; }
+            send(value);
+        };
         const root = session.metadata!.path, requested = typeof body.path === 'string' ? body.path : url.searchParams.get('path') ?? root;
         const path = posix.resolve(root, requested);
         this.fileRequests.push({ sessionId: session.id, machineId: session.metadata!.machineId!, method: request.method ?? '', route: tail, path });
-        if (path !== root && !path.startsWith(`${root}/`)) { send({ success: false, code: 'denied', error: 'Outside source workspace' }); return true; }
+        const documentRead = request.method === 'GET' && (tail === 'file' || tail === 'file-info');
+        const roots = documentRead ? this.browseRoots.get(session.id) ?? [root] : [root];
+        if (!roots.some(allowed => path === allowed || path.startsWith(`${allowed}/`))) { send({ success: false, code: 'denied', error: documentRead ? 'Path is outside workspace roots' : 'Outside source workspace' }); return true; }
+        if (!documentRead && !session.active) { send({ success: false, error: 'Session is inactive' }, 409); return true; }
         const files = this.files.get(session.id) ?? new Map<string, FileEntry>();
         const directories = this.directories.get(session.id) ?? new Map<string, number>();
         const inspect = (target: string) => {
@@ -131,7 +141,7 @@ export class WorkbenchWireFixture {
                 if (tail === 'filesystem/upload' && typeof body.content !== 'string') { send({ success: false, code: 'invalid', error: 'Missing upload bytes' }); return true; }
                 if (body.action === 'create-directory') directories.set(path, this.modified++);
                 else files.set(path, { bytes: tail === 'filesystem/upload' ? Buffer.from(body.content as string, 'base64') : Buffer.alloc(0), modified: this.modified++ });
-                send({ success: true, entry: inspect(path) }); return true;
+                committed({ success: true, entry: inspect(path) }); return true;
             }
             const entry = inspect(path);
             if (!entry) { send({ success: false, code: 'not-found', error: 'Source entry not found' }); return true; }
@@ -142,7 +152,7 @@ export class WorkbenchWireFixture {
                 if (entry.type === 'directory' && body.recursive !== true) { send({ success: false, code: 'invalid', error: 'Recursive deletion must be explicit' }); return true; }
                 for (const [candidate] of selectedFiles) files.delete(candidate);
                 for (const [candidate] of selectedDirectories) directories.delete(candidate);
-                send({ success: true, deletedPaths: [...selectedFiles, ...selectedDirectories].map(([candidate]) => candidate) }); return true;
+                committed({ success: true, deletedPaths: [...selectedFiles, ...selectedDirectories].map(([candidate]) => candidate) }); return true;
             }
             if (!['rename', 'move', 'copy'].includes(String(body.action)) || typeof body.destination !== 'string') { send({ success: false, code: 'invalid', error: 'Unsupported source action' }); return true; }
             const destination = posix.resolve(root, body.destination);
@@ -155,7 +165,7 @@ export class WorkbenchWireFixture {
                 for (const [candidate] of selectedFiles) files.delete(candidate);
                 for (const [candidate] of selectedDirectories) directories.delete(candidate);
             }
-            send({ success: true, entry: inspect(destination), ...(body.action === 'copy' ? {} : { commit: { action: body.action, path, destination } }) }); return true;
+            committed({ success: true, entry: inspect(destination), ...(body.action === 'copy' ? {} : { commit: { action: body.action, path, destination } }) }); return true;
         }
         if (tail === 'files') {
             const query = (url.searchParams.get('query') ?? '').toLowerCase(), limit = Number(url.searchParams.get('limit') ?? 200);
@@ -195,9 +205,10 @@ export class WorkbenchWireFixture {
         }
         if (tail === 'filesystem/entry') { const entry = inspect(path); send(entry ? { success: true, entry } : { success: false, code: 'not-found', error: 'Source entry not found' }); return true; }
         const entry = files.get(path);
+        if (tail === 'file-info' && !entry) { send({ success: true, entries: [{ path }] }); return true; }
         if (!entry) { send({ success: false, code: 'not-found', error: 'Source file not found' }, tail === 'filesystem/download' ? 404 : 200); return true; }
         if (tail === 'file-info') send({ success: true, entries: [{ path, size: entry.bytes.byteLength, modified: entry.modified }] });
-        else if (tail === 'file') send({ success: true, path, content: entry.bytes.toString('base64'), hash: revision(entry.bytes), writable: true, size: entry.bytes.byteLength, modified: entry.modified });
+        else if (tail === 'file') send({ success: true, path, content: entry.bytes.toString('base64'), hash: revision(entry.bytes), writable: path.startsWith(`${root}/`), size: entry.bytes.byteLength, modified: entry.modified });
         else {
             response.writeHead(200, { 'content-type': entry.mediaType ?? 'text/plain; charset=utf-8', 'content-length': entry.bytes.byteLength,
                 'content-disposition': `attachment; filename="${posix.basename(path)}"` });

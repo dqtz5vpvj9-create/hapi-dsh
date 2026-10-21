@@ -1,5 +1,7 @@
 /** Native files remain on the owning Runner; this module never opens a Hub path. */
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
+import { posix, win32 } from 'node:path';
 import { z } from 'zod';
 import { HapiRequestError, type HapiSession } from '../codex/contracts.ts';
 import type { HapiClient } from './client.ts';
@@ -18,6 +20,7 @@ const upstreamDirectory = z.object({ success: z.boolean(), error: z.string().opt
 const upstreamSearch = z.object({ success: z.boolean(), error: z.string().optional(), files: workbenchOutputs.nativeFileSearch.shape.files.optional() });
 const fileInfo = z.object({ success: z.boolean(), error: z.string().optional(), entries: z.array(z.object({ path: z.string(), size: z.number().int().nonnegative().optional(), modified: z.number().optional() })).optional() });
 const fileRead = z.object({ success: z.boolean(), error: z.string().optional(), path: z.string().optional(), content: z.string().optional(), hash: z.string().regex(/^[a-f0-9]{64}$/).optional(), writable: z.boolean().optional(), size: z.number().int().nonnegative().optional(), modified: z.number().optional() });
+export interface SourceDocumentRead { absolutePath: string; version: string; data: Uint8Array; writable: boolean; modified?: number }
 const previewRead = workbenchOutputs.nativePreview.omit({ url: true });
 const previewRequest = z.strictObject({ source: workbenchSourceSchema, previewId: previewRead.shape.previewId });
 const officeExtensions = new Set(['doc', 'docx', 'odt', 'rtf', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp']);
@@ -112,7 +115,7 @@ export class NativeWorkbench {
     }
     async nativeDocument(input: WorkbenchRequest<'nativeDocument'>): Promise<WorkbenchResponse<'nativeDocument'>> {
         const request = workbenchInputs.nativeDocument.parse(input);
-        await this.resolveSource(request.source, request.document, { allowInactive: request.document.kind === 'generated-media' });
+        const session = await this.resolveSource(request.source, request.document, { allowInactive: true });
         const downloadUrl = resourceUrl(WORKBENCH_DOCUMENT_PATH, request);
         if (request.document.kind === 'generated-media') {
             const response = await this.client.readBinary(sourcePath(request.source.sourceSessionId, `/generated-images/${encodeURIComponent(request.document.imageId)}`), { maxBytes: MAX_SOURCE_GENERATED_MEDIA });
@@ -136,7 +139,7 @@ export class NativeWorkbench {
         const query = new URLSearchParams({ path: document.path });
         const metadata = parseResponse(fileInfo, await this.client.request(sourcePath(request.source.sourceSessionId, `/file-info?${query}`)));
         assertSuccess(metadata);
-        const info = metadata.entries?.find(entry => entry.path === document.path) ?? metadata.entries?.[0];
+        const info = metadata.entries?.find(entry => entry.path === document.path);
         if (info?.size === undefined) throw new HapiRequestError('The source did not return this file size', 'rejected', 404);
         if (info.size > MAX_DOCUMENT_BYTES) throw new HapiRequestError('Document preview is limited to 64 MiB', 'rejected', 413, 'too-large');
         const name = fileName(document.path);
@@ -151,7 +154,7 @@ export class NativeWorkbench {
         const bytes = Buffer.from(response.content, 'base64');
         if (bytes.byteLength > MAX_EDITABLE_BYTES) throw new HapiRequestError('The file changed size while loading. Reload its source metadata.', 'rejected', 409);
         const decoded = readableText(bytes, mimeType, name);
-        return { ...result, size: bytes.byteLength, text: decoded?.text ?? null, ...(decoded ? { format: decoded.format } : {}), writable: decoded !== null && !decoded.format.mixed && response.writable === true && response.hash !== undefined,
+        return { ...result, size: bytes.byteLength, text: decoded?.text ?? null, ...(decoded ? { format: decoded.format } : {}), writable: session.active && decoded !== null && !decoded.format.mixed && response.writable === true && response.hash !== undefined,
             ...(response.hash === undefined ? {} : { hash: response.hash }), ...(response.modified === undefined ? {} : { modified: response.modified }) };
     }
     async nativeFileSave(input: WorkbenchRequest<'nativeFileSave'>): Promise<WorkbenchResponse<'nativeFileSave'>> {
@@ -171,14 +174,51 @@ export class NativeWorkbench {
         return parseResponse(workbenchOutputs.nativeFileInspect, await this.client.request(sourcePath(request.source.sourceSessionId, `/filesystem/entry?${new URLSearchParams({ path: request.path })}`), { timeoutMs: 120_000, ...(signal ? { signal } : {}) }));
     }
 
-    /** Server-only bytes for official DSH resource providers, under the original Runner's read authority. */
-    async readSourceFile(source: WorkbenchSource, path: string, signal: AbortSignal, maxBytes: number = MAX_DOCUMENT_BYTES): Promise<Uint8Array> {
-        await this.resolveSource(source, { kind: 'file', path });
+    /**
+     * Document reads use HAPI's original read endpoint, not filesystem management.
+     * Its Hub selects the owning machine and its Runner enforces browse roots;
+     * inactive chats and authorized files outside the chat cwd remain readable.
+     * A management denial is never retried through a different owner.
+     */
+    async readSourceDocument(source: WorkbenchSource, path: string, signal: AbortSignal, maxBytes: number = MAX_DOCUMENT_BYTES): Promise<SourceDocumentRead> {
+        const session = await this.resolveSource(source, { kind: 'file', path }, { allowInactive: true });
         signal.throwIfAborted();
-        const result = await this.client.readBinary(sourcePath(source.sourceSessionId, `/filesystem/download?${new URLSearchParams({ path })}`), {
-            maxBytes: Math.min(maxBytes, MAX_DOCUMENT_BYTES), signal, timeoutMs: 120_000,
-        });
-        return result.data;
+        if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new HapiRequestError('Invalid document byte limit', 'rejected', 400);
+        const limit = Math.min(maxBytes, MAX_DOCUMENT_BYTES);
+        const response = parseResponse(fileRead, await this.client.request(sourcePath(source.sourceSessionId, `/file?${new URLSearchParams({ path })}`), {
+            signal, timeoutMs: 120_000, maxResponseBytes: Math.ceil(limit / 3) * 4 + 65_536,
+        }));
+        signal.throwIfAborted();
+        assertSuccess(response);
+        const encoded = response.content;
+        const unpadded = encoded?.replace(/={1,2}$/, '');
+        if (encoded === undefined || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/]/.test(unpadded!)) {
+            throw new HapiRequestError('The source returned invalid document bytes', 'indeterminate', 502, 'protocol_mismatch');
+        }
+        if (Buffer.byteLength(encoded, 'base64') > limit) throw new HapiRequestError('The document exceeds the requested byte limit', 'rejected', 413, 'too-large');
+        const data = Buffer.from(encoded, 'base64');
+        const version = createHash('sha256').update(data).digest('hex');
+        if (response.size !== undefined && response.size !== data.byteLength || response.hash !== undefined && response.hash !== version) {
+            throw new HapiRequestError('The source document bytes do not match their metadata', 'indeterminate', 502, 'protocol_mismatch');
+        }
+        const paths = win32.isAbsolute(session.metadata!.path) && !posix.isAbsolute(session.metadata!.path) ? win32 : posix;
+        const absolutePath = response.path ?? paths.resolve(session.metadata!.path, path);
+        if (!paths.isAbsolute(absolutePath) || absolutePath.includes('\0') || absolutePath.length > 8192) throw new HapiRequestError('The source returned an invalid document path', 'indeterminate', 502, 'protocol_mismatch');
+        return { absolutePath, version, data, writable: response.writable === true, ...(response.modified === undefined ? {} : { modified: response.modified }) };
+    }
+    async readSourceFile(source: WorkbenchSource, path: string, signal: AbortSignal, maxBytes: number = MAX_DOCUMENT_BYTES): Promise<Uint8Array> {
+        return (await this.readSourceDocument(source, path, signal, maxBytes)).data;
+    }
+    /** Read-only metadata under the same source document policy, for file watches. */
+    async sourceDocumentInfo(source: WorkbenchSource, path: string, signal: AbortSignal): Promise<{ size: number; modified?: number } | null> {
+        await this.resolveSource(source, { kind: 'file', path }, { allowInactive: true });
+        signal.throwIfAborted();
+        const result = parseResponse(fileInfo, await this.client.request(sourcePath(source.sourceSessionId, `/file-info?${new URLSearchParams({ path })}`), { signal, timeoutMs: 30_000 }));
+        signal.throwIfAborted();
+        assertSuccess(result);
+        const entry = result.entries?.find(value => value.path === path);
+        if (!entry || entry.size === undefined) return null;
+        return { size: entry.size, ...(entry.modified === undefined ? {} : { modified: entry.modified }) };
     }
     async nativeFileManage(input: WorkbenchRequest<'nativeFileManage'>): Promise<WorkbenchResponse<'nativeFileManage'>> {
         const request = workbenchInputs.nativeFileManage.parse(input);
@@ -195,7 +235,7 @@ export class NativeWorkbench {
     async nativePreview(input: WorkbenchRequest<'nativePreview'>): Promise<WorkbenchResponse<'nativePreview'>> {
         const request = workbenchInputs.nativePreview.parse(input);
         if (request.document.kind === 'generated-media') throw new HapiRequestError('The original source has no Office conversion route for generated media', 'rejected', 400);
-        await this.resolveSource(request.source, request.document);
+        await this.resolveSource(request.source, request.document, { allowInactive: true });
         const response = parseResponse(previewRead, await this.client.request(sourcePath(request.source.sourceSessionId, '/document-preview?mode=range'), {
             method: 'POST', body: { document: request.document, ...(request.version === undefined ? {} : { version: request.version }) }, timeoutMs: 90_000,
         }));
@@ -227,25 +267,28 @@ export class NativeWorkbench {
             let name: string;
             let mimeType: string | undefined;
             let generatedMedia = false;
+            let documentFile: { source: WorkbenchSource; path: string } | undefined;
             if (path === WORKBENCH_DOCUMENT_PATH) {
                 const input = workbenchInputs.nativeDocument.parse(value);
                 generatedMedia = input.document.kind === 'generated-media';
-                await this.resolveSource(input.source, input.document, { allowInactive: generatedMedia });
+                await this.resolveSource(input.source, input.document, { allowInactive: true });
                 upstream = input.document.kind === 'file'
-                    ? sourcePath(input.source.sourceSessionId, `/filesystem/download?${new URLSearchParams({ path: input.document.path })}`)
+                    ? ''
                     : input.document.kind === 'generated-media'
                         ? sourcePath(input.source.sourceSessionId, `/generated-images/${encodeURIComponent(input.document.imageId)}`)
                         : sourcePath(input.source.sourceSessionId, `/artifacts/${encodeURIComponent(input.document.artifactId)}`);
                 name = input.document.kind === 'file' ? fileName(input.document.path) : input.document.fileName;
-                if (input.document.kind === 'file') mimeType = mimeFor(name);
+                if (input.document.kind === 'file') { mimeType = mimeFor(name); documentFile = { source: input.source, path: input.document.path }; }
             } else {
                 const input = previewRequest.parse(value);
-                await this.resolveSource(input.source);
+                await this.resolveSource(input.source, undefined, { allowInactive: true });
                 upstream = sourcePath(input.source.sourceSessionId, `/document-preview/${encodeURIComponent(input.previewId)}`);
                 name = 'preview.pdf'; mimeType = 'application/pdf';
             }
             const range = path === WORKBENCH_PREVIEW_PATH && typeof request.headers.range === 'string' ? request.headers.range : undefined;
-            const result = await this.client.readBinary(upstream, { maxBytes: generatedMedia ? MAX_SOURCE_GENERATED_MEDIA : MAX_DOCUMENT_BYTES, timeoutMs: 120_000, signal: abort.signal, ...(range === undefined ? {} : { headers: { Range: range } }) });
+            const result = documentFile
+                ? { data: await this.readSourceFile(documentFile.source, documentFile.path, abort.signal), fileName: name, mimeType: mimeType!, status: 200, headers: {} as Record<string, string> }
+                : await this.client.readBinary(upstream, { maxBytes: generatedMedia ? MAX_SOURCE_GENERATED_MEDIA : MAX_DOCUMENT_BYTES, timeoutMs: 120_000, signal: abort.signal, ...(range === undefined ? {} : { headers: { Range: range } }) });
             if (generatedMedia && (result.status !== 200 || !result.data.byteLength || result.data.byteLength > MAX_SOURCE_GENERATED_MEDIA)) {
                 throw new HapiRequestError('The original generated media is empty, partial or too large', 'indeterminate', 502);
             }

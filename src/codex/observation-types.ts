@@ -14,7 +14,7 @@ export type NativeThreadGoal = z.infer<typeof nativeThreadGoalSchema>
 export const nativeNoticeSchema = z.object({
   id: z.string().min(1), createdAt: z.number().finite(),
   kind: z.enum(['message', 'error', 'context-compacted', 'compact-summary']),
-  text: z.string(), turnId: z.string().nullable(),
+  text: z.string(), details: z.string().optional(), turnId: z.string().nullable(),
 })
 export type NativeNotice = z.infer<typeof nativeNoticeSchema>
 

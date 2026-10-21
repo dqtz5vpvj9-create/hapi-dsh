@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { z } from 'zod'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { sourceDshChildStateSchema, type SourceDshChildState } from '../hapi-agent/dsh-child-types.ts'

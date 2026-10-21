@@ -11,11 +11,32 @@
 | Host TypeScript | `npx tsc -p tsconfig.host.json --noEmit` 通过 |
 | Client TypeScript | `npx tsc -p tsconfig.client.json --noEmit` 通过 |
 | E2E TypeScript | `npx tsc -p tsconfig.e2e.json --noEmit` 通过 |
-| 全部代码与传输测试 | `npm test` 实际执行 673 项，672 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
+| 全部代码与传输测试 | `npm test` 实际执行 768 项，767 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
 | 显式官方 federation 集成 | 前一检查点独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流。本轮未重复该独立用例，实际官方浏览器仍运行同一传输链路 |
 | 构建 | Host、Client、CLI、Runner、五个 source-aware providers 与类型声明构建通过 |
 
 `npm test` 使用 Node 的 `--test-isolation=none`，报告的是实际 case 数；测试文件进程退出成功不作为其内部断言已执行的证明。测试绑定本机回环端口，需要运行环境允许本地监听。官方进程集成单独使用 `HAPI_DSH_OFFICIAL_TESTS=1`，不能把默认 skip 写成已通过。
+
+### 实际截图反馈后的专项
+
+本次生产修复后，以单 worker 执行以下 **16 条实际官方浏览器流程，16 通过、0 失败**。它们检查正文、文件字节和操作效果，不以登录或目录非空代替功能验收。中文截图环境补充了系统缺失的 CJK 测试字体，产品继续使用系统字体回退，没有改上游字体或 renderer。
+
+| 专项 | 实际结果 |
+| --- | --- |
+| `source-conversation-history.spec.ts`，2 条 | 精确 indexed wire 的 180 轮、4500 步 native 历史在官方 Conversation 中出现用户正文和最终答案，实际分页并刷新；observed shared Codex 正文可见，生命周期不再变成 JSON 通知，原错误详情可展开。**修复前投影器也通过了长历史复现，不能据此宣布线上全空白已定因。** |
+| `source-document-policy.spec.ts`，1 条 | inactive 原聊天、cwd 之外但在源 browse roots 内的 Markdown、相对图片和 PDF 正常显示；下载与原字节一致，刷新恢复、源变更自动更新；拒绝目录仍由原源拒绝，零文件写入。 |
+| `artifact-plugins.spec.ts`，2 条 | opaque artifacts、旧 session-file 地址、相对图片和原机器身份、Markdown/PDF/Image/Code/静态 HTML 的官方 viewer；Office 使用明确的转换结果 fixture，下载仍为原件。 |
+| `workspace-chrome.spec.ts`，2 条 | 2048 px 桌面与 420 px 触屏；统一侧栏、完整官方标题和正文、紧凑菜单内原 Host/插件/Settings 操作均可达；手机实际暂存草稿并清空已确认原输入，长机器名不挤掉引擎名；无自动安装浮卡。 |
+| `plugin-workspace.spec.ts`，4 条 | 官方 Files/Terminal 资源与 PTY 身份、跨 pane 与 reload；源文件管理/CAS 编辑/丢回执恢复/搜索/Git/上传；移动按键、宏、字号；可信触摸缩放、历史惯性停止与 TUI 输入。 |
+| `legacy-terminal.spec.ts`，2 条 | 旧 SessionTerminal 同一个原 terminalId，官方 body/title、控件与持久字体；两个原源同名终端不串线，旧 tab→文件→刷新→聊天→文件恢复，关闭仅 detach。 |
+| `source-file-recovery.spec.ts`，2 条 | 文件操作丢 ACK 后，真实 graph 换代及页面刷新保留同一操作和未知状态，源只写一次；Web Locks 不可用时原读取仍可用，新写入明确拒绝。 |
+| `catalog-source-recovery.spec.ts`，1 条 | 一个始终不列入源发现列表的归档 Codex，旧 chat/document 双窗格先遇到真实 HTTP 404；仅解除源故障并点击 Retry 后，两窗格恢复官方正文与原文件。精确原 Hub/session/machine/path 和 3:2 几何保留，原会话与数量未变，零创建/恢复进程、聊天、文件写入与终端操作。 |
+
+首轮文档专项暴露了一个测试前提错误：固定官方 `SettingsRoot` 只在主会话为空时启动自动 onboarding，恢复已有源会话不会产生 Preview Notice。helper 现区分 fresh blank 与 existing-session，前者仍严格等实际确认，后者只处理真实出现的弹窗；没有预写确认配置或删除弹窗。修正后以上文档、旧终端与 artifact 流程均通过。
+
+最后一次仅修改英中文案，将历史离线会话的“正在重新连接”改为“尚未连接，草稿已保留”，状态和准入逻辑未改。重新构建后的 `catalog-source-recovery.spec.ts` 再次通过，并增加实际占位文案及显式恢复入口断言；没有把这次重跑重复计入上述 16 条。
+
+本环境没有连通用户的 Tailnet 站点，因此这 16 条不包含线上账号、私人磁盘、真实 Codex app-server 或实际部署验收。加强后的 `live-site.spec.ts` 需要另外指定一个已存在且有正文的源会话，必须实际打开正文并刷新，而不再将 availability smoke 当作聊天完成度。详见[现场修复与剩余问题](live-site-fixes.md)。
 
 ### 已在实际官方浏览器中确认的交互
 
@@ -32,16 +53,22 @@
 | `sidebar-actions.spec.ts`，3 条 | 鼠标、真实键盘焦点和移动触摸长按；准确身份复制、两种置顶、下方分屏与原草稿保留、标题建议与源 JSON 导出。重启/删除先确认，取消不提交，导航零聊天写入、零页面异常。 |
 | `appearance.spec.ts`，1 条 | 原偏好迁移、OLED/色板/气泡色、两 pane 页头字段与真实 xterm 9 px；实际 reload 保留。MutationObserver 断言源会话恢复期间没有短暂挂载 Hub 本机 opener，页面及控制台无错误。 |
 | `admin.spec.ts`，1 条 | 同一源机器 CPU/RAM/负载/运行时长在统一侧栏与官方 Settings 正确显示；机器改名、源 profile、重启丢 ACK 后仅查询、用量与真实 SQLite 下载路径。 |
+| `runner-skew.spec.ts`，2 条 | 官方根布局中的能力缺失提示、最小化与一小时关闭偏好；只有在线、二进制变更且支持受监督重启的源机器显示重启入口。与 Admin 专项在同一界面检查点合计 3/3，重启丢回执只查询，页面无异常。 |
 | `file-references.spec.ts`，1 条 | 官方 `@文件` 菜单、引用 chip、带空格文件精确提交与目录钻取；两个源机器不互串候选，源身份精确。 |
 | `incoming-share.spec.ts`，3 条 | fragment 分享隐私、已有草稿追加与不同 pane 隔离；真实 Service Worker multipart Share Target、原始 File Blob 恢复；取消新建保留分享、随后明确交接到新会话。官方 Settings 的“保存草稿后刷新”实际 reload 后恢复原附件字节及两个独立草稿，均未自动发送。 |
 | `cursor-launch.spec.ts`，1 条 | 原 Cursor base / variant 双选择、未完成选择刷新保留；改目录保留模型、换 Runner 清除旧模型；最终 source spawn 保留精确 wire ID。 |
 | `plugin-workspace.spec.ts` 的 source file actions | 官方文件树与文档扩展入口中的搜索、Git diff、创建/复制/重命名/移动/删除、上传与 hash CAS 编辑；另一个机器不变。保存回执丢失后实际 reload 仍保留原正文、原 hash 与未知状态，没有重新写源文件；未保存关闭被否决。 |
-| `legacy-terminal.spec.ts`，1 条 | 原 SessionTerminal 的同一 source/terminalId、双排键盘、一次与锁定修饰键、原 `terminal:write` 命令、隐藏宏与共享字号；reload 无输入重放。关闭仅 detach，没有 `terminal:close`、没有新 machine TerminalHost 请求。 |
+| `source-file-recovery.spec.ts`，2 条 | 文件操作意图先持久化，再发送源请求；丢回执后同一 operation ID 穿过旧 pane graph 实际断开、重建与 reload。源写入精确一次，无自动重试；检查源与目标后显式本地确认。缺少 Web Locks 时拒绝新文件写操作，原读取与预览仍可用。与 source file actions 合计 3/3 后，增加实际旧 graph 断开断言的恢复专项再次 2/2。 |
+| `plugin-workspace.spec.ts` 的官方 Files / Terminal | 同一统一侧栏中的两个源、官方文件与终端 pane、输入隔离与实际 reload；关闭 pane 仅 detach。最终生产构建定向 1/1，页面无异常。 |
+| `legacy-terminal.spec.ts`，2 条 | 原 SessionTerminal 使用官方 Terminal body/title 与原 source/terminalId；按键、宏、修饰键、拒绝输入后保留草稿、450 行只读历史复制、共享字号及 reload 无输入重放。两个源的同名终端不串线；终端→Files/文档→刷新→非当前旧终端标签→Conversation→重新展开文件与再刷新，每步保留原 resource/target 和 1:2 分屏比例。关闭仅 detach，没有 `terminal:close` 或 machine TerminalHost 请求；最终同一构建连续 2/2，页面无异常。 |
 | `queued-edit.spec.ts`，3 条 | 源排队编辑的竞争窗口、取消确认后显式恢复草稿、跨 pane 绝对定时草稿恢复；未知取消结果只读取源确认，不重新发送操作或自动覆盖输入。 |
 | `plugin-workspace.spec.ts` 的 trusted terminal touch | 实际触摸 9→18 px 与 PTY grid、600 行历史拖动/惯性、ACK 和屏幕模式切换停止；TUI 仅发送合法 SGR wheel，不产生惯性残留输入；移动端 Close pane 不终止原 PTY，不创建替代 shell。 |
+| `plugin-workspace.spec.ts` 的移动终端控件 | 官方 Terminal 上的双排按键、命令输入、宏、修饰键、共享字号及关闭行为；与 trusted terminal touch 和普通 Files/Terminal 在同一界面检查点合计 3/3。 |
 | `dsh-children.spec.ts`，3 条 | HAPI DSH 子会话在原官方 Conversation 中保留真实 parent/child 身份；显式 `/child` 与 `/child-steer` 走实际源操作回执；丢 ACK 刷新不重发；空 child 首次输入。普通 DSH 的子代理行为继续由官方服务承担。 |
 
-这几项定向结果不代表整套 Playwright 在本轮每次修改后都重跑过。其余已验证产品路径、具体测试文件与仍缺少的验证在功能对照表及各专项文档逐项记录。本轮链接与 Companion 在同一官方构建通过；后续输入换行和分享弹窗主题修复只对受影响交互再执行专项。先前工作区、源文件和终端结果继续按各行注明的范围保留，不扩大成任意第三方插件兼容的证明。
+这些结果不代表整套 Playwright 在本轮每次修改后都重跑过。最新生产构建的范围以上方“实际截图反馈后的专项”为准，包括普通 Files/Terminal、旧 SessionTerminal、源文件操作与恢复，以及移动控件和可信触摸。Runner 提示、Admin、链接、Companion、输入换行与分享主题等先前证据按各行范围保留。其余产品路径与尚缺的验证在功能对照表和专项文档逐项记录，不扩大成任意第三方插件兼容的证明。
+
+旧终端此前一次最终批次中，第一条通过，第二条输入途中测试 DSH Host 停止接受连接；当次没有留下足以定因的进程退出日志，尚不能宣称根因已修复，也没有依据归因为 OOM。相同生产构建随后严格单跑第二条通过，再连续跑两条均通过。测试 harness 现记录进程 exit code/signal，并始终附带脱敏 Host 日志；详见 [旧终端专项](legacy-session-terminal.md)。
 
 ## 验证层次
 

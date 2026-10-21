@@ -53,7 +53,8 @@ export function paneTitle(pane: PaneNode, rows: Readonly<Record<string, Workspac
     if (resource.kind === 'empty') return empty
     const session = rows[resource.sessionId]?.displayTitle ?? resource.sourceSessionId ?? resource.sessionId
     if (resource.kind === 'document') return resource.title ?? documentName(resource.document)
-    if (resource.kind === 'terminal') return `Terminal · ${session}`
+    if (resource.kind === 'terminal') return resource.title ?? (resource.target?.type === 'conversation' ? session
+        : resource.target ? dshPaneTitle(resource.target) : `Terminal · ${session}`)
     if (resource.kind === 'view') return resource.title ?? dshPaneTitle(resource.target)
     return session
 }

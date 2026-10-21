@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types'
 import { errorMessage, type WorkspaceController } from './controller.ts'

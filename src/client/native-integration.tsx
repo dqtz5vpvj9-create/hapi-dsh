@@ -11,6 +11,7 @@ import { ObservedControlLedger } from './observed-controls.tsx'
 import { installSourcePathActions } from './source-path-actions.tsx'
 import { installSourceFileActions } from './source-file-actions.tsx'
 import { installSourceTerminalActions } from './source-terminal-actions.tsx'
+import { installLegacyTerminalView } from './legacy-terminal-view.tsx'
 import { installArtifactPreview } from './artifact-preview.tsx'
 import { installSourceMarkdown } from './source-markdown.tsx'
 import { installNotifySummaryDisplay } from './notify-summary-display.tsx'
@@ -45,6 +46,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     disposers.push(installSourcePathActions(ctx, api))
     disposers.push(installSourceFileActions(ctx, api))
     disposers.push(installSourceTerminalActions(ctx, api))
+    disposers.push(installLegacyTerminalView(ctx, api))
     disposers.push(installArtifactPreview(ctx, api))
     disposers.push(installSourceMarkdown(ctx))
     disposers.push(installNotifySummaryDisplay(ctx, api))

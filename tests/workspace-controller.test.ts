@@ -5,7 +5,7 @@ import type { SessionBinding, SessionListState, SessionReference, SessionSummary
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { filterSessions, parseSessionResourceId, sessionCreationContext, sessionLocation, sessionResourceId, WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
-import { panes } from '../src/client/model.ts'
+import { initialWorkspace, panes, type PaneResource } from '../src/client/model.ts'
 import { sessionFolder } from '../src/workspace/presentation.ts'
 import { createWorkspaceNotifications } from '../src/workspace/notifications.ts'
 
@@ -379,6 +379,62 @@ test('saved local and remote panes wait for their own catalogs and recover when 
     remove(); controller.dispose(); local.disposeMain(); remote.disposeMain()
 })
 
+const restoredPluginResources: PaneResource[] = [
+    { kind: 'terminal', sessionId: 'saved', sourceHubId: 'source-hub', sourceSessionId: 'source-session', terminalId: 'original-terminal',
+        target: { type: 'tab', kind: 'hapi-legacy-terminal', address: 'sidebar://hapi-legacy-terminal/saved', params: { terminalId: 'original-terminal' } } },
+    { kind: 'document', sessionId: 'saved', sourceHubId: 'source-hub', sourceSessionId: 'source-session', document: { kind: 'file', path: '/source/original.txt' },
+        target: { type: 'resource', address: 'dsh-resource://file/session/saved/original.txt' } },
+    { kind: 'view', sessionId: 'saved', viewId: 'saved-view', target: { type: 'tab', kind: 'files', address: 'sidebar://files' }, title: 'Saved plugin view' },
+]
+
+for (const resource of restoredPluginResources) test(`restored ${resource.kind} preserves its identity through delayed catalog and asynchronous main-view confirmation`, async () => {
+    const source = fixture(), requested: string[] = []
+    source.phase('pending')
+    const state = initialWorkspace(source.options.nextId!)
+    state.windows[0]!.root = { type: 'pane', id: state.windows[0]!.root.id, resource }
+    source.memory.set(source.options.storageKey, JSON.stringify(state))
+    const controller = new WorkspaceController({ ...source.options, navigation: { ...source.navigation, openSession: target => { requested.push(String(target)) } } })
+    let old: SessionReference | undefined
+    try {
+        assert.deepEqual(controller.store.focusedPane().resource, resource)
+        // The official shell's old main can restore before the desired
+        // workspace Session appears. It is not a new user selection.
+        source.add('old'); old = source.sessions.retain('old' as SessionId, { source: 'mainView' })
+        assert.deepEqual(controller.store.focusedPane().resource, resource)
+        source.add('saved'); source.project('saved', { hapi: { hubId: 'source-hub', hapiSessionId: 'source-session' } } as never)
+        source.phase('ready'); source.publish()
+        assert.deepEqual(requested, ['saved'])
+        assert.deepEqual(controller.store.focusedPane().resource, resource)
+        old.release(); old = undefined
+        source.publish()
+        assert.deepEqual(controller.store.focusedPane().resource, resource, 'A temporary absence of mainView references must not discard a plugin resource')
+        // openSession is asynchronous in the real UI: its actual main
+        // reference may arrive after the immediate catalog callbacks above.
+        source.navigation.openSession('saved' as SessionId); source.publish()
+        await Promise.resolve()
+        assert.deepEqual(controller.store.focusedPane().resource, resource)
+        assert.equal(controller.getSnapshot().leases.get(controller.store.focusedPane().id)?.status, 'ready')
+        assert.deepEqual(JSON.parse(source.memory.get(source.options.storageKey)!).windows[0].root.resource, resource)
+        source.add('next'); source.navigation.openSession('next' as SessionId)
+        assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'next' }, 'A later explicit official navigation must still work')
+    } finally { controller.dispose(); old?.release(); source.disposeMain() }
+})
+
+test('a late first main-view retain of the same restored plugin Session does not turn it into chat', () => {
+    const source = fixture(), resource = restoredPluginResources[2]!, requested: string[] = []
+    source.add('saved')
+    const state = initialWorkspace(source.options.nextId!)
+    state.windows[0]!.root = { type: 'pane', id: state.windows[0]!.root.id, resource }
+    source.memory.set(source.options.storageKey, JSON.stringify(state))
+    const controller = new WorkspaceController({ ...source.options, navigation: { ...source.navigation, openSession: target => { requested.push(String(target)) } } })
+    try {
+        assert.deepEqual(requested, ['saved'])
+        source.publish(); source.publish()
+        source.navigation.openSession('saved' as SessionId)
+        assert.deepEqual(controller.store.focusedPane().resource, resource)
+    } finally { controller.dispose(); source.disposeMain() }
+})
+
 test('new-session request survives plugin-page reveal and does not change pane execution ownership', () => {
     const source = fixture(); source.add('running')
     let revealed = 0
@@ -505,6 +561,7 @@ test('first installation imports source geometry once and unavailable source ret
     assert.equal(controller.store.active().id, 'legacy-window')
     assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.waitingForCatalog, true)
     assert.equal(source.refs.length, 0, 'unmapped HAPI ids must never be retained as guessed DSH sessions')
+    controller.setSourceCatalog([], 'hub')
     source.add('display')
     source.project('display', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'hub' } } as SessionSummary['projectionValues'])
     await turn()
@@ -559,6 +616,129 @@ test('a legacy source-only deep link waits for the configured primary Hub instea
     controller.setSourceCatalog([], 'beta')
     const resource = controller.store.focusedPane().resource
     assert.equal(resource.kind === 'chat' && resource.sessionId, 'beta-display')
+    controller.dispose(); source.disposeMain()
+})
+
+test('restored panes prioritize one exact late source in a large catalog and share its hydration', async () => {
+    const source = fixture()
+    for (let index = 0; index < 153; index++) {
+        source.add(`display-${index}`)
+        source.project(`display-${index}`, { hapi: { hubId: 'original-hub', hapiSessionId: `original-${index}` } } as never)
+    }
+    const saved = initialWorkspace(() => 'restore-fixture')
+    saved.windows[0]!.root = { type: 'pane', id: 'restored-chat', resource: { kind: 'chat', sessionId: 'old-display', sourceSessionId: 'original-153', sourceHubId: 'original-hub' } }
+    saved.windows.push({ ...saved.windows[0]!, id: 'second-window', root: { type: 'pane', id: 'restored-document', resource: {
+        kind: 'document', sessionId: 'old-display', sourceSessionId: 'original-153', sourceHubId: 'original-hub', document: { kind: 'file', path: '/original/note.md' }, title: 'Saved document',
+    } } })
+    saved.focused[saved.windows[0]!.id] = 'restored-chat'; saved.focused['second-window'] = 'restored-document'
+    source.memory.set(source.options.storageKey, JSON.stringify(saved))
+    const controller = new WorkspaceController(source.options), calls: unknown[] = []
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const unresolve = controller.installSourceResolver(async (identity, signal) => {
+        calls.push(identity); await gate; signal.throwIfAborted()
+        source.add('current-display')
+        source.project('current-display', { hapi: { hubId: identity.hubId, hapiSessionId: identity.sourceSessionId } } as never)
+    })
+    await turn()
+    assert.deepEqual(calls, [{ hubId: 'original-hub', sourceSessionId: 'original-153' }])
+    assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'opening'))
+    assert.equal(source.refs.length, 0, 'no nearby or stale display is retained')
+    release(); await turn()
+    assert.ok([...controller.getSnapshot().leases.values()].every(lease => lease.status === 'ready' && lease.sessionId === 'current-display'))
+    assert.equal(controller.getSnapshot().catalog.ids.length, 154)
+    const document = panes(controller.store.getSnapshot().windows[1]!.root)[0]!.resource
+    assert.deepEqual(document.kind === 'document' && document.document, { kind: 'file', path: '/original/note.md' })
+    assert.equal(document.kind === 'document' && document.title, 'Saved document')
+    unresolve(); controller.dispose(); source.disposeMain()
+})
+
+test('missing original source retains the saved pane and exposes a deliberate exact retry', async () => {
+    const source = fixture(), saved = initialWorkspace(() => 'missing-fixture')
+    saved.windows[0]!.root = { type: 'pane', id: 'missing-pane', resource: { kind: 'chat', sessionId: 'old-display', sourceSessionId: 'same-name', sourceHubId: 'correct-hub' } }
+    saved.focused[saved.windows[0]!.id] = 'missing-pane'
+    source.memory.set(source.options.storageKey, JSON.stringify(saved))
+    source.add('wrong-display'); source.project('wrong-display', { hapi: { hubId: 'wrong-hub', hapiSessionId: 'same-name' } } as never)
+    const controller = new WorkspaceController(source.options)
+    let calls = 0
+    controller.installSourceResolver(async identity => {
+        calls++; assert.deepEqual(identity, { hubId: 'correct-hub', sourceSessionId: 'same-name' })
+        if (calls === 1) throw Object.assign(new Error('Original source was not found (404)'), { details: { status: 404 } })
+        source.add('correct-display'); source.project('correct-display', { hapi: { hubId: 'correct-hub', hapiSessionId: 'same-name' } } as never)
+    })
+    await turn()
+    assert.equal(controller.getSnapshot().leases.get('missing-pane')?.status, 'failed')
+    assert.equal(controller.getSnapshot().leases.get('missing-pane')?.sourceResolution, 'not-found')
+    assert.match(controller.getSnapshot().leases.get('missing-pane')?.error ?? '', /not found \(404\)/)
+    assert.deepEqual(controller.store.focusedPane().resource, saved.windows[0]!.root.resource)
+    source.publish(); await turn(); assert.equal(calls, 1, 'catalog broadcasts do not keep retrying a failed source')
+    assert.equal(source.refs.length, 0)
+    controller.retryPane('missing-pane'); await turn()
+    assert.equal(calls, 2)
+    assert.equal(controller.getSnapshot().leases.get('missing-pane')?.sessionId, 'correct-display')
+    controller.dispose(); source.disposeMain()
+})
+
+test('closing a pending original pane aborts its wait and a late source cannot recreate the pane', async () => {
+    const source = fixture(), saved = initialWorkspace(() => 'cancel-fixture')
+    saved.windows[0]!.root = { type: 'pane', id: 'pending-pane', resource: { kind: 'chat', sessionId: 'old-display', sourceSessionId: 'original', sourceHubId: 'hub' } }
+    saved.focused[saved.windows[0]!.id] = 'pending-pane'; source.memory.set(source.options.storageKey, JSON.stringify(saved))
+    const controller = new WorkspaceController(source.options)
+    let signal!: AbortSignal, release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    controller.installSourceResolver(async (_source, lifetime) => {
+        signal = lifetime; await gate
+        source.add('late-display'); source.project('late-display', { hapi: { hubId: 'hub', hapiSessionId: 'original' } } as never)
+    })
+    await turn(); controller.store.closePane('pending-pane')
+    assert.equal(signal.aborted, true)
+    release(); await turn()
+    assert.equal(controller.store.focusedPane().resource.kind, 'empty')
+    assert.equal(source.refs.length, 0)
+    controller.dispose(); source.disposeMain()
+})
+
+test('a source-only deep link hydrates only after its configured Hub is known', async () => {
+    const source = fixture(), controller = new WorkspaceController({ ...source.options, sourceSessionQuery: 'requested-original' }), calls: unknown[] = []
+    controller.installSourceResolver(async identity => {
+        calls.push(identity)
+        source.add('requested-display'); source.project('requested-display', { hapi: { hubId: identity.hubId, hapiSessionId: identity.sourceSessionId } } as never)
+    })
+    await turn(); assert.deepEqual(calls, [])
+    controller.setSourceCatalog([], 'configured-hub'); await turn()
+    assert.deepEqual(calls, [{ hubId: 'configured-hub', sourceSessionId: 'requested-original' }])
+    const resource = controller.store.focusedPane().resource
+    assert.equal(resource.kind === 'chat' && resource.sessionId, 'requested-display')
+    controller.dispose(); source.disposeMain()
+})
+
+test('legacy restored panes wait for the real primary Hub even when a foreign same-ID source arrives first', async () => {
+    const source = fixture()
+    source.add('foreign-display')
+    source.project('foreign-display', { hapi: { hubId: 'foreign-hub', hapiSessionId: 'original-source' } } as never)
+    const controller = new WorkspaceController({ ...source.options, persistence: { load: async () => null, save: async () => {} }, legacy: async () => legacyLayout })
+    const requests: unknown[] = []
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    controller.installSourceResolver(async identity => {
+        requests.push(identity); await gate
+        source.add('primary-display'); source.project('primary-display', { hapi: { hubId: identity.hubId, hapiSessionId: identity.sourceSessionId } } as never)
+    })
+    await turn()
+    assert.equal(source.refs.length, 0)
+    assert.deepEqual(requests, [])
+    const unbound = controller.store.focusedPane().resource
+    assert.equal(unbound.kind === 'chat' && unbound.sourceHubId, undefined)
+    assert.notEqual(unbound.kind === 'chat' && unbound.sessionId, 'foreign-display')
+    controller.setSourceCatalog([], 'primary-hub'); await turn()
+    assert.deepEqual(requests, [{ hubId: 'primary-hub', sourceSessionId: 'original-source' }])
+    const fixed = controller.store.focusedPane().resource
+    assert.equal(fixed.kind === 'chat' && fixed.sourceHubId, 'primary-hub')
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.sourceResolution, 'loading')
+    assert.equal(source.refs.length, 0)
+    finish(); await turn()
+    assert.deepEqual(controller.store.focusedPane().resource, { kind: 'chat', sessionId: 'primary-display', sourceSessionId: 'original-source', sourceHubId: 'primary-hub' })
+    assert.ok(source.refs.every(reference => reference.sessionId === 'primary-display'))
     controller.dispose(); source.disposeMain()
 })
 

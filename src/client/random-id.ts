@@ -7,8 +7,9 @@ export interface RandomSource {
  * UUIDv4 for HTTP origins where `crypto.randomUUID` is unavailable because the
  * page is not a secure context. `getRandomValues` remains available there.
  */
-export function randomId(source: RandomSource = globalThis.crypto): string {
-  if (typeof source.randomUUID === 'function') return source.randomUUID()
+export function randomId(source: RandomSource | undefined = globalThis.crypto): string {
+  if (typeof source?.randomUUID === 'function') return source.randomUUID()
+  if (typeof source?.getRandomValues !== 'function') throw new Error('Secure random generation is unavailable in this browser.')
   const bytes = source.getRandomValues(new Uint8Array(16))
   bytes[6] = (bytes[6]! & 0x0f) | 0x40
   bytes[8] = (bytes[8]! & 0x3f) | 0x80

@@ -122,7 +122,7 @@ export class NativeCodexAgent implements Agent {
     this.scope = createScope(parent, this)
     this.ctx = this.scope.ctx
     this.currentSession = this.ctx.sessions.prepare(this.id, {
-      meta: { cwd: source.metadata?.path ?? '/', agentPreset: 'hapi-codex-native', createdAt: source.createdAt },
+      meta: { cwd: source.metadata?.path ?? '/', createdAt: source.createdAt },
     })
     this.dispatch = agentEvents(this.ctx, this)
     this.inbox = new NativeInbox(this)
@@ -173,7 +173,7 @@ export class NativeCodexAgent implements Agent {
       await agent.applyRows(rows, true)
       agent.currentSession = agent.ctx.sessions.prepare(agent.id, {
         seed: agent.projector.historySeed(),
-        meta: { cwd: source.metadata?.path ?? '/', agentPreset: 'hapi-codex-native', createdAt: source.createdAt },
+        meta: { cwd: source.metadata?.path ?? '/', createdAt: source.createdAt },
       })
       agent.projector.finishHistorySeed(agent.session)
       agent.initializing = false

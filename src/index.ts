@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-client-modules';
 import type { SessionRenameValue } from '@deepseek-ai/dsh-api-session-controller/types';
+import { TerminalController, type Config as TerminalConfig } from '@deepseek-ai/dsh-api-terminal-controller';
 import {
     HAPI_REMOTE, type CreateNativeSession, type HapiCatalog, type MachineOptions,
     type NativeAnswerRequest, type NativeQueueRequest, type WorkspaceWrite, type WorkspaceWriteResult, type WorkspaceDocument,
@@ -21,6 +22,8 @@ import {
 import { readConfig, resolveHapiToken, type RuntimeConfig } from './cli/config.ts';
 import { HapiClient } from './hapi/client.ts';
 import { catalogDisplayMetadata, catalogListFacts, catalogRowState } from './hapi/catalog-metadata.ts';
+import { startSourceCatalogs } from './hapi/catalog-startup.ts';
+import { SourceSessionResolver, type OriginalSessionRequest } from './hapi/source-session-resolver.ts';
 import { HapiRequestError, type HapiCancelResult, type HapiSteerResult, type HapiRetryResult } from './codex/contracts.ts';
 import { CodexService, type NativeCodexAgent } from './codex/index.ts';
 import { attachmentResolver, artifactImporter, sourceUploadImporter, sourceInlineImporter } from './hapi/attachments.ts';
@@ -64,6 +67,8 @@ import { NativeLibrary } from './hapi/native-library.ts';
 import type { NativeLibraryRequest } from './native-library-types.ts';
 import { NativeWorkbench } from './hapi/workbench.ts';
 import { NativeTerminalBridge } from './hapi/terminal.ts';
+import { LegacySessionTerminals } from './hapi/legacy-terminals.ts';
+import type { LegacyTerminalOpenRequest, LegacyTerminalReadRequest, LegacyTerminalListRequest } from './legacy-terminal-types.ts';
 import type { WorkbenchRequest, WorkbenchSource } from './workbench-types.ts';
 import { HapiSessionExtras } from './hapi/session-extras.ts';
 import { sourceGeneratedMediaImporter } from './hapi/generated-media.ts';
@@ -73,9 +78,10 @@ import { FederationHub } from './hub/federation.ts';
 import { legacyWorkspaceSnapshotSchema, type LegacyWorkspaceSnapshot } from './legacy-workspace-types.ts';
 import { mountBootstrapRoute } from './shared/bootstrap.ts';
 import { mountPluginEvents } from './shared/plugin-events.ts';
+import { officialProviderConfig } from './shared/official-provider.ts';
 
 export const name = 'hapi-dsh';
-export const inject = ['agents', 'sessions', 'sessionProjections', 'attachments', 'fileUploads', 'llm', 'typert', 'webServer', 'connection', 'clientModules', 'appReady'];
+export const inject = ['loader', 'agents', 'sessions', 'sessionProjections', 'attachments', 'fileUploads', 'llm', 'typert', 'webServer', 'connection', 'clientModules', 'appReady'];
 export interface Config { configFile: string }
 export const Config: S<Config> = S.object({ configFile: S.string().required() });
 
@@ -104,6 +110,7 @@ interface ControllerOptions {
     nativePlan: NativePlan;
     nativeLibrary: NativeLibrary;
     workbench: NativeWorkbench;
+    legacyTerminals: LegacySessionTerminals;
     extras: HapiSessionExtras;
 }
 
@@ -115,9 +122,11 @@ export class HapiController extends TypertRemoteService {
     private sourceSummaries = new Map<string, Awaited<ReturnType<HapiClient['listSessions']>>[number]>();
     private summaryCacheAt = 0;
     private summaryRead: Promise<void> | undefined;
+    private readonly sourceResolver: SourceSessionResolver;
 
     /** Source capabilities for ordinary DSH Host provider composition; not a browser Remote method. */
     get nativeWorkbench(): NativeWorkbench { return this.options.workbench; }
+    get legacyTerminals(): LegacySessionTerminals { return this.options.legacyTerminals; }
 
     nativeTerminalAuthentication(): ReturnType<HapiClient['socketAuthentication']> { return this.options.client.socketAuthentication(); }
     get nativeTerminalStateFile(): string {
@@ -138,6 +147,7 @@ export class HapiController extends TypertRemoteService {
 
     constructor(ctx: Context, private readonly options: ControllerOptions) {
         super(ctx, 'hapi');
+        this.sourceResolver = new SourceSessionResolver(options.client, options.codex, options.observed);
         ctx.effect(() => options.client.subscribeCatalog(() => { this.machineCacheAt = 0; this.summaryCacheAt = 0; }), 'hapi-dsh: source catalog invalidation');
         ctx.effect(() => ctx.typert.register({
             package: 'hapi-dsh', face: 'host', schemas: [],
@@ -205,6 +215,8 @@ export class HapiController extends TypertRemoteService {
         return nativeLaunchOptions(this.options.client, request.machineId);
     }
 
+    sourceSessionResolve(request: OriginalSessionRequest) { return this.sourceCall(() => this.sourceResolver.resolve(request)); }
+
     sourceMachineOptions(request: SourceMachineOptionsRequest) { return sourceMachineOptions(this.options.client, request); }
     sourceMachineDirectory(request: SourceDirectoryRequest) { return this.sourceCall(() => sourceDirectory(this.options.client, request)); }
     sourceMachinePaths(request: SourcePathsRequest) { return this.sourceCall(() => sourcePaths(this.options.client, request)); }
@@ -220,6 +232,25 @@ export class HapiController extends TypertRemoteService {
     sourceAdministration() { return this.sourceCall(() => this.options.administration.overview()); }
     sourceCompanionInfo() { return this.sourceCall(async () => this.options.companion.info(this.ctx.invocation)); }
     sourceCompanionReveal(request: SourceCompanionReveal) { return this.sourceCall(async () => this.options.companion.reveal(this.ctx.invocation, request)); }
+    sourceLegacyTerminalOpen(request: LegacyTerminalOpenRequest, signal?: AbortSignal) {
+        return this.sourceCall(() => {
+            const source = this.legacyTerminalSource(request.sessionId);
+            const lifetime = signal ?? this.ctx.invocation?.signal;
+            if (!lifetime) throw new RemoteError('hapi/request', 'Opening an original terminal requires an active Remote invocation.', {
+                outcome: 'rejected', status: 409, sourceCode: 'source_terminal_call_unavailable',
+            });
+            return this.options.legacyTerminals.open(request, source, lifetime);
+        });
+    }
+    sourceLegacyTerminalRead(request: LegacyTerminalReadRequest) {
+        return this.sourceCall(async () => this.options.legacyTerminals.read(request, this.legacyTerminalSource(request.sessionId)));
+    }
+    sourceLegacyTerminals(request: LegacyTerminalListRequest) {
+        return this.sourceCall(async () => this.options.legacyTerminals.list(request, this.legacyTerminalSource(request.sessionId)));
+    }
+    sourceLegacyTerminalText(request: LegacyTerminalReadRequest, signal?: AbortSignal) {
+        return this.sourceCall(() => this.options.legacyTerminals.readText(request, this.legacyTerminalSource(request.sessionId), signal ?? this.ctx.invocation?.signal));
+    }
     sourceSessionBulk(request: SourceBulkOperation) { return this.sourceCall(() => this.options.bulk.operation(request)); }
     sourceSessionBulkRead(request: { operationId: string }) { return this.sourceCall(async () => this.options.bulk.read(request.operationId)); }
     sourceQueuedEdit(request: SourceQueuedEditRequest) { return this.sourceCall(() => this.options.queuedEdits.execute(request)); }
@@ -394,6 +425,13 @@ export class HapiController extends TypertRemoteService {
     sourceWorkGraph(request: SessionExtrasRequest<'sourceWorkGraph'>) { return this.sourceCall(() => this.options.extras.sourceWorkGraph(request)); }
     sourceWorkGraphLinks(request: SessionExtrasRequest<'sourceWorkGraphLinks'>) { return this.sourceCall(() => this.options.extras.sourceWorkGraphLinks(request)); }
 
+    private legacyTerminalSource(sessionId: string): WorkbenchSource {
+        const source = this.workbenchSource(sessionId);
+        if (!source) throw new RemoteError('hapi/request', 'This view does not belong to an original HAPI terminal source.', {
+            outcome: 'rejected', status: 409, sourceCode: 'source_terminal_binding_required',
+        });
+        return source;
+    }
     private native(id: string): NativeCodexAgent {
         const agent = this.options.codex.get(id);
         if (!agent || agent.id !== id) throw new RemoteError('hapi/request', 'The native session is unavailable or was replaced; refresh the workspace.', { outcome: 'rejected', status: 404 });
@@ -476,6 +514,10 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     }, join(dataDirectory, 'native'));
     const workbench = new NativeWorkbench(client);
     const terminal = new NativeTerminalBridge(client, workbench);
+    const legacyTerminals = new LegacySessionTerminals({
+        authenticate: () => client.socketAuthentication(), workbench,
+        getLimits: () => TerminalController.Config(officialProviderConfig(ctx, 'terminal-controller') as TerminalConfig),
+    });
     const extras = new HapiSessionExtras(client);
     ctx.effect(() => () => nativeControl.settled(), 'hapi-dsh: native control submissions');
     ctx.effect(() => () => observedControl.settled(), 'hapi-dsh: source control submissions');
@@ -490,6 +532,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     ctx.effect(() => () => nativeLibrary.settled(), 'hapi-dsh: source lifecycle submissions');
     ctx.effect(() => () => workbench.close(), 'hapi-dsh: source workbench');
     ctx.effect(() => () => terminal.close(), 'hapi-dsh: source terminals');
+    ctx.effect(() => () => legacyTerminals.dispose(), 'hapi-dsh: original SessionTerminal views');
     ctx.effect(() => () => extras.close(), 'hapi-dsh: source session resources');
     ctx.effect(() => () => voice.close(), 'hapi-dsh: original voice resources');
     ctx.effect(() => () => notifications.close(), 'hapi-dsh: original notifications');
@@ -514,19 +557,8 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     voice.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     notifications.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountShareTarget({ webServer: ctx.webServer }), 'hapi-dsh: browser share target');
-    new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
-    // A large existing HAPI catalog attaches every source and can take minutes.
-    // Keep the Host service available after a bounded startup window; the
-    // catalog subscription publishes the remaining sources as they attach.
-    const starts = Promise.allSettled([codex.start(), observed.start()]);
-    let timer: NodeJS.Timeout | undefined;
-    const completed = await Promise.race([
-        starts.then(() => true),
-        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 5_000); }),
-    ]);
-    if (timer !== undefined) clearTimeout(timer);
-    if (!completed) ctx.logger.warn('HAPI source catalog is still loading; sessions will appear as they attach');
-    void starts.then(results => {
-        for (const result of results) if (result.status === 'rejected') ctx.logger.warn(`HAPI is currently unavailable; source sessions will reconnect: ${result.reason instanceof Error ? result.reason.message : 'connection failed'}`);
-    });
+    new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, legacyTerminals, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
+    const startup = await startSourceCatalogs([{ name: 'Native Codex', start: () => codex.start() }, { name: 'HAPI', start: () => observed.start() }],
+        (source, error) => { ctx.logger.warn(`${source} catalog synchronization failed; source sessions will reconnect: ${error instanceof Error ? error.message : 'connection failed'}`); });
+    if (startup === 'background') ctx.logger.info('The initial HAPI catalog is still loading. The Host is ready; all source sessions continue synchronizing in the background.');
 }

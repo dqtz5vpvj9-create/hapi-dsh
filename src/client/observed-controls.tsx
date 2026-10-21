@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Source engines keep their own settings values and operation finality. */
-import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import type { ObservedSettingChange, ObservedSettingReceipt, ObservedSettings } from '../hapi-agent/control-types.ts'

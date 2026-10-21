@@ -1,6 +1,5 @@
+import { randomId } from './random-id.ts'
 /** Source-successor draft transfer. No chat submission or private editor state. */
-import { randomId } from './random-id.ts';
-
 export interface HandoffSource { hubId: string; sessionId: string }
 export interface HandoffAddress extends HandoffSource { displayId: string; hostId: string }
 export interface HandoffReference {

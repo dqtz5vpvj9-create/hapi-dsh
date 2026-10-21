@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Official DSH launch/attachment UI with an explicit HAPI protocol fixture, not model execution. */
 import { test, expect } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -11,9 +12,7 @@ test.describe('durable original HAPI launch and first task', () => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         const showCreate = async () => {
             await page.locator('.hapi-workspace-tools > details > summary').click();
             await page.getByRole('button', { name: 'Codex · New conversation', exact: true }).click();
@@ -58,9 +57,7 @@ test.describe('durable original HAPI launch and first task', () => {
     test('attachment-only source task uses its chosen machine and requires confirmation before creating a missing directory', async ({ page }) => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-workspace-tools > details > summary').click();
         await page.getByRole('button', { name: 'HAPI engines · New conversation', exact: true }).click();
         const creation = page.getByRole('dialog', { name: 'HAPI engines · New conversation', exact: true });

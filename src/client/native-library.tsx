@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { SourcePiHistoryPanel } from './source-history.tsx';
 import { nativeToolAllowed } from './native-tool-admission.ts';

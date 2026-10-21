@@ -44,7 +44,8 @@ export function parseNativeObservation(row: HapiMessage, binding: NativeBinding)
   if (typeof sourceId !== 'string' || !sourceId) return
   const identity = { id: sourceId, createdAt: row.createdAt, turnId }
   if ((content.type === 'event' && data.type === 'message' || data.type === 'error') && typeof data.message === 'string') {
-    return { kind: 'notice', value: { ...identity, kind: data.type === 'error' ? 'error' : 'message', text: data.message } }
+    return { kind: 'notice', value: { ...identity, kind: data.type === 'error' ? 'error' : 'message', text: data.message,
+      ...(typeof data.details === 'string' ? { details: data.details } : {}) } }
   }
   if (data.type === 'context_compacted' || content.type === 'event' && data.type === 'compact') {
     return { kind: 'notice', value: { ...identity, kind: 'context-compacted', text: 'Native Codex context was compacted.' } }

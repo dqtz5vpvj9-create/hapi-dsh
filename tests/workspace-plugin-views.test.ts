@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SurfaceActions } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
-import { initialWorkspace, parseWorkspaceState, WorkspaceStore } from '../src/client/model.ts'
+import { initialWorkspace, panes, parsePaneResource, parseWorkspaceState, resourceKey, WorkspaceStore } from '../src/client/model.ts'
 import { parseDshPaneTarget, parseNavigationValue } from '../src/workspace/dsh-view.ts'
 import { restoreOfficialPaneTarget, targetForTab } from '../src/client/pane-bridge.tsx'
 
@@ -46,6 +46,49 @@ test('opaque third-party DSH destinations survive geometry persistence without a
     assert.deepEqual(restored, store.getSnapshot())
     store.closeWindow(store.active().id); store.restoreWindow()
     assert.deepEqual(store.focusedPane().resource, { kind: 'view', sessionId, viewId: 'separate-instance', target: { type: 'tab', kind: 'not-installed', address: 'sidebar://not-installed/stable-instance' } })
+})
+
+test('an imported terminal pane persists plugin navigation, move and window restore without replacing its source identity', () => {
+    let sequence = 0
+    const id = () => `terminal-layout-${++sequence}`
+    const removed: unknown[] = []
+    const store = new WorkspaceStore(initialWorkspace(id), id, resources => { removed.push(...resources); return true })
+    const original = { kind: 'terminal', sessionId, sourceHubId: 'hub-one', sourceSessionId: 'source-session', terminalId: 'original-pty' } as const
+    store.openResource(original)
+    const paneId = store.focusedPane().id
+    const identity = resourceKey(original)
+    const target = parseDshPaneTarget({ type: 'tab', kind: 'third-party-view', address: 'sidebar://third-party-view/existing', params: { selection: ['saved', 3] } })
+    store.updateView(paneId, target, 'Review')
+    assert.equal(resourceKey(store.focusedPane().resource), identity)
+    assert.deepEqual(store.focusedPane().resource, { ...original, target, title: 'Review' })
+    store.movePaneToNewWindow(paneId)
+    assert.equal(store.focusedPane().id, paneId)
+    assert.deepEqual(parseWorkspaceState(JSON.parse(JSON.stringify(store.getSnapshot()))), store.getSnapshot())
+    assert.deepEqual(removed, [], 'navigation and reparenting do not remove the original terminal resource')
+    store.closeWindow(store.active().id)
+    store.restoreWindow()
+    assert.deepEqual(store.focusedPane().resource, { ...original, target, title: 'Review' })
+    store.updateView(paneId, { type: 'conversation' }, 'Conversation')
+    const restored = new WorkspaceStore(JSON.parse(JSON.stringify(store.getSnapshot())), id)
+    assert.deepEqual(restored.focusedPane().resource, { ...original, target: { type: 'conversation' }, title: 'Conversation' })
+    assert.deepEqual(parsePaneResource(original), original, 'old layouts need no target migration')
+    assert.throws(() => parsePaneResource({ ...original, target: { type: 'resource', address: 'javascript:alert(1)' } }))
+    assert.throws(() => parsePaneResource({ ...original, title: { html: 'untrusted' } }))
+})
+
+test('legacy terminal layout identities distinguish source sessions and hubs while retaining display successors', () => {
+    let sequence = 0
+    const id = () => `source-layout-${++sequence}`
+    const store = new WorkspaceStore(initialWorkspace(id), id)
+    const original = { kind: 'terminal', sessionId: 'display-one', sourceHubId: 'hub-one', sourceSessionId: 'source-one', terminalId: 'same-pty-id' } as const
+    store.openResource(original)
+    const first = store.focusedPane().id
+    store.openResource({ ...original, sessionId: 'display-two', sourceSessionId: 'source-two' }, 'horizontal')
+    store.openResource({ ...original, sessionId: 'other-hub-display', sourceHubId: 'hub-two' }, 'vertical')
+    assert.equal(panes(store.active().root).length, 3)
+    store.openResource({ ...original, sessionId: 'display-successor' }, 'horizontal')
+    assert.equal(store.focusedPane().id, first)
+    assert.equal(panes(store.active().root).length, 3)
 })
 
 test('layout rejects executable destinations and non-JSON plugin parameters', () => {

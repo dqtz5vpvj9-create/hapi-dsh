@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { remoteValue, type HapiRemoteApi, type SourceInitialTask, type SourceInitialTaskReceipt } from '../client-api.ts'
 import { errorMessage } from './controller.ts'
 

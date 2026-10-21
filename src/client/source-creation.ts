@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { createSourceSessionSchema, type CreateSourceSession, type SourceCreationFlavor, type SourceCreationState } from '../hapi-agent/creation-types.ts'
 import { errorMessage } from './controller.ts'

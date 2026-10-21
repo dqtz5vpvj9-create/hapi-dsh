@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Chromium capture + original DSH composer, with explicit HAPI/provider wire fixtures. */
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -14,9 +15,7 @@ async function admit(page: Page, environment: OfficialEnvironment) {
     });
     await page.goto(environment.launchUrl);
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
     await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
     const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
     await expect(pane.getByRole('button', { name: 'Voice and dictation', exact: true })).toBeVisible(); return pane;

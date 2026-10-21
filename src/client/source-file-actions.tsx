@@ -11,6 +11,8 @@ import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { MAX_DOCUMENT_BYTES, type NativeWorkbenchApi, type WorkbenchResponse, type WorkbenchSource } from '../workbench-types.ts'
 import { SourceFileEdit } from './source-file-edit.ts'
 import { SourceFileMutation, sourceFileContains, validSourceFileName } from './source-file-management.ts'
+import type { SourceFileMutationJournal } from './source-file-mutation-journal.ts'
+import type {} from './workspace-ui.ts'
 import { sourcePathAddress } from './source-path-actions.tsx'
 import { bytesToBase64, childPath, parentPath, parseWorkbenchChanges, type WorkbenchChange } from './workbench-model.ts'
 import { errorMessage } from './controller.ts'
@@ -38,6 +40,9 @@ const en = {
   browserCopy: 'Saved browser draft', inspectBrowser: 'Compare saved browser draft', browserDiscarded: 'The saved browser copy was discarded by another editor.',
   useBrowser: 'Use this saved browser draft', keepBrowser: 'Keep my current draft in this browser', downloadDraft: 'Download current draft',
   useBrowserAsk: 'Replace the current editor text with this saved browser draft? Download your current draft first if you want to keep both.',
+  recover: 'Recover source file operation', receipt: 'Saved operation intent', receiptId: 'Operation ID', readReceipt: 'Read saved operation',
+  reviewed: 'You acknowledged the current source state locally. The earlier operation still has no confirmed source receipt; reading paths cannot prove it completed.',
+  omittedPaths: 'Additional affected paths omitted from the bounded browser receipt',
 } as const
 const zh: Record<keyof typeof en, string> = {
   tools: '源文件工具', edit: '编辑源文件', search: '查找文件', git: 'Git 改动', manage: '管理文件', close: '关闭',
@@ -62,6 +67,9 @@ const zh: Record<keyof typeof en, string> = {
   browserCopy: '浏览器已保存的草稿', inspectBrowser: '对比浏览器保存的草稿', browserDiscarded: '其他编辑器已丢弃浏览器中的保存副本。',
   useBrowser: '采用此浏览器保存草稿', keepBrowser: '在浏览器中保留当前草稿', downloadDraft: '下载当前草稿',
   useBrowserAsk: '用这份浏览器保存草稿替换当前编辑器内容吗？如需保留两份，请先下载当前草稿。',
+  recover: '恢复源文件操作', receipt: '已保存的操作意图', receiptId: '操作 ID', readReceipt: '读取已保存的操作',
+  reviewed: '已在本地确认你核对了当前源状态。此前操作仍没有源端确认回执；读取路径不能证明该操作已经完成。',
+  omittedPaths: '浏览器有界回执中省略的其他受影响路径数量',
 }
 type Key = keyof typeof en
 type Translate = (key: Key) => string
@@ -81,7 +89,8 @@ class SourceActions {
   private version = 0
   private work = 0
   private preparedVersion = -1
-  constructor(readonly api: NativeWorkbenchApi, private readonly t: Translate) {}
+  private readonly subscriptions: Array<() => void> = []
+  constructor(readonly api: NativeWorkbenchApi, private readonly t: Translate, private readonly journal: SourceFileMutationJournal) {}
   getSnapshot = (): number => this.version
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private changed = (): void => { this.version++; for (const listener of this.listeners) listener() }
@@ -89,13 +98,13 @@ class SourceActions {
   editor(source: WorkbenchSource, path: string): SourceFileEdit {
     const key = `${sourceKey(source)}\0${path}`
     let editor = this.edits.get(key)
-    if (!editor) { editor = new SourceFileEdit(this.api, source, path); editor.subscribe(this.changed); this.edits.set(key, editor) }
+    if (!editor) { editor = new SourceFileEdit(this.api, source, path); this.subscriptions.push(editor.subscribe(this.changed)); this.edits.set(key, editor) }
     return editor
   }
   mutation(source: WorkbenchSource): SourceFileMutation {
     const key = sourceKey(source)
     let mutation = this.mutations.get(key)
-    if (!mutation) { mutation = new SourceFileMutation(this.api, source); mutation.subscribe(this.changed); this.mutations.set(key, mutation) }
+    if (!mutation) { mutation = new SourceFileMutation(this.api, source, this.journal); this.subscriptions.push(mutation.subscribe(this.changed)); this.mutations.set(key, mutation) }
     return mutation
   }
   get pending(): boolean { return this.work > 0 || [...this.edits.values()].some(edit => edit.getSnapshot().busy === 'save') || [...this.mutations.values()].some(mutation => mutation.getSnapshot().busy) }
@@ -123,6 +132,7 @@ class SourceActions {
     for (const edit of affected) edit.discard()
     return true
   }
+  dispose(): void { for (const unsubscribe of this.subscriptions) unsubscribe(); for (const mutation of this.mutations.values()) mutation.dispose(); this.listeners.clear() }
 }
 
 function SourceCode({ code, diff = false, t }: { code: string; diff?: boolean; t: Translate }) {
@@ -232,6 +242,8 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
   const [reading, setReading] = useState(false), [uploading, setUploading] = useState(false), [error, setError] = useState<string | null>(null)
   const [uploadTarget, setUploadTarget] = useState(directory ? path : parentPath(path))
   const uploadInput = useRef<HTMLInputElement>(null), creating = action === 'create-file' || action === 'create-directory'
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; void mutation.load(); return () => { mounted.current = false } }, [mutation])
   const selectedPath = resolveWorkspacePath(cwd, target), parent = directory ? path : parentPath(path)
   const inspect = async (): Promise<void> => {
     if (reading || state.busy) return
@@ -250,20 +262,20 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
       if (creating) {
         if (!validSourceFileName(value)) throw new Error(t('invalidName'))
         const newPath = childPath(selectedPath, value)
-        if (await mutation.manage({ action, path: newPath })) { setValue(''); open(newPath, action === 'create-directory') }
+        if (await mutation.manage({ action, path: newPath }) && mounted.current) { setValue(''); open(newPath, action === 'create-directory') }
         return
       }
       if (!entry || inspectedPath !== selectedPath) throw new Error(t('inspectFirst'))
       if (action === 'delete') {
         if (!window.confirm(`${t('deleteConfirm')}\n${entry.path}\n${t('entries')}: ${entry.entryCount}`) || !actions.beforeMutation(source, selectedPath)) return
-        if (await mutation.manage({ action, path: selectedPath, expectedRevision: entry.revision, recursive: entry.type === 'directory' })) { setEntry(undefined); setInspectedPath('') }
+        if (await mutation.manage({ action, path: selectedPath, expectedRevision: entry.revision, recursive: entry.type === 'directory' }) && mounted.current) { setEntry(undefined); setInspectedPath('') }
         return
       }
       if (action === 'rename' && !validSourceFileName(value)) throw new Error(t('invalidName'))
       const destination = action === 'rename' ? childPath(parentPath(selectedPath), value) : resolveWorkspacePath(cwd, value)
       if (!value.trim() || sourceFileContains(selectedPath, destination)) throw new Error(t('invalidDestination'))
       if (action !== 'copy' && !actions.beforeMutation(source, selectedPath)) return
-      if (await mutation.manage({ action, path: selectedPath, destination, expectedRevision: entry.revision })) { setEntry(undefined); setInspectedPath(''); open(destination, entry.type === 'directory') }
+      if (await mutation.manage({ action, path: selectedPath, destination, expectedRevision: entry.revision }) && mounted.current) { setEntry(undefined); setInspectedPath(''); open(destination, entry.type === 'directory') }
     } catch (error) { setError(errorMessage(error)) }
   }
   const upload = async (files: FileList | null): Promise<void> => {
@@ -272,17 +284,25 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
     const finish = actions.beginWork()
     try {
       for (const file of Array.from(files)) {
+        if (!mounted.current) break
         if (!validSourceFileName(file.name)) throw new Error(t('invalidName'))
         if (file.size > MAX_DOCUMENT_BYTES) throw new Error(t('tooLarge'))
         const content = bytesToBase64(new Uint8Array(await file.arrayBuffer()))
+        if (!mounted.current) break
         if (!await mutation.upload(childPath(resolveWorkspacePath(cwd, uploadTarget), file.name), content)) break
       }
     } catch (error) { setError(errorMessage(error)) }
     finally { finish(); setUploading(false); if (uploadInput.current) uploadInput.current.value = '' }
   }
-  const disabled = !writable || state.busy || state.uncertain || uploading || reading
+  const disabled = !writable || mutation.blocked || uploading || reading
   return <div className="hapi-source-body">
     {!writable && <p>{t('readOnly')}</p>}
+    {!state.loaded && <p role="status">{t('loading')}</p>}
+    {state.request && <section aria-label={t('receipt')} data-source-file-operation={state.operationId ?? undefined}>
+      <strong>{t('receipt')}: {state.request.action}</strong><p className="hapi-source-revision">{t('receiptId')}: {state.operationId}</p>
+      <p className="hapi-source-path">{state.request.path}{'destination' in state.request ? ` → ${state.request.destination}` : ''}</p>
+      {state.phase === 'reviewed' && !state.result?.success && <p className="hapi-source-help">{t('reviewed')}</p>}
+    </section>}
     <form className="hapi-source-form" onSubmit={event => { event.preventDefault(); void submit() }}>
       <label>{t('operation')}<select value={action} disabled={disabled} onChange={event => {
         const next = event.target.value as ManageAction; setAction(next); setValue(next === 'rename' ? pathPartsOf(selectedPath).name : ''); setError(null)
@@ -298,11 +318,13 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
     </form>
     {(state.busy || uploading) && <p role="status">{t('working')}</p>}
     {(error || state.error) && <p className="hapi-source-error" role="alert">{error || state.error}</p>}
+    {state.storageError && <button type="button" disabled={state.busy} onClick={() => { void mutation.load() }}>{t('readReceipt')}</button>}
     {state.result?.success && <p role="status" className="hapi-source-status">{t('completed')}</p>}
     {(state.result?.commit || state.result?.deletedPaths?.length) && !state.result.success && <div className="hapi-source-warning"><p>{t('partial')}</p><pre>{JSON.stringify(state.result.commit ?? state.result.deletedPaths, null, 2)}</pre></div>}
+    {state.omittedPaths > 0 && <p>{t('omittedPaths')}: {state.omittedPaths}</p>}
     {state.uncertain && <div className="hapi-source-warning"><p>{t('uncertain')}</p><button type="button" disabled={state.busy} onClick={() => { void mutation.inspect() }}>{t('inspect')}</button>
       {state.observed && <><ul>{state.observed.map(row => <li key={row.path}><span className="hapi-source-path">{row.path}</span>: {row.result.entry ? `${row.result.entry.type} · ${row.result.entry.size} B · ${row.result.entry.revision}` : row.result.code === 'not-found' ? t('notFound') : row.result.error || row.result.code || t('unknown')}</li>)}</ul>
-        <button type="button" disabled={state.busy || state.observed.some(row => !row.result.success && row.result.code !== 'not-found')} onClick={() => { if (mutation.review()) { setEntry(undefined); setInspectedPath('') } }}>{t('review')}</button></>}
+        <button type="button" disabled={!state.canReview || state.storageError !== null} onClick={() => { void mutation.review().then(reviewed => { if (reviewed && mounted.current) { setEntry(undefined); setInspectedPath('') } }) }}>{t('review')}</button></>}
     </div>}
   </div>
 }
@@ -316,6 +338,8 @@ function SourceTools({ ctx, actions, props, directory, t }: { ctx: Context; acti
   useSyncExternalStore(actions.subscribe, actions.getSnapshot)
   const [mode, setMode] = useState<Mode | null>(null), [error, setError] = useState<string | null>(null)
   const [manageTarget, setManageTarget] = useState<{ path: string; directory: boolean } | null>(null)
+  const mutation = useMemo(() => source && !observed?.sidechain ? actions.mutation(source) : null, [actions, source, observed?.sidechain])
+  useEffect(() => { if (mutation) void mutation.load() }, [mutation])
   useEffect(() => { setMode(null); setError(null); setManageTarget(null) }, [source, props.absolutePath, props.sessionId])
   if (!source || !projection || observed?.sidechain) return null
   const writable = projection.readOnly === false, cwd = ctx.sessions.list.getSnapshot().byId[props.sessionId]?.cwd ?? ''
@@ -333,6 +357,7 @@ function SourceTools({ ctx, actions, props, directory, t }: { ctx: Context; acti
   return <span className="hapi-source-actions">
     {!directory && <button type="button" title={t('edit')} aria-label={t('edit')} disabled={!writable} onClick={() => setMode('edit')}>✎</button>}
     <button type="button" aria-label={t('tools')} title={t('tools')} onClick={() => setMode(directory ? 'search' : 'manage')}>⋯</button>
+    {mutation && (mutation.getSnapshot().uncertain || mutation.getSnapshot().storageError || mutation.getSnapshot().busy) && <button type="button" onClick={() => setMode('manage')}>{t('recover')}</button>}
     {mode && <SourceDialog title={t('tools')} busy={actions.pending} close={close} t={t}>
       <nav aria-label={t('tools')}>{(['search', 'git', 'manage', ...(!directory ? ['edit' as const] : [])] as Mode[]).map(item => <button type="button" key={item} aria-pressed={mode === item} disabled={actions.pending || item === 'edit' && !writable} onClick={() => setMode(item)}>{t(item)}</button>)}</nav>
       {error && <p role="alert" className="hapi-source-error">{error}</p>}
@@ -348,22 +373,23 @@ function SourceTools({ ctx, actions, props, directory, t }: { ctx: Context; acti
 /** Only public list seats and the optional pane-close capability; no view replacement. */
 export function installSourceFileActions(ctx: Context, api: HapiRemoteApi): () => void {
   const unlocale = ctx.locale.register('hapiSourceFiles', { en, zh }), t = ctx.locale.bind('hapiSourceFiles')
-  const actions = new SourceActions(api, t)
   const style = document.createElement('style'); style.dataset.hapiSourceFileActions = ''; style.textContent = css; document.head.append(style)
   const disposers: Array<() => void> = [unlocale, () => style.remove()]
+  const owner = ctx.inject(['hapiWorkspaceUi'], current => {
+  const actions = new SourceActions(api, t, current.hapiWorkspaceUi.sourceFileMutations)
+  const scoped: Array<() => void> = [() => actions.dispose()]
   const Files = (props: ActionProps) => <SourceTools ctx={ctx} actions={actions} props={props} directory t={t}/>
   const Document = (props: PropsRuntime<'sidebar.right.tab.document.actions'>) => <SourceTools ctx={ctx} actions={actions} props={props} directory={false} t={t}/>
-  disposers.push(ctx.slots.inject('sidebar.right.tab.files.actions', () => ctx.slots.register({ name: 'sidebar.right.tab.files.actions', id: 'hapi.source-file-tools', order: 50 }, Files)))
-  disposers.push(ctx.slots.inject('sidebar.right.tab.document.actions', () => ctx.slots.register({ name: 'sidebar.right.tab.document.actions', id: 'hapi.source-file-tools', order: 50 }, Document)))
+  scoped.push(ctx.slots.inject('sidebar.right.tab.files.actions', () => ctx.slots.register({ name: 'sidebar.right.tab.files.actions', id: 'hapi.source-file-tools', order: 50 }, Files)))
+  scoped.push(ctx.slots.inject('sidebar.right.tab.document.actions', () => ctx.slots.register({ name: 'sidebar.right.tab.document.actions', id: 'hapi.source-file-tools', order: 50 }, Document)))
   const guard = ctx.inject(['hapiWorkspacePane'], current => { current.effect(() => current.hapiWorkspacePane.registerCloseGuard(actions.beforeClose)) })
-  disposers.push(() => { void guard.dispose() })
-  const updates = ctx.inject(['hapiWorkspaceUi'], current => {
-    const prepare = current.hapiWorkspaceUi.updates.register('Source file editors', () => actions.prepareReload())
-    const verify = current.hapiWorkspaceUi.updates.register('Source file editors', () => { if (!actions.preparedForReload) throw new Error('A source file editor changed while saving. Try the update again.') }, 'verify')
-    return () => { prepare(); verify() }
-  })
-  disposers.push(() => { void updates.dispose() })
+  scoped.push(() => { void guard.dispose() })
+  scoped.push(current.hapiWorkspaceUi.updates.register('Source file editors', () => actions.prepareReload()))
+  scoped.push(current.hapiWorkspaceUi.updates.register('Source file editors', () => { if (!actions.preparedForReload) throw new Error('A source file editor changed while saving. Try the update again.') }, 'verify'))
   const leave = (event: BeforeUnloadEvent): void => { if (!actions.preparedForReload && (actions.dirty || actions.pending || actions.unresolved)) { event.preventDefault(); event.returnValue = '' } }
-  window.addEventListener('beforeunload', leave); disposers.push(() => window.removeEventListener('beforeunload', leave))
+  window.addEventListener('beforeunload', leave); scoped.push(() => window.removeEventListener('beforeunload', leave))
+  return () => { for (const dispose of scoped.reverse()) dispose() }
+  })
+  disposers.push(() => { void owner.dispose() })
   return () => { for (const dispose of disposers.reverse()) dispose() }
 }

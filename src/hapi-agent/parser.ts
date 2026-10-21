@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { HapiAttachment, HapiMessage } from '../codex/contracts.js'
-import { canonicalJson, envelopeFor, record } from '../codex/native.js'
+import { canonicalJson, envelopeFor, nativeExecutionFor, record, type NativeExecution } from '../codex/native.js'
 import type { ObservedNotice, ObservedUsage } from './projection-types.js'
 import { ObservedScopeIndex } from './scopes.js'
 import type { SourceGeneratedMedia } from './generated-media-types.js'
@@ -15,6 +15,7 @@ export type SourcePart = { type: 'text'; text: string } | { type: 'reasoning'; t
 interface ObservedBase {
   key: string; rowId: string; localId: string | null; seq: number | null; createdAt: number
   scopeId: string | null; parentToolCallId: string | null; fingerprint: string; model: string | null
+  nativeExecution?: NativeExecution
 }
 export type ObservedItem = ObservedBase & (
   | { kind: 'user'; parts: SourcePart[]; text: string; invoked: boolean; mode: 'queue' | 'steer' }
@@ -99,6 +100,7 @@ function usageOf(value: unknown, base: ObservedBase, inclusive: boolean): Observ
 function fingerprint(item: ObservedItem): ObservedItem {
   item.fingerprint = createHash('sha256').update(canonicalJson({
     ...item, rowId: undefined, localId: undefined, seq: undefined, createdAt: undefined, fingerprint: undefined,
+    nativeExecution: item.nativeExecution ? { ...item.nativeExecution, turn: undefined } : undefined,
     ...(item.kind === 'assistant' ? { live: undefined } : {}), ...(item.kind === 'tool-call' ? { progress: undefined } : {}),
   })).digest('hex')
   return item
@@ -121,28 +123,36 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
   }
   const namespace = scopeId ? `${scopeId}:` : ''
   const sourceKey = childTrace ? str(data?.id) ?? row.id : row.id
+  const nativeExecution = nativeExecutionFor(childTrace ? data?.nativeExecution : record(envelope.meta)?.nativeExecution ?? data?.nativeExecution)
   const base: ObservedBase = { key: `${namespace}${sourceKey}`, rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt,
     scopeId, parentToolCallId,
-    fingerprint: '', model: str(record(data?.message)?.model) ?? str(data?.model) ?? null }
+    fingerprint: '', model: str(record(data?.message)?.model) ?? str(data?.model) ?? null,
+    ...(nativeExecution ? { nativeExecution } : {}) }
   const values: ObservedItem[] = []
   const push = (item: ObservedItem): void => { values.push(fingerprint(item)) }
-  const notice = (kind: ObservedNotice['kind'], text: string, suffix = 'notice'): void => {
+  const notice = (kind: ObservedNotice['kind'], text: string, suffix = 'notice', details?: string): void => {
     const key = `${base.key}:${suffix}`
-    push({ ...base, key, kind: 'notice', notice: { id: key, createdAt: base.createdAt, kind, text, scopeId } })
+    push({ ...base, key, kind: 'notice', notice: { id: key, createdAt: base.createdAt, kind, text, scopeId,
+      ...(details === undefined ? {} : { details }) } })
   }
   if (envelope.role === 'user') {
     const parts = inputParts(envelope.content)
     if (parts.length) push({ ...base, key: `user:${row.localId ?? row.id}`, kind: 'user', parts, text: textOf(parts),
-      invoked: row.localId === null || row.invokedAt != null, mode: record(envelope.meta)?.deliveryMode === 'steer' || row.steered ? 'steer' : 'queue' })
+      invoked: nativeExecution !== undefined || row.localId === null || row.invokedAt != null,
+      mode: record(envelope.meta)?.deliveryMode === 'steer' || row.steered ? 'steer' : 'queue' })
     return values
   }
   if (envelope.role !== 'agent' || !content || !data) return []
+  // A source-native lifecycle row carries turn facts; it is not an assistant
+  // response or a diagnostic JSON notice. parseObservedMessage consumes its
+  // actual terminal fact below, including archived/non-native Codex sessions.
+  if (data.type === 'native-turn' && nativeExecution) return values
   if (content.type === 'event' && !childTrace) {
     if (data.type === 'ready') push({ ...base, kind: 'end', reason: 'completed', error: null })
     else if (data.type === 'abort-restore') {
       push({ ...base, kind: 'end', reason: 'aborted', error: null })
       if (typeof data.text === 'string') notice('message', data.text, 'aborted-input')
-    } else if (data.type === 'message' || data.type === 'error') notice(data.type, str(data.message) ?? canonicalJson(data))
+    } else if (data.type === 'message' || data.type === 'error') notice(data.type, str(data.message) ?? canonicalJson(data), 'notice', str(data.details))
     else if (data.type === 'compact-summary') notice('summary', str(data.summary) ?? '')
     else if (data.type === 'compact') notice('compact', str(data.message) ?? canonicalJson(data))
     else notice('source-event', canonicalJson(data))
@@ -153,7 +163,12 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
     if ((data.type === 'message' || data.type === 'reasoning') && typeof data.message === 'string') {
       const reasoning = data.type === 'reasoning'
       const cumulative = reasoning && id !== undefined || data.streamSnapshot === true || childTrace && id !== undefined || Boolean(id?.match(/^pi-.+-turn-\d+-message-\d+-text-\d+$/))
-      const live = data.live === true || !reasoning && cumulative && (!childTrace || row.localId !== id || data.streamSnapshot === true)
+      // Shared Codex history keeps streamSnapshot=true on completed items.
+      // Only its stable localId confirms durability; the flag describes the
+      // cumulative payload, not whether the source item is still streaming.
+      const live = data.live === true || (nativeExecution
+        ? id === undefined || row.localId !== id
+        : !reasoning && cumulative && (!childTrace || row.localId !== id || data.streamSnapshot === true))
       const review = !reasoning && !live ? sourceStandaloneReview(data.message, data) : null
       push({ ...base, key: `${namespace}${reasoning ? 'reasoning' : 'text'}:${cumulative && id ? id : sourceKey}`,
         kind: 'assistant', parts: [{ type: reasoning ? 'reasoning' : 'text', text: data.message }],
@@ -176,8 +191,8 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
     } else if (data.type === 'token_count') {
       const usage = usageOf(data.info, base, true)
       if (usage) push({ ...base, kind: 'usage', usage })
-    } else if (data.type === 'error') notice('error', str(data.message) ?? canonicalJson(data))
-    else if (data.type === 'context_compacted') notice('compact', canonicalJson(data))
+    } else if (data.type === 'error') notice('error', str(data.message) ?? canonicalJson(data), 'notice', str(data.details))
+    else if (data.type === 'context_compacted') notice('compact', 'The source context was compacted.')
     else if (data.type === 'compact-summary') notice('summary', str(data.summary) ?? '')
     else if (data.type === 'generated-image') {
       const s = record(data.source)
@@ -240,6 +255,20 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
 export function parseObservedMessage(row: HapiMessage, scopes?: ObservedScopeIndex): ObservedItem[] {
   if (!scopes) { scopes = new ObservedScopeIndex(); scopes.update([row]) }
   const values = parseObservedBody(row, scopes)
+  const envelope = envelopeFor(row.content), content = record(envelope?.content)
+  const outer = record(content?.data), data = outer?.type === 'agent-run-trace' ? record(outer.message) : outer
+  const nativeExecution = nativeExecutionFor(outer?.type === 'agent-run-trace'
+    ? data?.nativeExecution : record(envelope?.meta)?.nativeExecution ?? data?.nativeExecution)
+  if (nativeExecution?.turn?.ended && nativeExecution.turn.status !== 'inProgress') {
+    const { scopeId, parentToolCallId } = scopes.forRow(row)
+    // Every indexed item may repeat these source lifecycle facts. One stable
+    // terminal identity is shared by the explicit event and the metadata.
+    values.push(fingerprint({ key: `${scopeId ?? 'root'}:native-end:${nativeExecution.threadId}:${nativeExecution.turnId}`,
+      rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt, scopeId, parentToolCallId,
+      model: null, fingerprint: '', kind: 'end', reason: nativeExecution.turn.status === 'completed' ? 'completed'
+        : nativeExecution.turn.status === 'interrupted' ? 'aborted' : 'error', error: null,
+      nativeExecution: { threadId: nativeExecution.threadId, turnId: nativeExecution.turnId, turn: nativeExecution.turn } }))
+  }
   for (const completion of scopes.completionsForRow(row)) values.push(fingerprint({
     ...completion, rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt,
     kind: 'end', model: null, fingerprint: '',
@@ -261,5 +290,24 @@ export function parseObservedHistory(rows: readonly HapiMessage[], scopes?: Obse
     }
     items.push(item)
   }
-  return items
+  // A native history snapshot can put final lifecycle metadata on its first
+  // item (or a native-turn row before the items). Settle only after all known
+  // items in that source turn, never before the actual answer is projected.
+  const endings = new Map<string, ObservedItem & { kind: 'end' }>()
+  const positions = new Map<string, number>()
+  const ordered: ObservedItem[] = []
+  const turnKey = (item: ObservedItem): string | undefined => item.nativeExecution
+    ? JSON.stringify([item.scopeId, item.nativeExecution.threadId, item.nativeExecution.turnId]) : undefined
+  for (const item of items) {
+    const key = turnKey(item)
+    if (key && item.kind === 'end') { endings.set(key, item); if (!positions.has(key)) positions.set(key, ordered.length - 1); continue }
+    ordered.push(item)
+    if (key) positions.set(key, ordered.length - 1)
+  }
+  const after = new Map<number, ObservedItem[]>()
+  for (const [key, ending] of endings) {
+    const index = positions.get(key) ?? -1
+    after.set(index, [...after.get(index) ?? [], ending])
+  }
+  return [...after.get(-1) ?? [], ...ordered.flatMap((item, index) => [item, ...after.get(index) ?? []])]
 }

@@ -1,6 +1,6 @@
+import { randomId } from '../random-id.ts'
 // SPDX-License-Identifier: AGPL-3.0-only
 // Browser port of Haven toolbar configuration. See HAVEN.md.
-import { randomId } from '../random-id.ts';
 import { useEffect, useRef, useState } from 'react'
 import { TerminalDialog, Button } from './dialog.tsx'
 import type { TerminalTranslate } from './locales.ts'

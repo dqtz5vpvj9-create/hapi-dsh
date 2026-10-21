@@ -64,9 +64,12 @@ export class HapiAgentService {
     if (this.catalogRefresh) return this.catalogRefresh
     const task = (async () => {
       const sources = await this.transport.listSessions()
-      for (let index = 0; index < sources.length; index += 4) await Promise.all(sources.slice(index, index + 4).map(async source => {
-        try { await this.attach(source.id) } catch (error) { this.report(error, source.id) }
-      }))
+      for (let index = 0; index < sources.length; index += 4) {
+        if (this.disposed) return
+        await Promise.all(sources.slice(index, index + 4).map(async source => {
+          try { await this.attach(source.id) } catch (error) { this.report(error, source.id) }
+        }))
+      }
     })()
     this.catalogRefresh = task
     try { await task } finally { if (this.catalogRefresh === task) this.catalogRefresh = undefined }
@@ -153,7 +156,7 @@ export class HapiAgentService {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true; this.unsubscribe?.()
-    await Promise.allSettled([...this.attaching.values(), ...this.work.values()])
+    await Promise.allSettled([...this.attaching.values(), ...this.work.values(), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
     await Promise.allSettled(this.list().map(agent => agent.dispose())); this.agents.clear(); this.unregister?.()
   }
   private report(error: unknown, sourceId?: string): void {

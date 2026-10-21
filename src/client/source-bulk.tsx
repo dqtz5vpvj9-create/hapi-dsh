@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { useEffect, useRef, useState } from 'react';
 import { remoteValue } from '../client-api.ts';
 import type { SourceAdminApi, SourceBulkOperation, SourceBulkReceipt } from '../source-admin-types.ts';

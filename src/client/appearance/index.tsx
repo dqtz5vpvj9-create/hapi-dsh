@@ -101,8 +101,8 @@ const styles = `
 .hapi-appearance-colors{display:grid;gap:12px;margin:16px 0;grid-template-columns:repeat(2,minmax(0,1fr))}.hapi-appearance-colors>div{display:flex;gap:8px;align-items:center;justify-content:space-between}.hapi-appearance-colors label{justify-content:flex-start}
 .hapi-appearance-settings input[type=color]{width:36px;height:30px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent}
 .hapi-appearance-header-options{display:flex;flex-wrap:wrap;gap:12px 20px;margin:16px 0}.hapi-appearance-header-options label{justify-content:flex-start}
-.hapi-source-header-metadata{display:flex;gap:3px 10px;flex-wrap:wrap;min-width:0;max-width:min(42cqw,560px);font:var(--dsw-font-xxxs-11);color:var(--dsw-alias-label-secondary)}
-.hapi-source-header-metadata>span{white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}.hapi-source-header-label{opacity:.75}
+.hapi-source-header-metadata{display:flex;gap:3px 10px;flex-wrap:wrap;min-width:0;max-width:min(42cqw,560px);font:400 12px/1.45 var(--dsw-font-family,system-ui,sans-serif);color:var(--dsw-alias-label-secondary)}
+.hapi-source-header-metadata>span{white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}.hapi-source-header-metadata>[data-hapi-header-field=agent]{flex-shrink:0}.hapi-source-header-label{opacity:.75}
 /* The official header publishes an anonymous inline-size container for slot
    occupants. Apply source metadata priorities to each pane, not the page. */
 @container(max-width:700px){.hapi-source-header-metadata{flex-wrap:nowrap}.hapi-source-header-label{display:none}.hapi-source-header-metadata>span:not([data-hapi-header-field=agent]):not([data-hapi-mobile-secondary]){display:none}}

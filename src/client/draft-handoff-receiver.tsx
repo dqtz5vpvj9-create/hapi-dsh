@@ -1,5 +1,5 @@
+import { randomId } from './random-id.ts'
 /** A live official composer endpoint; neither editor nor submission is replaced. */
-import { randomId } from './random-id.ts';
 import { useEffect, useMemo, useRef } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';

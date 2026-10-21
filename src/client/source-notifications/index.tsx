@@ -58,7 +58,6 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
         const state = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot), tr = useWords();
         const saving = useRef<HTMLDialogElement>(null);
         useEffect(() => { if (state.updating) saving.current?.showModal(); else saving.current?.close(); }, [state.updating]);
-        const offerInstall = !state.installDismissed && !state.installed && (state.canInstall || state.iosInstall);
         return <div className="hapi-notification-stack" aria-label={tr('Source notifications', '源会话通知')}>
             <dialog ref={saving} className="hapi-update-dialog" aria-label={tr('Saving workspace drafts', '保存工作区草稿')} onCancel={event => event.preventDefault()}>
                 <p role="status">{tr('Saving open editors and original attachment bytes before updating…', '正在保存已打开的编辑器和附件原始内容，随后更新…')}</p>
@@ -66,10 +65,6 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
             {state.notices.slice(-5).map(notice => <article key={notice.id} role="status"><div><strong>{notice.title}</strong><p>{notice.body}</p>
                 <button type="button" onClick={() => { void runtime.open({ hubId: notice.hubId, sessionId: notice.sessionId }).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{tr('Open conversation', '打开会话')}</button></div>
                 <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss notification', '关闭通知')} onClick={() => runtime.dismiss(notice.id)}>×</button></article>)}
-            {offerInstall && <article><div><strong>{tr('Keep this workspace on your device', '将工作区保留在设备上')}</strong>
-                {state.iosInstall ? <p>{tr('Safari → Share → Add to Home Screen.', 'Safari → 分享 → 添加到主屏幕。')}</p>
-                    : <p><button type="button" disabled={state.installing} onClick={() => { void runtime.promptInstall(); }}>{tr('Install workspace', '安装工作区')}</button></p>}</div>
-                <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss installation suggestion', '关闭安装提示')} onClick={() => runtime.dismissInstall()}>×</button></article>}
             {state.updateReady && <article><div><strong>{tr('Workspace update available', '工作区有可用更新')}</strong>
                 <p>{tr('Save open drafts and attachments before loading the update.', '先保存已打开的草稿和附件，再加载更新。')}</p>
                 <button type="button" disabled={state.updating} onClick={() => { void runtime.applyUpdate(); }}>{state.updating ? tr('Saving editors…', '正在保存编辑器…') : tr('Save drafts and update', '保存草稿并更新')}</button>
@@ -85,6 +80,7 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
 }
 
 const styles = `
+.hapi-notification-settings,.hapi-notification-stack,.hapi-update-dialog{font:400 14px/1.5 var(--dsw-font-family,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif)}
 .hapi-update-dialog{position:fixed;inset:0;margin:auto;max-width:min(420px,calc(100vw - 32px));border:1px solid var(--border-secondary,#8886);border-radius:12px;padding:24px;background:var(--bg-primary,Canvas);color:var(--text-primary,CanvasText);pointer-events:auto}.hapi-update-dialog::backdrop{background:#0008}
 .hapi-notification-settings{font-size:14px;line-height:1.5;color:inherit}.hapi-notification-settings h2{font-size:18px;margin:0 0 16px}.hapi-notification-settings h3{font-size:15px;margin:22px 0 8px}.hapi-notification-settings p{max-width:64ch}.hapi-notification-settings label{display:flex;align-items:center;gap:8px}.hapi-notification-actions{display:flex;flex-wrap:wrap;gap:8px}.hapi-notification-settings button,.hapi-notification-stack button{font:inherit;border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,Canvas);color:inherit;border-radius:6px;padding:6px 10px;cursor:pointer}.hapi-notification-settings button:disabled{opacity:.5;cursor:default}.hapi-notification-error{color:var(--text-error,#d45d62);overflow-wrap:anywhere}.hapi-notification-stack{position:fixed;right:16px;bottom:40px;display:grid;gap:8px;max-width:min(390px,calc(100vw - 32px));max-height:60dvh;overflow:auto;pointer-events:none;z-index:70}.hapi-notification-stack article{pointer-events:auto;display:flex;gap:12px;padding:14px;border:1px solid var(--border-secondary,#8886);border-radius:12px;background:var(--bg-primary,Canvas);color:var(--text-primary,CanvasText);box-shadow:0 4px 24px #0003;font-size:13px}.hapi-notification-stack p{margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto}.hapi-notification-dismiss{align-self:start;border:0!important;background:transparent!important;padding:0 3px!important;font-size:20px!important}
 `;

@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** The official menu/editor/Remote are real; source filesystem and native delivery are explicit HTTP fixtures. */
 import { test, expect } from '@playwright/test'
 import { startOfficialEnvironment } from './official-runtime.ts'
@@ -11,8 +12,7 @@ test('official @ file candidates and reference chips stay on their original sour
     environment.hapi.workbench.updateFile('native-beta', '/workspace/beta/beta only.ts', 'Beta file fixture\n')
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const preview = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-    if (await preview.isVisible()) await preview.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
     await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click()
     const alpha = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true })
     await expect(alpha.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible()

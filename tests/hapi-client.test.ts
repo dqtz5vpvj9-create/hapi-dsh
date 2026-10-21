@@ -53,6 +53,27 @@ test('a read rejected with 401 refreshes authentication once', async () => {
     } finally { await client.close(); }
 });
 
+test('document JSON response budgets bound streamed bytes and declared lengths independently of authentication', async () => {
+    const value = { success: true, content: Buffer.from('original source bytes').toString('base64') };
+    const wire = JSON.stringify(value), bytes = Buffer.byteLength(wire);
+    let declared = false, calls = 0;
+    const client = new HapiClient({ ...base, fetch: async input => {
+        if (String(input).endsWith('/auth')) return auth();
+        calls++;
+        return new Response(wire, { headers: declared ? { 'Content-Length': String(bytes) } : {} });
+    } });
+    try {
+        assert.deepEqual(await client.request('/api/sessions/original/file?path=report.txt', { maxResponseBytes: bytes }), value);
+        await assert.rejects(client.request('/api/sessions/original/file?path=report.txt', { maxResponseBytes: bytes - 1 }), /exceeds the supported size/);
+        declared = true;
+        await assert.rejects(client.request('/api/sessions/original/file?path=report.txt', { maxResponseBytes: bytes - 1 }), /exceeds the supported size/);
+        for (const maxResponseBytes of [0, NaN, Infinity, 90 * 1024 * 1024 + 1]) {
+            await assert.rejects(client.request('/api/sessions/original/file?path=report.txt', { maxResponseBytes }), /Invalid HAPI response byte limit/);
+        }
+        assert.equal(calls, 3, 'A rejected response and an invalid budget must not trigger a retry');
+    } finally { await client.close(); }
+});
+
 test('a mutation returning 401 is indeterminate because upstream can mask a downstream failure as authentication failure', async () => {
     let authCalls = 0;
     let mutations = 0;

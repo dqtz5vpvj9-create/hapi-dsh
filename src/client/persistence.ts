@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { remoteValue, type HapiRemoteApi, type WorkspaceWrite } from '../client-api.ts'
 import type { WorkspacePersistence } from './controller.ts'
 import type { WorkspaceState } from './model.ts'

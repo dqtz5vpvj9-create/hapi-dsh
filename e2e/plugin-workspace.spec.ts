@@ -1,12 +1,11 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
 
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl);
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
 }
 async function openTool(page: Page, pane: Locator, name: 'Project files' | 'Terminal'): Promise<Locator> {
     const ids = new Set(await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id'))));
@@ -52,7 +51,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await expect(alphaFile.getByText('Source file from machine-alpha', { exact: true })).toBeVisible();
             await expect(betaFile.getByText('Source file from machine-beta', { exact: true })).toBeVisible();
             await expect(alphaFile.getByText('Source file from machine-beta', { exact: true })).toHaveCount(0);
-            const reads = environment.hapi.workbench.fileRequests.filter(row => row.route === 'filesystem/download');
+            const reads = environment.hapi.workbench.fileRequests.filter(row => row.route === 'file' && row.method === 'GET');
             expect(reads.some(row => row.sessionId === 'native-alpha' && row.path === '/workspace/alpha/source.txt')).toBe(true);
             expect(reads.some(row => row.sessionId === 'native-beta' && row.path === '/workspace/beta/source.txt')).toBe(true);
             expect(reads.every(row => row.path.startsWith(`/workspace/${row.sessionId.replace('native-', '')}/`))).toBe(true);

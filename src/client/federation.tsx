@@ -22,6 +22,7 @@ import { installSourceAppearance } from './appearance/index.tsx'
 import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
+import { resolveOriginalSession } from './source-session-resolver.ts'
 import { createGraphStore, graphStorage, GRAPH_STORE_MODULE } from './runtime-store.ts'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import type {} from './native-integration.tsx'
@@ -29,6 +30,7 @@ import { createPaneInputRouter } from './pane-input.ts'
 import { createPaneRetention } from './pane-retention.ts'
 import { isPluginEventsRequest, pluginEventsOverWebSocket, SharedPluginEvents } from './plugin-events.ts'
 import { documentPaneTarget } from '../workspace/artifacts.ts'
+import { legacyTerminalPaneTarget } from './legacy-session-terminal.tsx'
 import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
 
@@ -302,11 +304,17 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let currentResource = resource
         let presentation = { focused: initial.focused, visible: initial.visible !== false }
         const presentationListeners = new Set<() => void>()
+        let menuTarget = initial.toolsTarget ?? null
+        const menuListeners = new Set<() => void>()
+        const toolsTarget = {
+            getSnapshot: () => menuTarget,
+            subscribe(listener: () => void) { menuListeners.add(listener); return () => { menuListeners.delete(listener) } },
+        }
         const resourceId = sessionResourceId(host.id, sourceId)
         const ui = sharedUi.createScope()
         const navigation: WorkspacePaneNavigation = {
             paneId, hostId: host.id, preferences: ui.preferences, voice: ui.voice, sourceSummaries: ui.sourceSummaries,
-            shareInbox: ui.shareInbox, handoffs: ui.handoffs, sourceScheduleDrafts: ui.sourceScheduleDrafts, updates: ui.updates,
+            shareInbox: ui.shareInbox, handoffs: ui.handoffs, sourceScheduleDrafts: ui.sourceScheduleDrafts, sourceFileMutations: ui.sourceFileMutations, updates: ui.updates,
             readLegacyScratchlist: ui.readLegacyScratchlist,
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
@@ -328,6 +336,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             if (!pane || !reference || disposed) return
             try {
                 let target = currentResource.kind === 'view' ? currentResource.target : undefined
+                if (currentResource.kind === 'terminal') target = currentResource.target ?? legacyTerminalPaneTarget(currentResource)
                 if (currentResource.kind === 'document') target = currentResource.target ?? documentPaneTarget(sourceId, currentResource.document,
                     currentResource.sourceSessionId ? { sourceSessionId: currentResource.sourceSessionId,
                         ...(currentResource.sourceHubId ? { sourceHubId: currentResource.sourceHubId } : {}),
@@ -390,7 +399,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     await voiceScope
                     if (disposed || currentGeneration !== generation || activeSignal.aborted) return
                 }
-                pane = installRemotePane(graph.ctx, { hostLabel: host.label,
+                pane = installRemotePane(graph.ctx, { hostLabel: host.label, toolsTarget,
                     ...(integration ? { native: integration.native, localeInstalled: true } : {}),
                     navigated: (target, title) => workspace.updateView(paneId, target, title), keyboard: {
                     capture: event => graph.dispatch(event, true), bubble: event => graph.dispatch(event, false),
@@ -422,12 +431,15 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             surface.removeEventListener('keydown', bubble)
             surface.remove(); renderer.unmount()
             presentationListeners.clear()
+            menuListeners.clear()
             try { await release(); await ui.dispose().catch(workspace.report) }
             finally { allPanes.delete(result) }
         })
         const result: PaneRuntime = { sourceId, surface, update(resource, options) {
             if (retired) return
             currentResource = resource
+            const nextMenuTarget = options.toolsTarget ?? null
+            if (menuTarget !== nextMenuTarget) { menuTarget = nextMenuTarget; for (const listener of menuListeners) listener() }
             const next = { focused: options.focused, visible: options.visible !== false }
             surface.dataset.hapiFocused = next.focused ? 'true' : 'false'
             surface.dataset.hapiVisible = next.visible ? 'true' : 'false'
@@ -475,7 +487,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     if (view.surface.parentElement === target) parking.append(view.surface)
                 }
             }, [sourceId, paneId])
-            useLayoutEffect(() => { activePanes.get(paneId)?.update(resource, options) }, [paneId, resource, options.focused, options.visible])
+            useLayoutEffect(() => { activePanes.get(paneId)?.update(resource, options) }, [paneId, resource, options.focused, options.visible, options.toolsTarget])
             return <div ref={mount} className="hapi-remote-mount" style={{ minHeight: 0, height: '100%', width: '100%' }}/>
         }
         const renderPane: NonNullable<import('./controller.ts').WorkspaceHost['renderPane']> = (reference, resource, options) => <RemoteSession sourceId={reference.sessionId} resource={resource} options={options}/>
@@ -503,6 +515,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
 /** Reconcile paired Hosts and native display revisions in the single workspace. */
 export function installFederation(ctx: Context, workspace: WorkspaceController): () => Promise<void> {
     const lifetime = new AbortController()
+    const unresolveSource = workspace.installSourceResolver((source, signal) => resolveOriginalSession(ctx.remote.hapi, ctx.sessions, source, AbortSignal.any([lifetime.signal, signal])))
     let preferenceStorage: Storage | undefined
     let windowStorage: Storage | undefined
     try { preferenceStorage = localStorage } catch { /* The public preference face can remain in memory. */ }
@@ -566,6 +579,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     const timer = setInterval(() => { void poll() }, 3000)
     return async () => {
         lifetime.abort(); clearInterval(timer)
+        unresolveSource()
         document.removeEventListener('keydown', containShortcuts)
         for (const entry of running.values()) entry.abort.abort()
         await Promise.allSettled([...running.values()].map(entry => entry.runtime?.stop()))

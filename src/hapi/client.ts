@@ -46,7 +46,7 @@ export const spawnSessionResponseSchema = z.discriminatedUnion('type', [
         sessionId: z.string().min(1).optional(), childStarted: z.boolean().optional(), agent: z.string().optional() }),
 ]);
 export type SpawnSessionResponse = z.infer<typeof spawnSessionResponseSchema>;
-type RequestOptions = { method?: string; body?: unknown; signal?: AbortSignal; timeoutMs?: number };
+type RequestOptions = { method?: string; body?: unknown; signal?: AbortSignal; timeoutMs?: number; maxResponseBytes?: number };
 
 /** Server-side HAPI client. Access tokens and refresh JWTs never enter client-facing data. */
 export class HapiClient implements HapiTransport {
@@ -146,8 +146,8 @@ export class HapiClient implements HapiTransport {
         return Buffer.concat(chunks);
     }
 
-    private async decode(response: Response): Promise<unknown> {
-        const text = Buffer.from(await this.readBody(response, 64 * 1024 * 1024)).toString('utf8');
+    private async decode(response: Response, maxBytes = 64 * 1024 * 1024): Promise<unknown> {
+        const text = Buffer.from(await this.readBody(response, maxBytes)).toString('utf8');
         if (!text.trim()) return null;
         try { return JSON.parse(text); }
         catch { throw new HapiRequestError('HAPI returned invalid JSON; mutation outcome is unknown', 'indeterminate', response.status); }
@@ -191,6 +191,11 @@ export class HapiClient implements HapiTransport {
 
     async request(path: string, options: RequestOptions = {}): Promise<unknown> {
         const method = (options.method ?? 'GET').toUpperCase();
+        // HAPI's authorized document endpoint returns at most 64 MiB of file
+        // bytes as base64 JSON. Keep the wire bound explicit instead of rejecting
+        // an otherwise supported document at the generic 64 MiB JSON limit.
+        const maxResponseBytes = options.maxResponseBytes ?? 64 * 1024 * 1024;
+        if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1 || maxResponseBytes > 90 * 1024 * 1024) throw new Error('Invalid HAPI response byte limit');
         // The original additive capability advertisement is the one public
         // route outside /api/. It is read-only and cannot broaden proxy paths.
         if (!(path.startsWith('/api/') || path === '/health' && method === 'GET') || path.includes('://')) throw new Error('Invalid HAPI API path');
@@ -221,7 +226,7 @@ export class HapiClient implements HapiTransport {
                 throw new HapiRequestError(readOnly ? 'HAPI authentication failed' : 'HAPI returned HTTP 401; the operation may already have executed. Refresh native state before retrying.',
                     readOnly ? 'rejected' : 'indeterminate', 401, 'reauthentication_required');
             }
-            const value = await this.decode(response);
+            const value = await this.decode(response, maxResponseBytes);
             if (!response.ok) {
                 const code = z.object({ code: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional() }).safeParse(value);
                 throw new HapiRequestError(`HAPI request returned HTTP ${response.status}`,

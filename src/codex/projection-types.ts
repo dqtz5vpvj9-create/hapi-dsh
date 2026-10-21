@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type {} from '@deepseek-ai/dsh-session-projection/types'
 import { nativeNoticeSchema, nativeThreadGoalSchema, nativeUsageSchema } from './observation-types.js'
 import { observedSidechainSummarySchema } from '../hapi-agent/sidechain-types.js'
 import { sourceTeamSchema } from '../source-collaboration-types.js'

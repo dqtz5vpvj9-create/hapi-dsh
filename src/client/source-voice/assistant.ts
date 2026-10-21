@@ -1,5 +1,5 @@
+import { randomId } from '../random-id.ts'
 /** Gemini/Qwen wire handling adapted from HAPI 0f8ef697 realtime/*VoiceSession.tsx (AGPL-3.0-only). */
-import { randomId } from '../random-id.ts';
 import { remoteValue } from '../../client-api.ts';
 import { isObject } from '../../voice/messages.ts';
 import { resolveComposedVoiceSystemPrompt, truncateUtf8ByteLength } from '../../voice/protocol/voicePersonality.ts';

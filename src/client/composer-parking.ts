@@ -1,4 +1,4 @@
-import { randomId } from './random-id.ts';
+import { randomId } from './random-id.ts'
 import { z } from 'zod';
 import { remoteValue, type SessionExtrasApi, type SourceAttachment, type SourceNote, type WorkbenchSource } from '../client-api.ts';
 import { sourceAttachmentSchema, sourceNoteSchema } from '../session-extras-types.ts';

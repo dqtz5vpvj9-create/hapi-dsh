@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real DSH Web and official loader; source Cursor discovery/spawn are explicit wire fixtures. */
 import { test, expect } from '@playwright/test'
 import { startOfficialEnvironment } from './official-runtime.ts'
@@ -11,9 +12,7 @@ test('Cursor original base and variant picker preserves exact source identity, d
         environment.hapi.cursorCatalogs.set('machine-beta', { availableModels: [{ modelId: 'fixture-other[fast=false]' }], cliModelSkus: [] })
         await page.goto(environment.launchUrl)
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-        const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+        await acknowledgePreviewNotice(page, environment)
         const open = async () => {
             await page.locator('.hapi-workspace-tools > details > summary').click()
             await page.getByRole('button', { name: 'HAPI engines · New conversation', exact: true }).click()

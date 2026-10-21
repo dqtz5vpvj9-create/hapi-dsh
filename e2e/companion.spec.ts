@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real official Web/QR/clipboard integration; the HAPI wire and HTTPS alias are explicit fixtures. */
 import { test, expect, type Page } from '@playwright/test';
 import { sourceCompanionInfoSchema } from '../src/source-companion-types.ts';
@@ -17,8 +18,7 @@ async function openSettings(page: Page) {
 }
 async function launch(page: Page, environment: OfficialEnvironment) {
     await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
-    if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+    await acknowledgePreviewNotice(page, environment)
 }
 
 test.describe('original Companion pairing in the official Settings shell', () => {

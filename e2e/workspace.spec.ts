@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 import { test, expect } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
 
@@ -44,7 +45,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         const errors: string[] = [];
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
-        await page.getByRole('dialog', { name: 'Preview Notice' }).getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
         await expect(page.locator('.hapi-session-sidebar')).toHaveCount(1);
         await expect(page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' })).toBeVisible();
@@ -109,14 +110,11 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice' });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'DSH remote conversation' }).click();
         const remotePane = page.getByRole('region', { name: 'Pane: DSH remote conversation', exact: true });
         await expect(remotePane.locator('.hapi-remote-shell')).toBeVisible();
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
         const composer = remotePane.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions' });
         await expect(composer).toBeVisible();
@@ -124,13 +122,16 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await remotePane.getByRole('button', { name: 'Send message', exact: true }).click();
         await expect(remotePane.getByText('A real remote DSH composer turn', { exact: true })).toBeVisible();
         await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toHaveCount(2);
+        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
         await remotePane.getByRole('button', { name: 'Host settings', exact: true }).click();
         await expect(page.getByRole('dialog')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
-        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Plugins' });
+        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click();
+        await remotePane.getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: 'Plugins', exact: true }).click();
         await expect(remotePane).toContainText('Plugins');
-        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption('');
+        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click();
+        await remotePane.getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: 'Conversation', exact: true }).click();
         await expect(composer).toBeVisible();
         await page.screenshot({ path: 'test-results/official-remote.png', fullPage: true });
         expect(errors).toEqual([]);
@@ -141,9 +142,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice' });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex beta' }).click();
         const nativePane = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true });
         await nativePane.locator('.hapi-native-settings > summary').click();
@@ -191,9 +190,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice' });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.getByRole('button', { name: 'New session', exact: true }).last().click();
         const choice = page.getByRole('dialog', { name: 'New conversation', exact: true });
         await choice.getByRole('button', { name: /^DSH/ }).click();
@@ -222,9 +219,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
-        const notice = page.getByRole('dialog', { name: 'Preview Notice' });
-        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
-        if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
+        await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex beta' }).click();
         const pane = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true });
         const planId = 'e2e-source-plan-proposal';

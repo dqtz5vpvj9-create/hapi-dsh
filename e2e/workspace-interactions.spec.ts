@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Real unchanged DSH UI; the HAPI wire fixture is explicit and runs no model. */
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
@@ -5,11 +6,9 @@ import { startOfficialEnvironment, type OfficialEnvironment } from './official-r
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
     // Each environment has a fresh official profile. Its async welcome plugin
     // can present this after the workspace shell has already become visible.
-    await expect(notice).toBeVisible()
-    await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+    await acknowledgePreviewNotice(page, environment)
 }
 const composer = (pane: Locator) => pane.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true })
 

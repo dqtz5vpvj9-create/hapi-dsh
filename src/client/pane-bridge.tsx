@@ -86,6 +86,7 @@ export function installPaneBridge(ctx: Context, source: PaneBridgeSource): () =>
             const requested = state.target ? JSON.stringify(state.target) : ''
             const applied = useRef<string | null>(null)
             const opening = useRef(false)
+            const restoredThisCommit = useRef(false)
             const hiddenExpansion = useRef<boolean | undefined>(undefined)
             const restoredWhileHidden = useRef(false)
             const surfaceRef = useRef(surface); surfaceRef.current = surface
@@ -102,6 +103,10 @@ export function installPaneBridge(ctx: Context, source: PaneBridgeSource): () =>
                     return
                 }
                 opening.current = true
+                // Effects from this render still see the surface from before
+                // restore. In particular, its previously expanded tab must not
+                // overwrite an explicit request to reveal Conversation.
+                restoredThisCommit.current = true
                 try {
                     restoreOfficialPaneTarget(ctx, sessionId, actions, state.target)
                     if (!state.visible && state.target.type !== 'panel') {
@@ -118,7 +123,14 @@ export function installPaneBridge(ctx: Context, source: PaneBridgeSource): () =>
                 finally { opening.current = false }
             }, [requested, sessionId, actions, types])
             useEffect(() => {
-                if (!state.target || state.target.type === 'panel' || state.target.type === 'conversation' || !currentTab || !navigation || opening.current || applied.current === null) return
+                if (restoredThisCommit.current) { restoredThisCommit.current = false; return }
+                if (!state.target || state.target.type === 'panel' || !currentTab || !navigation || opening.current || applied.current === null) return
+                // A normal Conversation pane keeps its own rightbar behavior.
+                // Only an explicitly saved Conversation destination needs to
+                // follow a later visible expansion back into a plugin view.
+                if (state.target.type === 'conversation' && (!state.visible || !surface?.layout.expanded
+                    || !ctx.sidebarRight.isExpanded() || ctx.layout.panelInfo.getSnapshot().activePanelId !== null
+                    || hiddenExpansion.current !== undefined || restoredWhileHidden.current)) return
                 try {
                     const target = targetForTab(currentTab, navigation.params)
                     // An explicit viewer choice is retained; otherwise the next
@@ -127,7 +139,7 @@ export function installPaneBridge(ctx: Context, source: PaneBridgeSource): () =>
                     applied.current = JSON.stringify(target)
                     source.navigated(target, currentTab.title)
                 } catch (error) { source.failed(error) }
-            }, [currentTab?.id, currentTab?.contentId, currentTab?.title, navigation])
+            }, [requested, state.visible, surface?.layout.expanded, currentTab?.id, currentTab?.contentId, currentTab?.title, navigation])
             useLayoutEffect(() => {
                 if (restoredWhileHidden.current) { restoredWhileHidden.current = false; return }
                 const current = surfaceRef.current

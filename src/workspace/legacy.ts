@@ -27,16 +27,24 @@ export function sourceRow(resource: Exclude<PaneResource, { kind: 'empty' }>, ro
     return matches.length === 1 ? matches[0] : undefined
 }
 
-export function importLegacyWorkspace(input: unknown, rows: Readonly<Record<string, WorkspaceCatalogRow>>): WorkspaceState | null {
+export interface SourceBindingScope {
+    /** Confirmed by the configured original Hub's catalog, never inferred from a display row. */
+    primaryHubId?: string
+    /** Imported legacy identities without a Hub wait for that confirmation. */
+    requireHub?: boolean
+}
+
+export function importLegacyWorkspace(input: unknown, rows: Readonly<Record<string, WorkspaceCatalogRow>>, scope: SourceBindingScope = {}): WorkspaceState | null {
     const legacy = legacyWorkspaceSnapshotSchema.parse(input)
     if (!legacy.workspaces.length) return null
     let occurrence = 0
     const node = (value: LegacyWorkspaceNode): WorkspaceNode => {
         if (value.type === 'split') return { ...value, children: value.children.map(node), weights: [...value.weights] }
         if (value.resource.kind === 'empty') return { ...value, resource: { kind: 'empty' } }
-        const resource = parsePaneResource({ ...value.resource, sessionId: `hapi-unmapped:${++occurrence}`, sourceSessionId: value.resource.sessionId })
+        const resource = parsePaneResource({ ...value.resource, sessionId: `hapi-unmapped:${++occurrence}`, sourceSessionId: value.resource.sessionId,
+            ...(scope.primaryHubId ? { sourceHubId: scope.primaryHubId } : {}) })
         if (resource.kind === 'empty') throw new Error('A source resource cannot become empty during migration')
-        const row = sourceRow(resource, rows), source = sourceIdentity(row)
+        const row = scope.requireHub && !resource.sourceHubId ? undefined : sourceRow(resource, rows), source = sourceIdentity(row)
         return { ...value, resource: { ...resource, ...(row ? { sessionId: row.id } : {}), ...(source?.hubId ? { sourceHubId: source.hubId } : {}) } }
     }
     const windows = legacy.workspaces.map(window => ({ ...window, root: node(window.root) }))
@@ -44,15 +52,21 @@ export function importLegacyWorkspace(input: unknown, rows: Readonly<Record<stri
         focused: Object.fromEntries(windows.map(window => [window.id, panes(window.root)[0]!.id])), zoomed: {} })
 }
 
-export function bindSourceResources(state: WorkspaceState, rows: Readonly<Record<string, WorkspaceCatalogRow>>): WorkspaceState {
+export function bindSourceResources(state: WorkspaceState, rows: Readonly<Record<string, WorkspaceCatalogRow>>, scope: SourceBindingScope = {}): WorkspaceState {
     let changed = false
     const node = (value: WorkspaceNode): WorkspaceNode => {
         if (value.type === 'split') return { ...value, children: value.children.map(node) }
         if (value.resource.kind === 'empty' || !value.resource.sourceSessionId) return value
+        if (!value.resource.sourceHubId && scope.primaryHubId) {
+            changed = true
+            value = { ...value, resource: { ...value.resource, sourceHubId: scope.primaryHubId } }
+        }
+        if (value.resource.kind === 'empty') return value
+        if (scope.requireHub && !value.resource.sourceHubId) return value
         const row = sourceRow(value.resource, rows), source = sourceIdentity(row)
         if (!row || (row.id === value.resource.sessionId && value.resource.sourceHubId === source?.hubId)) return value
         changed = true
-        const target = (value.resource.kind === 'view' || value.resource.kind === 'document') && value.resource.target
+        const target = (value.resource.kind === 'view' || value.resource.kind === 'document' || value.resource.kind === 'terminal') && value.resource.target
         return { ...value, resource: { ...value.resource, sessionId: row.id, ...(source?.hubId ? { sourceHubId: source.hubId } : {}),
             ...(target && row.hostId === 'local' ? { target: rebindSessionFileTarget(target, value.resource.sessionId, row.sourceSessionId) } : {}),
         } }

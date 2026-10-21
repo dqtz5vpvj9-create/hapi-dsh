@@ -39,6 +39,20 @@ test('administration whitelists original machine metadata and preserves independ
     assert.deepEqual(adminMachine(fixture.machine).runner, { status: 'running', pid: 7, startedAt: 1000 });
 }));
 
+test('Runner binary changes include a rollback, but missing and non-finite times cannot recommend a restart', async () => harness(async fixture => {
+    const metadata = fixture.machine.metadata!;
+    metadata.startedCliMtimeMs = 200; metadata.installedCliMtimeMs = 100;
+    assert.equal(adminMachine(fixture.machine).restartRecommended, true);
+    metadata.startedCliMtimeMs = 100;
+    assert.equal(adminMachine(fixture.machine).restartRecommended, false);
+    metadata.installedCliMtimeMs = Number.NaN;
+    assert.equal(adminMachine(fixture.machine).restartRecommended, false);
+    metadata.installedCliMtimeMs = Infinity;
+    assert.equal(adminMachine(fixture.machine).restartRecommended, false);
+    delete metadata.installedCliMtimeMs;
+    assert.equal(adminMachine(fixture.machine).restartRecommended, false);
+}));
+
 test('lost restart receipt survives Host reload, observes new source process and never restarts twice', async () => harness(async fixture => {
     fixture.handle = async (path, method) => { assert.equal(path, '/api/machines/runner-one/restart-runner'); assert.equal(method, 'POST'); throw new HapiRequestError('Lost reply', 'indeterminate'); };
     const input = { operationId: randomUUID(), action: { kind: 'restart-runner' as const, machineId: 'runner-one' } };

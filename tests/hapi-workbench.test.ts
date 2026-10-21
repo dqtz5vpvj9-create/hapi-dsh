@@ -57,6 +57,46 @@ test('inactive and unbound native sessions cannot become local files or terminal
     assert.equal(f.requests.length, 0);
 });
 
+test('document reads preserve the original inactive-session browse policy without enabling writes', async () => {
+    const f = fixture(); f.session.active = false;
+    const value = await f.service.nativeDocument({ source, document: { kind: 'file', path: 'notes.txt' } });
+    assert.equal(value.text, 'first\nsecond\n'); assert.equal(value.writable, false);
+    await assert.rejects(f.service.nativeFileSave({ source, path: 'notes.txt', text: 'changed', expectedHash: digest(original) }), /offline/);
+    const signal = new AbortController().signal;
+    f.respond(async (path, options) => {
+        assert.match(path, /\/file\?path=%2Fauthorized%2Freports%2Fnotes.txt$/);
+        assert.equal(options?.signal, signal);
+        assert.equal(options?.maxResponseBytes, 65_536 + 4 * Math.ceil(64 / 3));
+        return { success: true, path: '/authorized/reports/notes.txt', content: Buffer.from(original).toString('base64'), hash: digest(original), size: Buffer.byteLength(original), writable: false };
+    });
+    const read = await f.service.readSourceDocument(source, '/authorized/reports/notes.txt', signal, 64);
+    assert.equal(Buffer.from(read.data).toString(), original);
+    assert.equal(read.absolutePath, '/authorized/reports/notes.txt'); assert.equal(read.version, digest(original));
+    assert(f.requests.every(row => row.options?.method === undefined));
+    assert.equal(f.binaries.length, 0, 'The active-session filesystem download route is never used');
+    await assert.rejects(f.service.readSourceDocument({ ...source, machineId: 'other-machine' }, '/authorized/reports/notes.txt', signal), /another source machine/);
+    assert.equal(f.requests.length, 3);
+});
+
+test('source document bytes validate length, hash, encoding and canonical path before reaching official viewers', async () => {
+    const f = fixture(), signal = new AbortController().signal;
+    const valid = { success: true, content: Buffer.from('source').toString('base64'), hash: digest('source'), size: 6 };
+    for (const patch of [{ content: 'broken==&' }, { hash: digest('another') }, { size: 7 }, { path: 'relative.txt' }]) {
+        f.respond(async () => ({ ...valid, ...patch }));
+        await assert.rejects(f.service.readSourceDocument(source, 'notes.txt', signal),
+            (error: unknown) => error instanceof HapiRequestError && error.code === 'protocol_mismatch');
+    }
+    f.respond(async () => valid);
+    await assert.rejects(f.service.readSourceDocument(source, 'notes.txt', signal, 5),
+        (error: unknown) => error instanceof HapiRequestError && error.status === 413);
+    f.session.metadata!.path = 'C:\\Users\\Fixture\\project';
+    const read = await f.service.readSourceDocument(source, '..\\reports\\notes.txt', signal, 6);
+    assert.equal(read.absolutePath, 'C:\\Users\\Fixture\\reports\\notes.txt');
+    f.respond(async () => ({ success: false, error: 'Path is outside workspace roots' }));
+    await assert.rejects(f.service.readSourceDocument(source, 'D:\\private.txt', signal), /outside workspace roots/);
+    assert.equal(f.binaries.length, 0);
+});
+
 test('file editing preserves source BOM/CRLF and forwards the exact optimistic hash once', async () => {
     const f = fixture();
     const file = await f.service.nativeDocument({ source, document: { kind: 'file', path: 'notes.txt' } });

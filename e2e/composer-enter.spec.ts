@@ -1,3 +1,4 @@
+import { acknowledgePreviewNotice } from './preview-notice.ts'
 /** Official DSH editor/undo/menus/upload owner are real. HAPI delivery and explicit transport delays are fixtures. */
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
@@ -6,8 +7,7 @@ const composerName = 'Message or run a task, / commands, @ files or sessions'
 async function admit(page: Page, environment: OfficialEnvironment): Promise<Locator> {
   await page.goto(environment.launchUrl)
   await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-  const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
-  if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
+  await acknowledgePreviewNotice(page, environment)
   await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click()
   const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true })
   await expect(pane.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible()
@@ -15,6 +15,7 @@ async function admit(page: Page, environment: OfficialEnvironment): Promise<Loca
   return pane
 }
 async function preference(page: Page, pane: Locator, value: 'send' | 'newline'): Promise<void> {
+  await pane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
   await pane.getByRole('button', { name: 'Host settings', exact: true }).click()
   const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
   await settings.getByRole('button', { name: 'Message input', exact: true }).click()

@@ -1,7 +1,7 @@
+import { randomId } from '../random-id.ts'
 // Adapted from HAPI 0f8ef697; original HAPI/Haven/TermBeam notices follow.
 // SPDX-License-Identifier: AGPL-3.0-only
 // Haven toolbar key IDs and macro presets; browser sequences use TermBeam's encoder.
-import { randomId } from '../random-id.ts';
 import { DEFAULT_TOUCHBAR_KEYS } from './defaultKeys.ts'
 import { encodeCombo } from './keyCombo.ts'
 import type { TouchBarKey } from './types.ts'
