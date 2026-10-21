@@ -19,6 +19,7 @@ test.describe('original browser notes inside the official DSH workspace', () => 
         await page.addInitScript(value => { localStorage.setItem('hapi.scratchlist.v1.native-alpha', value); }, raw);
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
         const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
+        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
         if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
         const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });

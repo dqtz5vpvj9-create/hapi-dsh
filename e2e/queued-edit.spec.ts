@@ -7,6 +7,7 @@ const composerName = 'Message or run a task, / commands, @ files or sessions'
 async function open(page: Page, environment: OfficialEnvironment, title: string) {
   await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
   const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
+  await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
   if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
   await page.locator('.hapi-session-open').filter({ hasText: title }).click()
   const pane = page.getByRole('region', { name: `Pane: ${title}`, exact: true })

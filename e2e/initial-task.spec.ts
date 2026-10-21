@@ -12,6 +12,7 @@ test.describe('durable original HAPI launch and first task', () => {
         await page.goto(environment.launchUrl);
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
         const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
+        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
         if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
         const showCreate = async () => {
             await page.locator('.hapi-workspace-tools > details > summary').click();
@@ -58,6 +59,7 @@ test.describe('durable original HAPI launch and first task', () => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
         const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
+        await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
         if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
         await page.locator('.hapi-workspace-tools > details > summary').click();
         await page.getByRole('button', { name: 'HAPI engines · New conversation', exact: true }).click();

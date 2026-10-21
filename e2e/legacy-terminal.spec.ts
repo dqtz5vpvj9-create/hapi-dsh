@@ -38,6 +38,7 @@ test.describe('existing HAPI v2 terminal controls', () => {
     try {
       await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
       const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true })
+      await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
       if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click()
       await expect(terminal.getByRole('status')).toContainText('Connected to source terminal')
       await expect(terminal).toHaveAttribute('data-terminal-font', '9')

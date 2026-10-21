@@ -5,6 +5,7 @@ async function admit(page: Page, environment: OfficialEnvironment): Promise<void
     await page.goto(environment.launchUrl);
     const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
+    await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
     if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
 }
 async function openTool(page: Page, pane: Locator, name: 'Project files' | 'Terminal'): Promise<Locator> {

@@ -15,6 +15,7 @@ test.describe('original HAPI administration in the unchanged official Settings s
             await page.goto(environment.launchUrl);
             await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
             const notice = page.getByRole('dialog', { name: 'Preview Notice', exact: true });
+            await notice.waitFor({ state: 'visible', timeout: 2000 }).catch(() => undefined);
             if (await notice.isVisible()) await notice.getByRole('button', { name: 'Continue', exact: true }).click();
             await page.locator('.hapi-sidebar-native > details > summary').click();
             const machineRow = page.locator('[data-source-machine="machine-alpha"]');
