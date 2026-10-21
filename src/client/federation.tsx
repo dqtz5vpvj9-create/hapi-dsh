@@ -17,7 +17,9 @@ import { panes, type PaneResource } from './model.ts'
 import { mountPaneNative } from './pane-native.ts'
 import { installRemotePane } from './remote-pane.tsx'
 import { installPaneChrome } from './surface/chrome.ts'
+import { createPaneBootGate, shouldBootPane } from './surface/lazy-pane.ts'
 import { PANE_GRAPH_POLICY, projectPluginEvents } from './surface/pane-graph.ts'
+import { prefetchPaneArtifacts } from './surface/prefetch.ts'
 import { installSourceVoice } from './source-voice/index.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installShareReceiver } from './share-receiver.tsx'
@@ -132,8 +134,14 @@ async function refreshBootstrap(host: FederationHost, resources: HostResources, 
  * `projectEvents` is the pane projection: the Host still answers one official
  * `/plugins/events` stream per Context, but graph syncs and rebuilds are
  * rewritten/dropped so a filtered pane can never restore an excluded row.
+ *
+ * `prefetchBundles` warms the shared per-Host artifact cache with bounded
+ * parallel fetches while the loader resolves dependency chains, so a pane graph
+ * over a slow Host or the Hub reverse tunnel is limited by throughput instead of
+ * by the longest serial arrival chain. The loader still owns compilation
+ * (`resources.compiled` is unchanged and one wrapper per Host URL).
  */
-async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false): Promise<GraphRuntime> {
+async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false, prefetchBundles = false): Promise<GraphRuntime> {
     const origin = window.location.origin
     const baseUrl = new URL(host.basePath, origin).href
     const directFetch = transport(host, signal)
@@ -256,6 +264,19 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         execute(facade, facade, facade, hostFetch, window.location, localStorageFacade, documentFacade)
     }
     overrides.__DSH_TRANSPORT__ = { fetch: hostFetch, createWebSocket: socket, streamBaseUrl: baseUrl, loadBundle }
+    if (prefetchBundles) {
+        void prefetchPaneArtifacts({
+            entries: boot.entries, baseUrl, artifacts: resources.artifacts,
+            // Local Hosts can saturate the browser's connections; a paired Host
+            // usually crosses the Hub reverse tunnel, where a smaller burst is
+            // friendlier and still replaces the loader's serialized arrival chain.
+            concurrency: host.id === 'local' ? 12 : 6,
+            load: url => hostFetch(url, { cache: 'no-cache' }).then(result => {
+                if (!result.ok) throw new Error(`${host.label}: plugin artifact returned HTTP ${result.status}`)
+                return result.text()
+            }),
+        })
+    }
     // The official Web seed's store engine closes over primary localStorage.
     // Its unmodified npm source is separately bundled and evaluated against
     // this graph's persistence facade; all plugin consumers get that instance.
@@ -317,7 +338,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     // its editor, dialogs, Client Context, and SessionReference. The layout owns
     // these roots; component unmount only parks their DOM.
     type Resource = Exclude<PaneResource, { kind: 'empty' }>
-    interface PaneRuntime { sourceId: string; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; stop(force?: boolean): Promise<void> }
+    interface PaneRuntime { sourceId: string; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; stop(force?: boolean): Promise<void> }
     const activePanes = new Map<string, PaneRuntime>()
     const allPanes = new Set<PaneRuntime>()
     const parking = document.createElement('div')
@@ -328,6 +349,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const surface = document.createElement('div')
         surface.className = 'hapi-remote-pane'
         surface.dataset.hapiHost = host.id; surface.dataset.hapiPaneInstance = paneId
+        // A pane in a parked/retained window renders its surface but must not
+        // fetch bundles or evaluate an official graph until its window is shown.
+        if (initial.visible === false) surface.dataset.hapiPaneDeferred = 'true'
         Object.assign(surface.style, { display: 'flex', flexDirection: 'column', minHeight: '0', height: '100%', width: '100%', overflow: 'hidden' })
         // Runtime style/portal nodes are siblings of the React mount, so neither
         // React nor document-facade style insertion can erase the other's DOM.
@@ -347,6 +371,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let nativeDispose: (() => Promise<void>) | undefined
         let chromeDispose: (() => void) | undefined
         let generation = 0
+        /** At most one boot attempt; success is a one-way latch, failure reopens it. */
+        const boot = createPaneBootGate()
         let currentResource = resource
         let presentation = { focused: initial.focused, visible: initial.visible !== false }
         const presentationListeners = new Set<() => void>()
@@ -419,7 +445,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             const activeSignal = AbortSignal.any([signal, lifetime.signal])
             const fail = (reason: unknown): void => {
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) return
-                renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(reason)}</p><button type="button" onClick={() => { void start() }}>Retry</button></div>)
+                renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(reason)}</p><button type="button" onClick={() => { if (boot.begin()) { surface.dataset.hapiPaneBooting = 'true'; void start() } }}>Retry</button></div>)
             }
             try {
                 // Refresh the cached Host snapshot first: the rows a pane boots come
@@ -431,7 +457,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 // this plugin's own bundle are excluded, and the shared plugin-event
                 // stream is projected onto the same subset (graph syncs rewritten,
                 // rebuilds of excluded rows dropped).
-                const graph = await bootGraph(root, host, resources, PANE_GRAPH_POLICY.transform(resources.payload.graph as WebBootGraph), surface, paneId, activeSignal, navigation, true, true)
+                const graph = await bootGraph(root, host, resources, PANE_GRAPH_POLICY.transform(resources.payload.graph as WebBootGraph), surface, paneId, activeSignal, navigation, true, true, true)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) { await graph.stop(); return }
                 runtime = graph
                 // Window-level chrome is owned once by the primary graph. Empty
@@ -487,7 +513,31 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     workspace.openSession(sessionResourceId(host.id, next))
                 })
                 draw()
-            } catch (reason) { fail(reason) }
+                boot.succeed()
+                delete surface.dataset.hapiPaneBooting
+                surface.dataset.hapiPaneBooted = 'true'
+            } catch (reason) {
+                fail(reason)
+            } finally {
+                // A failed or superseded attempt must not latch the pane shut: a
+                // later visibility flip (or the Retry button) may try again. Only
+                // the successful path keeps the booted phase and marker.
+                if (currentGeneration === generation && boot.phase() !== 'booted') {
+                    boot.fail()
+                    delete surface.dataset.hapiPaneBooting
+                }
+            }
+        }
+        /**
+         * Start the official graph at most once per successful boot. The attempt
+         * is tracked separately from success so a failure leaves the pane
+         * retryable; later visibility flips never unload a booted graph.
+         */
+        const activate = (): void => {
+            if (disposed || retired || !boot.begin()) return
+            delete surface.dataset.hapiPaneDeferred
+            surface.dataset.hapiPaneBooting = 'true'
+            void start()
         }
         const retention = createPaneRetention(() => {
             retired = true
@@ -508,7 +558,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             try { await release(); await ui.dispose().catch(workspace.report) }
             finally { allPanes.delete(result) }
         })
-        const result: PaneRuntime = { sourceId, surface, update(resource, options) {
+        const result: PaneRuntime = { sourceId, surface, activate, update(resource, options) {
             if (retired) return
             currentResource = resource
             const nextMenuTarget = options.toolsTarget ?? null
@@ -519,10 +569,13 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
                 presentation = next; for (const listener of presentationListeners) listener()
             }
+            // A parked window becoming active starts its panes; a booted pane is
+            // never unloaded, so this is a one-way transition.
+            if (shouldBootPane(options, boot.phase() === 'booted')) activate()
             draw()
         }, stop: retention.stop }
         allPanes.add(result)
-        void start()
+        if (shouldBootPane(initial, false)) activate()
         return result
     }
     const getPane = (paneId: string, sourceId: string, resource: Resource, options: WorkspaceRenderOptions): PaneRuntime => {

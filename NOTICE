@@ -22,7 +22,7 @@ and web/src/components/SessionList.tsx. Original Enter and external-link
 preferences retain the source keys and input/navigation meaning.
 
 Pinned fork: https://github.com/dqtz5vpvj9-create/hapi
-Revision: 0f8ef6970884c92fb2ddca3070be2ec56cb50333
+Revision: 55166cf8d87814ccfb383b538a8e8c55283bed81
 Original project: https://github.com/tiann/hapi
 HAPI is licensed under AGPL-3.0. The upstream CLI's additional attribution
 notice is reproduced, unmodified, in docs/licenses/HAPI-NOTICE.txt for provenance.
@@ -59,7 +59,7 @@ recorded in package-lock.json in the corresponding source release.
 
 Source terminal keyboard controls
 ----------------------------------
-The optional terminal key toolbar adapts HAPI 0f8ef697's browser keyboard
+The optional terminal key toolbar adapts HAPI 55166cf8's browser keyboard
 controls, Haven layout and customization semantics (AGPL-3.0-only), and
 TermBeam's key-combination encoder and pointer-repeat behavior (MIT).
 It composes with the unchanged official DSH terminal view and writes through

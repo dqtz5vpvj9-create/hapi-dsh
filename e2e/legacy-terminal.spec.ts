@@ -110,7 +110,6 @@ test.describe('existing HAPI v2 terminals in the official DSH view', () => {
       await expect.poll(() => wire.inputs.at(-1)?.data).toBe('echo saved\r')
 
       const chat = page.locator('[data-pane-id="existing-chat-pane"]')
-      await chat.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
       await chat.getByRole('button', { name: 'Host settings', exact: true }).click()
       const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
       await settings.getByRole('button', { name: 'HAPI appearance', exact: true }).click()
@@ -129,7 +128,10 @@ test.describe('existing HAPI v2 terminals in the official DSH view', () => {
       await page.getByRole('dialog', { name: 'Snippets', exact: true }).getByRole('button', { name: 'Legacy macro', exact: true }).click()
       await expect.poll(() => wire.inputs.length).toBe(beforeReload + 1)
       expect(wire.inputs.at(-1)?.data).toBe('echo saved\r')
-      await pane.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click()
+      await pane.click({ position: { x: 4, y: 4 } })
+      const paneActions = page.locator('.hapi-statusbar .hapi-pane-actions')
+      await paneActions.locator(':scope > summary').click()
+      await paneActions.getByRole('button', { name: 'Close pane', exact: true }).click()
       await expect(pane).toHaveCount(0); await expect.poll(() => wire.detachments.length).toBe(2)
       expect(wire.closeRequests).toEqual([])
       expect(wire.attachments.every(row => row.sessionId === sourceId && row.terminalId === terminalId)).toBe(true)
@@ -186,8 +188,6 @@ test.describe('existing HAPI v2 terminals in the official DSH view', () => {
       await expect(alpha.locator('[data-dockkit-tab]').filter({ hasText: 'Alpha original alias' })).toBeVisible()
       await expect(beta.locator('[data-dockkit-tab]').filter({ hasText: 'HAPI SessionTerminal' })).toBeVisible()
 
-      await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
-
       await alpha.getByRole('button', { name: 'Plugin views', exact: true }).click()
       await alpha.getByRole('button', { name: /Workspace files/ }).click()
       await expect(alpha.locator('[data-files-root]')).toHaveAttribute('data-files-root', '/workspace/alpha')
@@ -211,8 +211,7 @@ test.describe('existing HAPI v2 terminals in the official DSH view', () => {
 
       // Explicit Conversation must not be changed by retained hidden tabs.
       // Re-expanding the real sidebar is an explicit navigation choice.
-      await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
-      await alpha.getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: 'Conversation', exact: true }).click()
+      await alpha.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption('')
       await expect(alpha.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible()
       await expect(alpha.getByRole('button', { name: 'Open right sidebar', exact: true })).toBeVisible()
       await expect(page.locator('.hapi-persistence-saved')).toBeVisible()
@@ -238,8 +237,12 @@ test.describe('existing HAPI v2 terminals in the official DSH view', () => {
         expect.objectContaining({ kind: 'terminal', terminalId, sourceSessionId: 'native-beta' }),
       ]))
       await page.screenshot({ path: `${info.outputDir}/legacy-official-plugin-navigation.png`, fullPage: true })
-      await alpha.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click()
-      await beta.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click()
+      for (const closeTarget of [alpha, beta]) {
+        await closeTarget.click({ position: { x: 4, y: 4 } })
+        const closeActions = page.locator('.hapi-statusbar .hapi-pane-actions')
+        await closeActions.locator(':scope > summary').click()
+        await closeActions.getByRole('button', { name: 'Close pane', exact: true }).click()
+      }
       await expect(alpha).toHaveCount(0); await expect(beta).toHaveCount(0)
       expect(wire.closeRequests).toEqual([])
       expect(wire.inputs.every(row => row.terminalId === terminalId && row.machineId === `machine-${row.sessionId.replace('native-', '')}`)).toBe(true)

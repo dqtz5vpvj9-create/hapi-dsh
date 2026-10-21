@@ -53,6 +53,8 @@ export const hapiProjectionSchema = z.object({
   nativeHome: z.string().nullable(),
   nativeConnection: z.enum(['attached', 'history', 'disconnected']),
   readOnly: z.boolean(),
+  /** Why `readOnly` is set. Message input is admitted separately from this operation gate. */
+  readOnlyReason: z.enum(['engine-owned', 'unavailable', 'migration', 'fault']).nullable().optional(),
   model: z.string().nullable(),
   reasoningEffort: z.string().nullable(),
   /** The source's currently actionable native plan, independent of tool approvals. */

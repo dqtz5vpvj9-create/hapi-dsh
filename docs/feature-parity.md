@@ -2,7 +2,7 @@
 
 这份表按原 HAPI 的实际页面、组件和行为测试核对功能，作为 drop-in 替代的开发与验收清单。**目前尚未达到完整 HAPI 功能和 UX 的超集。** 表中的“已实现”只覆盖该行写明的范围；存在浏览器测试并不等于连接真实模型、真实账号或所有第三方插件均已验收。
 
-基线固定为 [HAPI `0f8ef697`](https://github.com/dqtz5vpvj9-create/hapi/tree/0f8ef6970884c92fb2ddca3070be2ec56cb50333) 与 [DSH `687f282e` / `0.2.1-rc.2`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317)。下表的 HAPI 路径均相对前一个固定提交，项目路径相对本仓库。上游保持只读，来源与许可证见 [UPSTREAMS.json](../UPSTREAMS.json) 和 [NOTICE](../NOTICE)。本轮暂停发行与安装器扩展，优先完成产品功能。
+基线固定为 [HAPI `55166cf8`](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81) 与 [DSH `687f282e` / `0.2.1-rc.2`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317)。下表的 HAPI 路径均相对前一个固定提交，项目路径相对本仓库。上游保持只读，来源与许可证见 [UPSTREAMS.json](../UPSTREAMS.json) 和 [NOTICE](../NOTICE)。本轮暂停发行与安装器扩展，优先完成产品功能。
 
 ## 状态与验收口径
 
@@ -23,7 +23,7 @@
 
 ## 1. tmux 工作区与布局
 
-主要来源：[WorkspaceShell.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/workspace/WorkspaceShell.tsx)、`web/src/workspace/workspaceStore.ts`、`workspaceSync.ts`、`windowIdentity.ts`、`shared/src/workspaces.ts`。
+主要来源：[WorkspaceShell.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/workspace/WorkspaceShell.tsx)、`web/src/workspace/workspaceStore.ts`、`workspaceSync.ts`、`windowIdentity.ts`、`shared/src/workspaces.ts`。
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |
@@ -42,7 +42,7 @@
 
 ## 2. 统一侧边栏与信息层级
 
-主要来源：[SessionList.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/components/SessionList.tsx) 及同目录的 `SessionList.*.test.tsx`、`SessionListScrollAnchor.tsx`、`RecentSessionList.tsx`、`lib/sessionListSearch.ts`。
+主要来源：[SessionList.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/components/SessionList.tsx) 及同目录的 `SessionList.*.test.tsx`、`SessionListScrollAnchor.tsx`、`RecentSessionList.tsx`、`lib/sessionListSearch.ts`。
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@
 
 ## 3. 新建、恢复和机器上下文
 
-主要来源：[NewSession/index.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/components/NewSession/index.tsx)、`NewSession/index.test.tsx`、`preferences.ts`、`newSessionFormDraft.ts`、`newTaskDelivery.ts`。
+主要来源：[NewSession/index.tsx](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/components/NewSession/index.tsx)、`NewSession/index.test.tsx`、`preferences.ts`、`newSessionFormDraft.ts`、`newTaskDelivery.ts`。
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |
@@ -156,7 +156,7 @@
 
 ## 8. 账号、机器、设置、通知和语音
 
-主要来源：[settings/categories.ts](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/routes/settings/categories.ts)、`settings/general/display/chat/voice/machines/storage/usage/about.tsx`、`components/settings/*`、`realtime/*`、`shared/src/voice.ts`。
+主要来源：[settings/categories.ts](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/routes/settings/categories.ts)、`settings/general/display/chat/voice/machines/storage/usage/about.tsx`、`components/settings/*`、`realtime/*`、`shared/src/voice.ts`。
 
 | 编号 | 原 HAPI 行为 | 当前实现与状态 | 剩余验收或差距 |
 | --- | --- | --- | --- |

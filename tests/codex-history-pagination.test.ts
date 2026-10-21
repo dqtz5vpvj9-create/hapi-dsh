@@ -14,6 +14,7 @@ function message(index: number): HapiMessage {
     content: { role: 'agent', content: { type: 'codex', data: { type: 'message', message: `Answer ${index}` } } } }
 }
 function rows(count: number): HapiMessage[] { return Array.from({ length: count }, (_, index) => message(index)) }
+const PAGE = 200
 
 class FakeHistory {
   readonly requests: HapiMessagesQuery[] = []
@@ -26,23 +27,19 @@ class FakeHistory {
     this.onRequest?.(index)
     const ordered = [...this.rows].sort(compareNativeMessages)
     const head = ordered.length ? position(ordered.at(-1)!) : { at: 0, seq: 0 }
-    const limit = query.limit ?? 200
+    const limit = query.limit ?? PAGE
+    // HAPI only signals a stale snapshot when the caller supplies an epoch.
     const reset = query.epoch !== undefined && query.epoch !== this.epoch
-    let pool = ordered
-    if (query.untilAt !== undefined && query.untilSeq !== undefined) {
-      const until = { at: query.untilAt, seq: query.untilSeq }
-      pool = ordered.filter(row => compare(position(row), until) <= 0)
-    }
     let selected: HapiMessage[]
     let available: number
     if (!reset && query.beforeAt !== undefined && query.beforeSeq !== undefined) {
       const before = { at: query.beforeAt, seq: query.beforeSeq }
-      const older = pool.filter(row => compare(position(row), before) < 0)
+      const older = ordered.filter(row => compare(position(row), before) < 0)
       selected = older.slice(-limit)
       available = older.length
     } else {
-      selected = pool.slice(-limit)
-      available = pool.length
+      selected = ordered.slice(-limit)
+      available = ordered.length
     }
     const first = selected[0]
     return {
@@ -60,29 +57,35 @@ class FakeHistory {
 }
 const transport = (fake: FakeHistory): HapiTransport => fake as unknown as HapiTransport
 
-test('a busy source that rewrites its active item no longer restarts a large read', async () => {
+test('a busy appending source keeps one epoch-stable pass and never sends the snapshot anchor', async () => {
   const fake = new FakeHistory(); fake.rows = rows(5_000)
-  // A live session bumps its epoch whenever the active stream item changes.
-  fake.onRequest = () => { fake.epoch++ }
   const history = await readNativeHistory(transport(fake), 'native-session')
   assert.equal(history.length, 5_000)
   assert.deepEqual(new Set(history.map(row => row.id)).size, 5_000)
   assert.deepEqual(history.map(row => row.id), [...history].sort(compareNativeMessages).map(row => row.id))
-  assert.equal(fake.requests.length, 25)
-  const head = fake.rows.at(-1)!
-  assert.equal(fake.requests[0]?.untilAt, undefined)
-  for (const request of fake.requests.slice(1)) {
-    assert.equal(request.untilAt, position(head).at)
-    assert.equal(request.untilSeq, head.seq)
-    assert.equal(request.epoch, undefined)
+  // 1 initial page + 24 backward pages + 1 final epoch-stable validation.
+  assert.equal(fake.requests.length, 26)
+  const epoch = fake.epoch
+  assert.equal(fake.requests[0]!.epoch, undefined)
+  for (const request of fake.requests) {
+    assert.equal(request.untilAt, undefined)
+    assert.equal(request.untilSeq, undefined)
   }
+  for (const request of fake.requests.slice(1, -1)) {
+    assert.equal(request.epoch, epoch)
+    assert.ok(request.beforeAt !== undefined && request.beforeSeq !== undefined)
+  }
+  const validation = fake.requests.at(-1)!
+  assert.equal(validation.epoch, epoch)
+  assert.equal(validation.limit, 1)
+  assert.ok(validation.beforeAt !== undefined && validation.beforeSeq !== undefined)
 })
 
-test('a source rewind restarts the pass and publishes only the replacement history', async () => {
+test('a structural change mid-pass invalidates it and only the replacement pass is published', async () => {
   const fake = new FakeHistory(); fake.rows = rows(5_000)
   fake.onRequest = index => {
     if (index !== 2) return
-    // The source rewinds: the newest 1,000 rows disappear and the head moves back.
+    // The source rewinds: the newest 1,000 rows disappear and the epoch bumps.
     fake.rows = fake.rows.slice(0, 4_000); fake.epoch++
   }
   const history = await readNativeHistory(transport(fake), 'native-session')
@@ -91,20 +94,28 @@ test('a source rewind restarts the pass and publishes only the replacement histo
   assert.ok(fake.requests.length > 20)
 })
 
-test('consecutive rewinds reject instead of publishing rows the source already removed', async () => {
+test('a change after the last page is caught by final validation', async () => {
   const fake = new FakeHistory(); fake.rows = rows(5_000)
-  const removed = new Set<string>()
+  const backwardPages = 24
+  fake.onRequest = index => {
+    if (index !== backwardPages + 1) return
+    // The epoch changes exactly when the final validation request is issued.
+    fake.rows = fake.rows.slice(0, 4_000); fake.epoch++
+  }
+  const history = await readNativeHistory(transport(fake), 'native-session')
+  assert.equal(history.length, 4_000)
+  assert.ok(fake.requests.length > backwardPages + 2)
+})
+
+test('consecutive structural changes reject instead of publishing invalidated rows', async () => {
+  const fake = new FakeHistory(); fake.rows = rows(5_000)
   fake.onRequest = index => {
     if (index === 0) return
-    // Each page discovers a rewound head: every anchored pass is invalid.
-    for (const row of fake.rows.slice(-1)) removed.add(row.id)
     fake.rows = fake.rows.slice(0, -1); fake.epoch++
   }
   await assert.rejects(readNativeHistory(transport(fake), 'native-session'),
     /Native history changed repeatedly during pagination; refresh/)
-  // Nothing was published, so no message the rewind removed can be mistaken for
-  // authoritative history by the caller's cache or projection.
-  assert.ok(removed.size > 0)
+  assert.equal(fake.requests.length, 8)
 })
 
 test('an incomplete page cursor cannot loop forever or substitute a partial snapshot', async () => {
@@ -112,10 +123,10 @@ test('an incomplete page cursor cannot loop forever or substitute a partial snap
   fake.readMessages = async function (this: FakeHistory, _sessionId: string, query: HapiMessagesQuery = {}) {
     this.requests.push({ ...query })
     const ordered = [...this.rows].sort(compareNativeMessages)
-    const limit = query.limit ?? 200
+    const limit = query.limit ?? PAGE
     const selected = ordered.slice(-limit)
     const first = selected[0]
-    return { messages: selected, page: { direction: 'before', limit, epoch: 1, reset: false,
+    return { messages: selected, page: { direction: 'before', limit, epoch: this.epoch, reset: false,
       nextBeforeSeq: first?.seq ?? null, nextBeforeAt: first ? position(first).at : null,
       nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: ordered.at(-1)!.seq, snapshotHeadAt: position(ordered.at(-1)!).at,
       hasMore: true } }

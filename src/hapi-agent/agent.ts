@@ -10,8 +10,9 @@ import { DeliveryJournal } from '../codex/delivery.js'
 import { readNativeHistory } from '../codex/history.js'
 import { NativeHistoryCache } from '../codex/history-cache.js'
 import { NativeHistoryChangedError } from '../codex/projector.js'
-import type { HapiApprovalAnswer, HapiAttachment, HapiEvent, HapiMessage, HapiSession, HapiTransport } from '../codex/contracts.js'
+import { HapiRequestError, type HapiApprovalAnswer, type HapiAttachment, type HapiEvent, type HapiMessage, type HapiSession, type HapiTransport } from '../codex/contracts.js'
 import type { DeliveryView } from '../codex/projection-types.js'
+import { resumedSessionNotice, resumeAwareTransport } from '../codex/agent.js'
 import { ObservedContent, type ObservedContentOptions } from './content.js'
 import { observedBinding, observedCapabilities, observedSessionId, sameObservedIdentity, type ObservedBinding } from './identity.js'
 import { parseObservedHistory, parseObservedMessage, type ObservedItem } from './parser.js'
@@ -34,6 +35,11 @@ export interface HapiObservedOptions extends ObservedContentOptions {
   displayRevision?: number
   resolveAttachments?: (sourceId: string, message: UserMessage) => Promise<HapiAttachment[]>
   onHistoryChanged?: (agent: HapiObservedAgent, rows: HapiMessage[]) => Promise<void>
+  /**
+   * HAPI resume for an inactive original session. Only an explicit
+   * `session_inactive` (HTTP 409) delivery rejection may use it, once.
+   */
+  resumeSession?: (hapiSessionId: string) => Promise<string>
 }
 
 class ObservedInbox implements Inbox {
@@ -131,7 +137,23 @@ export class HapiObservedAgent implements Agent {
         model: this.source.model ?? null, effort: this.source.effort ?? this.source.modelReasoningEffort ?? null,
         permissionMode: this.source.permissionMode ?? null, error: this.fault }),
     }, transport, directory)
-    this.journal = new DeliveryJournal(directory, this.logicalSessionId, source.id, transport, () => {
+    const deliveryTransport = config.resumeSession
+      ? resumeAwareTransport(transport, {
+          sessionId: () => this.bound.hapiSessionId,
+          state: () => ({ active: this.source.active }),
+          resume: config.resumeSession,
+          verify: async resumedSessionId => {
+            const resumed = await transport.getSession(resumedSessionId)
+            if (!sameObservedIdentity(this.bound, observedBinding(transport.hubId, resumed))) {
+              throw new HapiRequestError('The resumed session has a different original engine identity; the message was not delivered', 'rejected', 409, 'source_identity_mismatch')
+            }
+          },
+          onRebind: (localId, from, to, phase) => {
+            this.journal.update(localId, phase === 'before' ? 'dispatching' : 'accepted', resumedSessionNotice(from, to))
+          },
+        })
+      : transport
+    this.journal = new DeliveryJournal(directory, this.logicalSessionId, source.id, deliveryTransport, () => {
       if (!this.initializing && !this.disposed) { this.syncInbox(); this.publish() }
     }, config.resolveAttachments)
     this.approvals = new NativeApprovals(directory, this.logicalSessionId, source.id, transport, () => {
@@ -183,7 +205,13 @@ export class HapiObservedAgent implements Agent {
       machineName: this.source.metadata?.host ?? this.bound.machineId, nativeId: this.bound.nativeId,
       path: this.source.metadata?.path ?? '/', active: this.source.active, thinking: this.source.thinking,
       controlledByUser: capabilities.switchToRemote, connection: this.connected ? 'connected' : 'disconnected',
+      // `readOnly` keeps its operation-permission meaning (approvals, settings,
+      // source edits). Message input is admitted separately: an inactive
+      // original session is resumed before delivery, while only the original
+      // engine owning local input blocks sending.
       readOnly: !this.connected || !this.source.active || this.fault !== null || capabilities.switchToRemote,
+      readOnlyReason: capabilities.switchToRemote ? 'engine-owned'
+        : !this.connected || !this.source.active ? 'unavailable' : this.fault !== null ? 'fault' : null,
       model: this.source.model ?? null, effort: this.source.effort ?? this.source.modelReasoningEffort ?? null,
       permissionMode: this.source.permissionMode ?? null, capabilities,
       pendingRequests: this.approvals.pending(), resolvedRequests: this.approvals.resolved(), delivery: this.deliveries(),
@@ -409,9 +437,11 @@ export class HapiObservedAgent implements Agent {
     if (key !== this.fingerprint) { appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/state', value); this.fingerprint = key }
   }
   private assertWritable(): void {
+    // Inactive/history/disconnected/fault sessions still accept a durable
+    // journal submission; only the original engine owning local input is a
+    // real read-only owner, and a detached observation cannot own new input.
     if (this.disposed) throw new Error('The source observation was detached')
-    if (this.projection.readOnly) throw new Error(this.fault ?? (this.projection.controlledByUser
-      ? 'The source is controlled by its local terminal; switch it to remote control first' : 'The HAPI source runner is unavailable'))
+    if (this.projection.controlledByUser) throw new Error('The source is controlled by its local terminal; switch it to remote control first')
   }
   reportError(error: unknown): void { this.fault = error instanceof Error ? error.message : 'The HAPI source could not be synchronized'; this.publish() }
   private rejectWaiters(message: string): void { for (const waiter of this.idleWaiters) waiter.reject(new Error(message)); this.idleWaiters.clear() }

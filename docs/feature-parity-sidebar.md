@@ -1,6 +1,6 @@
 # Original HAPI sidebar actions
 
-This is a source-based audit against HAPI `0f8ef697`. The original row action adapter and source-successor draft hand-off are implemented. All three actual-browser sidebar cases passed on shared build `21781`, including keyboard focus, split navigation, export, source confirmations and touch long press. Both draft hand-off cases passed on build `31690`; the later build changes only first-menu keyboard focus. The unified sidebar owns navigation and geometry only. Source mutations use their existing durable operation controllers, and plugin views use official DSH tab registrations.
+This is a source-based audit against HAPI `55166cf8`. The original row action adapter and source-successor draft hand-off are implemented. All three actual-browser sidebar cases passed on shared build `21781`, including keyboard focus, split navigation, export, source confirmations and touch long press. Both draft hand-off cases passed on build `31690`; the later build changes only first-menu keyboard focus. The unified sidebar owns navigation and geometry only. Source mutations use their existing durable operation controllers, and plugin views use official DSH tab registrations.
 
 ## Actual upstream entry points
 

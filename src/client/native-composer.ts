@@ -1,7 +1,6 @@
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { HapiProjection } from '../codex/projection-types.ts'
 import type { WorkspaceTranslate } from './locales.ts'
 import type {} from '../hapi-agent/projection-types.ts'
 
@@ -23,14 +22,17 @@ export function installNativeComposerAdmission(
         if (disposed) return
         const needed = new Set<SessionId>()
         for (const row of Object.values(sessions.list.getSnapshot().byId)) {
-            const projection: HapiProjection | undefined = row.projectionValues?.hapi
+            // Native Codex is never inert: inactive/history/disconnected sessions
+            // accept a durable send and resume the original source on delivery.
+            // Only the observed engine owning local input is a real admission
+            // block. Native connection/resume state is shown as non-blocking
+            // status by the source controls, not by freezing the composer.
             const observed = row.projectionValues?.hapiObserved
-            if (!(projection && (projection.readOnly || projection.nativeConnection !== 'attached')) && !(observed && observed.readOnly)) continue
+            const engineOwned = Boolean(observed && (observed.controlledByUser || observed.readOnlyReason === 'engine-owned'))
+            if (!engineOwned) continue
             const id = row.id
             needed.add(id)
-            const reason = locale.t(observed ? observed.controlledByUser ? 'sourceLocallyControlled' : observed.connection === 'disconnected' ? 'sourceReconnecting' : 'sourceReadOnly'
-                : projection?.nativeConnection === 'disconnected' ? 'nativeReconnecting'
-                    : projection?.nativeConnection === 'history' ? 'nativeResumeToSend' : 'nativeReadOnly')
+            const reason = locale.t('sourceLocallyControlled')
             const store = blocks.storeFor(id)
             let entry = entries.get(id)
             if (entry && entry.store !== store) { remove(id, entry); entry = undefined }

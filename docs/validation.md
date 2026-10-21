@@ -22,7 +22,7 @@ E2E 的官方 profile 现在按构建产物缓存到系统临时目录：第一�
 | Host TypeScript | `npx tsc -p tsconfig.host.json --noEmit` 通过 |
 | Client TypeScript | `npx tsc -p tsconfig.client.json --noEmit` 通过 |
 | E2E TypeScript | `npx tsc -p tsconfig.e2e.json --noEmit` 通过 |
-| 全部代码与传输测试 | `npm test` 实际执行 807 项，806 通过，0 失败，1 项官方进程测试按设计等待显式启用（`npm run test:micro` 同一套） |
+| 全部代码与传输测试 | `npm test` 实际执行 864 项，863 通过，0 失败，1 项官方进程测试按设计等待显式启用（`npm run test:micro` 同一套） |
 | 显式官方 federation 集成 | 前一检查点独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流。本轮未重复该独立用例，实际官方浏览器仍运行同一传输链路 |
 | 构建 | Host、Client、CLI、Runner、五个 source-aware providers 与类型声明构建通过 |
 
@@ -115,3 +115,30 @@ npm run test:e2e
 固定 DSH 的 sidebar 在异步 retain 尚未完成时被正常释放，可能输出 `Sidebar Session opening failed: … is released`。这与真正的会话打开失败必须按发生时点和可见结果区分；不能吞掉全部 console error。本项目不为消除它而修改官方代码。
 
 未使用用户的 Codex 登录、实际 app-server 或第三方模型/语音账号完成线上任务验收，也不预先宣称所有第三方 DSH 插件兼容。实际部署需覆盖：原生 turn 与最终审批、真实排队/steer/cancel、网络中断恢复、不同机器同名路径、旧终端原 ID 恢复，以及将要分发的插件在自己的 Host、Session 和官方设置页中运行。提供方数据和账号凭据不得进入公共测试产物。
+
+## 2026-10-21 线上反馈后的第二批修复
+
+这一批全部由实际部署截图和站点探针触发，构建后只跑 typecheck、单测（864 项 / 863 通过 / 1 项 opt-in skip / 0 失败）与定向 e2e，不重跑全量套件。
+
+| 问题 | 修复与边界 |
+| --- | --- |
+| Codex 长历史只显示最近一页、两条 `HAPI request returned HTTP 400`、加载更早失效 | 根因是我们把第一页的 `untilAt/untilSeq` 当快照锚点发给 HAPI；HAPI 要求 until 搭配 after 游标，第二页起全部 400。现在读取一个 **epoch-stable pass**：首頁取 `page.epoch`，每个 backward page 带同一 epoch，遇到 `reset`/epoch 变化或游标不前进即重开（最多 4 次），最后一页后再用 snapshot head 游标做一次 epoch 校验；只发布完整 pass，失败保留调用方旧缓存。真实 Hub 验证：indexed 会话 19 页 / 3754 行、native 会话 60 页 / 2096 与 2005 行，全部 200 且 epoch 稳定；页面内点“加载更早”后锚点从 104 增到 216，无 400。 |
+| “Codex 计划”面板常驻、重复红卡错误 | 计划面板只在源端真的发布 `planId` 或存在 pending/durable receipt 时渲染，后台刷新失败只进诊断层；重复 source error 折叠成一行 `源错误 · N`，展开仍是原始事件；approvals、submitted-but-unresolved answers、indeterminate receipts 与可操作失败保持可见。 |
+| 需要可复制的调试输出层 | 页面级内存环形缓冲（300 条），只存 allowlist 字段：时间、method、sanitized path-only route、status/code/requestId/outcome、duration、timeout/abort、retry-after、连接变化、分页 direction/cursors/epoch/reset/hasMore、build 与 hub/session/source-session/machine/engine 身份；不存 body、prompt、文件内容、cookies、authorization、URL query/fragment、console 原文。`诊断 N` 入口 + 抽屉 + 复制全部/清空；live 探针中止一次 `hapi/nativePlan` 后入口出现，抽屉显示 build/版本/身份，复制按钮可用。 |
+| Codex “只读” 输入框 | 这是错误实现：`readOnly` 曾把 `!active`、`!connected`、历史 `fault` 和引擎独占都算进去。现在消息准入只阻止 disposed 与 observed 引擎独占输入；原生 Codex 的 inactive/history/disconnected/fault 都接受 durable journal 提交，投递前按 HAPI 语义 resume 原会话（single-flight、校验 native identity、rebind 并持久化通知），只有明确 rejected 的 409/session_inactive 允许一次 resume+retry，timeout/丢 ACK 仍是 unknown，不重发不换 id。live 探针打开 inactive native 会话：composer 可编辑、无只读提示、无计划面板。 |
+| 启动慢、`DSH · Connecting…` | 只 boot 可见窗口的 pane graph：本轮实测恢复 13 pane 时 4 booted / 9 deferred，活动窗口 ready 6.5–8.1s（基线 14.6s），parked window 首次激活 1.9–5.2s，切回已 boot 窗口 0.7–1.2s，草稿跨窗口与 reload 保留；4-pane retained heap 77.84MB（同方法基线 77.32MB，噪声级）；54 个 row bundle 改为 bounded shared-cache prefetch（并行度 1.51–2.34，仍记录 maxQueued 51 的突发风险）。远端 Host pane 仍受 Hub 隧道影响，列为 residual risk。 |
+| 窗格“额头”与底部窗口列表 | 删除桌面 pane header，底部状态栏改为 window 列表（每项显示 window 名 + 该 window focused pane 的 session name，仅 >1 时显示窗格数），窗格几何动作收进底部 Pane actions 菜单；window 右键/长按/Shift+F10 菜单支持 rename/new/close/move，move 使用该 window 自己的 focused pane。移动端保留既有底部 pane bar。定向 `workspace-chrome.spec.ts` 与 1600px/420px 实际截图核对。 |
+| DSH“加载更早”体验差 | 新增 `src/client/seamless/**` 页面级插件：发现官方 Conversation 的 `[data-conversation-scroll]`，在向上意图接近顶部时自动驱动官方 Load earlier 控件，复用上游 beginPaging/preserve 锚定；单飞、burst 3 页/1200ms、12s 超时、失败冷却与 3 次 suspend、每 host+session 自动页上限 20、manual 按钮始终保留；`data-hapi-seamless`（error/suspended/limit）与 `hapi-dsh:seamless-history` 事件进诊断。定向 e2e 5/5（自动翻页、锚点 |Δ|≤2px、慢页单飞、失败恢复、reload 无重复请求）；live 探针一次向上手势自动加一页。DOM 兼容边界与触摸惯性/双 pane fairness/远端 pane 见专项文档。 |
+
+### 上游版本记录修正
+
+部署中的 HAPI Hub 构建自 `55166cf8d87814ccfb383b538a8e8c55283bed81`（`/mnt/cache/build-cache/hapi-production/20261020T204939Z-55166cf8d8`），此前 `UPSTREAMS.json` 与部分文档记录的是更早的 `0f8ef697`。已核对：历史窗口、分页、阅读锚点与 `hub/src/sync/messageService.ts` 在两个 revision 之间字节一致，仅 `HappyThread.tsx` 有一处 touch tail 修复；因此本批契约结论对两个 revision 都成立。`UPSTREAMS.json`、文档基线与 `HAPI_SOURCE_REVISION` 已更新为部署 revision；源码里标注 `0f8ef697` 的类型注释保留为**适配来源**，不再当作运行版本。
+
+### 定向 e2e 结果边界
+
+- `e2e/seamless-history.spec.ts`：5/5 通过（chat-core 在本构建上执行）。
+- `e2e/pane-surface.spec.ts`：功能断言通过；console 验收项 `Session reference … is released` 未归零，已确认是官方 sidebar-view retire/ready 竞态日志（eager 基线同样存在，启动阶段 2→0–1，切窗时每次 re-open 出现最多 5 条），按“已知上游日志”处理，不作为本批失败项。
+- `e2e/workspace-chrome.spec.ts`：2/2 通过（2048px 桌面与 420px 触屏；spec 已对齐 v2 的真实 13px 标题/11px 状态字号与官方 header 紧凑 cluster 的可访问名称）。
+- `e2e/pane-surface.spec.ts`：3/3，`e2e/seamless-history.spec.ts`：5/5。
+- 全量 Playwright 套件没有在本构建上重跑；上表各项按定向 spec 与 live 探针的实际范围记录，不扩大成全产品回归证明。
+- 已知缺口（未在本批修复）：pane 切到官方 Plugins 等 main panel 后，官方 header 被面板页替换，当前没有从该面板直接回到 Conversation 的固定入口；用户可重新从侧栏打开会话或换 pane。列为后续可用性项，不阻塞本批。

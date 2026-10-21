@@ -65,7 +65,6 @@ test.describe('original HAPI appearance through official DSH plugin contracts', 
             const beta = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true })
             await expect(beta.getByText('Native history beta in the official DSH Conversation.', { exact: true })).toBeVisible()
             await expect(beta.getByLabel('Source session information').locator('[data-hapi-header-field="machine"]')).toContainText('Linux workstation')
-            await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
             await alpha.getByRole('button', { name: 'Host settings', exact: true }).click()
             const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
             await settings.getByRole('button', { name: 'HAPI appearance', exact: true }).click()
@@ -83,8 +82,9 @@ test.describe('original HAPI appearance through official DSH plugin contracts', 
             await expect.poll(() => beta.locator('[data-hapi-pane-instance]').evaluate(element => getComputedStyle(element).getPropertyValue('--dsw-alias-bg-base').trim())).toBe('#2e3440')
 
             const ids = new Set(await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id'))))
-            const menu = alpha.locator('.hapi-pane-header > .hapi-pane-menu')
-            await menu.locator('summary').click(); await menu.getByRole('button', { name: 'Terminal', exact: true }).click()
+            await alpha.click({ position: { x: 4, y: 4 } })
+            const menu = page.locator('.hapi-statusbar .hapi-pane-actions')
+            await menu.locator(':scope > summary').click(); await menu.getByRole('button', { name: 'Terminal', exact: true }).click()
             await expect.poll(async () => (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).filter(id => !ids.has(id)).length).toBe(1)
             const id = (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).find(id => !ids.has(id))!
             const terminal = page.locator(`[data-pane-id="${id}"]`)

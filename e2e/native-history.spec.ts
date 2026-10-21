@@ -114,7 +114,7 @@ test.describe('native source history rendering', () => {
         } finally { if (errors.length) await info.attach('source-final-errors', { body: errors.join('\n'), contentType: 'text/plain' }) }
     })
 
-    test('a large history with source epoch churn still renders the transcript', async ({ page }, info) => {
+    test('a large history keeps one epoch-stable pass while the source appends', async ({ page }, info) => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
         try {
             const rows = bulkHistory()
@@ -122,23 +122,48 @@ test.describe('native source history rendering', () => {
             const paging: HistoryPaging = { epoch: 1, pageSize: 200, onPage(index, hook) {
                 pages = index + 1
                 if (index === 0) return
-                // A live source rewrites its active item between pages and bumps the
-                // hub epoch; a cursor read must not restart or fail because of it.
-                hook.epoch++
-                const streaming = rows.find(row => row.id === 'bulk-answer-299')
-                if (streaming) {
-                    const content = streaming.content as { content: { data: { message: string } } }
-                    content.content.data.message = `Bulk answer 299, streaming update ${index}`
-                }
+                // Normal appends (monotonic positions) do not bump the HAPI message
+                // epoch; the reader must finish one pass over the same snapshot.
+                rows.push({ id: `bulk-live-${index}`, localId: null, seq: rows.length + 1,
+                    createdAt: Date.now() + index, invokedAt: Date.now() + index,
+                    content: { role: 'agent', content: { type: 'codex', data: { type: 'message',
+                        id: `bulk-live-${index}`, message: `Bulk live answer ${index}`, streamSnapshot: true,
+                        nativeExecution: { threadId: 'observed-fixture', turnId: 'bulk-live', itemId: `bulk-live-${index}` } } } } })
             } }
-            environment.hapi.addObserved('pi', 'history-churn', 'machine-alpha', { rows, paging })
-            const pane = await open(page, environment, 'Source pi history-churn')
+            environment.hapi.addObserved('pi', 'history-append', 'machine-alpha', { rows, paging })
+            const pane = await open(page, environment, 'Source pi history-append')
             await expect(pane.getByText(/Bulk answer 299/).first()).toBeVisible({ timeout: 15_000 })
             await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('Native history changed repeatedly')
             await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('history unavailable')
             await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('Failed to load history')
             expect(pages).toBeGreaterThan(1)
             expect(errors).toEqual([])
-        } finally { if (errors.length) await info.attach('source-history-churn-errors', { body: errors.join('\n'), contentType: 'text/plain' }) }
+        } finally { if (errors.length) await info.attach('source-history-append-errors', { body: errors.join('\n'), contentType: 'text/plain' }) }
+    })
+
+    test('a structural rewind mid-pass invalidates it and renders the replacement history', async ({ page }, info) => {
+        const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+        try {
+            const rows = bulkHistory()
+            let pages = 0
+            let rewound = false
+            const paging: HistoryPaging = { epoch: 1, pageSize: 200, onPage(index, hook) {
+                pages = index + 1
+                if (index !== 2 || rewound) return
+                // A rewind removes the newest rows and bumps the epoch: rows read
+                // before this point are no longer an authoritative snapshot.
+                rewound = true
+                rows.splice(Math.max(0, rows.length - 50) - 1, 50)
+                hook.epoch++
+            } }
+            environment.hapi.addObserved('pi', 'history-rewind', 'machine-alpha', { rows, paging })
+            const pane = await open(page, environment, 'Source pi history-rewind')
+            await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('Native history changed repeatedly', { timeout: 15_000 })
+            await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('history unavailable')
+            await expect(pane.getByText(/Bulk answer 0/).first()).toBeVisible()
+            expect(rewound).toBe(true)
+            expect(pages).toBeGreaterThan(2)
+            expect(errors).toEqual([])
+        } finally { if (errors.length) await info.attach('source-history-rewind-errors', { body: errors.join('\n'), contentType: 'text/plain' }) }
     })
 })

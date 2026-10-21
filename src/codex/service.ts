@@ -139,6 +139,7 @@ export class CodexService {
       stateDirectory: this.options.stateDirectory, displayRevision: this.revisions.get(base) ?? 0,
       ...(this.options.resolveAttachments ? { resolveAttachments: this.options.resolveAttachments } : {}),
       ...(this.options.importArtifact ? { importArtifact: this.options.importArtifact } : {}),
+      ...(this.options.resumeSession ? { resumeSession: this.options.resumeSession } : {}),
       onHistoryChanged: (agent, snapshot) => this.replaceDisplay(agent, snapshot),
     }, rows)
   }

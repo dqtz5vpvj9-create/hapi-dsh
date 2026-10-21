@@ -15,8 +15,10 @@ Revision record: (a) `ui-deliverables` retained (54 rows) because it owns the
 `present` tool renderer and the changes-review right-column tab; (b) pane chrome
 shadows `sidebar.workspaces` + `shell.leading` only, keeping the sidebar shell
 and `sidebar.settings` subtree; (c) the plugin-event SSE projection keeps its
-decoder/buffer per stream instead of module-level. The earlier heap numbers are
-the measured 53-row graph; the 54-row estimate is called out in §3.
+decoder/buffer per stream instead of module-level; (d) task-18 added lazy
+pane-graph boot by window visibility plus bounded prefetch of the published
+row-URL bundle set — startup measurements in §3 are from the release build
+`dist/client.js` 10:16:58 and are separate from the earlier per-pane heap table.
 
 ## 1. Verdict per feasibility question
 
@@ -159,6 +161,89 @@ run in this revision.
 Nothing was rebuilt for this table after the source edits: `dist/client.js`
 (07:59:24) and `dist/index.js` (07:59:23) are newer than the last src edit
 (07:58:08). `tsc -p tsconfig.host|client|e2e.json --noEmit` all clean.
+
+### Lazy pane boot and restored-workspace startup (task-18, release build `dist/client.js` 10:16:58)
+
+Method: same fixture/harness, restored 13-pane layout across three windows
+(4 active + 5 parked + 4 parked) seeded through the real restore path (local
+workspace snapshot + display/source session identity from HAPI catalog), then a
+page reload into it. Heap: CDP `HeapProfiler.collectGarbage` ×3 +
+`Runtime.getHeapUsage`. Startup timing: Node wall clock from reload start to the
+last active-window Conversation body; bundle timing from Playwright request
+events (`/plugins/` first byte/response), which measure enqueue and completion
+rather than wire-level concurrency. The Hub and the paired "remote" Runner run
+on the same machine, so absolute remote numbers underestimate a real Hub
+reverse-tunnel/lis-imac link; only the relative shape is meaningful there.
+
+| startup metric | eager baseline (1dad739) | lazy build |
+| --- | --- | --- |
+| workspace visible after reload | 9.34s | 5.9–8.1s |
+| active window 4 panes ready | 14.63s | **6.0–8.2s** |
+| panes at load | 13 graphs booted, all ready 16.79s | **4 booted / 9 deferred** (w2=5, w3=4) |
+| first activation of window 2 | already booted | **1.9–5.2s** |
+| first activation of window 3 | already booted | **3.4–7.2s** |
+| switch back to window 1 | — | **0.7–1.2s**, graph reused, no re-boot |
+| parked pane usable + draft | — | **pass**: composer usable on activation; drafts survive window switches and a reload (active window draft restored; parked window still deferred, then boots and restores its draft) |
+
+| heap (4 panes, same method) | eager baseline | lazy build |
+| --- | --- | --- |
+| 0 panes | 36.6–36.7 MB | 36.17 MB |
+| 1 pane | 58.4 MB | 58.44 MB |
+| 2 panes | 65.3 MB | 65.37 MB |
+| 4 panes | 77.32 MB | **77.6–77.8 MB** (+0.4–0.6%, noise-level) |
+
+| 54 retained-row bundle URLs | eager baseline (13 graphs at load) | lazy build (4 graphs at load) |
+| --- | --- | --- |
+| single-resource requests per Host | 54 | 55 (build row set drifts, still one per row) |
+| span | 14.7s | 7.7–10.4s (by first window-2 activation) |
+| parallelism (busy/span) | 1.45 | 1.55–2.34 |
+| serialized-equivalent | 21.3s | 11.9–22.7s |
+| max queued at once | 10 | 51 (prefetch + per-pane loader enqueue; request events, not wire concurrency) |
+
+| remote Host pane first boot | eager baseline | lazy build |
+| --- | --- | --- |
+| click → Conversation ready | 2.20s | **2.0–2.8s** |
+| row-URL span | 1.52s | 1.21–1.72s |
+| row-URL parallelism | 3.28 | **5.0–6.1** |
+
+The lazy build boots only the active window's four graphs; every parked pane
+mounts a lightweight surface and fetches no bundle until its window is shown.
+Booted panes are never unloaded (the boot gate latches on success only, so a
+failed boot stays retryable) and switching windows reuses the graph, which keeps
+drafts, dialogs, terminal and rightbar state. On top of that, the published
+single-resource row URLs are prefetched into the shared per-Host artifact cache
+with bounded concurrency (12 local / 6 tunnelled) before the official Loader's
+dependency-ordered arrival resolves them; the loader, its compilation cache and
+the graph synchronization are unchanged. No combo URL is constructed: the pinned
+Host serves only its precomposed response map (phase combos plus one-row combos;
+unknown URLs are 404), and no Host-side merge endpoint was added.
+
+Residual risks observed during verification:
+
+1. **Official `ui-sidebar-right` lifecycle log** (`Sidebar Session opening
+   failed: ... Session reference ... is released`, pinned
+   `dsh-client-ui-sidebar-right/lib/client.js:1640`): the eager baseline emits
+   2 of these during its boot storm; the lazy build emits 0–2 during startup and
+   3–6 only while the synthetic test rapidly switches windows/reloads. This is
+   accepted as pre-existing `controller/openSession` churn in the official
+   sidebar views, not part of the lazy-boot path; a controller-scope follow-up
+   should reconcile view retirement with `reference.ready`. No `connection lost`
+   / plugin-event transport errors were observed in the lazy runs.
+2. **Enqueue burst**: prefetching plus four concurrent pane loaders can queue up
+   to ~51 row requests at once on a fast local Host (baseline 10). Wire
+   concurrency is browser-bounded and every URL is still fetched once per Host,
+   but a queue-reservation form of the prefetch (reserve all row promises, one
+   bounded worker queue) is the next optimisation if a real tunnel shows an
+   adverse burst.
+3. **Retained heap is unchanged by design**: deferred graphs are not allocated,
+   but once the panes are opened the retained heap matches the eager build
+   (77.6–77.8 vs 77.32 MB at 4 panes). Lazy boot only removes the startup cost.
+4. **Remote Runner deploy overlap**: one combined verification run hit transient
+   `HTTP 404/503` for a remote Runner artifact
+   (`@deepseek-ai/dsh-client-ui-subagent/client.js`) while the release services
+   were being restarted; the same remote-pane spec passed standalone immediately
+   afterwards (`consoleErrors: []`). Treat remote artifact 404/503 in the first
+   seconds after a deploy/restart as environmental, not a pane-surface defect.
 
 ## 4. Single-package seam plan (implemented layout)
 

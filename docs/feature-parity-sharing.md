@@ -1,7 +1,7 @@
 # Incoming share picker
 
 This page records the incoming-share picker work against HAPI
-`0f8ef6970884c92fb2ddca3070be2ec56cb50333`. It describes the picker and its
+`55166cf8d87814ccfb383b538a8e8c55283bed81`. It describes the picker and its
 integration with the existing share hand-off, not a second composer or chat
 renderer.
 

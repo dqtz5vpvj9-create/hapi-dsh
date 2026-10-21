@@ -5,6 +5,7 @@ import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { HapiObservedProjection } from '../src/hapi-agent/projection-types.ts'
 import type { HapiProjection } from '../src/codex/projection-types.ts'
 import { installNativeComposerAdmission } from '../src/client/native-composer.ts'
 import { en } from '../src/client/locales.ts'
@@ -20,9 +21,9 @@ function store<T>(initial: T): SnapshotStore<T> {
     }
 }
 
-test('source read-only state blocks the official composer without erasing another plugin reason', () => {
+function fixture() {
     const id = 'native' as SessionId
-    const list = store<SessionListState>({ ids: [], byId: {}, phase: 'ready', projectionsBySession: {} })
+    const list = store<SessionListState>({ ids: [id], byId: {}, phase: 'ready', projectionsBySession: {} })
     const values = new Map<SessionId, ReturnType<ComposerBlocks['storeFor']>>()
     const blocks: ComposerBlocks = {
         storeFor(sessionId) {
@@ -33,34 +34,63 @@ test('source read-only state blocks the official composer without erasing anothe
         set(sessionId, block) { blocks.storeFor(sessionId).set(block) },
         forget(sessionId) { values.delete(sessionId) },
     }
-    const update = (connection: NonNullable<HapiProjection>['nativeConnection'], readOnly: boolean): void => {
-        // Only these admission facts are consumed; all execution data is absent
-        // in this explicit unit fixture and is covered by the Host tests.
-        const projection = { engine: 'codex', nativeConnection: connection, readOnly } as NonNullable<HapiProjection>
-        list.set({ ids: [id], phase: 'ready', projectionsBySession: {}, byId: {
-            [id]: { id, displayTitle: 'Native', running: false, blank: false, updatedAt: 1, retainedBy: {}, projectionValues: { hapi: projection } },
-        } })
+    const setProjection = (projectionValues: Record<string, unknown> | undefined): void => {
+        const row = { id, displayTitle: 'Native', running: false, blank: false, updatedAt: 1, retainedBy: {} }
+        list.set({ ids: [id], phase: 'ready', projectionsBySession: {},
+            byId: { [id]: projectionValues === undefined ? row : { ...row, projectionValues } } })
     }
-    const foreign = { reason: 'Select a model first' }
-    blocks.set(id, foreign)
     const dispose = installNativeComposerAdmission({ list }, blocks, { t: key => en[key], subscribe: () => () => {} })
-    update('disconnected', true)
-    assert.equal(blocks.storeFor(id).getSnapshot(), foreign)
-    blocks.set(id, undefined)
-    assert.equal(blocks.storeFor(id).getSnapshot()?.reason, en.nativeReconnecting)
-    update('history', true)
-    assert.equal(blocks.storeFor(id).getSnapshot()?.reason, en.nativeResumeToSend)
-    update('attached', false)
-    assert.equal(blocks.storeFor(id).getSnapshot(), undefined)
-    update('disconnected', true)
-    blocks.set(id, foreign)
-    update('attached', false)
-    assert.equal(blocks.storeFor(id).getSnapshot(), foreign)
-    blocks.set(id, undefined)
-    update('attached', true)
-    assert.equal(blocks.storeFor(id).getSnapshot()?.reason, en.nativeReadOnly)
-    dispose()
-    assert.equal(blocks.storeFor(id).getSnapshot(), undefined)
-    update('disconnected', true)
-    assert.equal(blocks.storeFor(id).getSnapshot(), undefined)
+    return { id, blocks, setProjection, dispose }
+}
+
+const native = (patch: Partial<NonNullable<HapiProjection>> = {}): NonNullable<HapiProjection> =>
+    ({ engine: 'codex', nativeConnection: 'attached', readOnly: false, ...patch }) as NonNullable<HapiProjection>
+const observed = (patch: Partial<NonNullable<HapiObservedProjection>> = {}): NonNullable<HapiObservedProjection> =>
+    ({ engine: 'hapi', controlledByUser: false, readOnly: false, readOnlyReason: null, ...patch }) as NonNullable<HapiObservedProjection>
+
+test('native Codex connection and fault availability never freezes the composer', () => {
+    const app = fixture()
+    try {
+        // Availability is a non-blocking status for native Codex: these states
+        // still accept a durable send and resolve the source on delivery.
+        for (const projection of [
+            native({ nativeConnection: 'disconnected', readOnly: true, readOnlyReason: 'unavailable' }),
+            native({ nativeConnection: 'history', readOnly: true, readOnlyReason: 'unavailable' }),
+            native({ nativeConnection: 'attached', readOnly: true, readOnlyReason: 'fault' }),
+            native({ nativeConnection: 'attached', readOnly: true, readOnlyReason: 'migration' }),
+        ]) {
+            app.setProjection({ hapi: projection })
+            assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+        }
+        app.setProjection(undefined)
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+    } finally { app.dispose() }
+})
+
+test('only the original engine owning local input blocks the composer, with accurate copy', () => {
+    const app = fixture()
+    try {
+        app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'engine-owned', controlledByUser: true }) })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceLocallyControlled)
+        // A disconnected inactive source is resumable, not inert.
+        app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'unavailable', active: false }) })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+        app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'fault' }) })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+    } finally { app.dispose() }
+})
+
+test('another plugin reason is never erased and the engine-owned block releases with its owner', () => {
+    const app = fixture()
+    const foreign = { reason: 'Select a model first' }
+    try {
+        app.blocks.set(app.id, foreign)
+        app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'engine-owned', controlledByUser: true }) })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), foreign)
+        app.blocks.set(app.id, undefined)
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceLocallyControlled)
+        app.setProjection({ hapiObserved: observed() })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+    } finally { app.dispose() }
+    assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
 })

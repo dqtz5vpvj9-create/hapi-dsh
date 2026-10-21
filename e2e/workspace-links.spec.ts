@@ -50,8 +50,6 @@ test.describe('workspace external links', () => {
             await expect(alphaInput).toHaveText('Alpha unsent before navigation')
             await expect(betaInput).toHaveText('Beta unsent before navigation')
 
-            await alpha.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
-
             await alpha.getByRole('button', { name: 'Host settings', exact: true }).click()
             const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
             await settings.getByRole('button', { name: 'Workspace links', exact: true }).click()

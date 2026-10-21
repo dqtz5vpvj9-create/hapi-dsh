@@ -7,7 +7,7 @@
 ```bash
 git clone https://github.com/dqtz5vpvj9-create/hapi.git
 cd hapi
-git checkout 0f8ef6970884c92fb2ddca3070be2ec56cb50333
+git checkout 55166cf8d87814ccfb383b538a8e8c55283bed81
 bun install --frozen-lockfile
 bun run build:single-exe
 ```

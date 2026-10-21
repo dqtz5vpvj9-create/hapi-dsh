@@ -9,14 +9,20 @@ async function admit(page: Page, environment: OfficialEnvironment): Promise<void
 }
 async function openTool(page: Page, pane: Locator, name: 'Project files' | 'Terminal'): Promise<Locator> {
     const ids = new Set(await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id'))));
-    const menu = pane.locator('.hapi-pane-header > .hapi-pane-menu');
-    await menu.locator('summary').click();
+    await pane.click({ position: { x: 4, y: 4 } });
+    const menu = page.locator('.hapi-statusbar .hapi-pane-actions');
+    await menu.locator(':scope > summary').click();
     await menu.getByRole('button', { name, exact: true }).click();
     await expect.poll(async () => (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).filter(id => !ids.has(id)).length).toBe(1);
     const id = (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).find(id => !ids.has(id))!;
     return page.locator(`[data-pane-id="${id}"]`);
 }
-const closePane = async (pane: Locator): Promise<void> => { await pane.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click(); };
+const closePane = async (page: Page, pane: Locator): Promise<void> => {
+    await pane.click({ position: { x: 4, y: 4 } });
+    const actions = page.locator('.hapi-statusbar .hapi-pane-actions');
+    await actions.locator(':scope > summary').click();
+    await actions.getByRole('button', { name: 'Close pane', exact: true }).click();
+};
 
 test.describe('official plugin views inside the unified HAPI workspace', () => {
     let environment: OfficialEnvironment;
@@ -36,7 +42,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await expect(alphaFile.locator('[data-files-root]')).toHaveAttribute('data-files-root', '/workspace/alpha');
             await alphaFile.locator('[data-files-entry="file"]').getByRole('button', { name: 'source.txt', exact: true }).click();
             await expect(alphaFile.getByText('Source file from machine-alpha', { exact: true })).toBeVisible();
-            await chat.locator('.hapi-pane-header').click();
+            await chat.click({ position: { x: 4, y: 4 } });
             await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex beta' }).click();
             const betaChat = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true });
             await expect(betaChat.getByText('Native history beta in the official DSH Conversation.', { exact: true })).toBeVisible();
@@ -44,7 +50,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await expect(betaFile.locator('[data-files-root]')).toHaveAttribute('data-files-root', '/workspace/beta');
             await betaFile.locator('[data-files-entry="file"]').getByRole('button', { name: 'source.txt', exact: true }).click();
             await expect(betaFile.getByText('Source file from machine-beta', { exact: true })).toBeVisible();
-            await closePane(betaChat);
+            await closePane(page, betaChat);
             await expect(page.locator('.hapi-pane')).toHaveCount(2);
             await expect(page.locator('.hapi-persistence-saved')).toBeVisible();
             await page.reload();
@@ -60,12 +66,12 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await expect(alphaTerminal.locator('[data-sidebar-terminal] .xterm')).toBeVisible();
             await alphaTerminal.getByRole('textbox', { name: 'Terminal', exact: true }).pressSequentially('alpha-source-input\r');
             await expect.poll(() => environment.hapi.workbench.terminalInputs.filter(row => row.machineId === 'machine-alpha').map(row => row.data).join('')).toBe('alpha-source-input\r');
-            await closePane(alphaFile);
+            await closePane(page, alphaFile);
             const betaTerminal = await openTool(page, betaFile, 'Terminal');
             await expect(betaTerminal.locator('[data-sidebar-terminal] .xterm')).toBeVisible();
             await betaTerminal.getByRole('textbox', { name: 'Terminal', exact: true }).pressSequentially('beta-source-input\r');
             await expect.poll(() => environment.hapi.workbench.terminalInputs.filter(row => row.machineId === 'machine-beta').map(row => row.data).join('')).toBe('beta-source-input\r');
-            await closePane(betaFile);
+            await closePane(page, betaFile);
             const creations = environment.hapi.workbench.terminalCommands.filter(row => row.command.type === 'create');
             expect(creations).toHaveLength(2);
             expect(creations).toEqual(expect.arrayContaining([
@@ -80,8 +86,8 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await expect.poll(() => environment.hapi.workbench.terminalInputs.filter(row => row.machineId === 'machine-alpha').map(row => row.data).join('')).toBe('alpha-source-input\rafter-reload\r');
             expect(environment.hapi.workbench.terminalCommands.filter(row => row.command.type === 'create')).toHaveLength(2);
             await page.screenshot({ path: `${info.outputDir}/official-source-terminals.png`, fullPage: true });
-            await closePane(alphaTerminal);
-            await closePane(betaTerminal);
+            await closePane(page, alphaTerminal);
+            await closePane(page, betaTerminal);
             expect(environment.hapi.workbench.terminalCommands.filter(row => row.command.type === 'terminate')).toHaveLength(0);
             expect([...environment.hapi.workbench.terminals.values()].map(row => row.info.status)).toEqual(['running', 'running']);
             await expect(page.locator('.hapi-session-sidebar')).toHaveCount(1);
@@ -105,7 +111,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
         const pane = await openTool(page, chat, 'Project files');
         await pane.locator('[data-files-entry="file"]').getByRole('button', { name: 'source.txt', exact: true }).click();
         await expect(pane.getByText('Source file from machine-alpha', { exact: true })).toBeVisible();
-        await closePane(chat);
+        await closePane(page, chat);
         const dialog = page.getByRole('dialog', { name: 'Source file tools', exact: true });
         const contents = dialog.getByRole('textbox', { name: 'File contents', exact: true });
         const close = () => dialog.locator('footer').getByRole('button', { name: 'Close', exact: true }).click();
@@ -157,7 +163,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
 
         await edit(); await contents.fill('Retained draft after a refused pane close'); await close();
         page.once('dialog', confirm => { void confirm.dismiss(); });
-        await closePane(pane); await expect(pane).toBeVisible();
+        await closePane(page, pane); await expect(pane).toBeVisible();
         await edit(); await expect(contents).toHaveValue('Retained draft after a refused pane close');
         page.once('dialog', confirm => { void confirm.accept(); });
         await dialog.getByRole('button', { name: 'Discard draft', exact: true }).click(); await close();
@@ -237,7 +243,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             const chat = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
             const terminal = await openTool(page, chat, 'Terminal');
             await expect(terminal.locator('[data-sidebar-terminal] .xterm')).toBeVisible();
-            await closePane(chat);
+            await closePane(page, chat);
             const bar = terminal.locator('[data-testid="termbeam-touchbar"]');
             await expect(bar.getByRole('button', { name: 'Control', exact: true })).toBeEnabled();
             const allocated = [...source.terminals.values()].findLast(row => row.machineId === 'machine-alpha')!;
@@ -329,7 +335,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             await beta.getByRole('button', { name: 'Snippets', exact: true }).click();
             await expect(page.getByRole('dialog', { name: 'Snippets', exact: true }).getByRole('button', { name: 'Check machine', exact: true })).toBeVisible();
             await page.getByRole('dialog', { name: 'Snippets', exact: true }).locator('footer').getByRole('button', { name: 'Close', exact: true }).click();
-            await closePane(beta); await closePane(betaChat);
+            await closePane(page, beta); await closePane(page, betaChat);
             expect(source.terminalCommands.filter(row => row.command.type === 'terminate')).toHaveLength(0);
             expect(source.terminalInputs.filter(row => row.terminalId === allocated.info.terminalId).every(row => row.machineId === 'machine-alpha')).toBe(true);
             expect(errors).toEqual([]);
@@ -350,7 +356,7 @@ test.describe('official plugin views inside the unified HAPI workspace', () => {
             const chat = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
             const terminal = await openTool(page, chat, 'Terminal');
             await expect(terminal.locator('[data-sidebar-terminal] .xterm')).toBeVisible();
-            await closePane(chat);
+            await closePane(page, chat);
             await page.setViewportSize({ width: 420, height: 860 });
             const rows = terminal.locator('.xterm-rows'), screen = terminal.locator('.xterm-screen');
             await expect(rows).toHaveCSS('font-size', '9px');

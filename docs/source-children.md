@@ -56,7 +56,7 @@ interrupts its original process.
 ## Compatibility and verification boundary
 
 The adapter targets the unchanged HAPI fork at
-`0f8ef6970884c92fb2ddca3070be2ec56cb50333` and DSH at
+`55166cf8d87814ccfb383b538a8e8c55283bed81` and DSH at
 `687f282e8625c6b8d11ff58211a90524be2e4317` (`0.2.1-rc.2`). The source protocol
 definitions and binding validation are in
 [`dsh-child-types.ts`](../src/hapi-agent/dsh-child-types.ts) and

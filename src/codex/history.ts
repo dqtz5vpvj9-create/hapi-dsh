@@ -1,29 +1,12 @@
-import type { HapiMessage, HapiMessagesPage, HapiMessagesQuery, HapiTransport } from './contracts.js'
+import type { HapiMessage, HapiMessagesQuery, HapiTransport } from './contracts.js'
 import { compareNativeMessages } from './native.js'
 
 const PAGE_SIZE = 200
 const MAX_ATTEMPTS = 4
 
-interface SnapshotHead { at: number; seq: number }
+interface Position { at: number; seq: number }
 
-function headOf(page: HapiMessagesPage): SnapshotHead | null {
-  const { snapshotHeadAt, snapshotHeadSeq } = page.page
-  if (snapshotHeadAt === null || snapshotHeadSeq === null) return null
-  return { at: snapshotHeadAt, seq: snapshotHeadSeq }
-}
-
-/** Newest known position, used when a source does not publish its snapshot head. */
-function newestOf(rows: readonly HapiMessage[]): SnapshotHead | null {
-  let found: SnapshotHead | null = null
-  for (const row of rows) {
-    if (row.seq === null) continue
-    const at = row.invokedAt ?? row.createdAt
-    if (!found || at > found.at || at === found.at && row.seq > found.seq) found = { at, seq: row.seq }
-  }
-  return found
-}
-
-const isBefore = (left: SnapshotHead, right: SnapshotHead): boolean =>
+const isBefore = (left: Position, right: Position): boolean =>
   left.at < right.at || left.at === right.at && left.seq < right.seq
 
 function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
@@ -37,34 +20,46 @@ function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
 interface Pass { rows: HapiMessage[]; complete: boolean }
 
 /**
- * Read one bounded, latest-first pass anchored to the first page's snapshot
- * head. Later pages carry the head as `untilAt/untilSeq` and never re-send an
- * epoch: a source that keeps appending or rewrites its active stream item
- * cannot reset this read half way through. The only real restart conditions
- * are an authoritative `reset` or a snapshot head that moved backwards
- * (rewind/truncation).
+ * Read one bounded, latest-first pass pinned to one HAPI message epoch.
+ *
+ * HAPI rejects `untilAt/untilSeq` without an `afterAt/afterSeq` pair, so the
+ * first page's snapshot head cannot bound older pages. What does guarantee a
+ * coherent read is the message epoch: HAPI bumps it only when history changes
+ * structurally (rewind/truncate/delete/fork/out-of-order insert), not for
+ * normal appends. Every backward page therefore carries the epoch captured
+ * from the first page; a `reset` response (or any epoch change) means the
+ * snapshot was invalidated and the pass restarts from a fresh latest page. A
+ * final epoch-stable check proves nothing changed while the rows were read.
+ * Falling back to "read whatever is there now" would publish rows the source
+ * has already removed; callers keep their previous cache instead.
  */
 async function readPass(transport: HapiTransport, sessionId: string): Promise<Pass> {
   const first = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
-  const pinned = headOf(first) ?? newestOf(first.messages)
+  const epoch = first.page.epoch
+  const snapshotHeadAt = first.page.snapshotHeadAt, snapshotHeadSeq = first.page.snapshotHeadSeq
   const rows: HapiMessage[] = [...first.messages]
-  const cursors = new Set<string>()
   let page = first
   while (page.page.hasMore) {
     const at = page.page.nextBeforeAt, seq = page.page.nextBeforeSeq
     if (at === null || seq === null) return { rows, complete: false }
-    const key = `${at}:${seq}`
-    if (cursors.has(key)) return { rows, complete: false }
-    cursors.add(key)
-    const query: HapiMessagesQuery = {
-      limit: PAGE_SIZE, beforeAt: at, beforeSeq: seq, bounded: true,
-      ...(pinned ? { untilAt: pinned.at, untilSeq: pinned.seq } : {}),
+    page = await transport.readMessages(sessionId, { limit: PAGE_SIZE, beforeAt: at, beforeSeq: seq, epoch, bounded: true })
+    if (page.page.reset || page.page.epoch !== epoch) return { rows: [], complete: false }
+    const nextAt = page.page.nextBeforeAt, nextSeq = page.page.nextBeforeSeq
+    if (page.page.hasMore) {
+      if (nextAt === null || nextSeq === null) return { rows, complete: false }
+      if (!isBefore({ at: nextAt, seq: nextSeq }, { at, seq })) return { rows, complete: false }
     }
-    page = await transport.readMessages(sessionId, query)
-    if (page.page.reset) return { rows: [], complete: false }
-    const current = headOf(page)
-    if (pinned && current && isBefore(current, pinned)) return { rows: [], complete: false }
     rows.push(...page.messages)
+  }
+  // Final validation: re-issue a cursor page under the same epoch. HAPI only
+  // reports a stale snapshot when a cursor is supplied, so anchor the check on
+  // the first page's snapshot head. A `reset` here proves the pass read a
+  // history that structurally changed under it.
+  if (snapshotHeadAt !== null && snapshotHeadSeq !== null) {
+    const check = await transport.readMessages(sessionId, {
+      limit: 1, beforeAt: snapshotHeadAt, beforeSeq: snapshotHeadSeq, epoch, bounded: true,
+    })
+    if (check.page.reset || check.page.epoch !== epoch) return { rows: [], complete: false }
   }
   return { rows, complete: true }
 }
@@ -73,10 +68,9 @@ async function readPass(transport: HapiTransport, sessionId: string): Promise<Pa
  * Read native history through HAPI's bounded cursor page contract.
  *
  * Large live sessions page through many requests while the source is still
- * appending. Each pass is anchored to one snapshot head, so a source that keeps
- * appending or rewrites its active stream item no longer restarts the read on a
- * new epoch. A real rewind or truncation still restarts the pass because the
- * head moves backwards (or the source reports an authoritative reset).
+ * appending. Normal appends keep the epoch stable, so one anchored pass reads
+ * the whole window; a structural change (rewind/truncation/deletion/fork)
+ * invalidates the pass and it restarts from a fresh latest page.
  *
  * Only a complete anchored pass is published. Rows read before a reset may name
  * messages the source has already removed, so an exhausted read reports an

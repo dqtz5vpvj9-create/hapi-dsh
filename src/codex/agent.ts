@@ -8,9 +8,10 @@ import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import { appendPluginRecord, SessionId, type Session, type SessionSeq } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-api-session-controller/types'
-import type {
-  HapiApprovalAnswer, HapiAttachment, HapiCancelResult, HapiEvent, HapiMessage, HapiNativeRuntime,
-  HapiRetryResult, HapiSession, HapiSteerResult, HapiTransport,
+import {
+  HapiRequestError,
+  type HapiApprovalAnswer, type HapiAttachment, type HapiCancelResult, type HapiEvent, type HapiMessage,
+  type HapiNativeRuntime, type HapiRetryResult, type HapiSession, type HapiSteerResult, type HapiTransport,
 } from './contracts.js'
 import { NativeApprovals } from './approvals.js'
 import { DeliveryJournal } from './delivery.js'
@@ -38,6 +39,105 @@ export interface NativeCodexOptions {
   importArtifact?: NativeArtifactImporter
   /** Allows the service to replace a display generation after authoritative native rewind. */
   onHistoryChanged?: (agent: NativeCodexAgent, rows: HapiMessage[]) => Promise<void>
+  /**
+   * HAPI resume for an inactive original session. Only an explicit
+   * `session_inactive` (HTTP 409) delivery rejection may use it, once.
+   */
+  resumeSession?: (hapiSessionId: string) => Promise<string>
+}
+
+/** The original-source facts a delivery needs before it may dispatch. */
+export interface ResumableDeliveryTarget {
+  /** The session id deliveries target right now. */
+  sessionId(): string
+  /** Known original-source lifecycle; only a confirmed inactive session is pre-resolved. */
+  state(): { active: boolean }
+  /** HAPI resume of the original session (single-flight). */
+  resume(hapiSessionId: string): Promise<string>
+  /** Confirm the resumed display still belongs to this exact native/source identity before delivery. */
+  verify?(resumedSessionId: string): Promise<void>
+  /** Persist the explicit user-visible rebind notice before dispatch and after acceptance. */
+  onRebind?(localId: string, from: string, to: string, phase: 'before' | 'after'): void
+}
+
+/** Only the Hub's explicit, structured rejection authorizes an automatic resume. */
+export function isInactiveSessionError(error: unknown): boolean {
+  return error instanceof HapiRequestError && error.outcome === 'rejected' && error.code === 'session_inactive'
+}
+
+export function resumedSessionNotice(from: string, to: string): string {
+  return `The original session was resumed as a new session (${to}). This message was delivered to the resumed session; reopen it from the sidebar to continue there. The previous display (${from}) was not claimed as its owner.`
+}
+
+/**
+ * A delivery-only transport implementing HAPI's resolve-before-send ordering.
+ *
+ * - A known inactive original session is resumed and its native/source identity
+ *   verified before the first dispatch; the resumed id is rebound first and the
+ *   user is told about a different id after it accepts the message.
+ * - A confirmed `session_inactive` HTTP 409 rejection (race with the source
+ *   going inactive) does the same resolve once and retries the same durable
+ *   localId exactly once.
+ * - Transport errors, timeouts and lost acknowledgements are indeterminate:
+ *   this transport never resumes, retries or swaps ids for them.
+ *
+ * `DeliveryJournal` still persists the dispatch before network I/O; a resume
+ * failure leaves the message in its journal entry for an explicit retry.
+ */
+export function resumeAwareTransport(transport: HapiTransport, target: ResumableDeliveryTarget): HapiTransport {
+  let current = target.sessionId()
+  let resumed = false
+  let resuming: Promise<string> | undefined
+  const resolveOnce = async (): Promise<string> => {
+    const cached = resuming
+    if (cached) return cached
+    if (resumed) return current
+    const from = current
+    resuming = target.resume(from).then(async next => {
+      const id = next || from
+      await target.verify?.(id)
+      current = id
+      resumed = true
+      return id
+    }).finally(() => { resuming = undefined })
+    return resuming
+  }
+  const deliver = async (message: Parameters<HapiTransport['sendMessage']>[1]): Promise<void> => {
+    const deliverTo = async (to: string, from: string): Promise<void> => {
+      const rebound = to !== from
+      // The rebound target and the user notice are persisted before any
+      // network I/O; a crash between them restores as an unknown delivery.
+      if (rebound) target.onRebind?.(message.localId, from, to, 'before')
+      await transport.sendMessage(to, message)
+      if (rebound) target.onRebind?.(message.localId, from, to, 'after')
+    }
+    const from = current
+    if (target.state().active === false) {
+      await deliverTo(await resolveOnce(), from)
+      return
+    }
+    try { await transport.sendMessage(from, message) }
+    catch (error) {
+      if (!isInactiveSessionError(error)) throw error
+      await deliverTo(await resolveOnce(), from)
+    }
+  }
+  return {
+    get hubId() { return transport.hubId },
+    listSessions: () => transport.listSessions(),
+    getSession: id => transport.getSession(id),
+    readMessages: (id, query) => transport.readMessages(id, query),
+    ...(transport.listSlashCommands ? { listSlashCommands: (id: string) => transport.listSlashCommands!(id) } : {}),
+    sendMessage: (_sessionId, message) => deliver(message),
+    getQueuedState: (id, localIds) => transport.getQueuedState(id, localIds),
+    cancelQueuedMessage: (id, messageId) => transport.cancelQueuedMessage(id, messageId),
+    steerQueuedMessage: (id, messageId) => transport.steerQueuedMessage(id, messageId),
+    retryIndeterminateMessage: (id, messageId) => transport.retryIndeterminateMessage(id, messageId),
+    abortSession: id => transport.abortSession(id),
+    approve: (id, requestId, answer) => transport.approve(id, requestId, answer),
+    deny: (id, requestId, answer) => transport.deny(id, requestId, answer),
+    subscribe: listener => transport.subscribe(listener),
+  }
 }
 
 /** Native pending input is mirrored for official DSH queue display only. */
@@ -139,7 +239,23 @@ export class NativeCodexAgent implements Agent {
         model: this.source.model ?? this.source.metadata?.codexModel ?? null, effort: this.source.modelReasoningEffort ?? null,
         permissionMode: this.source.permissionMode ?? null, error: this.fault,
       }) })
-    this.journal = new DeliveryJournal(stateDirectory, this.logicalSessionId, source.id, transport, () => {
+    const deliveryTransport = config.resumeSession
+      ? resumeAwareTransport(transport, {
+          sessionId: () => this.binding.hapiSessionId,
+          state: () => ({ active: this.source.active }),
+          resume: config.resumeSession,
+          verify: async resumedSessionId => {
+            const resumed = await transport.getSession(resumedSessionId)
+            if (resumed.metadata?.codexNativeSession !== true || resumed.metadata?.codexSessionId !== this.binding.threadId) {
+              throw new HapiRequestError('The resumed session belongs to a different native Codex thread; the message was not delivered', 'rejected', 409, 'source_identity_mismatch')
+            }
+          },
+          onRebind: (localId, from, to, phase) => {
+            this.journal.update(localId, phase === 'before' ? 'dispatching' : 'accepted', resumedSessionNotice(from, to))
+          },
+        })
+      : transport
+    this.journal = new DeliveryJournal(stateDirectory, this.logicalSessionId, source.id, deliveryTransport, () => {
       if (!this.disposed && !this.initializing) { this.syncInbox(); this.publishProjection() }
     }, config.resolveAttachments)
     this.approvals = new NativeApprovals(stateDirectory, this.logicalSessionId, source.id, transport, () => {
@@ -218,8 +334,13 @@ export class NativeCodexAgent implements Agent {
       nativeId: this.binding.threadId, nativeHome: this.binding.home,
       nativeConnection: !this.connected || !this.source.active ? 'disconnected'
         : this.source.metadata?.codexNativeConnection ?? 'history',
+      // `readOnly` keeps its operation-permission meaning (approvals, settings,
+      // source edits). Message input is a separate admission: native Codex
+      // always accepts a durable send and resolves the source on delivery.
       readOnly: !this.connected || !this.source.active || this.source.metadata?.codexNativeConnection !== 'attached'
         || this.source.metadata?.migrationInProgress !== undefined || this.fault !== null,
+      readOnlyReason: !this.connected || !this.source.active || this.source.metadata?.codexNativeConnection !== 'attached'
+        ? 'unavailable' : this.source.metadata?.migrationInProgress !== undefined ? 'migration' : this.fault !== null ? 'fault' : null,
       model: this.source.model ?? this.source.metadata?.codexModel ?? null,
       reasoningEffort: this.source.modelReasoningEffort ?? null,
       planId: typeof this.source.agentState?.codexPlanProposalId === 'string' ? this.source.agentState.codexPlanProposalId : null,
@@ -502,8 +623,11 @@ export class NativeCodexAgent implements Agent {
     this.projectionFingerprint = fingerprint
   }
   private assertWritable(): void {
+    // Inactive/history/disconnected/fault sessions still accept a durable
+    // journal submission; the delivery path resolves the source or reports an
+    // explicit rejected/indeterminate receipt. Only a detached observation
+    // cannot own new input.
     if (this.disposed) throw new Error('The native Codex observation was detached')
-    if (this.projection.readOnly) throw new Error(this.fault ?? 'Native Codex is not attached to an available HAPI runner')
   }
   reportError(error: unknown): void {
     this.fault = error instanceof Error ? error.message : 'The native Codex observation failed'

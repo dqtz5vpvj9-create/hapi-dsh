@@ -189,10 +189,10 @@ live shell, actual Runner acknowledgement or user's existing PTY.
 
 The pinned upstream implementations are recorded in [UPSTREAMS.json](../UPSTREAMS.json):
 
-- HAPI [`terminal.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/hub/src/socket/handlers/terminal.ts),
-  [`terminalRegistry.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/hub/src/socket/terminalRegistry.ts),
-  [`userTerminalBuffer.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/hub/src/socket/userTerminalBuffer.ts),
-  and [`TerminalManager.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/cli/src/terminal/TerminalManager.ts).
+- HAPI [`terminal.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/hub/src/socket/handlers/terminal.ts),
+  [`terminalRegistry.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/hub/src/socket/terminalRegistry.ts),
+  [`userTerminalBuffer.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/hub/src/socket/userTerminalBuffer.ts),
+  and [`TerminalManager.ts`](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/cli/src/terminal/TerminalManager.ts).
 - DSH `@deepseek-ai/dsh-api-terminal-controller` version `0.2.1-rc.2`,
   unmodified. The adapter uses its public frame/environment contracts and
   provider composition; the client uses its real public service and view model.

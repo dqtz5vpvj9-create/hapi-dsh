@@ -128,7 +128,10 @@ test.describe('HAPI voice through public DSH composer and shared microphone owne
         environment.hapi.voice.sendTool('qwen-realtime', 'messageCodingAgent', { message: 'Qwen fixture source request' }, 'qwen-tool-1');
         await expect.poll(() => environment.hapi.sent.length).toBe(beforeBeta + 1); expect(environment.hapi.sent.at(-1)?.sessionId).toBe('native-beta');
         await dialog.getByRole('button', { name: 'Minimize voice and continue', exact: true }).click();
-        await beta.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click();
+        await beta.click({ position: { x: 4, y: 4 } });
+        const betaActions = page.locator('.hapi-statusbar .hapi-pane-actions');
+        await betaActions.locator(':scope > summary').click();
+        await betaActions.getByRole('button', { name: 'Close pane', exact: true }).click();
         await expect.poll(() => qwen.closed).toBe(true); await stoppedTracks(page);
         await page.locator('.hapi-session-open').filter({ hasText: 'DSH remote conversation' }).click();
         const remote = page.getByRole('region', { name: 'Pane: DSH remote conversation', exact: true });

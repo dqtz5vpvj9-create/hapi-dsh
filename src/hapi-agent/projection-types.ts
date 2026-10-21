@@ -27,6 +27,8 @@ export const hapiObservedProjectionSchema = z.object({
   displayRevision: z.number().int().nonnegative(), machineId: z.string().nullable(), machineName: z.string().nullable(),
   nativeId: z.string().nullable(), path: z.string(), active: z.boolean(), thinking: z.boolean(),
   controlledByUser: z.boolean(), connection: z.enum(['connected', 'disconnected']), readOnly: z.boolean(),
+  /** Why `readOnly` is set; only `engine-owned` also locks message input. */
+  readOnlyReason: z.enum(['engine-owned', 'unavailable', 'fault']).nullable().optional(),
   model: z.string().nullable(), effort: z.string().nullable(), permissionMode: z.string().nullable(),
   capabilities: z.object({
     steer: z.boolean(), switchToRemote: z.boolean(), images: z.boolean(),

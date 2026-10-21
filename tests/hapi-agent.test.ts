@@ -24,6 +24,8 @@ class Fixture implements HapiObservedTransport {
   readonly sources = new Map<string, HapiSession>()
   readonly rows = new Map<string, HapiMessage[]>()
   readonly sent: Array<{ source: string; value: HapiSendMessage }> = []
+  readonly sendTargets: string[] = []
+  sendHook: ((source: string, value: HapiSendMessage) => void) | undefined
   readonly answers: Array<{ source: string; id: string; answer: HapiApprovalAnswer; deny: boolean }> = []
   readonly requests: Array<{ path: string; method: string; body: unknown }> = []
   readonly listeners = new Set<(event: HapiEvent) => void>()
@@ -47,7 +49,13 @@ class Fixture implements HapiObservedTransport {
     return { messages: structuredClone(this.rows.get(id) ?? []), page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
       nextBeforeSeq: null, nextBeforeAt: null, nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: null, snapshotHeadAt: null, hasMore: false } }
   }
-  async sendMessage(source: string, value: HapiSendMessage) { this.sent.push({ source, value: structuredClone(value) }); if (this.sendFailure) throw this.sendFailure }
+  async sendMessage(source: string, value: HapiSendMessage) {
+    this.sendTargets.push(source)
+    // A hook throw is a Hub rejection, never a recorded delivery.
+    this.sendHook?.(source, value)
+    this.sent.push({ source, value: structuredClone(value) })
+    if (this.sendFailure) throw this.sendFailure
+  }
   async getQueuedState() { return structuredClone(this.queue) }
   async cancelQueuedMessage(_source: string, id: string) { this.cancelled.push(id); return { status: 'cancelled' as const, localId: id } }
   async steerQueuedMessage(_source: string, id: string) { return { status: 'steered' as const, localId: id } }
@@ -180,7 +188,10 @@ test('source delivery remains unknown after disconnect and restart, without auto
     await app.close(); app = await mount(source, directory)
     app.service.list()[0]!.followup(message); await app.service.list()[0]!.journal.settled(); assert.equal(source.sent.length, 1)
     source.isConnected = false; source.emit({ type: 'connection-changed', data: { status: 'disconnected' } }); await app.service.settled()
-    assert.throws(() => app.service.list()[0]!.followup(message), /unavailable/)
+    // A disconnected source is not a fake read-only lock. The same durable
+    // delivery identity remains unchanged, so this cannot replay the message.
+    app.service.list()[0]!.followup(message); await app.service.list()[0]!.journal.settled()
+    assert.equal(source.sent.length, 1)
     assert.equal(source.aborts, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -246,7 +257,11 @@ test('scheduled source delivery has one durable identity and survives view dispo
     source.emit({ type: 'connection-changed', data: { status: 'disconnected' } }); await app.service.settled()
     assert.equal(restored.scheduleReceipt(operationId)?.scheduledAt, scheduledAt)
     assert.equal(restored.scheduleReceipt('missing'), null); assert.equal(source.sent.length, 1)
-    assert.throws(() => restored.scheduleText({ operationId, text: 'Do this later', scheduledAt }), /unavailable/)
+    // Scheduling is message input: an offline/inactive source keeps the same
+    // durable operation identity and never replays it.
+    assert.equal(restored.scheduleText({ operationId, text: 'Do this later', scheduledAt }).localId,
+      restored.scheduleReceipt(operationId)?.localId)
+    assert.equal(source.sent.length, 1)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -306,4 +321,90 @@ test('parser distinguishes live source snapshots, terminal facts and queued huma
   const live = parseObservedMessage(codex('thinking', 2, { type: 'reasoning', id: 'thought', message: 'Reasoning', live: true }))
   assert.ok(live[0]?.kind === 'assistant'); assert.equal(live[0].live, true)
   assert.equal(parseObservedMessage(ready())[0]?.kind, 'end')
+})
+
+// ---------------------------------------------------------------------------
+// R4: only original-engine input ownership is read-only; inactive sources are
+// resumed before delivery per HAPI's resolve-before-send ordering.
+// ---------------------------------------------------------------------------
+
+test('an observed engine owning local input keeps the accurate admission block', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-owned-')), source = new Fixture()
+  const claude = source.add('claude')
+  claude.agentState = { ...claude.agentState, controlledByUser: true }
+  const app = await mount(source, directory)
+  try {
+    const agent = app.service.list()[0]!
+    assert.equal(agent.projection.readOnly, true)
+    assert.equal(agent.projection.readOnlyReason, 'engine-owned')
+    assert.equal(agent.projection.capabilities.switchToRemote, true)
+    assert.throws(() => agent.followup(freezeMessage({ id: MessageId('owned-block'), role: 'user', source: { kind: 'user' },
+      content: [{ type: 'text', text: 'Do not send' }] })), /local terminal.*remote control/)
+    assert.equal(source.sent.length, 0, 'the original engine owns input, so nothing is journaled for delivery')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('an inactive observed source resumes the original session before delivery and sends once', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-resume-')), source = new Fixture()
+  const claude = source.add('claude')
+  claude.active = false
+  const resumes: string[] = []
+  const app = await mount(source, directory, { resumeSession: async id => { resumes.push(id); return id } })
+  try {
+    const agent = app.service.list()[0]!
+    assert.equal(agent.projection.readOnlyReason, 'unavailable')
+    agent.followup(freezeMessage({ id: MessageId('observed-inactive'), role: 'user', source: { kind: 'user', rpcId: 'observed-inactive' },
+      content: [{ type: 'text', text: 'Deliver after resume' }] }))
+    await agent.journal.settled()
+    assert.deepEqual(resumes, ['claude'])
+    assert.deepEqual(source.sendTargets, ['claude'])
+    assert.equal(source.sent.length, 1)
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a confirmed session_inactive rejection resumes once and retries the same durable source delivery', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-race-')), source = new Fixture()
+  source.add('claude')
+  const resumes: string[] = []
+  source.sendHook = () => { throw new HapiRequestError('Session is inactive', 'rejected', 409, 'session_inactive') }
+  const app = await mount(source, directory, { resumeSession: async id => { resumes.push(id); source.sendHook = undefined; return id } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(freezeMessage({ id: MessageId('observed-race'), role: 'user', source: { kind: 'user', rpcId: 'observed-race' },
+      content: [{ type: 'text', text: 'Race the source shutdown' }] }))
+    await agent.journal.settled()
+    assert.deepEqual(resumes, ['claude'])
+    assert.deepEqual(source.sendTargets, ['claude', 'claude'])
+    assert.equal(source.sent.length, 1)
+    assert.equal(source.sent[0]?.value.localId, 'dsh:observed-race')
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a failed original-source resume leaves an explicit retryable delivery without replay', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-resume-failed-')), source = new Fixture()
+  const claude = source.add('claude')
+  claude.active = false
+  let fail = true
+  const app = await mount(source, directory, { resumeSession: async () => {
+    if (fail) throw new HapiRequestError('Original session resume is unavailable', 'rejected', 409, 'resume_unavailable')
+    return 'claude'
+  } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(freezeMessage({ id: MessageId('observed-resume-failed'), role: 'user', source: { kind: 'user', rpcId: 'observed-resume-failed' },
+      content: [{ type: 'text', text: 'Keep this draft' }] }))
+    await agent.journal.settled()
+    assert.equal(source.sendTargets.length, 0)
+    const failed = agent.projection.delivery[0]!
+    assert.equal(failed.state, 'rejected')
+    assert.match(failed.error ?? '', /resume is unavailable/)
+    assert.equal(failed.text, 'Keep this draft')
+    fail = false
+    agent.retryRejectedDelivery('dsh:observed-resume-failed')
+    await agent.journal.settled()
+    assert.deepEqual(source.sendTargets, ['claude'], 'only the explicit retry delivers')
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

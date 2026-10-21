@@ -23,6 +23,7 @@ import { installNativeActionDock } from './native-action-dock.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
+import { installDiagnostics, setDiagnosticIdentity } from './diagnostics/index.ts'
 
 export interface NativePaneIntegration { api: HapiRemoteApi; native: NativeActionsApi; controls: NativeControlLedger }
 
@@ -40,8 +41,12 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
         retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
         answer: async (sessionId, requestId, answer, deny) => remoteValue(await api.nativeAnswer({ sessionId, requestId, answer, ...(deny === undefined ? {} : { deny }) })),
         resume: async sessionId => remoteValue(await api.resumeSession({ sessionId })),
+        // Per graph api instance: concurrent panes cannot share this identity.
+        identify: identity => setDiagnosticIdentity(api, identity),
     }
-    const disposers: Array<() => void> = []
+    // Page-global, copyable evidence for remote/console/window failures. This
+    // never gates source execution and never renders into the conversation.
+    const disposers: Array<() => void> = [installDiagnostics(api)]
     disposers.push(installSourceAppearance(ctx))
     disposers.push(installSourcePathActions(ctx, api))
     disposers.push(installSourceFileActions(ctx, api))

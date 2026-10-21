@@ -27,7 +27,9 @@ flowchart TD
 
 一个窗格不再把官方 Web 的完整 AppFrame 当作自己的界面：`src/client/surface/` 定义单包内的三个 seam——`contracts.ts`（PaneHost/SessionSource/SessionView/ChromeOwnership）、`pane-graph.ts`（窗格只启动对话所需官方插件行，并把 Host 的插件图事件投影到同一子集）、`chrome.ts`（官方 `sidebar`/`shell.leading` 等窗口级 seat 在窗格图中影子为空，右栏/设置/对话框归焦点窗格）。官方 AppFrame 仍是唯一公开的 Conversation 宿主，所以窗格仍拥有自己的官方 Client Context；路由 b 的结论与证据、保留/排除行清单、内存实测见 [pane-surface.md](pane-surface.md)。
 
-窗格图不再重新求值本插件自己的 client bundle：根图通过 `mountPaneNative` 在窗格 Context 上安装 HAPI 侧贡献，bundle 与官方行按 Host 编译缓存共享一次 `new Function` 结果、每次执行仍传入该窗格自己的 `document/localStorage/fetch` facade。实测 4 窗格 JS heap 从 244.6MB 降到 75.8MB，第 2 个以后每窗格约 6.05MB。
+窗格图不再重新求值本插件自己的 client bundle：根图通过 `mountPaneNative` 在窗格 Context 上安装 HAPI 侧贡献，bundle 与官方行按 Host 编译缓存共享一次 `new Function` 结果、每次执行仍传入该窗格自己的 `document/localStorage/fetch` facade。实测 4 窗格 JS heap 从 244.6MB 降到 77.84MB（测量方法见 pane-surface.md），第 2 个以后每窗格约 6MB。
+
+窗格图按可见性懒启动：活动窗口的 pane 在页面加载时 boot，parked/retained 窗口的 pane 保留轻量占位，首次激活才启动；已 boot 的图不卸载，窗口切换保留状态、草稿与对话框。恢复 13 个 pane 时实际只启动活动窗口的 4 个，其余 9 个延迟，活动窗口 ready 从 14.6s 降到 6.5–8.1s，切回已 boot 窗口 0.7–1.2s。行 bundle 走 bounded shared-cache prefetch（仍受 Hub 隧道延迟影响，远端 pane 首次启动仍是已知残留风险）。
 
 ## 为什么要独立 Context
 
@@ -147,6 +149,14 @@ HAPI 中的 DSH continuable child 仍有一个源协议边界：原 child-send A
 
 原生历史 seed 的辅助记录使用 `displayTurn/displayStep`。官方 Conversation 会将所有事件 payload 顶层的 `turn/step` 视作真实位置；辅助字段不能制造额外步骤，也不能改变最终回答所在的边界。这一契约由已发布的官方 `ConversationNodeAssembler` 回归验证。
 
+## 输入准入与源会话恢复
+
+原生 Codex 与 observed 会话的“可写”准入和操作权限分开：`readOnly` 仍表达 approvals/settings/source-edit 的操作权限，不再决定消息输入。消息提交只阻止 disposed 与 observed 的引擎独占输入；inactive、history、disconnected 或历史故障的原生会话都接受一次 durable journal 提交，投递前按 HAPI 语义 resume 原会话（single-flight、校验 native identity、rebind 并持久化可见通知），只有明确 rejected 的 `409/session_inactive` 允许一次 resume+retry，timeout/丢 ACK 仍按 unknown 处理、不重发也不换 id。resume 返回新 session id 时以显式 notice 告知用户从侧栏重新打开，不把消息记到旧 id 的成功上。历史读取使用 epoch-stable pass，失败保留旧缓存；展示故障只进[诊断层](diagnostics.md)，不锁输入。
+
+## 诊断输出层与无缝历史
+
+浏览器侧诊断层（`src/client/diagnostics/**`）用字段 allowlist 的 300 条内存环形缓冲记录 HAPI/remote 失败、连接状态、分页与身份上下文，`诊断 N` 抽屉支持复制全部/清空，不采集 body、prompt、cookies、authorization 或 URL query。无缝历史插件（`src/client/seamless/**`）自动化官方 Conversation 的 Load earlier 控件，在向上意图接近顶部时自动翻一页，复用官方 beginPaging/preserve 锚定；有单飞/burst/超时/失败冷却/suspend/每会话页数上限，pinned 结构变化时惰性降级为手动按钮。两者边界与验证见 [diagnostics.md](diagnostics.md) 与 [seamless-history.md](seamless-history.md)。
+
 ## 反向通道
 
 Runner 通过私有配对凭据发起 WSS 连接。握手验证协议版本、稳定机器 ID 与精确 DSH 版本，同一身份只允许一个在线实例。Hub 保存摘要，Runner 保存原始机器凭据。
@@ -175,5 +185,5 @@ HTTP/WS 的完整通道使官方插件保留所属 Host 的 API 与事件能力�
 
 - [官方 Web bundle 与启动配置](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317/packages/bundle/web-app)
 - [官方 Client connection](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/connection)
-- [固定 HAPI fork](https://github.com/dqtz5vpvj9-create/hapi/tree/0f8ef6970884c92fb2ddca3070be2ec56cb50333)
+- [固定 HAPI fork](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81)
 - 本仓库 `tests/federation-official.test.ts` 通过固定 npm 发行版实际验证官方安装、插件图、原始 Conversation bundle、Session RPC 与事件 WebSocket。

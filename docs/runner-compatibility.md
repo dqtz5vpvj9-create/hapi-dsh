@@ -7,7 +7,7 @@ RPC capabilities. Offline Runners are excluded, and a disconnected Hub or an
 unavailable current administration read cannot claim that a Runner is online.
 
 The contract follows the pinned original HAPI revision
-[`0f8ef6970884c92fb2ddca3070be2ec56cb50333`](https://github.com/dqtz5vpvj9-create/hapi/tree/0f8ef6970884c92fb2ddca3070be2ec56cb50333):
+[`55166cf8d87814ccfb383b538a8e8c55283bed81`](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81):
 `shared/src/runnerCapabilities.ts`,
 `web/src/components/RunnerVersionSkewBanner.tsx`, and
 `web/src/lib/runnerSkewBannerState.ts`. The adapted implementation remains

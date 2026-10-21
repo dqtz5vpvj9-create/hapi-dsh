@@ -31,6 +31,11 @@ class FakeHapi implements HapiTransport {
   readonly hubId = 'test-hub'
   readonly listeners = new Set<(event: HapiEvent) => void>()
   readonly sent: HapiSendMessage[] = []
+  /** Every attempted dispatch target; a rejected attempt is not a delivery. */
+  readonly sendTargets: string[] = []
+  /** Throw from here to simulate a per-attempt Hub rejection. */
+  sendHook: ((sessionId: string, message: HapiSendMessage) => void) | undefined
+  readonly sessionsById = new Map<string, HapiSession>()
   readonly answers: Array<{ requestId: string; answer: HapiApprovalAnswer; deny: boolean }> = []
   readonly cancelCalls: string[] = []
   aborts = 0
@@ -58,13 +63,19 @@ class FakeHapi implements HapiTransport {
     const { codexNativeSession: _native, codexNativeConnection: _connection, ...metadata } = this.source.metadata!
     return [{ ...this.source, metadata }]
   }
-  async getSession(): Promise<HapiSession> { return structuredClone(this.source) }
+  async getSession(id?: string): Promise<HapiSession> {
+    const explicit = id === undefined ? undefined : this.sessionsById.get(id)
+    return structuredClone(explicit ?? this.source)
+  }
   async readMessages(_id: string, query: HapiMessagesQuery = {}): Promise<HapiMessagesPage> {
     this.reads.push(query)
     if (this.historyFailure) throw this.historyFailure
     return this.readHook?.(query) ?? page(this.rows)
   }
-  async sendMessage(_id: string, message: HapiSendMessage): Promise<void> {
+  async sendMessage(id: string, message: HapiSendMessage): Promise<void> {
+    this.sendTargets.push(id)
+    // A hook throw is a Hub rejection, never a recorded delivery.
+    this.sendHook?.(id, message)
     this.sent.push(structuredClone(message))
     if (this.sendFailure) throw this.sendFailure
   }
@@ -150,7 +161,10 @@ test('native scheduled delivery remains source-owned through abort, view closure
     assert.equal(restored.scheduleReceipt(operationId)?.localId, original.localId)
     assert.equal(restored.scheduleReceipt(operationId)?.scheduledAt, scheduledAt)
     assert.equal(restored.scheduleReceipt('missing'), null); assert.equal(fake.sent.length, 1)
-    assert.throws(() => restored.scheduleText({ operationId, text: 'Run when the original timer fires', scheduledAt }), /available|writable|inactive/)
+    // Scheduling is message input, not a source operation: the same durable
+    // operation id resolves to its existing receipt without a new delivery.
+    assert.equal(restored.scheduleText({ operationId, text: 'Run when the original timer fires', scheduledAt }).localId, original.localId)
+    assert.equal(fake.sent.length, 1)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -308,7 +322,7 @@ test('source-confirmed identity rotation retires old native display admission an
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native lifecycle reconciliation refuses an unversioned identity change and keeps source-not-ready sessions read-only', async () => {
+test('native lifecycle reconciliation refuses an unversioned identity change without locking message input', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-unready-'))
   const fake = new FakeHapi()
   const app = await mount(fake, directory)
@@ -316,12 +330,15 @@ test('native lifecycle reconciliation refuses an unversioned identity change and
     const agent = app.service.list()[0]!
     fake.source.metadata = { ...fake.source.metadata!, codexSessionId: 'unversioned-native-thread' }
     await assert.rejects(app.service.reconcileSource(fake.source.id), /without advancing/)
-    assert.equal(agent.projection.readOnly, true)
     fake.source.metadataVersion++
     delete fake.source.metadata.codexSessionId
     assert.equal(await app.service.reconcileSource(fake.source.id), undefined)
-    assert.equal(agent.projection.readOnly, true)
-    assert.equal(fake.sent.length, 0)
+    // A source-not-ready display is a diagnostic, not an input gate: the
+    // durable journal still accepts the message and delivery resolves it.
+    const message = createUserMessage({ content: [{ type: 'text', text: 'Send despite unready source' }], source: { kind: 'user' } })
+    agent.followup(message)
+    await agent.journal.settled()
+    assert.equal(fake.sent.length, 1)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -535,7 +552,9 @@ test('disconnect and disposal never terminate or fabricate completion for the or
     fake.emit({ type: 'connection-changed', data: { status: 'disconnected' } })
     await app.service.settled()
     assert.equal(agent.status, 'running')
-    assert.equal(agent.projection.readOnly, true)
+    // `readOnly` gates source operations; message input is admitted separately.
+    assert.equal(agent.projection.nativeConnection, 'disconnected')
+    assert.equal(agent.projection.readOnlyReason, 'unavailable')
     assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 0)
     agent.cancel({ kind: 'disposed' })
     await app.close()
@@ -555,6 +574,9 @@ test('native history epoch resets restart pagination without mixing pages', asyn
   }
   const rows = await readNativeHistory(fake, fake.source.id)
   assert.deepEqual(new Set(rows.map(row => row.localId)), new Set(['latest', 'older']))
+  // One resetting pass (latest page, then its resetting backward page) and one
+  // complete pass. These fixture pages carry no snapshot head, so no extra
+  // anchored validation read is issued.
   assert.equal(fake.reads.length, 4)
 })
 
@@ -612,7 +634,7 @@ test('attachment admission resolves runner paths before the one native send', as
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('offline native history uses a read cache and does not enable native actions', async () => {
+test('offline native history uses a read cache and keeps the fault diagnostic-only for input', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-cache-'))
   const fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Cached native answer' }, 'answer'), terminal()]
@@ -622,11 +644,14 @@ test('offline native history uses a read cache and does not enable native action
     fake.historyFailure = new Error('Runner is offline')
     app = await mount(fake, directory)
     const agent = app.service.list()[0]!
-    assert.equal(agent.projection.readOnly, true)
     assert.match(agent.projection.error ?? '', /offline/)
+    assert.equal(agent.projection.readOnlyReason, 'fault')
     assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
-    assert.throws(() => agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Cannot send' }], source: { kind: 'user' } })), /offline/)
-    assert.equal(fake.sent.length, 0)
+    // Faults are diagnostics: the durable journal still accepts the message and
+    // the delivery path reports the real source outcome instead of a fake lock.
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Send despite cached history' }], source: { kind: 'user' } }))
+    await agent.journal.settled()
+    assert.equal(fake.sent.length, 1)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -770,5 +795,153 @@ test('native content deduplication ignores JSON key ordering and rejects an actu
     fake.source.metadataVersion = 2
     await assert.rejects(agent.refresh(), /identity changed/)
     assert.equal(agent.sourceSession.metadata?.codexSessionId, THREAD)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+// ---------------------------------------------------------------------------
+// R4: unavailable/stale native sources are not read-only; delivery resolves the
+// original session per HAPI's resolve-before-send ordering.
+// ---------------------------------------------------------------------------
+
+function outbound(localId: string, text: string): UserMessage {
+  return freezeMessage({ id: MessageId(localId), role: 'user', source: { kind: 'user', rpcId: localId },
+    content: [{ type: 'text', text }] })
+}
+
+test('an inactive native session resumes the exact original thread before delivery and sends exactly once', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-')), fake = new FakeHapi()
+  fake.source.active = false
+  const resumes: string[] = []
+  const app = await mount(fake, directory, { resumeSession: async id => { resumes.push(id); fake.source.active = true; return id } })
+  try {
+    const agent = app.service.list()[0]!
+    // `readOnly` keeps its operation-permission meaning, but input is admitted.
+    assert.equal(agent.projection.readOnly, true)
+    assert.equal(agent.projection.readOnlyReason, 'unavailable')
+    agent.followup(outbound('r4-inactive', 'Deliver after resume'))
+    await agent.journal.settled()
+    assert.deepEqual(resumes, [fake.source.id], 'resume targets the original source id')
+    assert.deepEqual(fake.sendTargets, [fake.source.id], 'delivery targets the verified resumed id')
+    assert.equal(fake.sent.length, 1)
+    assert.equal(fake.sent[0]?.localId, 'dsh:r4-inactive')
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('concurrent queued deliveries share one single-flight resume of the inactive source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-once-')), fake = new FakeHapi()
+  fake.source.active = false
+  const resumes: string[] = []
+  const app = await mount(fake, directory, { resumeSession: async id => { resumes.push(id); return id } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-first', 'First queued message'))
+    agent.followup(outbound('r4-second', 'Second queued message'))
+    await agent.journal.settled()
+    assert.equal(resumes.length, 1, 'one original source resume serves both deliveries')
+    assert.deepEqual(fake.sendTargets, [fake.source.id, fake.source.id])
+    assert.equal(fake.sent.length, 2)
+    assert.ok(agent.projection.delivery.every(row => row.state === 'accepted'))
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a confirmed session_inactive rejection resumes once and retries the same durable localId', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-race-')), fake = new FakeHapi()
+  const resumes: string[] = []
+  fake.sendHook = () => { throw new HapiRequestError('Session is inactive', 'rejected', 409, 'session_inactive') }
+  const app = await mount(fake, directory, { resumeSession: async id => { resumes.push(id); fake.sendHook = undefined; return id } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-race', 'Race with source inactivity'))
+    await agent.journal.settled()
+    assert.deepEqual(resumes, [fake.source.id])
+    assert.deepEqual(fake.sendTargets, [fake.source.id, fake.source.id], 'one rejected attempt, one delivery')
+    assert.equal(fake.sent.length, 1)
+    assert.equal(fake.sent[0]?.localId, 'dsh:r4-race', 'the retried dispatch kept the durable localId')
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('an indeterminate native delivery never resumes, retries or replaces the original source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-unknown-')), fake = new FakeHapi()
+  const resumes: string[] = []
+  fake.sendFailure = new HapiRequestError('Connection lost after dispatch', 'indeterminate')
+  const app = await mount(fake, directory, { resumeSession: async id => { resumes.push(id); return id } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-unknown', 'Unknown delivery'))
+    await agent.journal.settled()
+    assert.deepEqual(resumes, [], 'a transport failure is unknown, not an inactive-source proof')
+    assert.equal(fake.sendTargets.length, 1)
+    assert.equal(agent.projection.delivery[0]?.state, 'indeterminate')
+    assert.match(agent.projection.delivery[0]?.error ?? '', /Connection lost/)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a failed resume keeps the message in a rejected retryable delivery and never replays it automatically', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-failed-')), fake = new FakeHapi()
+  fake.source.active = false
+  const resumes: string[] = []
+  let fail = true
+  const app = await mount(fake, directory, { resumeSession: async id => {
+    resumes.push(id)
+    if (fail) throw new HapiRequestError('Original session resume is unavailable', 'rejected', 409, 'resume_unavailable')
+    return id
+  } })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-resume-failed', 'Keep this draft'))
+    await agent.journal.settled()
+    assert.equal(fake.sendTargets.length, 0, 'nothing is sent when the original source cannot be resumed')
+    const failed = agent.projection.delivery[0]!
+    assert.equal(failed.state, 'rejected')
+    assert.match(failed.error ?? '', /resume is unavailable/)
+    assert.equal(failed.text, 'Keep this draft', 'the message stays in the durable journal')
+    fail = false
+    agent.retryRejectedDelivery('dsh:r4-resume-failed')
+    await agent.journal.settled()
+    assert.equal(resumes.length, 2)
+    assert.equal(fake.sendTargets.length, 1, 'only the explicit retry dispatches')
+    assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('resuming into a different native identity is rejected before delivery and preserves the draft', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-identity-')), fake = new FakeHapi()
+  fake.source.active = false
+  const other = structuredClone(fake.source)
+  other.id = 'resumed-other-session'
+  other.metadata = { ...other.metadata!, codexSessionId: 'a-different-native-thread' }
+  fake.sessionsById.set('resumed-other-session', other)
+  const app = await mount(fake, directory, { resumeSession: async () => 'resumed-other-session' })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-wrong-thread', 'Do not deliver here'))
+    await agent.journal.settled()
+    assert.equal(fake.sendTargets.length, 0, 'an identity mismatch is caught before any delivery')
+    const failed = agent.projection.delivery[0]!
+    assert.equal(failed.state, 'rejected')
+    assert.match(failed.error ?? '', /different native Codex thread/)
+    assert.equal(failed.text, 'Do not deliver here')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a different resumed session id is rebound before delivery and persisted as an explicit notice', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-resume-rebind-')), fake = new FakeHapi()
+  fake.source.active = false
+  const app = await mount(fake, directory, { resumeSession: async () => 'resumed-native-session' })
+  try {
+    const agent = app.service.list()[0]!
+    agent.followup(outbound('r4-rebind', 'Deliver to the resumed session'))
+    await agent.journal.settled()
+    assert.deepEqual(fake.sendTargets, ['resumed-native-session'])
+    const delivery = agent.projection.delivery[0]!
+    assert.equal(delivery.state, 'accepted')
+    assert.match(delivery.error ?? '', /resumed as a new session \(resumed-native-session\)/)
+    assert.match(delivery.error ?? '', /reopen it from the sidebar/)
+    // Later deliveries already target the rebound session without another resume.
+    agent.followup(outbound('r4-after-rebind', 'Next message'))
+    await agent.journal.settled()
+    assert.deepEqual(fake.sendTargets, ['resumed-native-session', 'resumed-native-session'])
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

@@ -23,10 +23,12 @@ async function admit(page: Page, environment: OfficialEnvironment): Promise<void
     await acknowledgePreviewNotice(page, environment)
 }
 function sourcePane(page: Page, title: string): Locator {
-    return page.locator('.hapi-pane').filter({ has: page.locator('.hapi-pane-header > .hapi-pane-title').filter({ hasText: title }) })
+    // v2 has no workspace title bar; the pane region name carries the session title.
+    return page.locator(`.hapi-pane[aria-label="Pane: ${title}"]`)
 }
 async function menu(page: Page, pane: Locator, mobile = false): Promise<Locator> {
-    const result = mobile ? page.locator('.hapi-mobile-pane-bar > .hapi-pane-menu') : pane.locator('.hapi-pane-header > .hapi-pane-menu')
+    if (!mobile) await pane.click({ position: { x: 4, y: 4 } })
+    const result = mobile ? page.locator('.hapi-mobile-pane-bar > .hapi-pane-menu') : page.locator('.hapi-statusbar .hapi-pane-actions')
     await result.locator(':scope > summary').click()
     await expect(result).toHaveAttribute('open', '')
     return result
@@ -79,14 +81,18 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             await expect(observed.getByText('Original dsh answer in the official DSH Conversation.', { exact: true })).toBeVisible()
             for (const pane of [native, observed]) {
                 await expect(pane.locator('[data-slot="conversation.session.header"]')).toBeVisible()
+                // v2: no workspace title bar; pane identity comes from the bottom window list.
+                await expect(pane.locator('.hapi-pane-header')).toHaveCount(0)
                 await expect(pane.locator('.hapi-pane-body .hapi-host-tools')).toHaveCount(0)
-                await expect(pane.getByRole('button', { name: words.settings })).not.toBeVisible()
+                // Host settings / plugin views stay in the official session header utilities.
+                await expect(pane.getByRole('button', { name: words.settings })).toBeVisible()
+                await expect(pane.getByRole('button', { name: words.views })).toBeVisible()
                 expect(await pane.locator('[data-slot="conversation.session.header"]').innerText()).not.toMatch(/hapi-(?:native|observed|codex-native)/)
-                const titleFont = await typography(pane.locator('.hapi-pane-title'))
-                expect(titleFont.size).toBeGreaterThanOrEqual(13)
+                const titleFont = await typography(page.locator('.hapi-window-tabs [aria-selected="true"] .hapi-window-label'))
+                expect(titleFont.size).toBeGreaterThanOrEqual(12)
                 expect(titleFont.family).not.toMatch(/monospace|(?:^|,)\s*"?serif"?(?:,|$)/i)
                 const frame = await pane.locator('.hapi-host-frame').boundingBox(), box = await pane.boundingBox()
-                expect(frame!.height).toBeGreaterThan(box!.height - 45)
+                expect(frame!.height).toBeGreaterThan(box!.height - 16)
                 expect((await pane.locator('[data-conversation-content]').boundingBox())!.height).toBeGreaterThan(500)
                 const flow = pane.locator('[data-chat-flow]:not([data-step-process-content])')
                 expect((await flow.boundingBox())!.height).toBeGreaterThan(100)
@@ -94,27 +100,33 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             }
             await expect(observed.locator('[data-hapi-header-field="model"]')).toContainText('DeepSeek-Flash')
             await expect(observed.locator('[data-hapi-header-field="model"]')).not.toContainText('["')
-            expect((await typography(page.locator('.hapi-session-title').filter({ hasText: sourceTitle }))).size).toBeGreaterThanOrEqual(14)
-            expect((await typography(native.locator('.hapi-native-status'))).size).toBeGreaterThanOrEqual(13)
+            // v2 uses the official --dsw-font-xs-13 chrome scale for titles.
+            const windowTitleType = await typography(page.locator('.hapi-window-tabs [aria-selected="true"] .hapi-window-label'))
+            expect(windowTitleType.size).toBeGreaterThanOrEqual(13)
+            const sessionTitle = page.locator('.hapi-session-title').filter({ hasText: sourceTitle })
+            const sessionTitleType = await typography(sessionTitle)
+            expect(sessionTitleType.size).toBeGreaterThanOrEqual(13)
+            expect(sessionTitleType.family).not.toMatch(/monospace|(?:^|,)\s*"?serif"?(?:,|$)/i)
+            // Native status is a compact 11px caption in the current type scale;
+            // the readable-title floor is asserted above on the window/session titles.
+            expect((await typography(native.locator('.hapi-native-status'))).size).toBeGreaterThanOrEqual(11)
             await offerInstall(page)
             await expect(page.locator('.hapi-notification-stack article')).toHaveCount(0)
             await page.screenshot({ path: info.outputPath('workspace-readable-2048.png'), fullPage: true })
 
+            // The bottom bar's Pane actions menu owns pane geometry only.
             const actions = await menu(page, native)
-            await expect(actions.getByRole('button', { name: words.settings })).toBeVisible()
-            await expect(actions.getByRole('button', { name: words.views })).toBeVisible()
+            await expect(actions.getByRole('button', { name: words.split })).toBeVisible()
             await expect(actions.getByRole('button', { name: 'Plugin views in a new pane', exact: true })).toBeVisible()
-            await actions.getByRole('button', { name: words.settings }).click()
+            await expect(actions.getByRole('button', { name: 'Close pane', exact: true })).toBeVisible()
+            await page.keyboard.press('Escape')
+            await expect(actions).not.toHaveAttribute('open', '')
+
+            await native.getByRole('button', { name: words.settings }).click()
             const settings = page.getByRole('dialog', { name: words.settingsDialog })
             await expect(settings).toBeVisible()
             await page.keyboard.press('Escape')
             await expect(settings).toHaveCount(0)
-            await expect(actions).not.toHaveAttribute('open', '')
-
-            await (await menu(page, native)).getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: words.plugins }).click()
-            await expect(native.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true })).not.toBeVisible()
-            await (await menu(page, native)).getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: words.conversation }).click()
-            await expect(native.getByText(nativeAnswer, { exact: true })).toBeVisible()
 
             // Installation remains a deliberate action in the original Settings.
             await page.getByRole('button', { name: 'Account menu', exact: true }).click()
@@ -127,6 +139,16 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             await page.keyboard.press('Escape')
             await expect(page.locator('.hapi-session-sidebar')).toHaveCount(1)
             await expect(page.locator('iframe')).toHaveCount(0)
+
+            // Official plugin pages stay reachable from the pane utility cluster.
+            // Selecting one replaces the conversation surface in that pane; this is
+            // the last pane assertion so no return-to-conversation step is needed.
+            const hostTools = native.getByRole('combobox', { name: 'Host tools', exact: true })
+            await expect(hostTools.locator('option', { hasText: 'Plugins' })).toHaveCount(1)
+            await expect(hostTools.locator('option', { hasText: words.conversation })).toHaveCount(1)
+            await hostTools.selectOption({ label: 'Plugins' })
+            await expect(native.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true })).not.toBeVisible()
+            await expect(native.getByRole('heading', { name: 'Plugins', exact: true })).toBeVisible()
             expect(errors).toEqual([])
         } finally {
             await info.attach('browser-errors', { body: errors.join('\n'), contentType: 'text/plain' })
@@ -145,14 +167,16 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             await page.locator('.hapi-session-picker .hapi-session-open').filter({ hasText: sourceTitle }).click()
             const native = sourcePane(page, sourceTitle)
             await expect(native.getByText(nativeAnswer, { exact: true })).toBeVisible()
-            await expect(native.locator('.hapi-pane-header')).not.toBeVisible()
+            await expect(native.locator('.hapi-pane-header')).toHaveCount(0)
             await expect(native.locator('[data-slot="conversation.session.header"]')).toBeVisible()
             await expect(native.locator('.hapi-pane-body .hapi-host-tools')).toHaveCount(0)
             await offerInstall(page)
             await expect(page.locator('.hapi-notification-stack article')).toHaveCount(0)
             const mobileActions = await menu(page, native, true)
-            await expect(mobileActions.getByRole('button', { name: words.settings })).toBeVisible()
-            await mobileActions.getByRole('button', { name: words.settings }).click()
+            await expect(mobileActions.getByRole('button', { name: words.split })).toBeVisible()
+            await page.keyboard.press('Escape')
+            await expect(mobileActions).not.toHaveAttribute('open', '')
+            await native.getByRole('button', { name: /Open the Settings panel for this Host/ }).click()
             const settings = page.getByRole('dialog', { name: words.settingsDialog })
             await expect(settings).toBeVisible()
             await page.keyboard.press('Escape'); await expect(settings).toHaveCount(0)
@@ -166,8 +190,7 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             await expect(engineLabel).toBeVisible()
             expect(await engineLabel.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
             const activeTools = await menu(page, observed, true)
-            await expect(activeTools.locator('.hapi-host-tools')).toHaveCount(1)
-            await expect(activeTools.getByRole('button', { name: words.settings })).toBeVisible()
+            await expect(activeTools.getByRole('button', { name: words.split })).toBeVisible()
             await page.screenshot({ path: info.outputPath('workspace-mobile-menu-420.png'), fullPage: true })
             await page.keyboard.press('Escape')
             await expect(activeTools).not.toHaveAttribute('open', '')

@@ -15,7 +15,6 @@ async function admit(page: Page, environment: OfficialEnvironment): Promise<Loca
   return pane
 }
 async function preference(page: Page, pane: Locator, value: 'send' | 'newline'): Promise<void> {
-  await pane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
   await pane.getByRole('button', { name: 'Host settings', exact: true }).click()
   const settings = page.getByRole('dialog', { name: 'Settings', exact: true })
   await settings.getByRole('button', { name: 'Message input', exact: true }).click()

@@ -232,7 +232,7 @@ test('creation, Session-scoped file authority and immutable source identity are 
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('prepared task restores from its admitted content and never admits it again after a writable-source race', async () => {
+test('first-task delivery survives a source that goes inactive after admission and is never re-admitted after restart', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-initial-')), source = new SourceFixture(); source.add('native', 'codex', true)
   let app = await mount(source, directory)
   try {
@@ -240,13 +240,20 @@ test('prepared task restores from its admitted content and never admits it again
     app.attachments.beforeAdmission = async () => {
       source.sources.get('native')!.active = false; await agent.refresh()
     }
-    const prepared = await app.tasks.submit(request)
-    assert.equal(prepared.status, 'prepared'); assert.equal(prepared.canRetry, false); assert.equal(source.sent.length, 0)
+    // R4: a source availability change after admission does not lock message
+    // input. The durable task dispatches once with its admitted content; the
+    // delivery path resolves the source instead of fabricating a read-only wall.
+    const submitted = await app.tasks.submit(request)
+    await app.tasks.settled()
+    assert.equal(source.sent.length, 1)
+    assert.equal(source.sent[0]?.value.localId, submitted.localId)
+    assert.equal(source.sent[0]?.value.text, '')
+    assert.equal(source.sent[0]?.value.attachments?.length, 1)
+    assert.equal(app.attachments.admissions, 1)
     const creations = app.creations; await app.close(); source.sources.get('native')!.active = true; app = await mount(source, directory, creations)
-    assert.equal((await app.tasks.read({ operationId: request.operationId }))?.canRetry, true)
-    await app.tasks.retry({ operationId: request.operationId }); await app.tasks.settled()
-    assert.equal(source.sent.length, 1); assert.equal(source.sent[0]?.value.localId, prepared.localId)
-    assert.equal(source.sent[0]?.value.text, ''); assert.equal(source.sent[0]?.value.attachments?.length, 1)
+    assert.equal((await app.tasks.read({ operationId: request.operationId }))?.localId, submitted.localId)
+    await app.tasks.settled()
+    assert.equal(source.sent.length, 1, 'restart never replays the admitted first task')
     assert.equal(app.attachments.admissions, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

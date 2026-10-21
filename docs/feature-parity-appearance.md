@@ -1,6 +1,6 @@
 # Original HAPI appearance in official DSH views
 
-Baseline: HAPI `0f8ef697` and DSH `687f282e` / npm `0.2.1-rc.2`. The adapter does not modify upstream packages, duplicate a chat renderer, replace the official header, or reorder another plugin's controls.
+Baseline: HAPI `55166cf8` and DSH `687f282e` / npm `0.2.1-rc.2`. The adapter does not modify upstream packages, duplicate a chat renderer, replace the official header, or reorder another plugin's controls.
 
 ## Implemented contracts
 
@@ -47,7 +47,7 @@ This section records source review against the pinned versions. It is a plan for
 
 ### Enter inserts a newline
 
-Original HAPI stores `hapi-composer-enter-behavior` as `send` or `newline`. Its `HappyComposer` gives IME and Shift+Enter priority, lets a visible suggestion consume Enter, then uses Ctrl/Cmd+Enter to send in newline mode. See the pinned [preference hook](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/hooks/useComposerEnterBehavior.ts) and [composer key handling](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/components/AssistantChat/HappyComposer.tsx#L1371).
+Original HAPI stores `hapi-composer-enter-behavior` as `send` or `newline`. Its `HappyComposer` gives IME and Shift+Enter priority, lets a visible suggestion consume Enter, then uses Ctrl/Cmd+Enter to send in newline mode. See the pinned [preference hook](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/hooks/useComposerEnterBehavior.ts) and [composer key handling](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/components/AssistantChat/HappyComposer.tsx#L1371).
 
 The official DSH [keymap](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-conversation/src/client/input/editor/keymap.ts) handles Enter inside Lexical at critical priority. A window-level bubbling shortcut observer runs too late to prevent that send. `ComposerKeyboard` and the operations in `ComposerBarInjected` are explicitly package-private; their presence in a retained entry is not permission to call them. The [published InputActions](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-conversation/src/client/contract/input.ts#L241) instead expose selection/revision capture, one undoable plain-text insertion, and ordinary submission.
 

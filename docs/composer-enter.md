@@ -47,7 +47,7 @@ Client and E2E TypeScript checks passed. No browser build overrides or source ch
 
 ## Upstream references
 
-- Original HAPI [preference storage and defaults](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/hooks/useComposerEnterBehavior.ts) and [composer keyboard behavior](https://github.com/dqtz5vpvj9-create/hapi/blob/0f8ef6970884c92fb2ddca3070be2ec56cb50333/web/src/components/AssistantChat/HappyComposer.tsx).
+- Original HAPI [preference storage and defaults](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/hooks/useComposerEnterBehavior.ts) and [composer keyboard behavior](https://github.com/dqtz5vpvj9-create/hapi/blob/55166cf8d87814ccfb383b538a8e8c55283bed81/web/src/components/AssistantChat/HappyComposer.tsx).
 - Pinned DSH `packages/client/ui-conversation/src/client/contract/input.ts`, `contract/composer-blocks.ts`, `contract/slots.ts`, and `input/editor/keymap.ts` define the public actions, public admission states, attachment seat and original IME/repeat behavior.
 - Pinned DSH `packages/client/ui-input-trigger/src/client/contract.ts` and `controller.ts` define public controller resolution and arbitration. `ComposerKeyboard` and the input bar's injected implementation face remain package-private and are not used by this plugin.
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { filterSessions, sessionLocation, type WorkspaceController } from './controller.ts'
 import { isInternalIdentifier, readableEngine, readableHost, stableLabel } from './locales.ts'
@@ -22,7 +22,7 @@ import { NativeLibraryPanel, NativeSessionToolsPanel } from './native-library.ts
 import { SourceSessionToolsPanel } from './source-lifecycle.tsx'
 import { SourcePinButton } from './source-pin.tsx'
 import { SidebarActionSurface } from './sidebar-action-surface.tsx'
-import { sidebarActionFacts } from '../workspace/sidebar-actions.ts'
+import { sidebarActionFacts, sidebarMenuPosition, SidebarPress } from '../workspace/sidebar-actions.ts'
 import { SourceExportPanel } from './source-export.tsx'
 import { SourceTitlePanel } from './source-title-panel.tsx'
 import { SourceMigrationPanel } from './source-history.tsx'
@@ -193,14 +193,8 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         data-pane-id={pane.id} data-session-id={pane.resource.kind === 'chat' ? pane.resource.sessionId : ''} aria-hidden={hidden}
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
-        <header className="hapi-pane-header">
-            <ActivityDot {...sessionActivity(summary)} t={t}/>
-            <span className="hapi-pane-title" title={[title, summary?.cwd].filter(Boolean).join('\n')} draggable={!hidden}
-                onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>{readableTitle(title, t, 72)}</span>
-            <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
-            <PaneMenu pane={pane} window={window} controller={controller} t={t}/>
-            <IconButton label={t('closePane')} icon="close" onClick={() => controller.store.closePane(pane.id)}/>
-        </header>
+        <div className="hapi-pane-grip" data-hapi-pane-drag aria-hidden="true" title={t('paneDrag')} draggable={!hidden}
+            onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}/>
         <div className="hapi-pane-body">
             {pane.resource.kind === 'empty' ? <div className="hapi-empty"><WorkspaceIcon kind="grid" size={34}/><h2>{t('chooseSession')}</h2><p>{t('emptyHelp')}</p><button type="button" onClick={controller.requestSessionPicker}>{t('openConversation')}</button><button type="button" onClick={create}>{t('newSession')}</button><kbd>Ctrl B → %</kbd></div>
                 : lease?.status === 'failed' ? (() => {
@@ -217,11 +211,11 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
     </section>
 }
 
-function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
+function PaneMenuItems({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
     const layout = controller.getSnapshot().layout
     const row = pane.resource.kind === 'empty' ? undefined : controller.getSnapshot().catalog.byId[pane.resource.sessionId]
     const split = (axis: 'horizontal' | 'vertical'): void => { controller.store.focus(pane.id); controller.store.split(axis); controller.requestSessionPicker() }
-    return <details className="hapi-menu hapi-pane-menu"><summary title={t('actions')} aria-label={t('actions')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
+    return <>
         {pane.resource.kind !== 'empty' && <>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('pluginViewsBeside')}</button>
             <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('projectFiles')}</button>
@@ -235,6 +229,12 @@ function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: Wor
         {layout.windows.filter(other => other.id !== window.id).map(other => <button type="button" key={other.id} onClick={() => controller.store.movePane(pane.id, other.id)}>{t('moveTo')} · {windowAlias(other, layout.windows.indexOf(other) + 1)}</button>)}
         <button type="button" onClick={() => controller.store.movePaneToNewWindow(pane.id)}>{t('moveToNewWindow')}</button>
         <button type="button" onClick={() => controller.store.closePane(pane.id)}>{t('closePane')}</button>
+    </>
+}
+
+function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
+    return <details className="hapi-menu hapi-pane-menu"><summary title={t('actions')} aria-label={t('actions')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
+        <PaneMenuItems pane={pane} window={window} controller={controller} t={t}/>
     </div></details>
 }
 
@@ -247,6 +247,15 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     const [switcher, setSwitcher] = useState(false)
     const [rename, setRename] = useState<WorkspaceWindow | null>(null)
     const [prefix, setPrefix] = useState(false)
+    const [windowMenu, setWindowMenu] = useState<{ window: WorkspaceWindow; index: number; point: { x: number; y: number } } | null>(null)
+    const windowMenuRef = useRef<HTMLDivElement>(null)
+    const [windowMenuStyle, setWindowMenuStyle] = useState<CSSProperties>({ visibility: 'hidden' })
+    const pressedWindow = useRef<{ window: WorkspaceWindow; index: number } | null>(null)
+    const windowMenuTrigger = useRef<HTMLElement | null>(null)
+    const windowPress = useMemo(() => new SidebarPress(point => {
+        const target = pressedWindow.current
+        if (target) setWindowMenu({ ...target, point })
+    }), [])
     const mobile = useNarrowViewport()
     const windowTabs = useRef<HTMLDivElement>(null)
     const paneTabs = useRef<HTMLDivElement>(null)
@@ -256,6 +265,80 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         windowTabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
         paneTabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     }, [layout.activeWindowId, layout.focused[active.id], mobile])
+    useEffect(() => () => windowPress.dispose(), [windowPress])
+    useLayoutEffect(() => {
+        const node = windowMenuRef.current
+        if (!windowMenu || !node) return
+        const viewport = window.visualViewport
+        setWindowMenuStyle(sidebarMenuPosition(windowMenu.point, { width: node.offsetWidth, height: node.offsetHeight }, {
+            left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
+            width: viewport?.width ?? window.innerWidth, height: viewport?.height ?? window.innerHeight,
+        }))
+        const measure = (): void => {
+            if (!windowMenuRef.current) return
+            windowMenuRef.current.style.visibility = 'hidden'
+            setWindowMenuStyle(sidebarMenuPosition(windowMenu.point, { width: windowMenuRef.current.offsetWidth, height: windowMenuRef.current.offsetHeight }, {
+                left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
+                width: viewport?.width ?? window.innerWidth, height: viewport?.height ?? window.innerHeight,
+            }))
+        }
+        const resize = new ResizeObserver(measure); resize.observe(node)
+        window.addEventListener('resize', measure)
+        return () => { resize.disconnect(); window.removeEventListener('resize', measure) }
+    }, [windowMenu])
+    useEffect(() => {
+        if (!windowMenu) return
+        const close = (): void => setWindowMenu(null)
+        const outside = (event: PointerEvent): void => { if (!(event.target instanceof Node) || !windowMenuRef.current?.contains(event.target)) close() }
+        const escape = (event: KeyboardEvent): void => {
+            if (event.key !== 'Escape') return
+            event.preventDefault(); event.stopPropagation()
+            setWindowMenu(null)
+            requestAnimationFrame(() => { if (windowMenuTrigger.current?.isConnected) windowMenuTrigger.current.focus({ preventScroll: true }) })
+        }
+        document.addEventListener('pointerdown', outside, true); document.addEventListener('keydown', escape, true)
+        return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true) }
+    }, [windowMenu])
+    useLayoutEffect(() => {
+        if (!windowMenu || windowMenuStyle.visibility === 'hidden') return
+        windowMenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus({ preventScroll: true })
+    }, [windowMenu, windowMenuStyle.visibility])
+    /** Pane the window menu acts on: that window's own focused pane, never the global active one. */
+    const windowFocusedPaneId = (window: WorkspaceWindow): string => {
+        const list = panes(window.root)
+        const focused = layout.focused[window.id]
+        return (focused && list.some(pane => pane.id === focused) ? focused : list[0]!.id)
+    }
+    const closeWindowMenu = (restoreFocus = false): void => {
+        setWindowMenu(null)
+        if (!restoreFocus) return
+        requestAnimationFrame(() => { if (windowMenuTrigger.current?.isConnected) windowMenuTrigger.current.focus({ preventScroll: true }) })
+    }
+    const windowHandlers = (window: WorkspaceWindow, index: number) => ({
+        onPointerDown: (event: ReactPointerEvent<HTMLButtonElement>) => {
+            if (!event.isPrimary || event.button !== 0) return
+            pressedWindow.current = { window, index }
+            windowPress.begin(event.pointerId, { x: event.clientX, y: event.clientY }, event.pointerType)
+        },
+        onPointerMove: (event: ReactPointerEvent<HTMLButtonElement>) => windowPress.move(event.pointerId, { x: event.clientX, y: event.clientY }),
+        onPointerUp: (event: ReactPointerEvent<HTMLButtonElement>) => windowPress.end(event.pointerId),
+        onPointerCancel: () => windowPress.cancel(),
+        onPointerLeave: (event: ReactPointerEvent<HTMLButtonElement>) => { if (event.pointerType === 'mouse') windowPress.cancel() },
+        onContextMenu: (event: ReactMouseEvent<HTMLButtonElement>) => {
+            event.preventDefault(); event.stopPropagation()
+            pressedWindow.current = { window, index }; windowMenuTrigger.current = event.currentTarget
+            const bounds = event.currentTarget.getBoundingClientRect()
+            windowPress.context(event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : { x: bounds.left, y: bounds.bottom })
+        },
+        onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+            if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return
+            event.preventDefault(); event.stopPropagation()
+            pressedWindow.current = { window, index }; windowMenuTrigger.current = event.currentTarget
+            const bounds = event.currentTarget.getBoundingClientRect()
+            windowPress.context({ x: bounds.left, y: bounds.bottom })
+        },
+        onClickCapture: (event: ReactMouseEvent<HTMLButtonElement>) => { if (windowPress.suppressClick(event.detail)) { event.preventDefault(); event.stopPropagation() } },
+    })
     useEffect(() => {
         const node = windowTabs.current
         if (!node) return
@@ -370,24 +453,28 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 {layout.windows.map((window, index) => {
                     const paneCount = panes(window.root).length
                     const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))
-                    // A renamed window keeps its name; an auto window identifies the focused conversation.
-                    const label = window.autoName === false ? readableTitle(windowAlias(window, index + 1), t) : readableTitle(paneName, t)
+                    // Both identities stay visible: a renamed window leads, its focused
+                    // pane's session name remains the secondary label (and vice versa).
+                    const windowName = window.autoName === false ? readableTitle(windowAlias(window, index + 1), t, 32) : null
+                    const sessionName = readableTitle(paneName, t, 40)
+                    const label = windowName ?? sessionName
                     return <button type="button" role="tab" key={window.id} aria-selected={window.id === active.id}
-                        className={window.id === active.id ? 'hapi-window-tab-active' : ''} onClick={() => controller.store.selectWindow(window.id)}
+                        className={window.id === active.id ? 'hapi-window-tab-active' : ''} {...windowHandlers(window, index)}
+                        onClick={event => { if (windowPress.suppressClick(event.detail)) return; controller.store.selectWindow(window.id) }}
                         onDragOver={event => { if (acceptsWorkspaceDrag(event.dataTransfer)) { event.preventDefault(); event.stopPropagation() } }}
                         onDrop={event => dropOnWorkspaceWindow(controller, window.id, event)}
-                        onDoubleClick={() => setRename(window)} title={[label, paneName !== label ? paneName : null, paneCount > 1 ? t('paneCount', { n: paneCount }) : null].filter(Boolean).join('\n')}>
+                        onDoubleClick={() => setRename(window)} title={[label, sessionName !== label ? sessionName : null, paneCount > 1 ? t('paneCount', { n: paneCount }) : null].filter(Boolean).join('\n')}>
                         <ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/><span className="hapi-window-position">{index + 1}</span>
                         <span className="hapi-window-label">{label}</span>
+                        {windowName && <span className="hapi-window-session">{sessionName}</span>}
                         {paneCount > 1 && <span className="hapi-window-count" aria-label={t('paneCount', { n: paneCount })}>{paneCount}</span>}</button>
                 })}
             </div>
+            <details className="hapi-menu hapi-pane-actions" data-hapi-pane-actions="">
+                <summary title={t('paneActions')} aria-label={t('paneActions')}><WorkspaceIcon kind="more"/></summary>
+                <div className="hapi-menu-content"><PaneMenuItems pane={activePane} window={active} controller={controller} t={t}/></div>
+            </details>
             <IconButton label={t('newWindow')} icon="add" onClick={() => action(() => { controller.store.createWindow(); controller.requestSessionPicker() })}/>
-            <details className="hapi-menu hapi-window-menu"><summary title={t('more')} aria-label={t('more')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
-                <button type="button" onClick={() => setRename(active)}>{t('renameWindow')}</button>
-                <button type="button" onClick={() => setSwitcher(true)}>{t('windowList')}</button>
-                <button type="button" onClick={() => controller.store.closeWindow(active.id)} title={t('closeHelp')}>{t('closeWindow')}</button>
-            </div></details>
             <button type="button" className={`hapi-prefix${prefix ? ' hapi-prefix-active' : ''}`} onClick={() => setHelp(true)}>{t(prefix ? 'prefixReady' : 'prefix')}</button>
             <span className={`hapi-persistence hapi-persistence-${snapshot.persistence}`} title={t(snapshot.persistence)} aria-label={t(snapshot.persistence)}>●</span>
         </footer>
@@ -405,6 +492,27 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 onSuccessor={id => { const from = snapshot.nativePanel?.kind === 'session' ? snapshot.nativePanel.sessionId : null; if (!from) return; controller.closeNativePanel(); void controller.openSuccessorSession(from, id).catch(controller.report) }}
                 onOpen={id => { void controller.refresh(); controller.openSession(id); controller.closeNativePanel() }}/>}
         </Dialog>}
+        {windowMenu && createPortal(<div ref={windowMenuRef} role="menu" aria-label={t('windowActions')} className="hapi-menu-content hapi-window-context" style={windowMenuStyle}
+            onClick={event => { if (event.target instanceof Element && event.target.closest('button:not(:disabled)')) setWindowMenu(null) }}
+            onKeyDown={event => {
+                if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setWindowMenu(null); return }
+                if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return
+                const items = [...(windowMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? [])]
+                const index = items.indexOf(document.activeElement as HTMLElement)
+                const next = event.key === 'ArrowDown' ? (index + 1) % items.length : event.key === 'ArrowUp' ? (index - 1 + items.length) % items.length
+                    : event.key === 'Home' ? 0 : items.length - 1
+                if (items[next]) { event.preventDefault(); event.stopPropagation(); items[next]!.focus() }
+            }}>
+            <div className="hapi-session-menu-heading" role="presentation">{windowAlias(windowMenu.window, windowMenu.index + 1)} · {windowTitle(windowMenu.window, layout.focused[windowMenu.window.id], snapshot.catalog.byId, t('newPane'))}</div>
+            <button role="menuitem" type="button" onClick={() => { closeWindowMenu(true); setRename(windowMenu.window) }}>{t('renameWindow')}</button>
+            <button role="menuitem" type="button" onClick={() => { closeWindowMenu(); action(() => { controller.store.createWindow(); controller.requestSessionPicker() }) }}>{t('newWindow')}</button>
+            <button role="menuitem" type="button" onClick={() => { closeWindowMenu(); controller.store.closeWindow(windowMenu.window.id) }}>{t('closeWindow')}</button>
+            <button role="menuitem" type="button" onClick={() => { closeWindowMenu(true); setSwitcher(true) }}>{t('windowList')}</button>
+            <hr role="separator"/>
+            {layout.windows.filter(other => other.id !== windowMenu.window.id).map(other => <button role="menuitem" type="button" key={other.id}
+                onClick={() => { const paneId = windowFocusedPaneId(windowMenu.window); closeWindowMenu(true); controller.store.movePane(paneId, other.id) }}>{t('moveTo')} · {windowAlias(other, layout.windows.indexOf(other) + 1)}</button>)}
+            <button role="menuitem" type="button" onClick={() => { const paneId = windowFocusedPaneId(windowMenu.window); closeWindowMenu(true); controller.store.movePaneToNewWindow(paneId) }}>{t('moveToNewWindow')}</button>
+        </div>, document.body)}
         {switcher && <Dialog title={t('windowList')} close={() => setSwitcher(false)} t={t}><div className="hapi-window-switcher">
             {layout.windows.map((window, index) => {
                 const count = panes(window.root).length

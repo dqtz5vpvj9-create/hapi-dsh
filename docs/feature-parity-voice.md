@@ -1,6 +1,6 @@
 # 语音听写与实时助手
 
-本实现沿用 HAPI `0f8ef6970884c92fb2ddca3070be2ec56cb50333` 的语音协议、人格配置、语言目录和上下文提示，将入口挂到官方 DSH 的 `conversation.input.left` 与 `settings.section`。原会话、聊天渲染、输入框、输入队列和审批所有者仍由原 DSH/HAPI 服务负责。
+本实现沿用 HAPI `55166cf8d87814ccfb383b538a8e8c55283bed81` 的语音协议、人格配置、语言目录和上下文提示，将入口挂到官方 DSH 的 `conversation.input.left` 与 `settings.section`。原会话、聊天渲染、输入框、输入队列和审批所有者仍由原 DSH/HAPI 服务负责。
 
 ## 已实现的功能
 

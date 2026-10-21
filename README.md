@@ -30,7 +30,7 @@
 | pnpm | 11.28.5；官方 DSH 插件管理器要求 `pnpm` 位于 `PATH` |
 | 官方 DSH | `@deepseek-ai/dsh@0.2.1-rc.2`，主机和 Runner 必须一致 |
 | DSH 对照源码 | [`687f282e8625c6b8d11ff58211a90524be2e4317`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317) |
-| HAPI 原生桥 | [`dqtz5vpvj9-create/hapi@0f8ef6970884c92fb2ddca3070be2ec56cb50333`](https://github.com/dqtz5vpvj9-create/hapi/tree/0f8ef6970884c92fb2ddca3070be2ec56cb50333) |
+| HAPI 原生桥 | [`dqtz5vpvj9-create/hapi@55166cf8d87814ccfb383b538a8e8c55283bed81`](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81) |
 | 构建 HAPI 时需要 | Bun 1.4.0；运行本插件本身不需要 Bun |
 
 所有直接 npm 依赖及锁文件均固定版本。不要把公开 npm 上同名 HAPI 的版本号当作上述原生桥源码版本。

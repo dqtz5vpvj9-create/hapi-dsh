@@ -91,6 +91,7 @@ export const en = {
     planInvoked: 'Codex started the implementation turn. Follow its progress in the conversation.',
     planUnknown: 'The native result is unconfirmed. Check its receipt; this request will not be sent again.', planRejected: 'Codex rejected this implementation request.',
     untitledConversation: 'Untitled conversation', paneCount: '{n} panes', statusFilter: 'Status',
+    paneActions: 'Pane actions', windowActions: 'Window actions', paneDrag: 'Drag pane',
     errorSummary: 'The action could not be completed.', readableMachineFallback: 'Unknown machine',
 } as const
 
@@ -187,6 +188,7 @@ export const zh: Record<keyof typeof en, string> = {
     planInvoked: 'Codex 已开始实施回合，请在聊天中查看执行进度。',
     planUnknown: '原生结果尚未确认。请核对回执；此请求不会被再次发送。', planRejected: 'Codex 拒绝了此次实施请求。',
     untitledConversation: '未命名会话', paneCount: '{n} 个窗格', statusFilter: '状态',
+    paneActions: '窗格操作', windowActions: '窗口操作', paneDrag: '拖动窗格',
     errorSummary: '操作未能完成。', readableMachineFallback: '未知机器',
 }
 

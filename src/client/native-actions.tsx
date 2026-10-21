@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { HapiApprovalAnswer } from '../codex/contracts.ts'
 import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projection-types.ts'
 import type { WorkspaceTranslate } from './locales.ts'
@@ -10,6 +10,7 @@ import { NativeSettingsControls } from './native-controls.tsx'
 import { NativePlanControls } from './native-plan.tsx'
 import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
 import { ObservedSettingsControls, type ObservedControlLedger } from './observed-controls.tsx'
+import { openDiagnostics, recordConnection, recordSourceErrors, recordSourceFailure, translate, type DiagnosticIdentity } from './diagnostics/index.ts'
 
 export interface NativeActionsApi {
     readonly ledger: NativeActionLedger
@@ -17,6 +18,8 @@ export interface NativeActionsApi {
     readonly observedControls?: ObservedControlLedger
     readonly queuedEditing?: { busy: boolean; label: string; edit(sessionId: string, delivery: DeliveryView): void }
     branchLabel?(): string
+    /** Per-pane-graph identity for remote failure evidence (never page global). */
+    identify?(identity: DiagnosticIdentity): void
     cancel(sessionId: string, localId: string): Promise<unknown>
     steer(sessionId: string, localId: string): Promise<unknown>
     retry(sessionId: string, localId: string): Promise<unknown>
@@ -30,6 +33,66 @@ function printable(value: unknown): string {
 
 function SourceNoticeText({ notice }: { notice: { text: string; details?: string | undefined } }) {
     return <><pre>{notice.text}</pre>{notice.details && <details><summary>Details / 详情</summary><pre>{notice.details}</pre></details>}</>
+}
+
+const quietLineStyle = { display: 'flex', alignItems: 'center', gap: '6px', margin: '2px 0', flexWrap: 'wrap' as const,
+    color: 'var(--dsw-alias-label-tertiary, #888)', fontSize: '12px', lineHeight: '18px' }
+const quietButtonStyle = { font: 'inherit', fontSize: '12px', lineHeight: '18px', padding: 0, cursor: 'pointer',
+    border: 'none', background: 'transparent', color: 'var(--dsw-alias-state-business-primary, #3b82f6)', textDecoration: 'underline' }
+
+interface SourceNoticeLike { id: string; kind: string; text: string; details?: string | undefined; createdAt: number }
+
+/** Repeated source errors fold into one quiet disclosure; readable lifecycle
+ * notices (compaction/summary/agent messages) keep their own closed disclosure.
+ * Folding is presentational: no source event is deleted or rewritten. */
+export function splitSourceNotices<T extends { kind: string }>(notices: readonly T[]): { errors: readonly T[]; others: readonly T[] } {
+    return { errors: notices.filter(notice => notice.kind === 'error'), others: notices.filter(notice => notice.kind !== 'error') }
+}
+
+const NONE_NOTICES: readonly SourceNoticeLike[] = []
+
+/** One quiet "源错误 · N" line; the original notices stay available behind it
+ * and an allowlisted copy of their identity is routed to diagnostics. */
+function SourceErrorLine({ sessionId, identity, errors = NONE_NOTICES, failure = null, t }: {
+    sessionId: string; identity?: DiagnosticIdentity | undefined; errors?: readonly SourceNoticeLike[]
+    failure?: string | null; t: WorkspaceTranslate
+}) {
+    const errorKey = errors.map(notice => notice.id).join(',')
+    useEffect(() => {
+        if (errors.length) recordSourceErrors(sessionId, errors, identity)
+    }, [sessionId, identity?.hubId, identity?.hapiSessionId, errorKey])
+    useEffect(() => {
+        if (failure) recordSourceFailure(sessionId, 'projection', failure, identity)
+    }, [sessionId, identity?.hubId, identity?.hapiSessionId, failure])
+    const count = errors.length + (failure ? 1 : 0)
+    if (!count) return null
+    return <details className="hapi-source-error-line" data-hapi-source-error-line="" open={false}>
+        <summary style={quietLineStyle} data-hapi-source-error-summary="">{translate(t, 'Source errors', '源错误')} · {count}</summary>
+        {failure && <p role="status">{failure}</p>}
+        {errors.map(notice => <section key={notice.id} data-native-notice={notice.id}>
+            <header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header>
+            <SourceNoticeText notice={notice}/>
+        </section>)}
+        <button type="button" data-hapi-diagnostics-open="" style={quietButtonStyle} onClick={openDiagnostics}>{translate(t, 'Open diagnostics', '打开诊断')}</button>
+    </details>
+}
+
+/** Error notices collapse into the diagnostics line; compact/summary notices stay readable but closed. */
+function SourceNoticePanel({ sessionId, identity, notices, t }: {
+    sessionId: string; identity?: DiagnosticIdentity | undefined; notices: readonly SourceNoticeLike[]; t: WorkspaceTranslate
+}) {
+    const { errors, others } = splitSourceNotices(notices)
+    if (!errors.length && !others.length) return null
+    return <>
+        <SourceErrorLine sessionId={sessionId} identity={identity} errors={errors} t={t}/>
+        {others.length > 0 && <details className="hapi-native-notices" data-hapi-source-notices="">
+            <summary>{t('nativeNotices')} · {others.length}</summary>
+            {others.map(notice => <section key={notice.id} data-native-notice={notice.id}>
+                <header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header>
+                <SourceNoticeText notice={notice}/>
+            </section>)}
+        </details>}
+    </>
 }
 
 function NativeRequest({ sessionId, request, api, disabled, t }: {
@@ -132,17 +195,32 @@ function NativeDelivery({ sessionId, delivery, api, disabled, steer = true, t }:
 /** Original HAPI engines share controls, never pretend to be Codex or a DSH loop. */
 export function ObservedActions({ sessionId, projection, api, t }: { sessionId: string; projection: HapiObservedProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate }) {
     useEffect(() => { if (projection) api.ledger.resolved(sessionId, projection.resolvedRequests.map(row => row.requestId)) }, [projection, sessionId, api])
+    // Per-pane-graph identity for remote failure evidence; never a page-global slot.
+    const hubId = projection?.hubId, hapiSessionId = projection?.hapiSessionId, machineId = projection?.machineId ?? null, engine = projection?.flavor
+    useEffect(() => {
+        if (!projection) return
+        api.identify?.({ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: projection.flavor,
+            ...(projection.machineId === null ? {} : { machineId: projection.machineId }) })
+    }, [sessionId, api, hubId, hapiSessionId, machineId, engine])
+    const identity: DiagnosticIdentity | undefined = projection ? { hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId,
+        engine: projection.flavor, ...(projection.machineId === null ? {} : { machineId: projection.machineId }) } : undefined
+    const connection = projection?.connection ?? 'disconnected'
+    const previousConnection = useRef<typeof connection | null>(null)
+    useEffect(() => {
+        if (projection && previousConnection.current !== null && previousConnection.current !== connection) recordConnection(sessionId, connection, identity)
+        previousConnection.current = connection
+    }, [sessionId, connection, hubId, hapiSessionId])
     if (!projection || projection.dshChild) return null
     const deliveries = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
         <div className="hapi-native-status"><span>{projection.flavor} · {projection.connection}</span><span>{projection.controlledByUser ? t('sourceControlled') : projection.thinking ? t('running') : t('idle')}</span></div>
         {Reflect.get(projection, 'sidechain') ? <span>{t('sourceReadOnly')}</span> : api.observedControls && <ObservedSettingsControls ledger={api.observedControls} sessionId={sessionId} t={t}/>}
-        {projection.error && <p className="hapi-error" role="alert">{projection.error}</p>}
+        <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
         {projection.usage && <details className="hapi-native-usage"><summary>{t('contextUsage')} · {projection.usage.contextTokens.toLocaleString()}{projection.usage.contextWindow ? ` / ${projection.usage.contextWindow.toLocaleString()}` : ''}</summary><dl>
             <div><dt>{t('inputTokens')}</dt><dd>{projection.usage.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.outputTokens.toLocaleString()}</dd></div>
             {projection.usage.cachedInputTokens !== null && <div><dt>{t('cachedTokens')}</dt><dd>{projection.usage.cachedInputTokens.toLocaleString()}</dd></div>}
         </dl></details>}
-        {projection.notices.length > 0 && <details className="hapi-native-notices" open={projection.notices.some(notice => notice.kind === 'error')}><summary>{t('nativeNotices')} · {projection.notices.length}</summary>{projection.notices.map(notice => <section key={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><SourceNoticeText notice={notice}/></section>)}</details>}
+        <SourceNoticePanel sessionId={sessionId} identity={identity} notices={projection.notices} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
         {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
             {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} steer={projection.capabilities.steer} t={t}/>)}
@@ -159,20 +237,35 @@ export function NativeActions({ sessionId, projection, api, t }: {
     useEffect(() => {
         if (projection) api.ledger.resolved(sessionId, projection.resolvedRequests.map(request => request.requestId))
     }, [api, sessionId, projection])
+    const hubId = projection?.hubId, hapiSessionId = projection?.hapiSessionId, machineId = projection?.machineId ?? null
+    const nativeConnection = projection?.nativeConnection
+    useEffect(() => {
+        if (!projection) return
+        api.identify?.({ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: 'codex-native',
+            ...(projection.machineId === null ? {} : { machineId: projection.machineId }) })
+    }, [sessionId, api, hubId, hapiSessionId, machineId])
+    const identity: DiagnosticIdentity | undefined = projection ? { hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId,
+        engine: 'codex-native', ...(projection.machineId === null ? {} : { machineId: projection.machineId }) } : undefined
+    const connection = nativeConnection === 'attached' ? 'connected' as const : nativeConnection === 'history' ? 'reconnecting' as const : 'disconnected' as const
+    const previousConnection = useRef<typeof connection | null>(null)
+    useEffect(() => {
+        if (projection && previousConnection.current !== null && previousConnection.current !== connection) recordConnection(sessionId, connection, identity)
+        previousConnection.current = connection
+    }, [sessionId, connection, hubId, hapiSessionId])
     if (!projection) return null
     const delivery = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
     const disabled = projection.readOnly || projection.nativeConnection !== 'attached'
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
         <div className="hapi-native-status"><span>Codex · {projection.nativeConnection}</span><span>{projection.execution?.status ?? ''}</span></div>
         {api.controls && <NativeSettingsControls ledger={api.controls} sessionId={sessionId} disabled={disabled} t={t}/>}
-        {api.controls && <NativePlanControls ledger={api.controls} sessionId={sessionId} planId={projection.planId} disabled={disabled} t={t}/>}
+        {api.controls && <NativePlanControls ledger={api.controls} sessionId={sessionId} planId={projection.planId} disabled={disabled} t={t} identity={identity}/>}
         {projection.nativeConnection !== 'attached' && <button type="button" disabled={resuming} onClick={() => {
             if (resuming) return
             setResuming(true); setResumeError(null)
             void api.resume(sessionId).catch(error => setResumeError(errorMessage(error))).finally(() => setResuming(false))
         }}>{resuming ? t('awaitingConfirmation') : t('resume')}</button>}
-        {resumeError && <p className="hapi-error" role="alert">{resumeError}</p>}
-        {projection.error && <p className="hapi-error" role="alert">{projection.error}</p>}
+        <SourceErrorLine sessionId={sessionId} identity={identity} failure={resumeError} t={t}/>
+        <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
         {projection.usage && <details className="hapi-native-usage"><summary>{t('contextUsage')} · {projection.usage.contextTokens.toLocaleString()}{projection.usage.contextWindow ? ` / ${projection.usage.contextWindow.toLocaleString()}` : ''}</summary>
             <dl><div><dt>{t('inputTokens')}</dt><dd>{projection.usage.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.outputTokens.toLocaleString()}</dd></div>
                 {projection.usage.cachedInputTokens !== null && <div><dt>{t('cachedTokens')}</dt><dd>{projection.usage.cachedInputTokens.toLocaleString()}</dd></div>}
@@ -181,9 +274,7 @@ export function NativeActions({ sessionId, projection, api, t }: {
         {projection.threadGoal && <details className="hapi-native-goal"><summary>{t('threadGoal')} · {projection.threadGoal.status}</summary><p>{projection.threadGoal.objective}</p>
             <dl><div><dt>{t('tokensUsed')}</dt><dd>{projection.threadGoal.tokensUsed.toLocaleString()}{projection.threadGoal.tokenBudget == null ? '' : ` / ${projection.threadGoal.tokenBudget.toLocaleString()}`}</dd></div><div><dt>{t('goalTime')}</dt><dd>{Math.round(projection.threadGoal.timeUsedSeconds)}s</dd></div></dl>
         </details>}
-        {(projection.notices?.length ?? 0) > 0 && <details className="hapi-native-notices" open={projection.notices.some(notice => notice.kind === 'error')}><summary>{t('nativeNotices')} · {projection.notices.length}</summary>
-            {projection.notices.map(notice => <section key={notice.id} data-native-notice={notice.id} className={notice.kind === 'error' ? 'hapi-error' : ''}><header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header><SourceNoticeText notice={notice}/></section>)}
-        </details>}
+        <SourceNoticePanel sessionId={sessionId} identity={identity} notices={projection.notices ?? []} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
         {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate')}>
             <summary>{t('nativeDelivery')} · {delivery.length}</summary>

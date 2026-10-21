@@ -468,10 +468,14 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken });
     const companion = new SourceCompanionService({ hubId: config.hapi.id, sourceUrl: config.hapi.url,
         ...(config.hapi.companionUrl ? { companionUrl: config.hapi.companionUrl } : {}), readCredential: () => hapiToken });
+    // One HAPI resume callback for the durable delivery path. A delivery only
+    // uses it after an explicit `session_inactive` (409) rejection, once.
+    const resumeSession = (hapiSessionId: string): Promise<string> => client.resumeSession(hapiSessionId);
     const codex = new CodexService(ctx, client, {
         stateDirectory: join(dataDirectory, 'native'), resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client),
         onError: (error) => { ctx.logger.warn(`Native Codex synchronization: ${error.message}`); },
+        resumeSession,
     });
     const observed = new HapiAgentService(ctx, client, {
         stateDirectory: join(dataDirectory, 'observed'), resolveAttachments: attachmentResolver(ctx.attachments, client),
@@ -479,6 +483,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         importGeneratedMedia: sourceGeneratedMediaImporter(ctx.attachments, client),
         importInline: sourceInlineImporter(ctx.attachments),
         onError: error => { ctx.logger.warn(`HAPI session synchronization: ${error.message}`); },
+        resumeSession,
     });
     const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json') });
     const nativeControl = new NativeControl(client, codex, join(dataDirectory, 'native'));

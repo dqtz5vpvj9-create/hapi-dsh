@@ -122,16 +122,13 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await remotePane.getByRole('button', { name: 'Send message', exact: true }).click();
         await expect(remotePane.getByText('A real remote DSH composer turn', { exact: true })).toBeVisible();
         await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toHaveCount(2);
-        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click()
         await remotePane.getByRole('button', { name: 'Host settings', exact: true }).click();
         await expect(page.getByRole('dialog')).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
-        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click();
-        await remotePane.getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: 'Plugins', exact: true }).click();
+        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Plugins' });
         await expect(remotePane).toContainText('Plugins');
-        await remotePane.locator('.hapi-pane-header > .hapi-pane-menu > summary').click();
-        await remotePane.getByRole('group', { name: 'Host tools', exact: true }).getByRole('button', { name: 'Conversation', exact: true }).click();
+        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption('');
         await expect(composer).toBeVisible();
         await page.screenshot({ path: 'test-results/official-remote.png', fullPage: true });
         expect(errors).toEqual([]);

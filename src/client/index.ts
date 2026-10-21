@@ -21,6 +21,7 @@ import { createWorkspacePersistence } from './persistence.ts'
 import { SessionSidebar, WorkspaceRoot } from './ui.tsx'
 import type { SessionSidebarProps, WorkspaceRootProps } from './slots.ts'
 import { installWorkspaceStyles } from './styles.ts'
+import { installSeamlessHistory } from './seamless/index.ts'
 import { installSidebarNavigation } from './sidebar-navigation.ts'
 import { installWorkspaceMenus } from './menus.ts'
 import { installNewSessionShortcut } from './shortcuts.ts'
@@ -146,6 +147,9 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installWorkspaceStyles(document))
     disposers.push(installWorkspaceMenus(document))
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
+    // Page-global: covers local and remote Host panes. Automates the official
+    // Load earlier control so upstream paging/anchoring stays authoritative.
+    disposers.push(installSeamlessHistory(document, { loadEarlierLabel: () => ctx.locale.bind('chat')('chat.loadOlder') }))
     disposers.push(installHapiTabs(ctx, api))
     const administration = installSourceAdmin(ctx, api)
     disposers.push(administration)

@@ -97,7 +97,7 @@ Capture requests should pin the source epoch as described above. If an unpinned 
 
 `bytes.json`, `bytes.pagesTotal` and `bytes.largestPage` describe the entire input capture. Message-byte statistics and parser counts describe only the analyzed final segment. Row and Native candidate counts describe received occurrences; the Observed parser retains its normal stable-item coalescing behavior. No raw page, request cursor, epoch value, original identity or content is emitted.
 
-Primary source locations at HAPI `0f8ef697`:
+Primary source locations at HAPI `55166cf8`:
 
 - `shared/src/sessionExport.ts`: version 2 envelope and 100 MiB limit.
 - `shared/src/schemas.ts`, `DecryptedMessageSchema`: actual message fields.

@@ -12,14 +12,18 @@ async function sourceFile(page: Page, environment: OfficialEnvironment): Promise
   const chat = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true })
   await expect(chat.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible()
   const ids = new Set(await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id'))))
-  const menu = chat.locator('.hapi-pane-header > .hapi-pane-menu')
-  await menu.locator('summary').click(); await menu.getByRole('button', { name: 'Project files', exact: true }).click()
+  await chat.click({ position: { x: 4, y: 4 } })
+  const menu = page.locator('.hapi-statusbar .hapi-pane-actions')
+  await menu.locator(':scope > summary').click(); await menu.getByRole('button', { name: 'Project files', exact: true }).click()
   await expect.poll(async () => (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).filter(id => !ids.has(id)).length).toBe(1)
   const id = (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).find(id => !ids.has(id))!
   const pane = page.locator(`[data-pane-id="${id}"]`)
   await pane.locator('[data-files-entry="file"]').getByRole('button', { name: 'source.txt', exact: true }).click()
   await expect(pane.getByText('Source file from machine-alpha', { exact: true })).toBeVisible()
-  await chat.locator('.hapi-pane-header').getByRole('button', { name: 'Close pane', exact: true }).click()
+  await chat.click({ position: { x: 4, y: 4 } })
+  const closeActions = page.locator('.hapi-statusbar .hapi-pane-actions')
+  await closeActions.locator(':scope > summary').click()
+  await closeActions.getByRole('button', { name: 'Close pane', exact: true }).click()
   return pane
 }
 
