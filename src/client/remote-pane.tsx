@@ -13,6 +13,7 @@ import { installPaneBridge, targetForTab, type PaneBridgeSource, type PaneBridge
 import type { DshPaneTarget } from '../workspace/dsh-view.ts'
 import type { SidebarRightTabMenuOwnerProps } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import type {} from './pane-navigation.ts'
+import { installWorkspaceLinkSettings } from './workspace-links.tsx'
 
 type BridgeSeatProps = PropsRuntime<'shell.overlay'> & PropsRenderSlots<'hapi.remote.bridge'>
 
@@ -32,6 +33,7 @@ export function installRemotePane(ctx: Context, options: {
     dispose(): void
 } {
     const disposers: Array<() => void> = []
+    disposers.push(installWorkspaceLinkSettings(ctx))
     if (!options.localeInstalled) disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     const Reference = createContext<SessionReference | undefined>(undefined)
     const SettingsTarget = createContext<HTMLSpanElement | null>(null)

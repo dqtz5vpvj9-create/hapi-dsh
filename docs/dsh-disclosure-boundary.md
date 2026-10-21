@@ -1,0 +1,28 @@
+# Independent reasoning disclosure: current public API boundary
+
+**The independent HAPI reasoning-expand preference is not equivalent in this plugin.** The unchanged official reasoning row retains manual expansion and DSH's transcript presentation settings. The available public APIs do not let a plugin wrap that row's existing `useDisclosure` while also preserving the original renderer, its child-slot ownership, and its lifecycle. This limitation is separate from the [Enter preference implementation](composer-enter.md).
+
+This audit uses DSH `0.2.1-rc.2`, commit `687f282e8625c6b8d11ff58211a90524be2e4317`, recorded in `UPSTREAMS.json`. It changes no upstream source or runtime object.
+
+## Why a public Hook type is insufficient
+
+`UseDisclosure` is a published component capability with `expanded`, `setExpanded`, and `toggle`. Its implementation creates independent React state **for each Hook invocation**. Calling another instance does not control the one already held by the official reasoning row. See the [contract](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/contract/slots.ts#L154) and [implementation](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/chat/use-disclosure.ts#L11).
+
+The hook comes from the common `conversation.chat.node` slot injection owned by ChatFlow, rather than an individually replaceable service. The slot contract expressly says child registrants do not own or replace the common capability. At render time, contextual hooks are composed after the entry's own injected props, so an entry-level hook with the same name does not override the common hook. See [ChatFlow registration](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/apply.ts#L215), [slot ownership contract](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-slots/src/index.ts#L135), and [contextual prop composition](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-renderer/src/client/scoped-slots.tsx#L598).
+
+## Why an ordinary shadow wrapper cannot preserve the original renderer
+
+The official `assistant-step` registration declares and owns `conversation.chat.reasoning.body` and `conversation.chat.message.images`. Its original component needs the corresponding authorized `renderSlot` capability. See [the registration](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/chat/register-node-renderers.ts#L51).
+
+- Copying these declarations into a lower-priority shadow registration fails: SlotCore rejects a child key that already has a declarer.
+- Omitting them leaves the shadow without the required child-render authority. The renderer synthesizes `renderSlot` only for an entry's own declarations, and the bound function validates those declarations and the entry's lifetime.
+- The context-level `ctx.slots.renderSlot` renders only `root`; it cannot manufacture the old entry's child-render capability.
+- The entry inspection API supplies no public registration-update or decorator operation that preserves an original entry's identity while changing its component props. Mutating an inspected entry or replacing the renderer machinery would bypass this contract.
+
+These checks are explicit in [SlotCore registration](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-slots/src/index.ts#L1245), [bound child rendering](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-renderer/src/client/scoped-slots.tsx#L66), and [root-only rendering](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-renderer/src/client/registry.ts#L375). A read-only, in-memory probe against the installed public `SlotCore` confirmed that a shadow declaring the same fixture child throws `slot "audit.reasoning.body" is already declared`; a shadow without children has no child declaration. This probe validates the registration restriction, not a replacement UI.
+
+## The body and content factory do not expose the missing state
+
+`conversation.chat.reasoning.body` receives the original `text` and `running` values. The official row only mounts it **after** its private occurrence of `useDisclosure` is expanded. The reusable `conversation.chat.reasoning.content` factory renders Markdown and receives no parent disclosure controls. A body extension can customize already-expanded content; it cannot expand its collapsed parent. See [ReasoningRow](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/chat/ReasoningRow.tsx#L50) and [ReasoningContent](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/packages/client/ui-chat/src/client/chat/ReasoningContent.tsx#L14).
+
+Enclosing process/turn folds are another layer: changing DSH's general transcript policy does not provide an independent reasoning default or the original Codex exploration preference. This plugin therefore keeps the official disclosures and does not present a nonfunctional equivalent setting, duplicate a generic chat renderer, import package-private components, or simulate user clicks to force expansion.

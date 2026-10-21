@@ -27,6 +27,7 @@ import { SourceTitlePanel } from './source-title-panel.tsx'
 import { SourceMigrationPanel } from './source-history.tsx'
 import { MachineHealthRow } from './machine-health-view.tsx'
 import { useWorkspacePaneDrop, dropOnWorkspaceWindow } from './workspace-drag.tsx'
+import { useWorkspaceLinks, WorkspaceLinkNotice } from './workspace-links.tsx'
 import { acceptsWorkspaceDrag, writeWorkspaceDrag } from '../workspace/drag.ts'
 import { SidebarScrollAnchor } from './sidebar-scroll.tsx'
 import { SidebarWindow, type SidebarScrollObserver } from './sidebar-window.tsx'
@@ -210,7 +211,8 @@ function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: Wor
     </div></details>
 }
 
-export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile, preferences }: WorkspaceRootProps) {
+export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile, preferences, prepareNavigation }: WorkspaceRootProps) {
+    const links = useWorkspaceLinks(preferences, prepareNavigation)
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const { layout } = snapshot
     const [stage, setStage] = useState<HTMLDivElement | null>(null)
@@ -300,7 +302,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         ['%', 'splitHorizontal'], ['"', 'splitVertical'], ['c', 'newWindow'], ['n / p', 'nextWindow'],
         ['o', 'nextPane'], ['← ↑ → ↓ / h j k l', 'focusDirection'], ['w', 'windowList'], ['z', 'zoom'], ['x', 'closePane'], ['u', 'restoreWindow'], ['1…9', 'windowNumber'],
     ]
-    return <div className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="">
+    return <div className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="" onClickCapture={links.capture}>
         <header className="hapi-workspace-toolbar">
             <div className="hapi-workspace-brand"><WorkspaceIcon kind="grid"/><strong>HAPI</strong><span>{windowAlias(active, layout.windows.indexOf(active) + 1)}</span></div>
             <div className="hapi-workspace-tools">
@@ -318,6 +320,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
             </div>
         </header>
         {snapshot.notice && <div className="hapi-notice" role="alert"><span>{snapshot.notice}</span>{snapshot.conflict ? <><button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button><button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button></> : snapshot.persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retry')}</button>}<IconButton label={t('dismiss')} icon="close" onClick={controller.clearNotice}/></div>}
+        <WorkspaceLinkNotice links={links} language={language}/>
         <div className="hapi-workspace-stage" ref={setStage}>
             {layout.windows.map(window => {
                 const visible = window.id === layout.activeWindowId

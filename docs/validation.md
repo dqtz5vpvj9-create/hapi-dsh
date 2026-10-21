@@ -11,8 +11,8 @@
 | Host TypeScript | `npx tsc -p tsconfig.host.json --noEmit` 通过 |
 | Client TypeScript | `npx tsc -p tsconfig.client.json --noEmit` 通过 |
 | E2E TypeScript | `npx tsc -p tsconfig.e2e.json --noEmit` 通过 |
-| 全部代码与传输测试 | `npm test` 实际执行 633 项，632 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
-| 显式官方 federation 集成 | 独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流 |
+| 全部代码与传输测试 | `npm test` 实际执行 673 项，672 通过，0 失败，1 项官方进程测试按设计等待显式启用 |
+| 显式官方 federation 集成 | 前一检查点独立启用后 1 项通过，0 跳过；运行原始官方 Web profile、配对 Runner、bundle/Session RPC/事件流。本轮未重复该独立用例，实际官方浏览器仍运行同一传输链路 |
 | 构建 | Host、Client、CLI、Runner、五个 source-aware providers 与类型声明构建通过 |
 
 `npm test` 使用 Node 的 `--test-isolation=none`，报告的是实际 case 数；测试文件进程退出成功不作为其内部断言已执行的证明。测试绑定本机回环端口，需要运行环境允许本地监听。官方进程集成单独使用 `HAPI_DSH_OFFICIAL_TESTS=1`，不能把默认 skip 写成已通过。
@@ -23,6 +23,10 @@
 
 | 专项 | 实际界面确认的行为 |
 | --- | --- |
+| `workspace-links.spec.ts`，1 条 | 原链接偏好进入官方 Markdown：新页打开时无 opener；同页跳转先持久化点击前的即时编辑，真实离开后恢复两个 pane 的原官方草稿，零聊天提交。目标页面由明确浏览器 route fixture 提供。 |
+| `companion.spec.ts`，3 条 | 官方 Settings 显式揭示原 HAPI 配对信息、本地 PNG 实际解码和剪贴板；隐藏/关闭/切换后迟到 Remote 回复不恢复秘密，无存储残留；HTTP 源没有 HTTPS alias 时禁用。未连接实际手机或该保留域名。 |
+| `share-picker.spec.ts`，3 条，以及受影响交接 2 条 | 首次真实目录屏障、固定快照、共享预览数量、源时间与 inactive/日期搜索；真实 SW 原 Blob 预览/下载/插入，原生和 remote/local DSH 的准确目标；新建取消及后继会话已有草稿时明确追加。主题修复后的同一构建合计 5/5，通过实际日历背景/活动日/选中底色断言，零聊天写入。 |
+| `composer-enter.spec.ts`，2 条 | 修正实际尾端换行缺陷后，官方 Lexical 选区/撤销、文件 chip 后精确 LF、Chromium composition、长按单次提交、默认发送恢复；pending/failed upload 保留草稿并显示反馈，成功后只提交一次；local/remote 两 pane 偏好与刷新后真实源 payload 均通过。组成事件由 Chromium 协议驱动，不代表手动验收所有系统输入法。 |
 | `workspace.spec.ts`，5 条 | 统一侧栏和两类官方 Conversation、tmux 几何与刷新、跨机器官方插件/Settings、原生设置/精确历史分支/创建、普通 DSH 新建首次发送、计划实施丢回执不重复。 |
 | `draft-handoff.spec.ts`，2 条 | 真实源恢复接口返回新 source ID 后，原文字和 File 对象明确交接；原草稿按 revision/identity CAS 清理，Done 前完成持久屏障，刷新恢复原字节。目标已有草稿仅显式追加，同窗口 ready 分享跟随新源，零聊天提交、零重放。 |
 | `sidebar-actions.spec.ts`，3 条 | 鼠标、真实键盘焦点和移动触摸长按；准确身份复制、两种置顶、下方分屏与原草稿保留、标题建议与源 JSON 导出。重启/删除先确认，取消不提交，导航零聊天写入、零页面异常。 |
@@ -37,7 +41,7 @@
 | `plugin-workspace.spec.ts` 的 trusted terminal touch | 实际触摸 9→18 px 与 PTY grid、600 行历史拖动/惯性、ACK 和屏幕模式切换停止；TUI 仅发送合法 SGR wheel，不产生惯性残留输入；移动端 Close pane 不终止原 PTY，不创建替代 shell。 |
 | `dsh-children.spec.ts`，3 条 | HAPI DSH 子会话在原官方 Conversation 中保留真实 parent/child 身份；显式 `/child` 与 `/child-steer` 走实际源操作回执；丢 ACK 刷新不重发；空 child 首次输入。普通 DSH 的子代理行为继续由官方服务承担。 |
 
-这几项定向结果不代表整套 Playwright 在本轮每次修改后都重跑过。其余已验证产品路径、具体测试文件与仍缺少的验证在功能对照表及各专项文档逐项记录。最后一项生产增量是菜单完成可见布局后再聚焦，三条侧栏用例已在该构建独立通过；此前通过的 handoff 生产逻辑未随该修复变化。
+这几项定向结果不代表整套 Playwright 在本轮每次修改后都重跑过。其余已验证产品路径、具体测试文件与仍缺少的验证在功能对照表及各专项文档逐项记录。本轮链接与 Companion 在同一官方构建通过；后续输入换行和分享弹窗主题修复只对受影响交互再执行专项。先前工作区、源文件和终端结果继续按各行注明的范围保留，不扩大成任意第三方插件兼容的证明。
 
 ## 验证层次
 

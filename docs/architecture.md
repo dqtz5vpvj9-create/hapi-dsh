@@ -80,6 +80,8 @@ HAPI 文件路径只在经确认的源机器上解释。原官方“在 Host 应
 
 这些能力通过普通 HAPI 插件贡献到官方 slots；原文件、终端和 composer owner 保持原来的服务接口。第三方有私有编辑状态时，应主动接入更新准备回调；只加载它的 UI 并不能证明它自己的未保存内容已经持久化。
 
+工作区还管理“离开当前页面”的导航时机。原 HAPI 同页打开链接偏好通过工作区自己的容器处理；先完成上述保存事务，才执行导航。用户可以选择跟随 DSH 与插件自己的链接设置，包括官方侧栏浏览器。修饰键点击、下载、命名 frame 和插件显式声明的原生导航仍交原 owner；没有复制官方 Markdown 或修改其子插槽所有权。详见[链接导航](workspace-links.md)。
+
 ### 完整会话树与空源会话
 
 每个窗格保留官方 `main → ConversationRoot`。早期只调用公开 `conversation.content` 工厂的嵌入方式会漏掉头部，进而丢失 `conversation.session.header.utilities` 等第三方贡献；当前组合取消了该窗格级替换。视图路由 bridge 挂在增量 `shell.overlay`，保留真实 `SessionProvider` 与原 rightbar store；原生状态、审批和队列控件只注册到 `conversation.input.dock`。不拦截另一插件的 `slots.register`，不重新声明已经归官方头部所有的子插槽。

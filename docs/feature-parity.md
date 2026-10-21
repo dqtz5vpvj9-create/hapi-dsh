@@ -103,7 +103,7 @@
 | C13 | SDK subagent/agent-run transcript、父子导航、子代理输入 | **已实现源能力适配**：SDK 只读 child 与 HAPI DSH continuable child 分开；后者用可见 `/child`、`/child-steer` 和真实源收据 | `dsh-children.spec.ts` 三条官方浏览器通过 parent/child 归属、精确发送/steer/中断、丢 ACK 刷新不重发、空 child 首条输入；原 API 无 rpcId 的命令入口差异见 [源子代理说明](source-children.md)，不能称普通 Send UX 已完全等价 |
 | C14 | JSON/Markdown 完整导出、截断后显式导出全部 | **已实现**：真实源 export + official HAPI history tab | 新官方浏览器已走 JSON 下载；Markdown/大历史边界继续验收 |
 | C15 | 对话大纲、精准历史定位、加载目标旧页 | **已实现**：messageId→当前 generation seq→官方 loadOlder→own row anchor | 原 renderer 保持原样；新官方浏览器已覆盖定位可见消息 |
-| C16 | 分享一个 turn、截图与元数据、分享种子进入新会话 | **已实现核心**：官方回合 action/PNG/剪贴板，原 fragment/ShareSeed/IDB、真实 Share Target worker 与统一会话选择 | `turn-share.spec.ts` 通过 1440 px PNG 签名及精确回合内容；`incoming-share.spec.ts` 三条通过 fragment 隐私、现有草稿追加不串 pane、multipart 原 Blob、新建取消保留与明确新会话 hand-off；全部不自动发送。新增实际刷新流程已通过原附件字节与 alpha/beta 独立草稿恢复 |
+| C16 | 分享一个 turn、截图与元数据、分享种子进入新会话 | **已实现核心与原分享选择器**：官方回合 action/PNG/剪贴板，原 fragment/ShareSeed/IDB、真实 Share Target worker；固定首次会话快照、原预览数量/日期/搜索、文字与文件预览 | 原回合 PNG、fragment 隐私、原 Blob、刷新恢复及草稿交接已通过；`share-picker.spec.ts` 三条加新建取消、后继会话交接两条，在主题修复后合计 5/5 真浏览器通过。覆盖 source/remote/local DSH 精确目标、源故障可用性和日历实际样式，全部不自动发送。见 [分享选择器专项](feature-parity-sharing.md) |
 | C17 | 消息时间/状态、Codex review、生成媒体/附件专属呈现 | **已实现主要类型**：源字段、review findings、生成图片/视频/opaque artifact 复用官方内容与资源路由 | `codex-review.spec.ts` 两条通过 review 保留 raw Copy、源文件定位及 Pi/普通 DSH 不误判；`generated-media.spec.ts` 三条通过原图片、缺失资源明确不可用、视频预览/原件下载与重载；实际源媒体接口由显式 fixture 提供，未声称所有未来消息类型已认证 |
 
 ## 5. 备忘录、附件、定时与输入
@@ -119,7 +119,7 @@
 | I05 | 粘贴/拖附件、多窗格只进入目标 composer | **已实现隔离**：`pane-input.ts` 路由真实 document 事件 | 两 pane router 单测；需官方附件拖放的真实浏览器覆盖 |
 | I06 | source 附件准入、上传、错误、下载 | **已实现核心**：官方附件流程 + HAPI attachment adapter | 原生平台附件 picker、文件夹共享、相片/图片等端差异未全覆盖 |
 | I07 | Rich composer 文件/skill/command mention、selection 编辑和 parking | **部分**：官方 composer + source parking 与源 `@文件` provider 已接；候选菜单、chip、目录钻取继续由官方插件渲染 | `composer-parking.spec.ts` 与 `file-references.spec.ts` 真实浏览器已通过：两机器候选隔离、带空格文件引用、目录钻取和精确源提交；公开 provider 早启动/卸载/恢复有生命周期回归。skill/command 的全部原特殊 selection identity、输入展开布局仍须逐项适配 |
-| I08 | Enter 发送偏好、IME、恢复输入、发送错误可见 | **部分**：官方 composer；source readonly 用公开 ComposerBlocks | 原用户偏好迁移和跨所有引擎出错展示仍需专项验证 |
+| I08 | Enter 发送偏好、IME、恢复输入、发送错误可见 | **已实现偏好与原编辑器交互**：共享原 Enter key，换行交给浏览器和官方编辑器，Ctrl/Cmd+Enter 走普通队列；候选、IME、readonly、附件状态保留原 owner | `composer-enter.spec.ts` 两条真浏览器通过选区/撤销、文件 chip 后精确换行、Chromium composition、长按单投递、上传中/失败可见反馈、local/remote 两 pane 偏好与刷新后的精确源正文。16 项定向测试通过；真实 OS 输入法、各外部引擎全部错误组合仍需部署验证，见 [输入专项](composer-enter.md) |
 
 ## 6. 文件、文档、终端与插件兼容
 
@@ -150,8 +150,8 @@
 | U02 | 移动端统一会话选择层和安全区域 | **已实现基础** | 浏览器窄屏覆盖未完备；旧列表快速切换与返回手势仍需对照 |
 | U03 | CN/EN 与浅/深色主题 | **已实现核心外观适配**：原 18 色板/按模式七色自定义/OLED/80–120% 字体/9–17 px 终端字号，公开 ThemeRuntime 与原 Terminal hook | 原键读取、真实 ThemeRuntime/SlotCore 单测及 `appearance.spec.ts` 真官方浏览器通过；跨 pane 色板、16.8 px 聊天字体、真实 xterm 四种字形 9 px 与 reload 保留均有断言。见 [外观专项](feature-parity-appearance.md) |
 | U04 | 页面级 modal/focus trap/Escape 与 pane 隔离 | **已实现核心**：官方 AppFrame/overlay 保留，各 pane graph 独立 | Remote Settings/Escape 已过官方浏览器；同时多 pane modal/第三方 portal 继续验收 |
-| U05 | Composer toolbar 重排、工具折叠/推理折叠、用户气泡色 | **部分**：原用户气泡 preset/custom 已经公开 token 接原 renderer；其他旧键保留 | toolbar 重排/隐藏不能夺取其他插件控制权；独立推理/探索/工具折叠及 tool-group 色尚未精确映射，不以 DSH 大范围 transcript 预设冒充 |
-| U06 | header 字段显示开关、链接新窗口偏好 | **页头已实现，链接待补**：10 个原字段开关、真实源创建/活动时间、worktree/tier，原 official header 全部贡献保留 | source identity/时间 focused 与 `appearance.spec.ts` 真浏览器通过两 pane 字段更新/刷新。DSH sidebar/new-tab 与原 false 的同页导航不等价，尚未伪作迁移 |
+| U05 | Composer toolbar 重排、工具折叠/推理折叠、用户气泡色 | **部分**：原用户气泡 preset/custom 已经公开 token 接原 renderer；其他旧键保留 | toolbar 重排/隐藏不能夺取其他插件控制权；独立推理/探索/工具折叠及 tool-group 色尚未精确映射，不以 DSH 大范围 transcript 预设冒充。已按原 child ownership、common inject 与实际 SlotCore 检查，独立推理默认展开没有当前可用的公开入口，见 [公开接口边界](dsh-disclosure-boundary.md) |
+| U06 | header 字段显示开关、链接新窗口偏好 | **已实现**：10 个原字段开关、真实源时间与 worktree/tier；原同页/新页链接偏好迁移，另可明确跟随 DSH 插件设置 | `appearance.spec.ts` 通过两 pane 页头更新/刷新；`workspace-links.spec.ts` 通过官方 Markdown 新页无 opener、同页导航前即时草稿保存、真实离开后恢复两 pane 原草稿。只处理工作区内普通 HTTP(S) 链接，修饰键、下载及插件显式原生导航保留；私有编辑状态须接公开保存准备。见 [链接导航](workspace-links.md) |
 | U07 | PWA 安装、更新提示、原生 update 草稿事务、平台附件 | **Web 核心已实现**：原 dismiss 偏好、installprompt/appinstalled、worker 更新、所有已打开编辑器 prepare/verify 与附件原 Blob 恢复 | 安装及通知实际浏览器已过；更新拒绝存储失败/未完成提交/变化的 worker、超时不刷新有定向回归；官方 Settings 的“保存草稿后刷新”已通过真实 reload、原附件字节及两个 pane 各自草稿恢复。新 worker 控制权更换仍以定向回归为证；原 Capacitor 二进制更新与原生平台 picker 不等同于 Web PWA |
 
 ## 8. 账号、机器、设置、通知和语音
@@ -169,7 +169,7 @@
 | A07 | 通知权限、Push、App Badge、断线/同步/版本告警 | **已实现通知核心**：root-only 官方 settings/overlay、原 Push API、真实 presence、App Badge 偏好与 sidebar read-state 桥 | 实际浏览器 2 case 通过 VAPID 503 下 SSE→WS→overlay→精确 beta 导航、worker 注册/Hub 握手、不自动权限请求、hidden presence、PushManager/OS Badge 显式 fixture 和 unknown 不重放；真实账号 OS 投递未实验。初始链接保留 Hub+source 身份；版本更新草稿事务另列 U07 |
 | A08 | 语音听写：standard/realtime、多 provider、browser-local | **已实现核心**：原多 provider 协议、实际 MediaRecorder/multipart、实时连接、本地识别准入、官方草稿 revision-CAS、取消与恢复、共享偏好 | `voice-plugins.spec.ts` 标准录音/音频上传/保留草稿/无凭据落盘及 browser-local API fixture 的并发草稿冲突和无上传已过；实际第三方账号、音质与物理设备未验，详见 `feature-parity-voice.md` |
 | A09 | 实时语音助手三 backend、声音/人格/上下文、工具审批 | **已实现核心**：原 ElevenLabs/Gemini Live/Qwen 协议、人格与声音、源/DSH 独立上下文、真实 call ID、精确审批、全工作区单麦克风 owner | 完整官方浏览器复测已通过 Gemini alpha 精确审批、Qwen beta、同 ID 去重/同参数新 ID 允许、跨 pane 停止交接、普通 DSH 自有历史与发送、关闭释放所有 tracks。提供方为明确协议 fixture，没有真实第三方账号/音质验收 |
-| A10 | Companion pairing、共享访问/权限、Share 入口 | **部分/待补 UI** | Hub/Runner auth transport 已有，不等于原 companion/share product flow |
+| A10 | Companion pairing、共享访问/权限、Share 入口 | **Companion 已实现，共享授权仍部分**：官方 Settings 显式显示原 HAPI 配对 QR/链接，本地生成，原 Hub token/namespace 保留，严格 owner 准入 | `companion.spec.ts` 三条通过实际 QR 解码、剪贴板、迟到回包/隐藏/关闭清理及无兼容 HTTPS 地址时禁用。未实际配对手机；原 Companion 直连原 HAPI，不因此获得跨 DSH Host 目录。尚无新增的逐会话限权、到期或撤销邀请。见 [Companion 协议与边界](source-companion.md) |
 | A11 | Team 成员/任务/消息、工作图和 source agent-run 导航 | **已实现核心**：真实 source Team/work ledger，正式官方 tab 与 session header utility 入口；保留源独立水位与 live clear | `source-collaboration-types.ts`、`SourceCollaborationPanel`；`collaboration.spec.ts` 真浏览器通过完整官方页头入口、独立 source watermark/clear、精确 beta 导航、保留 alpha 草稿且没有 chat 写入 |
 | A12 | About/version/legal 与原浏览器偏好迁移 | **已实现核心**：官方 Settings 显示版本、构建内容指纹、上游来源和许可；已列明旧偏好读取/迁移 | 新产品内版本区域待本轮浏览器验证；未映射的原偏好继续保留并在 U05/U06/I08 列明，不静默替换成含义不同的 DSH 选项 |
 

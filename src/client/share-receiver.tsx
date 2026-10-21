@@ -9,10 +9,12 @@ import type {} from './pane-navigation.ts';
 import type {} from './workspace-ui.ts';
 import { installComposerAttachmentRecovery } from './composer-attachment-recovery.tsx';
 import { handoffDetectEnd, installDraftHandoffReceiver } from './draft-handoff-receiver.tsx';
+import { installComposerEnter } from './composer-enter/index.tsx';
 
 export function installShareReceiver(ctx: Context, existingBridge?: SourceComposerBridge): () => void {
     const scope = ctx.inject(['slots', 'sessions', 'conversation', 'locale', 'hapiWorkspaceUi'], owner => {
         const inbox = owner.hapiWorkspaceUi.shareInbox, bridge = existingBridge ?? installSourceComposerBridge(owner);
+        const enter = installComposerEnter(owner, bridge);
         const recovery = installComposerAttachmentRecovery(owner, bridge);
         const handoffs = owner.hapiWorkspaceUi.handoffs, handoffReceiver = installDraftHandoffReceiver(owner, bridge);
         const handoffChanges = handoffs.subscribe(inbox.wake);
@@ -68,7 +70,7 @@ export function installShareReceiver(ctx: Context, existingBridge?: SourceCompos
             </div>;
         };
         const stop = owner.slots.inject('conversation.input.dock', () => owner.slots.register({ name: 'conversation.input.dock', id: 'hapi.share-receiver', order: -80 }, Receiver));
-        return () => { handoffChanges(); handoffReceiver(); recovery(); stop(); if (!existingBridge) bridge.dispose(); };
+        return () => { enter(); handoffChanges(); handoffReceiver(); recovery(); stop(); if (!existingBridge) bridge.dispose(); };
     });
     return () => { void scope.dispose(); };
 }

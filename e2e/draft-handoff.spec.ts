@@ -77,6 +77,8 @@ test.describe('confirmed source successor draft hand-off', () => {
         archive(environment);
         await page.goto(`${environment.origin}/share#text=Pending%20share%20for%20the%20original%20source`);
         const sharing = page.getByRole('dialog', { name: 'Incoming share', exact: true });
+        // Original HAPI share picker includes inactive sessions after searching.
+        await sharing.getByRole('searchbox').fill('Native Codex alpha');
         await sharing.getByRole('button').filter({ hasText: 'Native Codex alpha' }).click();
         await expect(pane(page, 'Native Codex alpha').locator('[data-share-delivery]')).toHaveAttribute('data-share-delivery', 'waiting');
         const handoff = await reopen(page);

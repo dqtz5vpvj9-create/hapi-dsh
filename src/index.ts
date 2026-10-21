@@ -20,7 +20,7 @@ import {
 } from './client-api.ts';
 import { readConfig, resolveHapiToken, type RuntimeConfig } from './cli/config.ts';
 import { HapiClient } from './hapi/client.ts';
-import { catalogDisplayMetadata, catalogRowState } from './hapi/catalog-metadata.ts';
+import { catalogDisplayMetadata, catalogListFacts, catalogRowState } from './hapi/catalog-metadata.ts';
 import { HapiRequestError, type HapiCancelResult, type HapiSteerResult, type HapiRetryResult } from './codex/contracts.ts';
 import { CodexService, type NativeCodexAgent } from './codex/index.ts';
 import { attachmentResolver, artifactImporter, sourceUploadImporter, sourceInlineImporter } from './hapi/attachments.ts';
@@ -36,6 +36,8 @@ import { SourceLifecycle } from './hapi/source-lifecycle.ts';
 import { SourceInitialTasks } from './hapi/source-initial-task.ts';
 import { SourceHistory } from './hapi/source-history.ts';
 import { SourceAdministrationService } from './hapi/source-admin.ts';
+import { SourceCompanionService } from './hapi/source-companion.ts';
+import type { SourceCompanionReveal } from './source-companion-types.ts';
 import { mountSourceBackup } from './hapi/source-backup.ts';
 import { SourceVoiceService } from './hapi/source-voice.ts';
 import type { VoiceRequest } from './voice-types.ts';
@@ -94,6 +96,7 @@ interface ControllerOptions {
     initialTasks: SourceInitialTasks;
     sourceHistory: SourceHistory;
     administration: SourceAdministrationService;
+    companion: SourceCompanionService;
     voice: SourceVoiceService;
     notifications: SourceNotificationsService;
     bulk: SourceBulkActions;
@@ -180,6 +183,7 @@ export class HapiController extends TypertRemoteService {
                 pinMode: agent.sourceSession.globalPinned ? 'global' : agent.sourceSession.pinned ? 'project' : 'none',
                 ...catalogDisplayMetadata(agent.sourceSession.metadata),
                 sourceRowState: catalogRowState(agent.sourceSession, this.sourceSummaries.get(agent.binding.hapiSessionId)),
+                sourceListFacts: catalogListFacts(agent.sourceSession, this.sourceSummaries.get(agent.binding.hapiSessionId)),
             })),
             hosts: this.options.federation.listMachines().map(machine => ({ id: machine.id, label: machine.name, online: machine.online, basePath: machine.baseUrl })),
         };
@@ -214,6 +218,8 @@ export class HapiController extends TypertRemoteService {
     sourceHistoryOperationRead(request: SourceHistoryRead) { return this.sourceCall(() => this.options.sourceHistory.read(request)); }
     sourceHistoryContinue(request: SourceHistoryRead) { return this.sourceCall(() => this.options.sourceHistory.continue(request)); }
     sourceAdministration() { return this.sourceCall(() => this.options.administration.overview()); }
+    sourceCompanionInfo() { return this.sourceCall(async () => this.options.companion.info(this.ctx.invocation)); }
+    sourceCompanionReveal(request: SourceCompanionReveal) { return this.sourceCall(async () => this.options.companion.reveal(this.ctx.invocation, request)); }
     sourceSessionBulk(request: SourceBulkOperation) { return this.sourceCall(() => this.options.bulk.operation(request)); }
     sourceSessionBulkRead(request: { operationId: string }) { return this.sourceCall(async () => this.options.bulk.read(request.operationId)); }
     sourceQueuedEdit(request: SourceQueuedEditRequest) { return this.sourceCall(() => this.options.queuedEdits.execute(request)); }
@@ -420,7 +426,10 @@ export class HapiController extends TypertRemoteService {
 export async function apply(ctx: Context, input: Config): Promise<void> {
     const config = await readConfig(input.configFile);
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
-    const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: resolveHapiToken(config) });
+    const hapiToken = resolveHapiToken(config);
+    const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken });
+    const companion = new SourceCompanionService({ hubId: config.hapi.id, sourceUrl: config.hapi.url,
+        ...(config.hapi.companionUrl ? { companionUrl: config.hapi.companionUrl } : {}), readCredential: () => hapiToken });
     const codex = new CodexService(ctx, client, {
         stateDirectory: join(dataDirectory, 'native'), resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client),
@@ -505,7 +514,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     voice.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     notifications.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountShareTarget({ webServer: ctx.webServer }), 'hapi-dsh: browser share target');
-    new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
+    new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
     const starts = await Promise.allSettled([codex.start(), observed.start()]);
     for (const result of starts) if (result.status === 'rejected') ctx.logger.warn(`HAPI is currently unavailable; source sessions will reconnect: ${result.reason instanceof Error ? result.reason.message : 'connection failed'}`);
 }

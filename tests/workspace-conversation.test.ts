@@ -30,7 +30,11 @@ test('pane composition preserves the original main/header ownership and third-pa
     const ctx = { slots: {
         register: core.register.bind(core), entriesOfSlot: core.entriesOfSlot.bind(core), subscribe: core.subscribe.bind(core),
         inject: (_key: string, callback: () => () => void) => callback(),
-    }, locale: { subscribe: () => () => {} } } as unknown as Context
+    }, locale: { subscribe: () => () => {} },
+    // This ownership fixture does not provide shared workspace preferences.
+    // A real Cordis dependency scope remains dormant until that service exists.
+    inject: () => ({ dispose() {} }),
+    } as unknown as Context
     const pane = installRemotePane(ctx, { localeInstalled: true })
     assert.equal(core.entriesOfSlot('main')[0], originalMain)
     assert.equal(core.entriesOfSlot('main.conversation')[0], originalRoot)

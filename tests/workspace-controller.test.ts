@@ -189,6 +189,32 @@ test('original source pin and lifecycle metadata stay independent of official di
     controller.dispose(); source.disposeMain()
 })
 
+test('share discovery waits for real source identities and Host arrival while keeping loaded DSH on a source outage', () => {
+    const local = fixture(), remote = fixture(), controller = new WorkspaceController(local.options)
+    assert.equal(controller.getSnapshot().catalog.phase, 'ready')
+    assert.equal(controller.getSnapshot().catalogDiscovery.phase, 'pending')
+    const facts = { metadataPresent: true, flavor: 'codex', agentSessionId: 'native-thread', codexStoreId: '/source/home', hasTitleSignal: true, hasConversationContent: true }
+    controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'native-logical', displayRevision: 0,
+        hapiSessionId: 'original-source', machineId: 'source-machine', engine: 'codex', title: 'Source title', cwd: '/source', sourceListFacts: facts }], 'source-hub',
+    { connected: true, hosts: [{ id: 'remote', label: 'Other Host', online: true }] })
+    assert.equal(controller.getSnapshot().catalogDiscovery.sourceBindingsPending, 1)
+    local.add('native')
+    assert.equal(controller.getSnapshot().catalogDiscovery.sourceBindingsPending, 1, 'DSH proxy existence is not its source identity')
+    local.project('native', { hapi: { engine: 'codex', hubId: 'source-hub', hapiSessionId: 'original-source' } } as never)
+    assert.equal(controller.getSnapshot().catalogDiscovery.sourceBindingsPending, 0)
+    assert.deepEqual(controller.getSnapshot().catalog.byId.native?.sourceListFacts, facts)
+    assert.equal(controller.getSnapshot().catalogDiscovery.phase, 'pending', 'an advertised online Host is still loading')
+    const off = controller.addHost({ id: 'remote', label: 'Other Host', sessions: remote.sessions, navigation: remote.navigation, renderConversation: () => null })
+    controller.catalogHostReady('remote', 'Other Host')
+    assert.equal(controller.getSnapshot().catalogDiscovery.phase, 'ready')
+    local.add('ordinary')
+    assert.equal(controller.getSnapshot().catalog.byId.ordinary?.sourceListFacts, undefined)
+    controller.sourceCatalogFailed(new Error('HAPI disconnected'))
+    assert.equal(controller.getSnapshot().catalogDiscovery.phase, 'partial')
+    assert.equal(controller.getSnapshot().catalog.byId.ordinary?.hostOnline, true)
+    off(); controller.dispose(); local.disposeMain(); remote.disposeMain()
+})
+
 test('source timestamps and new-in-directory context retain actual machine identity through the engine chooser only', () => {
     const source = fixture(); source.add('native', 'Native', 10, '/source/project'); source.add('dsh', 'Official', 20, '/host/project')
     source.project('native', { hapi: { engine: 'codex', hapiSessionId: 'original-source', hubId: 'original-hub', machineId: 'source-machine' } } as never)

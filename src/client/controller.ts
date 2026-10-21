@@ -11,6 +11,7 @@ import type { CatalogMachine, CatalogSession } from '../client-api.ts'
 import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
 import { buildSidebarSearchIndex, compareSidebarSearch, type SidebarSearchIndex } from '../workspace/sidebar-search.ts'
+import { CatalogDiscovery, type WorkspaceCatalogDiscovery } from '../workspace/catalog-discovery.ts'
 
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
     interface SessionReferenceSourceMap { hapiWorkspace: unknown }
@@ -85,6 +86,7 @@ export interface WorkspaceCatalogRow extends SessionSummary {
     readonly sourceLastActiveAt?: CatalogSession['sourceLastActiveAt']
     readonly sourceWorktree?: CatalogSession['sourceWorktree']
     readonly sourceSubagentSearch?: readonly string[]
+    readonly sourceListFacts?: CatalogSession['sourceListFacts']
     readonly sourceRowState?: CatalogSession['sourceRowState']
 }
 
@@ -117,6 +119,8 @@ export interface PaneLease {
 export interface WorkspaceSnapshot {
     readonly layout: WorkspaceState
     readonly catalog: WorkspaceCatalog
+    /** Actual first source/Host discovery, independent of a temporarily empty catalog. */
+    readonly catalogDiscovery: WorkspaceCatalogDiscovery
     readonly leases: ReadonlyMap<string, PaneLease>
     readonly notice: string | null
     readonly persistence: 'local' | 'saving' | 'saved' | 'failed'
@@ -213,6 +217,9 @@ export class WorkspaceController {
     private readonly hostUnsubscribers = new Map<string, Array<() => void>>()
     private readonly hostMainIds = new Map<string, string | undefined>()
     private readonly sourceCatalog = new Map<string, CatalogSession>()
+    private readonly discovery = new CatalogDiscovery()
+    private discoveryCatalog: WorkspaceCatalog | undefined
+    private sourceBindingsPending = 0
     private readonly paneCloseGuards = new Map<string, Set<() => boolean>>()
     private readonly lifetime = new AbortController()
     private snapshot: WorkspaceSnapshot
@@ -261,6 +268,7 @@ export class WorkspaceController {
             ...(options.workspaceState ? { workspaceState: options.workspaceState } : {}) })
         this.snapshot = {
             layout: this.store.getSnapshot(), catalog: this.aggregateCatalog(),
+            catalogDiscovery: this.discovery.snapshot(options.sessions.list.getSnapshot().phase === 'ready'),
             leases: new Map(), notice, persistence: 'local', conflict: null,
             creation: null, creationContext: null, pickingSession: false, machines: [], nativePanel: null,
         }
@@ -320,13 +328,19 @@ export class WorkspaceController {
     }
     closeSessionPicker = (): void => { this.publish({ pickingSession: false }) }
     setMachines(machines: readonly CatalogMachine[]): void { this.publish({ machines }) }
-    setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string): void {
+    setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {
+        hosts: readonly { id: string; label: string; online: boolean }[]; connected: boolean
+    }): void {
         if (hubId) this.primarySourceHubId = hubId
         this.sourceCatalog.clear()
         for (const session of sessions) this.sourceCatalog.set(session.id, session)
+        this.discovery.observe(discovery?.hosts ?? [], discovery?.connected ?? true)
         this.publish({ catalog: this.aggregateCatalog() })
         this.openPendingSource()
     }
+    sourceCatalogFailed(error: unknown): void { this.discovery.sourceFailed(errorMessage(error)); this.publish() }
+    catalogHostReady(id: string, label: string): void { this.discovery.hostReady(id, label); this.publish() }
+    catalogHostFailed(id: string, label: string, error: unknown): void { this.discovery.hostFailed(id, label, errorMessage(error)); this.publish() }
     openNativeLibrary = (): void => { this.publish({ nativePanel: { kind: 'library' }, creation: null, creationContext: null, pickingSession: false }); this.options.reveal?.() }
     openNativeTools = (sessionId: string, initialAction?: 'fork' | 'archive' | 'reopen' | 'pin' | 'restart' | 'delete'): void => {
         this.publish({ nativePanel: { kind: 'session', sessionId, ...(initialAction ? { initialAction } : {}) }, pickingSession: false }); this.options.reveal?.()
@@ -336,6 +350,16 @@ export class WorkspaceController {
     private publish(patch: Partial<WorkspaceSnapshot> = {}): void {
         if (this.disposed) return
         this.snapshot = { ...this.snapshot, ...patch, layout: this.store.getSnapshot(), leases: new Map(this.leases) }
+        if (this.discoveryCatalog !== this.snapshot.catalog) {
+            this.discoveryCatalog = this.snapshot.catalog
+            const listed = new Set(this.snapshot.catalog.ids)
+            this.sourceBindingsPending = [...this.sourceCatalog.values()].filter(source => {
+                const identity = sourceIdentity(this.snapshot.catalog.byId[source.id])
+                return !listed.has(source.id as SessionId) || !identity?.hubId || identity.sessionId !== source.hapiSessionId
+                    || this.primarySourceHubId !== null && identity.hubId !== this.primarySourceHubId
+            }).length
+        }
+        this.snapshot = { ...this.snapshot, catalogDiscovery: this.discovery.snapshot(this.options.sessions.list.getSnapshot().phase === 'ready', this.sourceBindingsPending) }
         for (const listener of [...this.listeners]) listener()
     }
 
@@ -396,6 +420,7 @@ export class WorkspaceController {
                     ...(sourceOwned && typeof source?.active === 'boolean' ? { sourceActive: source.active } : {}),
                     ...(sourceOwned && source?.lifecycleState !== undefined ? { sourceLifecycleState: source.lifecycleState } : {}),
                     ...(sourceOwned && source ? { sourceCreatedAt: source.sourceCreatedAt ?? null, sourceLastActiveAt: source.sourceLastActiveAt ?? null, sourceSummary: source.sourceSummary ?? null, sourceWorktree: source.sourceWorktree ?? null, sourceSubagentSearch: source.sourceSubagentSearch ?? [],
+                        ...(source.sourceListFacts ? { sourceListFacts: source.sourceListFacts } : {}),
                         ...(source.sourceRowState ? { sourceRowState: source.sourceRowState } : {}) } : {}),
                     sourceSessionId, archived: !sourceOwned && archived.has(sourceSessionId),
                     pinned: sourceOwned ? source?.pinMode === 'project' || source?.pinMode === 'global' : pinned.has(sourceSessionId),

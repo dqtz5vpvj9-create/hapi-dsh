@@ -3,9 +3,10 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots';
 import type { ComposerAttachmentsProps, ComposerAttachment } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
+import { inspectComposerAttachments, type ComposerEnterAttachments } from './composer-enter/attachments.ts';
 
 /** Access the published attachment owner callbacks through their real mounted slot. */
-export interface SourceComposerBridge {
+export interface SourceComposerBridge extends ComposerEnterAttachments {
     addFiles(sessionId: SessionId, files: readonly File[], signal: AbortSignal): Promise<() => void>;
     captureFiles(sessionId: SessionId, ids: readonly string[]): readonly ComposerAttachment[];
     removeFiles(sessionId: SessionId, captured: readonly { id: string; file: File }[]): void;
@@ -41,6 +42,11 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
     };
     const stop = ctx.slots.subscribe('conversation.input.attachments', reconcile); reconcile();
     return {
+        inspectSubmission(sessionId, actions, ids) {
+            const seat = [...seats.get(sessionId) ?? []].find(row => row.props.inputActions === actions
+                && ids.every(id => row.props.attachments.some(attachment => attachment.id === id)));
+            return inspectComposerAttachments(seat?.props, ids);
+        },
         captureFiles(sessionId, ids) {
             if (!ids.length) return [];
             for (const row of seats.get(sessionId) ?? []) {

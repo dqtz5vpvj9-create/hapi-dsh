@@ -6,7 +6,7 @@ export type WorkspacePreferenceKey = 'hapi-terminal-touchbar-keys' | 'hapi-termi
     | 'hapi-appearance' | 'hapi-color-theme' | 'hapi-theme-colors' | 'hapi-font-scale' | 'hapi-terminal-font-size'
     | 'hapi-user-message-bg' | 'hapi-tool-group-bg' | 'hapi-session-header-metadata' | 'hapi-composer-toolbar-layout'
     | 'hapi-reasoning-collapsed' | 'hapi-codex-exploration-collapsed' | 'hapi-terminal-tool-display-mode'
-    | 'hapi-open-external-links-in-new-tab' | 'hapi-dsh-appearance-enabled' | 'hapi.sessionExportFormat'
+    | 'hapi-open-external-links-in-new-tab' | 'hapi-dsh-appearance-enabled' | 'hapi.sessionExportFormat' | 'hapi-composer-enter-behavior' | 'hapi-dsh-link-opening'
 export interface WorkspaceUiPreferences {
     getItem(key: WorkspacePreferenceKey): string | null
     setItem(key: WorkspacePreferenceKey, value: string): void
@@ -20,7 +20,7 @@ const keys = new Set<WorkspacePreferenceKey>(['hapi-terminal-touchbar-keys', 'ha
     'hapi-appearance', 'hapi-color-theme', 'hapi-theme-colors', 'hapi-font-scale', 'hapi-terminal-font-size',
     'hapi-user-message-bg', 'hapi-tool-group-bg', 'hapi-session-header-metadata', 'hapi-composer-toolbar-layout',
     'hapi-reasoning-collapsed', 'hapi-codex-exploration-collapsed', 'hapi-terminal-tool-display-mode',
-    'hapi-open-external-links-in-new-tab', 'hapi-dsh-appearance-enabled', 'hapi.sessionExportFormat'])
+    'hapi-open-external-links-in-new-tab', 'hapi-dsh-appearance-enabled', 'hapi.sessionExportFormat', 'hapi-composer-enter-behavior', 'hapi-dsh-link-opening'])
 
 export function createWorkspaceUiPreferences(storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
     events?: Pick<Window, 'addEventListener' | 'removeEventListener'>): WorkspaceUiPreferences & { dispose(): void } {

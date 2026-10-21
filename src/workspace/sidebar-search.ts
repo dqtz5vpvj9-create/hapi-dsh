@@ -63,7 +63,7 @@ export function hasSidebarSearchBoundary(value: string, query: string): boolean 
     const escaped = query.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`).test(value.toLowerCase())
 }
-export function scoreSidebarSearch(fields: SidebarSearchFields, query: string): { matched: boolean; score: number } {
+export function scoreSidebarSearch(fields: Readonly<{ [K in keyof SidebarSearchFields]: readonly string[] }>, query: string): { matched: boolean; score: number } {
     const normalized = query.trim().toLowerCase(), wildcard = isSidebarWildcard(normalized)
     const terms = wildcard ? [normalized] : normalized.split(/\s+/).filter(Boolean)
     if (!terms.length) return { matched: true, score: 0 }

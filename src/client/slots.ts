@@ -12,6 +12,6 @@ import type { InitialFileUpload } from './initial-task.ts'
 import type { WorkspaceUiPreferences } from './ui-preferences.ts'
 
 export type WorkspaceRootProps = PropsRuntime<'main'>
-    & PropsLocale<'hapiWorkspace'> & { controller: WorkspaceController; api: HapiRemoteApi; language: string; uploadInitialFile: InitialFileUpload; preferences?: WorkspaceUiPreferences | undefined }
+    & PropsLocale<'hapiWorkspace'> & { controller: WorkspaceController; api: HapiRemoteApi; language: string; uploadInitialFile: InitialFileUpload; preferences?: WorkspaceUiPreferences | undefined; prepareNavigation?: (() => Promise<void>) | undefined }
 export type SessionSidebarProps = PropsRuntime<'sidebar.workspaces'> & PropsLocale<'hapiWorkspace'>
     & { wide: boolean; expandSidebar: () => void; controller: WorkspaceController; api: HapiRemoteApi; controls?: NativeControlLedger }

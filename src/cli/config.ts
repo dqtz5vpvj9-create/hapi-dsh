@@ -23,6 +23,8 @@ export interface RuntimeConfig {
         url: string;
         tokenEnv: string;
         token?: string;
+        /** Original HAPI Hub HTTPS origin reachable by the mobile Companion. */
+        companionUrl?: string;
     };
     server: {
         host: string;
@@ -66,6 +68,16 @@ export function normalizeHttpUrl(value: unknown, name: string): string {
     return url.toString().replace(/\/+$/, '');
 }
 
+/** Native Companion clients accept an origin, not a reverse-proxy path prefix. */
+export function normalizeCompanionUrl(value: unknown): string {
+    const normalized = normalizeHttpUrl(value, 'hapi.companionUrl');
+    const url = new URL(normalized);
+    if (url.protocol !== 'https:' || url.pathname !== '/' || typeof value === 'string' && (value.includes('?') || value.includes('#'))) {
+        throw new Error('hapi.companionUrl must be an HTTPS origin without a path prefix');
+    }
+    return url.origin;
+}
+
 /** Match the official bare host[:port] contract without silently broadening a port grant. */
 function trustedAuthority(value: unknown): string {
     if (typeof value !== 'string' || value.includes('*')) throw new Error('server.trustedHosts must contain bare host[:port] authorities');
@@ -87,7 +99,7 @@ export function parseConfig(input: unknown): RuntimeConfig {
     const hapi = record(config.hapi, 'hapi');
     const server = record(config.server, 'server');
     keys(dsh, ['home', 'profile', 'command', 'args'], 'dsh');
-    keys(hapi, ['id', 'url', 'tokenEnv', 'token'], 'hapi');
+    keys(hapi, ['id', 'url', 'tokenEnv', 'token', 'companionUrl'], 'hapi');
     keys(server, ['host', 'port', 'publicUrl', 'trustedHosts', 'tls'], 'server');
     const home = string(dsh.home, 'dsh.home');
     if (!isAbsolute(home)) throw new Error('dsh.home must be an absolute path');
@@ -125,6 +137,7 @@ export function parseConfig(input: unknown): RuntimeConfig {
         result.dsh.args = [...dsh.args];
     }
     if (hapi.token !== undefined) result.hapi.token = string(hapi.token, 'hapi.token');
+    if (hapi.companionUrl !== undefined) result.hapi.companionUrl = normalizeCompanionUrl(hapi.companionUrl);
     if (server.publicUrl !== undefined) result.server.publicUrl = normalizeHttpUrl(server.publicUrl, 'server.publicUrl');
     if (server.trustedHosts !== undefined) {
         if (!Array.isArray(server.trustedHosts) || server.trustedHosts.length > 32) throw new Error('server.trustedHosts must be an array of at most 32 authorities');
@@ -259,9 +272,10 @@ export function resolveHapiToken(config: RuntimeConfig, env: NodeJS.ProcessEnv =
     return value;
 }
 
-export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi: { id: string; url: string; tokenEnv: string; credentialConfigured: boolean } } {
+export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi: { id: string; url: string; tokenEnv: string; companionUrl?: string; credentialConfigured: boolean } } {
     return {
         ...config,
-        hapi: { id: config.hapi.id, url: config.hapi.url, tokenEnv: config.hapi.tokenEnv, credentialConfigured: Boolean(config.hapi.token) },
+        hapi: { id: config.hapi.id, url: config.hapi.url, tokenEnv: config.hapi.tokenEnv,
+            ...(config.hapi.companionUrl ? { companionUrl: config.hapi.companionUrl } : {}), credentialConfigured: Boolean(config.hapi.token) },
     };
 }

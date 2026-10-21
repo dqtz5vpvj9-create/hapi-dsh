@@ -32,6 +32,7 @@ import { installNativeIntegration } from './native-integration.tsx'
 import type {} from './pane-navigation.ts'
 import { installHapiTabs } from './hapi-tabs.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
+import { installSourceCompanion } from './source-companion.tsx'
 import { ObservedControlLedger } from './observed-controls.tsx'
 import { installSourcePathActions } from './source-path-actions.tsx'
 import { installSourceFileActions } from './source-file-actions.tsx'
@@ -51,6 +52,7 @@ import { createWorkspaceNotifications } from '../workspace/notifications.ts'
 import { installShareInbox } from './share-inbox.tsx'
 import { installDraftHandoff } from './draft-handoff-dialog.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
+import { installWorkspaceLinkSettings } from './workspace-links.tsx'
 
 export { WorkspaceController, sessionResourceId, parseSessionResourceId } from './controller.ts'
 export type { WorkspaceHost, WorkspaceOptions, WorkspaceSnapshot, WorkspacePersistence } from './controller.ts'
@@ -144,7 +146,9 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     disposers.push(installHapiTabs(ctx, api))
     disposers.push(installSourceAdmin(ctx, api))
+    disposers.push(installSourceCompanion(ctx, api))
     disposers.push(installSourceAppearance(ctx))
+    disposers.push(installWorkspaceLinkSettings(ctx))
     disposers.push(installSourcePathActions(ctx, api))
     disposers.push(installSourceFileActions(ctx, api))
     disposers.push(installSourceTerminalActions(ctx, api))
@@ -162,7 +166,16 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
         t: ctx.locale.bind('hapiWorkspace'), subscribe: listener => ctx.locale.subscribe(listener),
     }))
     const uploadInitialFile = async (sessionId: string, file: File, signal?: AbortSignal) => remoteValue(await ctx.fileUpload.upload(sessionId as SessionId, file, file.name, signal))
-    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences })
+    const prepareWorkspaceDeparture = async (): Promise<void> => {
+        const ui = ctx.get('hapiWorkspaceUi')
+        const tr = (en: string, zh: string): string => ctx.locale.getSnapshot().active.startsWith('zh') ? zh : en
+        if (!ui) throw new Error(tr('The workspace editors are not ready.', '工作区编辑器尚未就绪。'))
+        if (ui.voice.getSnapshot()) throw new Error(tr('Finish the active voice call before leaving the workspace.', '请先结束正在进行的语音通话，再离开工作区。'))
+        if (controller.getSnapshot().creation) throw new Error(tr('Finish or close the new-session form before leaving the workspace.', '请先完成或关闭新建会话表单，再离开工作区。'))
+        if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error(tr('Wait for the incoming share to finish preparing.', '请等待正在接收的分享完成准备。'))
+        await ui.updates.checkpoint()
+    }
+    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture })
     const Sidebar = (props: Omit<SessionSidebarProps, 'controller' | 'controls' | 'api'>) => createElement(SessionSidebar, { ...props, controller, controls, api })
     stage = 'register workspace slots'
     // Shadow one existing main cell while preserving official shell, plugin

@@ -16,6 +16,10 @@ The Cursor model catalog and CLI SKU picker helpers in src/client/cursor-models
 also retain the pinned source's exact model identity and variant semantics.
 The machine health field schema, thresholds and uptime formatting adapt
 shared/src/schemas.ts and web/src/lib/machineHealth.ts from the same baseline.
+The shared-content preview and fixed share-picker snapshot preserve the source
+behavior in web/src/routes/share/index.tsx, web/src/lib/sharePickerSessions.ts
+and web/src/components/SessionList.tsx. Original Enter and external-link
+preferences retain the source keys and input/navigation meaning.
 
 Pinned fork: https://github.com/dqtz5vpvj9-create/hapi
 Revision: 0f8ef6970884c92fb2ddca3070be2ec56cb50333
@@ -88,3 +92,11 @@ pinned by the original HAPI baseline, to rasterize a reviewed, read-only copy
 of the official DSH Conversation DOM. It does not replace a chat renderer.
 Copyright (c) 2024-present yorickshan and html2canvas-pro contributors.
 Original MIT license: docs/licenses/HTML2CANVAS-PRO-MIT.txt.
+
+Local Companion QR encoding
+----------------------------
+The browser artifact bundles unmodified qrcode 1.5.4, the encoder used by
+the original HAPI Companion pairing feature. QR pixels are generated locally;
+the credential-bearing payload is never sent to an external QR service.
+Copyright (c) 2012 Ryan Day. MIT License.
+Original license: docs/licenses/QRCODE-MIT.txt.

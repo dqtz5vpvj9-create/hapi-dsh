@@ -1,17 +1,11 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
-import type { WorkspaceCatalogRow, WorkspaceController } from './controller.ts';
-import { parseSessionResourceId, sessionLocation } from './controller.ts';
-import { isSourceChild, sourceIdentity } from '../workspace/legacy.ts';
-import { sessionFolder } from '../workspace/presentation.ts';
-import { parseShareFields, shareFromFragment, shareSeedText, type ShareTarget } from './share-transfer.ts';
+import type { WorkspaceController } from './controller.ts';
+import { parseSessionResourceId } from './controller.ts';
+import { parseShareFields, shareFromFragment } from './share-transfer.ts';
+import { resolveShareCandidate, shareTargetForRow, type SharePickerCandidate } from '../workspace/share-picker.ts';
+import { SharePayloadPreview, ShareTargetPicker, sharePickerStyles } from './share-picker.tsx';
 import type {} from './workspace-ui.ts';
-
-function targetFor(row: WorkspaceCatalogRow): ShareTarget {
-    const source = sourceIdentity(row);
-    return source?.hubId ? { kind: 'hapi', hubId: source.hubId, sessionId: source.sessionId }
-        : { kind: 'dsh', hostId: row.hostId, sessionId: row.sourceSessionId };
-}
 
 /** Root-only picker. It never posts a chat or chooses a target from whichever pane mounts first. */
 export function installShareInbox(ctx: Context, controller: WorkspaceController): () => void {
@@ -39,40 +33,46 @@ function installRootShareInbox(ctx: Context, controller: WorkspaceController): (
         const transfer = await shareFromFragment(fields, timed); const stored = await inbox.ingest(transfer); address(stored);
     };
     void start().catch(inbox.report);
+    let awaitingCreatedIdentity: string | null = null;
     const created = controller.subscribeCreated(id => {
         if (inbox.getSnapshot().phase !== 'creating') return;
         const row = controller.getSnapshot().catalog.byId[id], source = parseSessionResourceId(id);
-        inbox.created(row ? targetFor(row) : { kind: 'dsh', hostId: source.hostId, sessionId: source.sessionId });
+        const target = row ? shareTargetForRow(row) : /^(?:hapi-codex-|hapi-observed-)/u.test(source.sessionId) ? null
+            : { kind: 'dsh' as const, hostId: source.hostId, sessionId: source.sessionId };
+        if (target) { awaitingCreatedIdentity = null; inbox.created(target); }
+        else awaitingCreatedIdentity = id;
     });
     const watchCreation = controller.subscribe(() => {
-        if (!controller.getSnapshot().creation && inbox.getSnapshot().phase === 'creating') inbox.cancelCreation();
+        if (inbox.getSnapshot().phase !== 'creating') { awaitingCreatedIdentity = null; return; }
+        if (awaitingCreatedIdentity) {
+            const row = controller.getSnapshot().catalog.byId[awaitingCreatedIdentity], target = row && shareTargetForRow(row);
+            if (target) { awaitingCreatedIdentity = null; inbox.created(target); }
+        } else if (!controller.getSnapshot().creation) inbox.cancelCreation();
     });
     const ShareDialog = () => {
-        const state = useSyncExternalStore(inbox.subscribe, inbox.getSnapshot), snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+        const state = useSyncExternalStore(inbox.subscribe, inbox.getSnapshot);
         const lang = useSyncExternalStore(listener => ctx.locale.subscribe(listener), language), tr = (en: string, zh: string) => lang.startsWith('zh') ? zh : en;
-        const dialog = useRef<HTMLDialogElement>(null), [query, setQuery] = useState('');
-        const rows = useMemo(() => Object.values(snapshot.catalog.byId).filter(row => !isSourceChild(row))
-            .filter(row => `${row.displayTitle} ${row.hostLabel} ${sessionLocation(row).machineName ?? ''} ${sessionFolder(row).path}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
-            .sort((a, b) => a.displayTitle.localeCompare(b.displayTitle)), [snapshot.catalog, query]);
+        const dialog = useRef<HTMLDialogElement>(null);
         useEffect(() => { if (state.opened) dialog.current?.showModal(); else dialog.current?.close(); }, [state.opened]);
         const record = state.record, busy = state.phase === 'inserting' || state.phase === 'loading', delivered = record?.hapiDshDelivery;
+        const select = (candidate: SharePickerCandidate): void => {
+            if (delivered && delivered.status !== 'ready' && !window.confirm(tr('Insert this share again? Review the target draft first to avoid duplicate text or files.', '再次插入这份分享？请先检查目标草稿，避免重复文字或文件。'))) return;
+            // Confirmation can remain open across an SSE update. Recheck the
+            // exact source after it closes, without choosing a similar row.
+            const target = resolveShareCandidate(candidate, controller.getSnapshot().catalog);
+            if (target.status !== 'ready') { inbox.report(new Error(tr('The chosen source is no longer available under this identity. Refresh the conversation snapshot and choose again.', '所选源会话当前无法按原身份访问，请刷新会话快照后重新选择。'))); return; }
+            controller.openSession(target.row.id); void inbox.select(target.target, Boolean(delivered));
+        };
         return <dialog ref={dialog} className="hapi-incoming-share-dialog" aria-label={tr('Incoming share', '接收分享')} onCancel={event => { event.preventDefault(); inbox.hide(); }}>
             <header><h2>{tr('Incoming share', '接收分享')}</h2><button type="button" aria-label={tr('Close incoming share', '关闭分享')} onClick={inbox.hide}>×</button></header>
             <p>{tr('Choose a conversation in this workspace. Shared content is added to its draft for review before sending.', '选择工作区中的会话。分享内容会加入草稿，检查后再发送。')}</p>
             {state.error && <p role="alert" className="hapi-error">{state.error}</p>}
             {busy && <p role="status">{tr('Preparing shared content…', '正在准备分享内容…')}</p>}
             {record && <>
-                <pre className="hapi-incoming-share-preview">{shareSeedText(record)}</pre>
-                {record.files.length > 0 && <ul>{record.files.map((file, index) => <li key={index}>{file.name} · {Math.ceil(file.blob.size / 1024)} KiB
-                    <button type="button" onClick={() => { const url = URL.createObjectURL(file.blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = file.name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30_000); }}>{tr('Save original file', '保存原始文件')}</button></li>)}</ul>}
+                <SharePayloadPreview key={record.id} record={record} language={lang}/>
                 {delivered && <p>{state.phase === 'inserted' ? tr('This content has been inserted. Its original files remain available here for one hour. Inserting again can duplicate the draft.', '这些内容已插入草稿，原始文件在此保留一小时。再次插入可能产生重复内容。')
                     : tr('The hand-off is bound to the selected conversation. If an earlier insertion was interrupted, check that draft before retrying.', '分享已经绑定所选会话。如果之前的插入中断，请先检查草稿，再决定是否重试。')}</p>}
-                <label>{tr('Find conversation', '查找会话')}<input type="search" value={query} onChange={event => setQuery(event.currentTarget.value)} disabled={busy}/></label>
-                <div className="hapi-share-destinations">{rows.map(row => <button type="button" key={row.id} disabled={busy || !row.hostOnline} onClick={() => {
-                    if (delivered && delivered.status !== 'ready' && !window.confirm(tr('Insert this share again? Review the target draft first to avoid duplicate text or files.', '再次插入这份分享？请先检查目标草稿，避免重复文字或文件。'))) return;
-                    controller.openSession(row.id); void inbox.select(targetFor(row), Boolean(delivered));
-                }}><strong>{row.displayTitle}</strong><small>{row.hostLabel} · {sessionLocation(row).machineName ?? sessionLocation(row).machineId ?? ''} · {sessionFolder(row).path}</small></button>)}</div>
-                {!rows.length && <p>{tr('No matching conversation. Create one or change the search.', '未找到匹配会话，可新建会话或修改搜索。')}</p>}
+                <ShareTargetPicker key={record.id} controller={controller} busy={busy} language={lang} t={ctx.locale.bind('hapiWorkspace')} onSelect={select}/>
                 <footer><button type="button" disabled={busy || Boolean(delivered)} onClick={() => { if (inbox.beginCreation()) controller.requestNewSession(); }}>{tr('Create a conversation for this share', '为这份分享新建会话')}</button>
                     <button type="button" disabled={busy} onClick={() => { if (window.confirm(tr('Discard the saved original share? Existing conversation drafts are kept.', '删除保存的原始分享内容？已有会话草稿会保留。'))) void inbox.discard().then(() => { if (!inbox.getSnapshot().record) address(); }); }}>{tr('Discard saved share', '删除保存的分享')}</button></footer>
             </>}
@@ -84,7 +84,22 @@ function installRootShareInbox(ctx: Context, controller: WorkspaceController): (
     };
     const overlay = ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'hapi.share-inbox', order: 40 }, ShareDialog));
     const shortcut = ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'hapi.share-inbox', order: 40 }, Shortcut));
-    const style = document.createElement('style'); style.textContent = styles; document.head.append(style);
+    const style = document.createElement('style'); style.textContent = styles + sharePickerStyles; document.head.append(style);
     return () => { lifetime.abort(); created(); watchCreation(); overlay(); shortcut(); style.remove(); };
 }
-const styles = `.hapi-incoming-share-dialog{width:min(660px,calc(100vw - 24px));max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box;padding:20px;border:1px solid var(--border-secondary,#8886);border-radius:12px;background:var(--bg-primary,Canvas);color:var(--text-primary,CanvasText);font-size:14px}.hapi-incoming-share-dialog::backdrop{background:#0007}.hapi-incoming-share-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px}.hapi-incoming-share-dialog h2{font-size:18px;margin:0}.hapi-incoming-share-dialog p{line-height:1.6}.hapi-incoming-share-preview{max-height:25vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--bg-secondary,#8881);padding:12px;border-radius:8px}.hapi-incoming-share-dialog label{display:flex;flex-direction:column;gap:6px}.hapi-incoming-share-dialog input{box-sizing:border-box;width:100%;padding:8px;border:1px solid var(--border-secondary,#8885);border-radius:6px;background:var(--bg-input,transparent);color:inherit}.hapi-incoming-share-dialog button,.hapi-incoming-share-status button{font:inherit;border:1px solid var(--border-secondary,#8885);border-radius:6px;background:var(--bg-secondary,transparent);color:inherit;cursor:pointer;padding:5px 9px}.hapi-incoming-share-dialog button:disabled{opacity:.5;cursor:default}.hapi-share-destinations{display:grid;gap:6px;max-height:35vh;overflow:auto;margin:12px 0}.hapi-share-destinations button{display:grid;gap:4px;text-align:start}.hapi-share-destinations small{color:var(--text-secondary,#888);overflow-wrap:anywhere}.hapi-incoming-share-dialog footer,.hapi-incoming-share-dialog li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}.hapi-incoming-share-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;padding:6px;color:var(--text-secondary,#888)}.hapi-incoming-share-dialog .hapi-error{color:var(--text-error,#d45d62);overflow-wrap:anywhere}`;
+const styles = `
+.hapi-incoming-share-dialog{width:min(660px,calc(100vw - 24px));max-height:calc(100dvh - 32px);overflow:auto;box-sizing:border-box;padding:20px;border:1px solid var(--hapi-border);border-radius:12px;background:var(--hapi-bg);color:var(--hapi-fg);font-size:14px}
+.hapi-incoming-share-dialog::backdrop{background:#0007}
+.hapi-incoming-share-dialog>header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.hapi-incoming-share-dialog h2{font-size:18px;margin:0}.hapi-incoming-share-dialog p{line-height:1.6}
+.hapi-incoming-share-preview{max-height:25vh;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--hapi-muted);padding:12px;border-radius:8px}
+:where(.hapi-incoming-share-dialog) label{display:flex;flex-direction:column;gap:6px}
+:where(.hapi-incoming-share-dialog) input{box-sizing:border-box;width:100%;padding:8px;border:1px solid var(--hapi-border);border-radius:6px;background:var(--hapi-bg);color:inherit}
+:where(.hapi-incoming-share-dialog) button,.hapi-incoming-share-status button{font:inherit;border:1px solid var(--hapi-border,var(--dsw-alias-border-l2,#8885));border-radius:6px;background:var(--hapi-muted,var(--dsw-alias-bg-layer-2,transparent));color:inherit;cursor:pointer;padding:5px 9px}
+.hapi-incoming-share-dialog button:disabled{opacity:.5;cursor:default}
+.hapi-share-destinations{display:grid;gap:6px;max-height:35vh;overflow:auto;margin:12px 0}.hapi-share-destinations button{display:grid;gap:4px;text-align:start}
+.hapi-share-destinations small{color:var(--hapi-secondary);overflow-wrap:anywhere}
+.hapi-incoming-share-dialog>footer,.hapi-incoming-share-dialog li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.hapi-incoming-share-status{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;padding:6px;color:var(--dsw-alias-label-secondary,#888)}
+.hapi-incoming-share-dialog .hapi-error{color:var(--dsw-alias-state-error-primary,#d45d62);overflow-wrap:anywhere}
+`;

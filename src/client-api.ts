@@ -38,6 +38,7 @@ export type * from './hapi-agent/initial-task-types.ts';
 import { sourceHistoryInputs, sourceHistoryOutputs, type SourceHistoryApi } from './hapi-agent/history-types.ts';
 export type * from './hapi-agent/history-types.ts';
 import { sourceAdminInputs, sourceAdminOutputs, type SourceAdminApi } from './source-admin-types.ts';
+import { sourceCompanionInputs, sourceCompanionOutputs, type SourceCompanionApi } from './source-companion-types.ts';
 export type * from './source-admin-types.ts';
 import { voiceInputs, voiceOutputs, type SourceVoiceApi } from './voice-types.ts';
 export type * from './voice-types.ts';
@@ -73,6 +74,10 @@ export interface CatalogSession {
     sourceSummary?: string | null;
     sourceWorktree?: { name: string; basePath: string; worktreePath?: string; branch?: string } | null;
     sourceSubagentSearch?: string[];
+    sourceListFacts?: {
+        metadataPresent: boolean; flavor: string | null; agentSessionId: string | null; codexStoreId: string | null;
+        hasTitleSignal: boolean; hasConversationContent: boolean | null;
+    };
     sourceRowState?: {
         todoProgress: { completed: number; total: number } | null;
         futureScheduledMessageCount: number | null; nextScheduledAt: number | null;
@@ -93,7 +98,7 @@ export interface WorkspaceWrite { expectedRevision: number; state: WorkspaceStat
 export interface WorkspaceWriteResult extends WorkspaceDocument { status: 'applied' | 'conflict' }
 export interface NativeQueueRequest { sessionId: string; localId: string }
 export interface NativeAnswerRequest { sessionId: string; requestId: string; answer: HapiApprovalAnswer; deny?: boolean }
-export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceVoiceApi, SourceNotificationsApi {
+export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceCompanionApi, SourceVoiceApi, SourceNotificationsApi {
     catalog(): Promise<RemoteResult<HapiCatalog>>;
     machineOptions(request: { machineId: string }): Promise<RemoteResult<MachineOptions>>;
     sourceMachineOptions(request: SourceMachineOptionsRequest): Promise<RemoteResult<SourceMachineOptions>>;
@@ -156,6 +161,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/sourceHistoryOperationRead': HapiRemoteApi['sourceHistoryOperationRead'];
         'hapi/sourceHistoryContinue': HapiRemoteApi['sourceHistoryContinue'];
         'hapi/sourceAdministration': HapiRemoteApi['sourceAdministration'];
+        'hapi/sourceCompanionInfo': HapiRemoteApi['sourceCompanionInfo'];
+        'hapi/sourceCompanionReveal': HapiRemoteApi['sourceCompanionReveal'];
         'hapi/sourceSessionBulk': HapiRemoteApi['sourceSessionBulk'];
         'hapi/sourceSessionBulkRead': HapiRemoteApi['sourceSessionBulkRead'];
         'hapi/sourceSummarySettings': HapiRemoteApi['sourceSummarySettings'];
@@ -259,7 +266,7 @@ const workspaceState = z.unknown().transform((value, context) => {
 const workspaceDocument = z.object({ revision: z.number().int().nonnegative(), state: workspaceState.nullable() });
 const looseJson = z.json();
 const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
-    ...nativeLibraryInputs, ...workbenchInputs, ...sessionExtrasInputs, ...sourceInitialTaskInputs, ...sourceHistoryInputs, ...sourceAdminInputs, ...voiceInputs, ...notificationInputs,
+    ...nativeLibraryInputs, ...workbenchInputs, ...sessionExtrasInputs, ...sourceInitialTaskInputs, ...sourceHistoryInputs, ...sourceAdminInputs, ...sourceCompanionInputs, ...voiceInputs, ...notificationInputs,
     machineOptions: z.strictObject({ machineId: id }),
     sourceMachineOptions: sourceMachineOptionsRequestSchema,
     sourceMachineDirectory: sourceDirectoryRequestSchema, sourceMachinePaths: sourcePathsRequestSchema,
@@ -290,13 +297,14 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     workspacePut: z.strictObject({ expectedRevision: z.number().int().nonnegative(), state: workspaceState, operationId: id }),
 };
 const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
-    ...nativeLibraryOutputs, ...workbenchOutputs, ...sessionExtrasOutputs, ...sourceInitialTaskOutputs, ...sourceHistoryOutputs, ...sourceAdminOutputs, ...voiceOutputs, ...notificationOutputs,
+    ...nativeLibraryOutputs, ...workbenchOutputs, ...sessionExtrasOutputs, ...sourceInitialTaskOutputs, ...sourceHistoryOutputs, ...sourceAdminOutputs, ...sourceCompanionOutputs, ...voiceOutputs, ...notificationOutputs,
     catalog: z.object({
         hubId: id, connected: z.boolean(),
         machines: z.array(z.object({ id, label: z.string(), online: z.boolean(), homeDir: z.string().optional(), workspaceRoots: z.array(z.string()).optional(),
             host: z.string().optional(), platform: z.string().optional(), version: z.string().optional(), lastSeenAt: z.number().finite().optional(), health: sourceMachineHealthSchema.nullable().optional() })),
         sessions: z.array(z.object({ id, logicalSessionId: id, displayRevision: z.number().int().nonnegative(), hapiSessionId: id, machineId: id.nullable(), engine: z.string(), title: z.string(), cwd: z.string(), updatedAt: z.number().finite().optional(), active: z.boolean().optional(), lifecycleState: z.string().nullable().optional(), pinMode: z.enum(['none', 'project', 'global']).default('none'),
             sourceCreatedAt: z.number().finite().nullable().optional(), sourceLastActiveAt: z.number().finite().nullable().optional(), sourceSummary: z.string().nullable().optional(), sourceWorktree: z.object({ name: z.string(), basePath: z.string(), worktreePath: z.string().optional(), branch: z.string().optional() }).nullable().optional(), sourceSubagentSearch: z.array(z.string()).optional(),
+            sourceListFacts: z.strictObject({ metadataPresent: z.boolean(), flavor: z.string().nullable(), agentSessionId: z.string().nullable(), codexStoreId: z.string().nullable(), hasTitleSignal: z.boolean(), hasConversationContent: z.boolean().nullable() }).optional(),
             sourceRowState: z.object({ todoProgress: z.object({ completed: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).nullable(),
                 futureScheduledMessageCount: z.number().int().nonnegative().nullable(), nextScheduledAt: z.number().finite().nullable(), serviceTier: z.string().nullable(),
                 backgroundTaskCount: z.number().int().nonnegative().nullable(), pendingRequestsCount: z.number().int().nonnegative().nullable() }).optional() })),

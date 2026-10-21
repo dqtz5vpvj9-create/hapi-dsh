@@ -534,7 +534,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
         try {
             const catalog = remoteValue(await ctx.remote.hapi.catalog())
             workspace.setMachines(catalog.machines)
-            workspace.setSourceCatalog(catalog.sessions, catalog.hubId)
+            workspace.setSourceCatalog(catalog.sessions, catalog.hubId, { hosts: catalog.hosts, connected: catalog.connected })
             for (const session of catalog.sessions) {
                 const previous = logical.get(session.logicalSessionId)
                 if (previous && previous !== session.id) workspace.replaceSession(previous, session.id)
@@ -550,15 +550,16 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                 running.set(host.id, entry)
                 void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi).then(async runtime => {
                     if (entry.abort.signal.aborted || lifetime.signal.aborted) { await runtime.stop(); return }
-                    entry.runtime = runtime; reported.delete(host.id)
+                    entry.runtime = runtime; reported.delete(host.id); workspace.catalogHostReady(host.id, host.label)
                 }).catch(error => {
                     if (running.get(host.id) === entry) running.delete(host.id)
                     if (entry.abort.signal.aborted || lifetime.signal.aborted) return
                     const message = errorMessage(error)
+                    workspace.catalogHostFailed(host.id, host.label, message)
                     if (reported.get(host.id) !== message) { reported.set(host.id, message); workspace.report(message) }
                 })
             }
-        } catch (error) { if (!lifetime.signal.aborted) workspace.report(error) }
+        } catch (error) { if (!lifetime.signal.aborted) { workspace.sourceCatalogFailed(error); workspace.report(error) } }
         finally { polling = false }
     }
     void poll()

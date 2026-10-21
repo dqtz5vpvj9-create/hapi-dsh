@@ -17,6 +17,24 @@ test('configuration normalizes Hub URLs and preserves a random Hub identity acro
     assert.notEqual(createConfig(config.hapi.url, {}).hapi.id, config.hapi.id);
 });
 
+test('Companion configuration preserves the original Hub and requires an explicit HTTPS origin without leaking credentials', () => {
+    const config = createConfig('http://127.0.0.1:3006/original-prefix', {});
+    const parsed = parseConfig({ ...config, hapi: { ...config.hapi, token: 'fixture-private-token', companionUrl: 'https://MOBILE.example.test:443/' } });
+    assert.equal(parsed.hapi.companionUrl, 'https://mobile.example.test');
+    assert.equal(parsed.hapi.url, config.hapi.url);
+    assert.equal(publicConfig(parsed).hapi.companionUrl, parsed.hapi.companionUrl);
+    assert.equal(JSON.stringify(publicConfig(parsed)).includes('fixture-private-token'), false);
+    for (const companionUrl of ['http://mobile.example.test', 'https://mobile.example.test/api', 'https://mobile.example.test/%2f',
+        'https://mobile.example.test?code=fixture-secret', 'https://mobile.example.test#fixture-secret', 'https://user:fixture-secret@mobile.example.test',
+        'https://mobile.example.test?', 'https://mobile.example.test#', 'hapicompanion://bind']) {
+        assert.throws(() => parseConfig({ ...config, hapi: { ...config.hapi, companionUrl } }), (error: unknown) => {
+            assert.ok(error instanceof Error);
+            assert.equal(error.message.includes('fixture-secret'), false);
+            return true;
+        });
+    }
+});
+
 test('invalid profile, listener and credential-bearing URL are rejected without echoing credentials', () => {
     const config = createConfig('http://127.0.0.1:3006', {});
     for (const profile of ['web', 'sdk', '../web', 'Hapi']) {

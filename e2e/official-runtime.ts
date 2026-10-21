@@ -50,7 +50,7 @@ async function invoke<T>(origin: string, cookie: string, prefix: string, method:
     return wire.result.value!;
 }
 
-export async function startOfficialEnvironment(remote = false): Promise<OfficialEnvironment> {
+export async function startOfficialEnvironment(remote = false, options: { companionUrl?: string } = {}): Promise<OfficialEnvironment> {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-browser-'));
     const children: ChildProcess[] = [];
     const processOutput: Array<() => string> = [];
@@ -71,6 +71,7 @@ export async function startOfficialEnvironment(remote = false): Promise<Official
         config.server.port = 0;
         config.hapi.token = hapi.accessToken;
         config.hapi.id = 'e2e-native-hub';
+        if (options.companionUrl !== undefined) config.hapi.companionUrl = options.companionUrl;
         const credentialsFile = join(directory, 'pairings.json');
         config.federation = { credentialsFile };
         const pairToken = remote ? await addPairing(credentialsFile, 'runner-one', 'Remote Linux') : undefined;
