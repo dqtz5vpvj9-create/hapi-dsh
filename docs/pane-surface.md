@@ -446,3 +446,11 @@ deliverables related.
 共享会话 Pane 激活时开始记录 `pane.reference.ready`、`pane.content.mounted` 与 `pane.composer.mounted`，进入现有诊断导出。同一次打开使用相同 request ID；`warm` 表示激活前官方会话已 open，`cold` 表示尚未 open。只读取 DOM 标记，不记录消息、草稿或附件内容。空会话不伪造正文耗时；30 秒内未齐、隐藏、关闭和失败分别留下 incomplete 记录并停止观察。纯性能记录不会单独弹出诊断浮标。
 
 这里的时间从 Host graph 可用后开始激活 Pane 算起，正文和输入框记录的是 DOM 挂载，不是屏幕绘制或交互完成；它不涵盖此前 Host 冷启动/隧道建立耗时。该实现完成 12 项相关逻辑测试及 Client 类型检查，实际浏览器耗时尚待用户手测采集。
+
+## 2026-10-22 DSH Web 本地构建样式修复
+
+独立 DSH Web 从本地目录构建，CSS Modules 类名与主站 npm 构建不同；官方 CSS 标签的 `data-plugin-css` 却只包含包名和文件名。此前远端 document facade 把样式查找转给整页 document，同名标签使远端跳过注入，形成正文和输入框布局失效。
+
+现在样式查询限定在各 graph 自己的容器；普通 DOM 查询仍可找到容器外的会话 portal。模块加载器使用未经修改的 pinned 官方 bundle，在同一 document facade 中求值，因此样式归属记录和 HMR 清理也不会跨 Host。没有修改独立 DSH Web 的源码或会话数据。
+
+14 项定向逻辑测试通过，包含真实 pinned CSS 注入代码的同名冲突复现、分 Host 样式加载/清理，以及真实官方模块加载器的样式归属检查。DOM 为协议夹具，未运行浏览器或截图验收。

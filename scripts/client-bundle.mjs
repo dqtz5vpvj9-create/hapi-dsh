@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 export async function buildClientBundle(buildIdentity) {
+    const modulesSource = await readFile(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-client-modules/client'), 'utf8');
     // The official store is a Web platform seed, not a downloadable graph entry.
     const storeRuntime = await build({
         entryPoints: ['@deepseek-ai/dsh-client-store'], bundle: true, format: 'iife', globalName: '__HAPI_DSH_OFFICIAL_STORE__',
@@ -15,7 +16,8 @@ export async function buildClientBundle(buildIdentity) {
         entryPoints: ['src/client/index.ts'], bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
         write: false, jsx: 'automatic', legalComments: 'inline',
         logOverride: { 'import-is-undefined': 'error' },
-        define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text), __HAPI_DSH_BUILD_ID__: buildIdentity },
+        define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text),
+            __HAPI_DSH_OFFICIAL_MODULES_SOURCE__: JSON.stringify(modulesSource), __HAPI_DSH_BUILD_ID__: buildIdentity },
         plugins: [{ name: 'style-text', setup(builder) {
             builder.onResolve({ filter: /\?text$/ }, args => {
                 const id = args.path.slice(0, -5);

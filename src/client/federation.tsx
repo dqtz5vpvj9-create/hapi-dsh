@@ -38,6 +38,7 @@ import { documentPaneTarget } from '../workspace/artifacts.ts'
 import { legacyTerminalPaneTarget } from './legacy-session-terminal.tsx'
 import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
+import { createGraphModules, graphStyleQueries } from './graph-document.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
 import { observePaneOpening } from './surface/pane-opening.ts'
@@ -77,7 +78,6 @@ const remoteKeyboardEvents = new WeakSet<KeyboardEvent>()
 interface HostResources {
     /** Refreshed before every pane boot so a later graph revision is not stale. */
     payload: Bootstrap
-    modulesExport: typeof import('@deepseek-ai/dsh-client-modules/client')
     staticModules: Record<string, unknown>
     /** Share immutable bytes, never factories, Contexts, references, or browser globals. */
     artifacts: Map<string, Promise<string>>
@@ -105,14 +105,12 @@ async function loadHostResources(root: Context, host: FederationHost, signal: Ab
     if (!response.ok) throw new Error(`${host.label}: DSH bootstrap returned HTTP ${response.status}`)
     const payload = bootstrapSchema.parse(await response.json())
     if (host.id !== 'local' && payload.graph.entries.some(row => row.id === 'hapi-dsh')) throw new Error('A Runner must use the Host-only hapi-dsh-runner bundle')
-    const modulesExport = await root.modules.import(MODULES_ID, '', {}) as HostResources['modulesExport']
-    if (typeof modulesExport.createClientModuleSystem !== 'function') throw new Error('The official DSH module bootstrap is unavailable')
     const staticModules = Object.fromEntries(await Promise.all(PLATFORM_MODULES.map(async id => [id, await root.modules.import(id, '', {})])))
     const eventsUrl = new URL('/hapi-dsh/plugin-events', window.location.origin)
     eventsUrl.protocol = eventsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
     eventsUrl.searchParams.set('host', host.id)
     const eventsFetch: typeof fetch = (_input, init) => pluginEventsOverWebSocket(eventsUrl, init?.signal)
-    return { payload, modulesExport, staticModules, artifacts: new Map(), compiled: new Map(), events: new SharedPluginEvents(eventsFetch, 'plugins/events', signal) }
+    return { payload, staticModules, artifacts: new Map(), compiled: new Map(), events: new SharedPluginEvents(eventsFetch, 'plugins/events', signal) }
 }
 
 /**
@@ -157,7 +155,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         : directFetch(input, init)
     const target: ClientModuleLoaderTarget = {
         mode: 'queue', pendingQueue: [], load(registration) { this.pendingQueue.push(registration) },
-        create(options) { return resources.modulesExport.createClientModuleSystem(this, { id: MODULES_ID, exports: resources.modulesExport as unknown as Record<string, unknown> }, options) },
+        create(options) { return modulesExport.createClientModuleSystem(this, { id: MODULES_ID, exports: modulesExport as unknown as Record<string, unknown> }, options) },
     }
     const keyboard: KeyboardRegistration[] = []
     const captured = new WeakSet<KeyboardEvent>()
@@ -213,9 +211,11 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     }, 'verify')
     // Keep browser-owned theme/title writes local. Disposing a remote theme
     // presenter must not retract the main shell's variables or attributes.
+    const styleQueries = graphStyleQueries(document, surface)
     const documentFacade = new Proxy(document, {
         get(current, property) {
             if (property === 'body' || property === 'documentElement' || property === 'head') return surface
+            if (property === 'querySelector' || property === 'querySelectorAll') return styleQueries[property]
             if (property === 'title') return host.label
             if (property === 'addEventListener') return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => addEvent(document, 'document', type, listener, options)
             if (property === 'removeEventListener') return (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => removeEvent(document, 'document', type, listener, options)
@@ -223,6 +223,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         },
         set(_current, property) { return property === 'title' },
     })
+    const modulesExport = createGraphModules(documentFacade)
     const socket = (input: string, protocols?: string | string[]): WebSocket => {
         const upstream = new URL(input, baseUrl)
         if (host.id === 'local') {
