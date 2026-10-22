@@ -191,6 +191,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
     const title = !summary && lease?.sourceResolution ? t('originalConversation') : paneTitle(pane, snapshot.catalog.byId, t('newPane'))
     return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { visibility: 'hidden', pointerEvents: 'none', ...(lastVisibleSize.current ?? {}) } : {}) }}
         data-pane-id={pane.id} data-session-id={pane.resource.kind === 'chat' ? pane.resource.sessionId : ''} aria-hidden={hidden}
+        data-hapi-pane-state={pane.resource.kind === 'empty' ? 'empty' : hidden && !lease?.reference ? 'deferred' : lease?.status ?? 'opening'}
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
         <div className="hapi-pane-grip" data-hapi-pane-drag aria-hidden="true" title={t('paneDrag')} draggable={!hidden}
@@ -386,6 +387,10 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     const action = (operation: () => void): void => { try { operation() } catch (error) { controller.report(error) } }
     const bind = (pane: PaneNode, visible: boolean): ReactNode => {
         const lease = snapshot.leases.get(pane.id)
+        // A parked pane has not requested a session yet. It has no pending
+        // operation to announce: only visible, actively opening panes load.
+        // Keep retained views mounted below so their draft and scroll survive.
+        if (!visible && !lease?.reference) return null
         if (!lease?.reference) return <div className="hapi-loading" role="status">{t(lease?.sourceResolution === 'loading' ? 'sourceLoading' : 'loading')}</div>
         if (pane.resource.kind === 'empty') return null
         const host = controller.host(lease.hostId)
@@ -698,6 +703,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     {facts.source && <button role="menuitem" type="button" disabled={!facts.nativeId} title={facts.nativeId ?? t('nativeIdUnavailable')} onClick={() => { if (facts.nativeId) void navigator.clipboard.writeText(facts.nativeId).catch(controller.report) }}>{t('copyNativeId')}</button>}
                     <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.displayId).catch(controller.report) }}>{t(facts.source ? 'copyDisplayId' : 'copyId')}</button>
                 </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
+                    onPointerEnter={() => controller.preloadSession(row.id)} onFocus={() => controller.preloadSession(row.id)}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
                     <div className="hapi-session-title"><ActivityDot {...activity} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
                     <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`} title={t('engine')}>{readableEngine(location.engine)}</span>

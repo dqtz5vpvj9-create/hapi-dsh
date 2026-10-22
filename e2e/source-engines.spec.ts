@@ -43,7 +43,11 @@ test.describe('original HAPI engines in the unified official Conversation', () =
         await pane.locator('[data-hapi-composer-overflow] > summary').click();
         await pane.getByRole('group', { name: 'More input controls', exact: true })
             .getByRole('button', { name: 'Session tools', exact: true }).click();
-        const tools = pane.getByRole('region', { name: 'Session tools', exact: true });
+        // Shared conversation opens this official plugin view as its own pane;
+        // it must retain the originating source even after focus moves there.
+        const toolsPane = page.getByRole('region', { name: 'Pane: Session tools', exact: true });
+        await expect(toolsPane.getByRole('textbox', { name: 'Title', exact: true })).toHaveValue(title);
+        const tools = toolsPane.getByRole('region', { name: 'Session tools', exact: true });
         await tools.getByRole('combobox', { name: 'Pin', exact: true }).selectOption('global');
         await expect.poll(() => environment.hapi.require(sourceId).session.globalPinned).toBe(true);
         await tools.getByRole('button', { name: 'Fork conversation', exact: true }).click();

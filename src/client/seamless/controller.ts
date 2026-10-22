@@ -35,10 +35,11 @@
  */
 
 import { firstAnchor } from './anchor.ts'
-import { AggregateLoadGate, SessionPageLedger, type AggregateLoadLimits } from './concurrency.ts'
+import type { AggregateLoadGate, SessionPageLedger, AggregateLoadLimits } from './concurrency.ts'
 import type { EarlierLoadBudgetLimits } from './budget.ts'
 import { keyIntent, scrollIntent, touchIntent, wheelIntent, type ReaderIntent } from './intent.ts'
 import { EarlierLoadPolicy, type EarlierViewState } from './policy.ts'
+import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
 /** Diagnostics event emitted by one pane controller. */
 export interface SeamlessHistoryEvent {
@@ -402,11 +403,8 @@ class ConversationHistoryController {
 
     /** Stable host+session identity for the per-session page ceiling. */
     private identityOf(content: HTMLElement): string {
-        const host = content.closest<HTMLElement>('[data-hapi-host]')?.getAttribute('data-hapi-host') ?? 'local'
-        const pane = content.closest<HTMLElement>(PANE_SELECTOR)
-        const resource = pane?.getAttribute('data-session-id') ?? pane?.getAttribute('data-pane-id') ?? 'unknown'
         const session = content.getAttribute('data-conversation-session') ?? 'unknown'
-        return `${host}|${resource}|${session}`
+        return automaticHistoryIdentity(content, session)
     }
 
     /** Reset when the same pane occurrence renders a different session. */
@@ -706,6 +704,7 @@ class ConversationHistoryController {
         this.pending = null
         this.clearPendingTimers()
         this.policy.committed(now)
+        this.ledger.spend(pending.identity)
         this.gate.release()
         this.awaitingRecovery = false
         this.recoveryProbe = null
@@ -815,8 +814,9 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
         clock: options.now ?? (() => (view?.performance.now() ?? Date.now())),
         pointerTarget: null,
     }
-    const gate = new AggregateLoadGate(options.aggregate)
-    const ledger = new SessionPageLedger(options.maxAutomaticPagesPerSession ?? DEFAULT_MAX_AUTOMATIC_PAGES_PER_SESSION)
+    const { gate, ledger } = automaticHistoryBounds(root, {
+        aggregate: options.aggregate, maxPages: options.maxAutomaticPagesPerSession ?? DEFAULT_MAX_AUTOMATIC_PAGES_PER_SESSION,
+    })
     const controllers = new Map<HTMLElement, ConversationHistoryController>()
     let scheduled = false
     let disposed = false

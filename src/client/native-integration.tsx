@@ -20,6 +20,7 @@ import { installGeneratedMediaDisplay } from './generated-media-display.tsx'
 import { installToolProgressDisplay } from './tool-progress-display.tsx'
 import { installCodexReviewDisplay } from './codex-review-display.tsx'
 import { installNativeActionDock } from './native-action-dock.tsx'
+import { installComposerPicker } from './composer-picker/index.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
@@ -61,6 +62,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     disposers.push(installToolProgressDisplay(ctx))
     disposers.push(installCodexReviewDisplay(ctx))
     disposers.push(installNativeActionDock(ctx, native, api))
+    disposers.push(installComposerPicker(ctx, controls, observedControls))
     disposers.push(installSourceDshChildControls(ctx, api))
     disposers.push(installTurnSharing(ctx))
     const Fork = (props: Omit<NativeForkActionProps, 'controls' | 'open'>) => createElement(NativeForkAction, { ...props, controls, open })

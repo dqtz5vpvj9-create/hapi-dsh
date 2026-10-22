@@ -77,6 +77,7 @@ import { WorkspaceRepository } from './hub/workspaces.ts';
 import { FederationHub } from './hub/federation.ts';
 import { legacyWorkspaceSnapshotSchema, type LegacyWorkspaceSnapshot } from './legacy-workspace-types.ts';
 import { mountBootstrapRoute } from './shared/bootstrap.ts';
+import { deferWorkspaceEntry, workspaceBootInjections } from './shared/workspace-boot.ts';
 import { mountPluginEvents } from './shared/plugin-events.ts';
 import { officialProviderConfig } from './shared/official-provider.ts';
 
@@ -552,6 +553,8 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         webServer: ctx.webServer, clientModules: ctx.clientModules, connection: ctx.connection,
         appReady: ctx.get('appReady') as { onReady(callback: () => void): () => void },
     }), 'hapi-dsh: local pane plugin bootstrap');
+    ctx.on('webserver/index-inject', table => { table.push(...workspaceBootInjections()); });
+    ctx.effect(() => ctx.webServer.tapIndex(deferWorkspaceEntry), 'hapi-dsh: first-paint workspace layout');
     await federation.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountPluginEvents({ webServer: ctx.webServer, connection: ctx.connection,
         hasHost: id => federation.listMachines().some(host => host.id === id && host.online),

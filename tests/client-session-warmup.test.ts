@@ -95,3 +95,39 @@ test('synchronous catalog reentry during retain cannot leak the evicted referenc
     } finally { warmup.dispose() }
     assert.ok(f.refs.every(ref => ref.releases === 1))
 })
+
+test('public Conversation preparation runs after readiness only for a retained generation', async () => {
+    const f = fixture(), prepared: string[] = [], failures: unknown[] = []
+    const failure = new Error('optional presentation cache is unavailable')
+    const warmup = createSessionWarmup(f.sessions, { prepare: reference => {
+        prepared.push(reference.binding.sessionId)
+        if (reference.sessionId === 'b') throw failure
+    }, onError: error => failures.push(error) })
+    try {
+        warmup.update(ids('a', 'b'))
+        assert.deepEqual(prepared, [], 'pending history must not be presented as a ready cache')
+        const retired = f.refs[0]!
+        warmup.update(ids('b', 'c'))
+        retired.resolve(); f.refs[1]!.resolve(); await tick()
+        assert.deepEqual(prepared, ['b'], 'evicted references must not materialize a Conversation binding')
+        assert.deepEqual(failures, [failure])
+        assert.equal(warmup.getSnapshot().ready, 1, 'optional presentation cache failure must not discard the source tail')
+        warmup.dispose()
+        f.refs[2]!.resolve(); await tick()
+        assert.deepEqual(prepared, ['b'])
+    } finally { warmup.dispose() }
+})
+
+test('an intended session takes the next warm slot without restarting pending references', async () => {
+    const f = fixture(), warmup = createSessionWarmup(f.sessions)
+    try {
+        warmup.update(ids('a', 'b', 'c', 'd', 'e'))
+        warmup.update(ids('x', 'a', 'b', 'c', 'd'))
+        assert.deepEqual(f.refs.map(ref => ref.id), ['a', 'b'])
+        assert.equal(f.refs[0]!.releases, 0)
+        assert.equal(f.refs[1]!.releases, 0)
+        f.refs[0]!.resolve(); await tick()
+        assert.deepEqual(f.refs.map(ref => ref.id), ['a', 'b', 'x'])
+        assert.equal(warmup.getSnapshot().opening, 2)
+    } finally { warmup.dispose() }
+})

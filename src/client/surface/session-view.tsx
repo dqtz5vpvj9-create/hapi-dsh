@@ -17,6 +17,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { WorkspacePaneNavigation } from '../pane-navigation.ts'
 import { WorkspacePaneProvider } from './pane-context.tsx'
 import { installSharedRightbar } from './shared-rightbar.tsx'
+import { bindInitialHistory } from '../seamless/index.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
@@ -130,6 +131,7 @@ export function installSessionViewHost(ctx: Context): {
     dispose(): void
 } {
     const entries = new Map<string, Entry>()
+    const initialHistory = new Map<string, () => void>()
     const listeners = new Set<() => void>()
     let snapshot: readonly Entry[] = []
     let sequence = 0
@@ -165,6 +167,8 @@ export function installSessionViewHost(ctx: Context): {
             if (entries.has(identity)) throw new Error(`Pane ${options.paneId} already has a session view on this Host`)
             let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading' }
             entries.set(identity, entry); publish()
+            const uninitialHistory = bindInitialHistory(options.target, options.reference, options.navigation.state)
+            initialHistory.set(identity, uninitialHistory)
             let live = true
             let removed: Promise<void> | undefined
             void options.reference.ready.then(() => {
@@ -183,6 +187,8 @@ export function installSessionViewHost(ctx: Context): {
                 dispose() {
                     if (removed) return removed
                     live = false
+                    uninitialHistory()
+                    initialHistory.delete(identity)
                     removed = entry.lifetime.mounted ? new Promise<void>(resolve => { entry.lifetime.removed = resolve }) : Promise.resolve()
                     if (entries.get(identity)?.key === entry.key) { entries.delete(identity); publish() }
                     return removed
@@ -192,7 +198,9 @@ export function installSessionViewHost(ctx: Context): {
         size: () => entries.size,
         dispose() {
             if (disposed) return
-            disposed = true; entries.clear(); publish()
+            disposed = true
+            for (const dispose of initialHistory.values()) dispose()
+            initialHistory.clear(); entries.clear(); publish()
             for (const dispose of disposers.reverse()) dispose()
             listeners.clear()
         },

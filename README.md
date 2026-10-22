@@ -138,13 +138,15 @@ Hub 自动重新加载配对策略并断开该机器。断线时已发送请求�
 
 ## 架构与验证
 
-每个窗格加载所属 Host 的真实官方 Client Context、插件图和会话对象。本机也采用相同机制，防止两个分屏共用官方单活动会话、右栏和对话框状态。模块加载和同一 Host 的插件事件连接可以共享；窗格状态保持独立。统一侧边栏聚合所有 Host 和源引擎目录。HAPI Codex 与其他 HAPI 引擎在主 Host 注册源会话适配器，同样进入官方 Conversation。
+Conversation 窗格默认复用所属 Host 的一个真实官方 Client graph，各窗格通过显式 SessionProvider 绑定会话，保留独立的视图、草稿和滚动状态。Host chrome、settings 和官方右栏共享，按 focused pane 路由；文件、文档等非 conversation 插件视图暂用兼容路径。统一侧边栏聚合所有 Host 和源引擎目录。HAPI Codex 与其他 HAPI 引擎在主 Host 注册源会话适配器，同样进入官方 Conversation。
 
 详见[架构与扩展边界](docs/architecture.md)、[可复现验证](docs/validation.md)和[维护者分发流程](docs/distribution.md)。测试区分模型桩、真实传输和真实官方 DSH 进程。发布前仍需使用实际 HAPI、原生 Codex app-server 和模型凭据做部署验收；自动化 fixture 不能证明这项验收已经完成。
 
-架构 A 的实验入口是在完成准入后的工作区 URL 添加 `?hapiGraph=shared`。本地会话复用主 Client graph，远端 chat pane 复用该 Host 的 catalog graph；文件、文档等插件视图暂用兼容路径。移除该参数即可选择原路径。现有 per-pane 草稿的存储迁移尚未完成，因此默认路径保持不变。公开 API 可行性、状态归属、性能测量和启用条件见[单 Host graph 报告](docs/one-graph-spike.md)。
+自 `58800d1` 起，架构 A 是普通 URL 的默认路径；`?hapiGraph=shared` 仍可显式选择它，`?hapiGraph=legacy` 可回到每 pane graph 的兼容路径。本地会话复用主 Client graph，远端 chat pane 复用该 Host 的 catalog graph。旧 per-pane rich draft 的自动存储迁移仍未完成；旧值保留，但不会自动导入共享 graph。公开 API、状态归属、测量和残余风险见[单 Host graph 报告](docs/one-graph-spike.md)。
 
-源消息同步现使用有界接收 journal、历史/live 合并与后台对账。快速尾部首屏仍是默认关闭的底层实验选项，生产配置未启用；具体保证和 display generation 的限制见[消息连续性说明](docs/live-history.md)。
+源消息同步使用有界接收 journal、历史/live 合并与后台对账。生产 composition 自 `58800d1` 起显式启用快速尾部 seed；底层构造参数缺省值仍为 false。补入更早历史可能替换 display generation，其 rich draft、附件与滚动锚点的安全迁移尚未完整验收；具体保证见[消息连续性说明](docs/live-history.md)。
+
+隐藏且未绑定的窗格保持 deferred 状态，首次可见时才绑定。首次打开会在首屏后有界预取上一轮；源会话的 composer 使用模型/推理强度与权限 capsule。启动反馈、正文与 composer 的独立计时及当前边界见[启动与窗格反馈](docs/startup-feedback.md)。日常客户端验证可使用[常驻官方环境](docs/warm-validation.md)，它复用 Host 和浏览器进程，并支持客户端重建后通过官方 HMR 重载。
 
 针对实际部署截图中的源会话恢复、目录外文档、聊天事件和界面问题，代码修复、16 条实际官方浏览器专项及仍未定因的原生空白问题记录在[现场修复说明](docs/live-site-fixes.md)。线上验收新增实际源聊天正文检查；离线诊断只输出结构计数，详见[历史诊断](docs/source-history-diagnostics.md)。
 

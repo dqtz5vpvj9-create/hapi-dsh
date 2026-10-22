@@ -6,6 +6,8 @@ import {
 } from '../src/client/seamless/index.ts'
 import type { AnchorCorrectionInput } from '../src/client/seamless/anchor.ts'
 import type { EarlierViewState } from '../src/client/seamless/policy.ts'
+import { InitialHistoryPlan, probeInitialWindow } from '../src/client/seamless/initial.ts'
+import type { SessionEventWindow } from '@deepseek-ai/dsh-api-session-controller/client'
 
 // ---------------------------------------------------------------------------
 // Reader intent normalization
@@ -337,4 +339,96 @@ test('the per-session page ledger is shared by identity and caps automatic pages
     ledger.reset()
     assert.equal(ledger.exhausted('host|pane-a|session-1'), false)
     assert.throws(() => new concurrency.SessionPageLedger(0), /positive integer/)
+})
+
+// ---------------------------------------------------------------------------
+// Initial previous-Turn prefetch: unlike reader paging, it never navigates.
+// ---------------------------------------------------------------------------
+
+const initial = (patch: Partial<Parameters<InitialHistoryPlan['evaluate']>[0]> = {}) => ({
+    visible: true, open: true, loading: false, hasMore: true, turns: 1, ...patch,
+})
+
+test('initial history waits for visible open state and leaves an already complete window alone', () => {
+    const subject = new InitialHistoryPlan()
+    assert.equal(subject.evaluate(initial({ visible: false })), false)
+    assert.equal(subject.evaluate(initial({ open: false })), false)
+    assert.equal(subject.evaluate(initial({ loading: true })), false)
+    assert.equal(subject.pages, 0)
+    assert.equal(subject.evaluate(initial()), true)
+    assert.equal(subject.evaluate(initial({ turns: 2 })), false)
+    assert.equal(subject.state, 'ready')
+    assert.equal(subject.evaluate(initial()), false)
+    const exhausted = new InitialHistoryPlan()
+    assert.equal(exhausted.evaluate(initial({ hasMore: false })), false)
+    assert.equal(exhausted.state, 'ready')
+})
+
+test('initial history shares one flight and stops after observing the previous Turn', () => {
+    const subject = new InitialHistoryPlan()
+    assert.equal(subject.evaluate(initial()), true)
+    subject.requested()
+    assert.equal(subject.evaluate(initial()), false)
+    subject.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 50, turns: 2 }, true)
+    assert.equal(subject.state, 'ready')
+    assert.equal(subject.pages, 1)
+    assert.equal(subject.evaluate(initial()), false)
+})
+
+test('oversized initial Turns have a two-page limit rather than an unbounded open-time backfill', () => {
+    const subject = new InitialHistoryPlan()
+    subject.requested()
+    subject.settled({ firstSeq: 1_500, turns: 1 }, { firstSeq: 1_000, turns: 1 }, true)
+    assert.equal(subject.evaluate(initial()), true)
+    subject.requested()
+    subject.settled({ firstSeq: 1_000, turns: 1 }, { firstSeq: 500, turns: 1 }, true)
+    assert.equal(subject.state, 'limited')
+    assert.equal(subject.evaluate(initial()), false)
+    assert.equal(subject.pages, 2)
+})
+
+test('initial failure or live-only append never counts as prepend and never starts a retry loop', () => {
+    const subject = new InitialHistoryPlan()
+    subject.requested()
+    subject.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 100, turns: 1 }, true)
+    assert.equal(subject.state, 'error')
+    assert.equal(subject.evaluate(initial()), false)
+    const rejected = new InitialHistoryPlan()
+    rejected.requested(); rejected.failed()
+    assert.equal(rejected.evaluate(initial()), false)
+    assert.equal(rejected.state, 'error')
+})
+
+test('reader input suppresses initial prefetch and does not abort a shared in-flight page', () => {
+    const subject = new InitialHistoryPlan()
+    subject.interrupt()
+    assert.equal(subject.evaluate(initial()), false)
+    const running = new InitialHistoryPlan()
+    running.requested(); running.interrupt()
+    assert.equal(running.state, 'loading')
+    running.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 50, turns: 1 }, true)
+    assert.equal(running.state, 'reader')
+    assert.equal(running.evaluate(initial()), false)
+})
+
+test('initial history counts distinct durable Turn starts, excluding tools and transient text', () => {
+    const entries = [
+        { type: 'event', event: { type: 'turn/start', seq: 10, data: { turn: 1 } } },
+        { type: 'event', event: { type: 'turn/start', seq: 11, data: { turn: 1 } } },
+        { type: 'event', event: { type: 'tool/start', seq: 12, data: { turn: 1 } } },
+        { type: 'transient', event: { type: 'assistant/live-chunk', seq: 12.5, data: { turn: 2 } } },
+        { type: 'event', event: { type: 'turn/start', seq: 13, data: { turn: 2 } } },
+    ] as unknown as SessionEventWindow['entries']
+    assert.deepEqual(probeInitialWindow({ entries }), { firstSeq: 10, turns: 2 })
+    assert.deepEqual(probeInitialWindow({ entries: [] }), { firstSeq: null, turns: 0 })
+})
+
+test('aggregate slot release wakes deferred initial views exactly once, and unsubscribe ends it', () => {
+    const subject = new concurrency.AggregateLoadGate({ maxConcurrent: 1 })
+    let releases = 0
+    const unsubscribe = subject.subscribe(() => { releases++ })
+    subject.tryStart(0); subject.release(); subject.release()
+    assert.equal(releases, 1)
+    subject.tryStart(1); unsubscribe(); subject.release()
+    assert.equal(releases, 1)
 })

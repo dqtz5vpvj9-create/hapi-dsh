@@ -70,16 +70,16 @@
 
 每次失败的创建尝试都会消耗 display revision；已经 announce 的 namespace 不会重用。旧 display 到新 display 的 reset 通知保留到恢复成功后。删除会取消这项重试和待通知的 reset。所有这些操作只重建观察，没有创建新的 native thread 或接管 Runner。
 
-## 6. 首屏策略：`fastHistorySeed` 默认关闭
+## 6. 首屏策略：生产显式启用 `fastHistorySeed`
 
-本次保守默认如下：
+`9e459db` 检查点使用完整初始 history；`58800d1` 随后在生产 composition 显式启用快速 seed。当前行为如下：
 
 | 路径 | 默认行为 |
 |---|---|
-| 初次 source attach | 等待完整且 epoch-stable 的初始 history seed |
+| 生产初次 source attach | 先发布 stale cache；没有缓存时先读取有界最新 200 条页，再后台补齐 |
 | 初始读取失败 | 显式 stale cache fallback，并自动后台对账 |
 | 已发布会话的 history refresh | 后台读取，实时事件继续进入当前 display / journal |
-| 实验性 cache-first / latest-page 首屏 | 只有显式设置 `fastHistorySeed: true` 才启用 |
+| 未传入参数的 agent/service 构造 | 缺省 false，仍等待完整且 epoch-stable 的初始 history seed |
 
 `fastHistorySeed?: boolean` 是 `NativeCodexOptions` / `HapiObservedOptions` 及相应 service options 的**内部构造参数**。测试或受控嵌入可传入：
 
@@ -90,20 +90,20 @@ const codex = new CodexService(ctx, transport, {
 })
 ```
 
-`src/index.ts` 的生产 composition 没有传入该参数。现有配置 schema、环境变量和 CLI **没有**启用它的入口；不能通过任意新增配置 key 假定生产开启。这项开关的缺省值是 false。
+`src/index.ts` 向 Codex 和 observed 两种 source service 显式传入 `fastHistorySeed: true`。构造参数本身的缺省值仍为 false；现有配置 schema、环境变量和 CLI 没有额外的开关入口。
 
 显式启用后，有缓存时先发布 stale cache；没有缓存时先读有界的最新 200 条页。缓存不足或最新页有更早历史时，随后后台读完整 snapshot、合并 live，并在需要时建立新的 display generation。
 
 缓存仍使用版本 1 的 JSON，新增可选 `complete` 字段。旧缓存缺少该字段按 `complete: true` 读取，以兼容原来完整 history seed 的格式；它不代表相对于当前 Hub 仍然新鲜。部分 seed 和失败 fallback 都不能被误认为已经证明完整。缓存不参与推断 delivery / approval 的实际结果。
 
-关闭实验首屏的原因是可验证的状态边界：DSH 新 display generation 会重新绑定 Session，官方 rich draft、attachment 恢复和滚动锚点在同一 source 换代时尚没有完整的安全迁移事务。现有跨 source handoff 不能替代这个事务。默认全量初始 seed 避免把正常打开会话都变成“先显示半段、随后重新绑定”。故障恢复或真实 rewind 引起的既有换代仍有该 residual，不能以默认关闭开关声称已经解决。
+此前保持关闭的原因仍然存在：DSH 新 display generation 会重新绑定 Session，官方 rich draft、attachment 恢复和滚动锚点在同一 source 换代时尚没有完整的安全迁移事务。现有跨 source handoff 不能替代这个事务。启用快速 seed 改变了初始读取策略，没有自动解决后续 backfill 换代的状态保护；故障恢复或真实 rewind 也仍有这个限制。
 
 ## 7. 验证与尚未宣称的结果
 
 backend 定向验证使用真实的固定 DSH Session、AgentRegistry、projection 和 command 包；Hub、消息、资源导入是明确的协议夹具。覆盖包括：
 
 - Agent 尚未存在时的 live 到达；后台 history 阻塞时的 live 输出；历史/live 重叠和 transport id 去重。
-- 默认完整 seed 不产生常规的稍后 backfill 换代；显式 fast seed 在历史阻塞时返回缓存 / 最新页。
+- 缺省构造的完整 seed 不产生常规的稍后 backfill 换代；显式 fast seed 在历史阻塞时返回缓存 / 最新页。
 - stale fallback 没有下一条 SSE 也会重试；旧 Agent 已退休后 replacement 准备失败也会由服务恢复。
 - epoch / reconnect gap 屏障；异步资源导入期间 invalidation 阻止过期 projection 和 Session announcement。
 - pending attach 期间删除、删除后 stale catalog、立即 remove/add；旧 writable owner 在新代际准备前退休。
@@ -111,4 +111,4 @@ backend 定向验证使用真实的固定 DSH Session、AgentRegistry、projecti
 
 主要测试：`tests/codex-native.test.ts`、`tests/hapi-agent.test.ts`、`tests/codex-history-journal.test.ts`、`tests/codex-history-races.test.ts`、`tests/source-stream-order.test.ts`。浏览器层的合成活动源验证见 `e2e/live-history.spec.ts`；最终执行结果以 [validation.md](validation.md) 为准。
 
-这些测试没有修改用户真实会话，也不证明生产活动会话刷新、远端隧道时序或 150 ms / 500 ms 性能门槛已经达标。默认初始 history 读取仍是完整分页，Host 重启也仍需读取源历史；“首屏完全不阻塞历史”和安全的 rich draft/scroll 换代迁移尚未作为生产默认交付。
+这些测试没有修改用户真实会话，也不证明生产活动会话刷新、远端隧道时序或 150 ms / 500 ms 性能门槛已经达标。当前生产构造启用尾部 seed，Host 重启仍需读取源历史；首次缓存/尾页读取与 Client graph 启动仍有成本，安全的 rich draft/scroll 换代迁移也尚未完成。

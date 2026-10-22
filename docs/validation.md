@@ -143,9 +143,9 @@ npm run test:e2e
 - 全量 Playwright 套件没有在本构建上重跑；上表各项按定向 spec 与 live 探针的实际范围记录，不扩大成全产品回归证明。
 - 已知缺口（未在本批修复）：pane 切到官方 Plugins 等 main panel 后，官方 header 被面板页替换，当前没有从该面板直接回到 Conversation 的固定入口；用户可重新从侧栏打开会话或换 pane。列为后续可用性项，不阻塞本批。
 
-## 2026-10-22 架构 A 与 source history / live 连续性
+## 2026-10-22 架构 A 与 source history / live 连续性（`9e459db` 检查点）
 
-本节是本次接手后的代码与验证记录，不覆盖前文历史批次的结果。架构 A 使用固定 DSH `0.2.1-rc.2` / `687f282e8625c6b8d11ff58211a90524be2e4317` 的公开 `SessionProvider`、`conversation.content` factory 与 Host shell 扩展点；没有修改或嵌入上游实现。实现细节和 rollout 条件见 [one-graph-spike.md](one-graph-spike.md)，后端语义见 [live-history.md](live-history.md)。
+本节记录 `9e459db` 检查点，保留当时的 opt-in / 完整 history 默认和验证边界。后续 `58800d1` 已将共享 graph 与生产 tail-first seed 设为默认；下文的历史测量不能自动视为这些新默认的验收。架构 A 使用固定 DSH `0.2.1-rc.2` / `687f282e8625c6b8d11ff58211a90524be2e4317` 的公开 `SessionProvider`、`conversation.content` factory 与 Host shell 扩展点；没有修改或嵌入上游实现。实现细节和当前条件见 [one-graph-spike.md](one-graph-spike.md)，后端语义见 [live-history.md](live-history.md)。
 
 ### 本次修复的实际边界
 
@@ -214,3 +214,39 @@ npm run test:e2e
 前一无 profiler 检查点的 warm p95 为 **273.9 ms**，四 pane 堆为 **73.89 MiB**，0-pane 基线则为 41.53 MiB。两轮存在时序/采样状态差异；最后一轮达到本地阈值不构成跨轮稳定性或生产 p95 保证，也不能与交接中另一机器的 77.8 MB 直接作严格内存优劣比较。完整样本和较早诊断分析保留在 [one-graph-spike.md](one-graph-spike.md)。
 
 缓存恢复正文 <500 ms 仍未验收。每 Host graph 复用本身不消除首次 Host boot、源全量历史读取和隧道成本，不能据此宣称生产恢复 13 pane 已摆脱 17 秒级首屏。共享路径继续 opt-in；改默认前仍需旧 per-pane storage 中的 rich draft 迁移、同一 source display 换代保护及实际生产冷/热测量。Phase 2 的 warm reference 数量有界并不等于官方 retained history window 已 trim；固定公开接口没有安全原地 trim 能力，该项仍未完成。P1/P2 composer parity 也不因本次共享 graph 与连续性修复自动完成。
+
+## 2026-10-22 六项反馈的增量修复（继 `58800d1`）
+
+本批建立在 `58800d1` 的共享 graph / 生产 tail-first 默认之上。实现范围和计时定义见 [startup-feedback.md](startup-feedback.md)。**新 pane 首开和真实冷启动仍未达到目标**：最近会话与 hover/focus 预热、HTML 布局预览已实现，但不能用预览出现替代真实 workspace、正文或 composer 就绪。
+
+### 实现和验收边界
+
+- 隐藏且尚无 reference 的 pane 显式标为 `deferred`，不渲染 loading 占位；已经挂载的隐藏 view 保留草稿与滚动。共享恢复用例覆盖 13 pane、首次 4 个 view / 9 个 deferred、后续 deferred 9→4→0，以及隐藏 loading 始终为 0。
+- 首屏后通过公开 Session `loadOlder()` 有界带出上一轮，与向上手势共享单飞和页数预算；自动读取不执行官方按钮附带的 `pauseFollowing()`。最多补两页，不能保证超过两页的巨大 Turn 或尚未进入 Host journal 的更早历史全部出现。
+- source composer 使用真实模型/权限 capsule：模型列表与勾选、effort stops/滑杆、能力允许时的 Fast 和独立权限弹层。写操作沿用 source control ledger，弹层与来源 pane 绑定。普通 DSH 保留官方控件与语义，完整 voice / Schedule / Goal 等功能对齐仍未完成。
+- 新增可常驻的官方 Host / Chromium 开发验证实例，客户端重建后等待官方 HMR 发布再重载。它提供八检查点 smoke；没有把原来的八份完整 spec 合并，也不声称完整回归现在只需十余秒。
+
+### 实际执行的检查点
+
+下表按构建检查点列出，未将不同检查点拼成“最终构建完整六用例一次全绿”。本批没有重跑全量 Playwright，也没有部署到生产或写入真实用户会话。
+
+| 检查 | 结果和范围 |
+|---|---|
+| 完整 `npm run test:micro` | **948 项，947 通过、1 项设计内 opt-in skip、0 失败**，包含 Host / Client / E2E TypeScript；测试报告耗时 39.674 s。该检查点之后只修正了 composer 布局 CSS、浏览器用例的上下文定位/实际命中断言及文档，没有重新宣称完整 micro 在最终字节上执行。 |
+| 最终完整构建 | 最后一次 composer CSS 和浏览器用例调整后的 `npm run build` **通过**，重新生成 Host / Client 产物与类型声明。最后两个定向用例在相同源码的独立 Client 构建上通过后完成这次完整构建。 |
+| 上一轮与阅读锚点（composer 最后两次 CSS 修正前） | `seamless-history` 两条通过。三个合成 Turn、每轮 520 条 assistant 行的用例自动补两页，上一轮输入和末尾正文出现，保持 tail-follow，零 source 发送。向上手势用例锚点 **44 px→44 px**，自动一页且 source REST 计数不增加。 |
+| 共享 13 pane 恢复（同一检查点） | `shared-restore` 通过：workspace **4,087 ms**、活动正文 **5,636 ms**；启动匹配 graph 请求 4，激活其他窗口新增 graph 请求 0；隐藏 loading 0，draft / pane 几何 / reload 与无 abort 断言通过。仅为已准备 catalog 的本地合成场景。 |
+| 兼容模式窄屏（最后一次 source capsule 换行修正前） | `workspace-chrome` 的 420 px 用例通过；明确在 `?hapiGraph=legacy` 下检查其完整官方 header。真实 overflow 命中、暂存草稿与移动工具入口通过，关闭上一检查点未正式复跑的这项缺口。它不代表 shared pane 具有 legacy header。 |
+| 最后一次 source capsule CSS 后 | E2E TypeScript 通过；客户端独立构建通过；`composer-picker` 与 `source-engines` **2/2 通过**，单 worker 总计 77.303 s。picker 检查双 pane 独立 draft/focus、两页模型弹层、effort/Fast/权限三次写入都只指向 beta、零发送；420 px 下两个 capsule 及官方 attach/send 都通过三个实际命中点检查，弹层没有越界或被裁切。原始 Claude 用例检查设置、最终审批、队列、pin、fork 与 launch 仍归属原 source。 |
+
+这次定向回归暴露并修复了两个实际布局问题：共享 embedded Conversation 不在旧 per-pane AppFrame 下，旧 CSS 未隐藏对应官方模型/权限 cell；窄屏下 R8 的单行布局与 capsule 固有宽度叠加又使按钮重叠。修复仅作用于带 source capsule 的实际 composer card，分别隐藏被替代的公开 cell、让工具组自然换行并允许 capsule 文本收缩；没有移动官方编辑器、attach、Stop 或 Send 节点。浏览器断言验证实际命中，不能只以元素可见当作可点击。
+
+另外两处失败属于共享默认后的测试上下文：Session tools 作为独立 plugin pane 打开，标题区是 tools 区的同级区域；legacy 用例若只给一次性 launch URL 附加 query，准入 303 会丢弃该 query。现分别在原 source 的 tools pane 内定位，以及先准入、再显式打开 legacy URL。没有通过强制点击或切换 source 测试到 legacy 来规避共享行为。
+
+### 常驻验证和性能仍未完成的部分
+
+warm 检查点发生在最后两次 composer 布局修正之前；完整命令和范围见 [warm-validation.md](warm-validation.md)。`check → rebuild-client → check` 两轮均 **8/8**，耗时 **11.633 s / 14.930 s**，始终复用一对 Host / Chromium，新增 split graph 请求 0、页面异常 0。客户端编译 **1.349 s**，含官方发布确认与 reload **4.288 s**。最初准备测试环境 **23.283 s** 单独记录；首轮曾与一次 E2E 类型检查短暂重叠，第二轮没有该并行工作。常驻实例已在测量结束后正常关闭。
+
+第二轮新 browser context 的布局标记 / FCP / 实际 workspace 分别是 **84.7 / 308 / 5,965.4 ms**；保存布局 reload 则是 **154.8 / 200 / 2,164.3 ms**。首次 session transcript/composer 检查点两轮分别为 **430 / 2,347 ms**，包含 Playwright actionability、点击与断言，没有拆成 click→body 和 click→composer。较慢结果保留，不能用第一轮或预览标记宣布首开/冷启动已修复。
+
+最终发布仍保留这些条件：生产新 split、冷 Host 与远端隧道的分项测量；缓存恢复正文 <500 ms；跨轮稳定的 warm p95 <150 ms；共享模式旧 rich draft 迁移、tail-to-full display 换代时的附件/draft/scroll 保护，以及公开接口下的 retained window trim。本批未改变上游代码，也未把合成源端测量当作生产站点验收。

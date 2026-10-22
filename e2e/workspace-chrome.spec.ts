@@ -1,5 +1,7 @@
-/** Real official DSH components and browser layout. HAPI histories and the
- * beforeinstallprompt event are explicit, synthetic protocol fixtures. */
+/** Real official DSH components and browser layout on the legacy full-header
+ * compatibility path. Shared content has no per-pane official header; its
+ * geometry and composer are covered by shared-restore / composer-picker.
+ * HAPI histories and beforeinstallprompt are explicit synthetic fixtures. */
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
 import { acknowledgePreviewNotice } from './preview-notice.ts'
@@ -18,7 +20,11 @@ const words = {
 }
 
 async function admit(page: Page, environment: OfficialEnvironment): Promise<void> {
-    await page.goto(environment.launchUrl)
+    // Admission redirects to the canonical root and drops extra query fields.
+    // Select the compatibility mode only after that cookie has been accepted.
+    const admission = await page.request.get(environment.launchUrl, { maxRedirects: 0 })
+    expect(admission.status()).toBe(303)
+    await page.goto(`${environment.origin}/?hapiGraph=legacy`)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
     await acknowledgePreviewNotice(page, environment)
 }
@@ -50,7 +56,7 @@ async function offerInstall(page: Page): Promise<void> {
     })
 }
 
-test.describe('readable workspace chrome keeps every official pane action', () => {
+test.describe('legacy workspace chrome keeps every official pane action', () => {
     test.use({ viewport: { width: 2048, height: 1088 }, locale: 'en-US' })
     let environment: OfficialEnvironment
     test.beforeEach(async () => {

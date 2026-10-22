@@ -68,6 +68,8 @@ export interface WorkspaceHost {
     readonly renderConversation?: (reference: SessionReference, options?: WorkspaceRenderOptions) => ReactNode
     /** Generic official plugin view, owned by the same isolated Client graph. */
     readonly renderPane?: (reference: SessionReference, resource: Exclude<PaneResource, { kind: 'empty' }>, options: WorkspaceRenderOptions) => ReactNode
+    /** Bounded read-only preparation for an explicit sidebar hover/focus. */
+    readonly warmSession?: (sessionId: SessionId) => void
 }
 
 export interface WorkspaceRenderOptions {
@@ -686,14 +688,23 @@ export class WorkspaceController {
 
     host(hostId: string): WorkspaceHost | undefined { return this.hosts.get(hostId) }
     /** Replace only a Host's rendering face; catalogs and references stay owned. */
-    bindRenderer(hostId: string, renderPane: NonNullable<WorkspaceHost['renderPane']>): () => void {
+    bindRenderer(hostId: string, renderPane: NonNullable<WorkspaceHost['renderPane']>, warmSession?: WorkspaceHost['warmSession']): () => void {
         const previous = this.hosts.get(hostId)
         if (!previous) throw new Error('The pane Host is unavailable')
-        const host = { ...previous, renderPane }
+        const host = { ...previous, renderPane, ...(warmSession ? { warmSession } : {}) }
         this.hosts.set(hostId, host); this.publish()
         return () => { if (this.hosts.get(hostId) === host) { this.hosts.set(hostId, previous); this.publish() } }
     }
     availableHosts(): Array<{ id: string; label: string }> { return [...this.hosts.values()].map(({ id, label }) => ({ id, label })) }
+
+    /** Preparation never changes selection, creates a pane, or sends a task. */
+    preloadSession = (resourceId: string): void => {
+        if (this.disposed) return
+        try {
+            const { host, sessionId } = this.source(resourceId)
+            host.warmSession?.(sessionId as SessionId)
+        } catch { /* The deliberate open owns any unavailable-Host error. */ }
+    }
 
     source(resourceId: string): { host: WorkspaceHost; sessionId: string } {
         const { hostId, sessionId } = parseSessionResourceId(resourceId)

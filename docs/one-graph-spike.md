@@ -13,12 +13,12 @@ chrome.** The original per-pane graph remains the compatibility path for
 non-conversation plugin views. Browser results and remaining rollout gates are
 recorded below; an API verdict alone is not a production latency claim.
 
-**Rollout verdict: amber.** The shared runtime is enabled with
-`?hapiGraph=shared`; the normal URL retains the previous runtime. Legacy rich
-draft migration, automatic display-generation preservation, and production
-restore/cold/warm measurements remain release gates for changing the default.
-The separate fast-history-seed option stays off by default even when the shared
-Client runtime is selected. The final local fixture's warm-switch p95 is
+**Rollout verdict: amber.** Since `58800d1`, the normal URL uses the shared
+runtime; `?hapiGraph=legacy` selects the graph-per-pane fallback. The production
+composition also explicitly enables fast history seeding. These defaults changed
+after the `9e459db` checkpoint recorded below. Legacy rich draft migration,
+automatic display-generation preservation, and production restore/cold/warm
+measurements remain unresolved acceptance risks. The checkpoint's local fixture warm-switch p95 is
 **101.9 ms**, meeting **<150 ms in that ten-switch sample**; the preceding
 checkpoint was **273.9 ms**. This variability does not establish a stable
 production percentile. The <500 ms cached-first-transcript gate remains unmet.
@@ -344,21 +344,22 @@ gate despite meeting the threshold in the final local fixture.
 
 ## Rollout and fallback
 
-The shared path is gated during validation so the existing graph-per-pane path
-can be selected for regressions. Conversation panes reuse one Host runtime;
+The shared path is the default since `58800d1`; `?hapiGraph=legacy` selects the
+existing graph-per-pane path for regressions. Conversation panes reuse one Host runtime;
 non-conversation plugin panes keep their compatibility implementation. The
 runtime must preserve parked-window laziness, session reference teardown,
 native thread identity, and source execution ownership.
 
-### Existing draft migration remains a rollout gate
+### Existing draft migration remains an acceptance gap
 
 Legacy per-pane graphs store their official draft keys beneath
 `hapi-dsh:host:<hostId>:pane:<paneId>:dsh.conversation.<displayId>`.
 The shared local graph uses `dsh.conversation.<displayId>`; a shared remote graph
 uses `hapi-dsh:host:<hostId>:pane:shared:dsh.conversation.<displayId>`.
-The opt-in path preserves old data but does not yet import those legacy draft
-values. Switching the default therefore requires separate migration and reload
-evidence, including a populated destination draft and simultaneous windows.
+The shared path preserves old data but does not yet import those legacy draft
+values. The default has changed without that migration being implemented.
+Separate migration and reload evidence, including a populated destination draft
+and simultaneous windows, is still required to close this gap.
 
 The public `requestDraftInitialization` face accepts a prompt string. A rich
 draft with semantic references or command tokens needs the supported
@@ -369,15 +370,15 @@ Attachment recovery uses a graph-independent identity composed of Host, pane,
 source Hub or DSH, and source or display session; preserving those identities
 keeps its file recovery path available.
 
-### Fast history seeding also requires a generation-preservation gate
+### Fast history seeding is enabled; generation preservation remains unverified
 
-The Host journal and live-event buffering can operate independently of a fast
-initial tail. The agent/service option `fastHistorySeed` is therefore opt-in;
-the default opens with the complete stable history read and overlays events
-captured during that read. Journal capture, merge, stale diagnostics, and
-background reconciliation remain enabled with the option off. Production must
-not enable cache-first or bounded-tail seeding until the transition described
-below is verified.
+The Host journal and live-event buffering operate independently of a fast
+initial tail. The agent/service constructor still defaults `fastHistorySeed`
+to false, while `src/index.ts` explicitly passes true to both production source
+services since `58800d1`. The older checkpoint used full-history-first startup.
+Journal capture, merge, stale diagnostics, and background reconciliation work in
+both modes. Enabling the new default did not complete the preservation protocol
+described below.
 
 The reason is specific to the pinned append-only DSH display. When an initial
 tail is published before its older history, the later full snapshot cannot
@@ -420,20 +421,18 @@ refresh, or storage failure must leave a recoverable copy and an actionable
 state, never silently clear the old draft. That protocol is separate from an
 explicit move between different source sessions.
 
-Required acceptance cases before enabling fast seeding are a user typing while
+Required acceptance cases for fast seeding are a user typing while
 older history arrives; reference and command chips; original file bytes;
 nonempty destination drafts; hidden panes; the same source open in multiple
 panes; refresh during preparation/insertion; and scroll anchored above the
 live tail. Tests must also verify no source submission or execution-ownership
 change occurs during migration.
 
-The default-off gate removes the new routine tail-to-full generation reset. It
-does not claim preservation for every pre-existing generation replacement.
-Source-history rewrites, identity changes, and recovery after an incomplete
-cache fallback can still require a new display, so their draft/scroll behavior
-remains a separate acceptance limitation. Full-history-first startup also
-retains its cold source-history latency; a sub-500 ms cached transcript is not
-claimed for that path.
+The former default-off gate avoided routine tail-to-full generation resets. It
+did not establish preservation for every pre-existing generation replacement.
+Source-history rewrites, identity changes, recovery after incomplete cache
+fallback and the now-enabled tail-to-full backfill can require a new display,
+so their draft/scroll behavior remains an acceptance limitation.
 
 Architecture A removes repeated Client graph construction. The separate
 [source history/live implementation](live-history.md) now captures incoming
@@ -441,14 +440,14 @@ events synchronously in a bounded per-source Host journal, merges them with
 history using source identity and monotonic stream state, rejects obsolete
 checkpoints across structural barriers, and runs history reconciliation outside
 the live event queue. Stale fallback is explicit and automatically retried even
-without another source event. These mechanisms are enabled with
+without another source event. These mechanisms also work with
 `fastHistorySeed` off; they do not require an additional per-pane SSE connection
 or change native execution ownership.
 
-The journal is bounded process memory, not durable source storage. Default
-initial attachment still waits for complete stable history, so nonblocking
-background reconciliation does not mean the first transcript renders before
-that read. Cache-first/latest-page rendering remains behind the default-off
-`fastHistorySeed` constructor option until same-source rich draft, attachment,
-and scroll preservation is verified. Production active-session continuity and
-the cached-first timing target still require their own acceptance evidence.
+The journal is bounded process memory, not durable source storage. Production
+now publishes a stale cache or bounded latest-page seed before full backfill,
+but a ready Client graph and the initial source read still have costs. Safe
+same-source rich draft, attachment, and scroll preservation, production
+active-session continuity and the cached-first timing target still require
+their own acceptance evidence. Follow-up UX changes and separate first-paint /
+usable-workspace measurements are recorded in [startup-feedback.md](startup-feedback.md).

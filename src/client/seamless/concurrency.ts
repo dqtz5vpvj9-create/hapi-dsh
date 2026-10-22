@@ -42,6 +42,7 @@ export class AggregateLoadGate {
     readonly limits: AggregateLoadLimits
     private active = 0
     private readonly starts: number[] = []
+    private readonly listeners = new Set<() => void>()
 
     /**
      * @param limits - overrides for the defaults.
@@ -76,7 +77,15 @@ export class AggregateLoadGate {
      * Release one aggregate in-flight slot. Idempotent at zero.
      */
     release(): void {
-        if (this.active > 0) this.active--
+        if (this.active === 0) return
+        this.active--
+        for (const listener of this.listeners) listener()
+    }
+
+    /** Initial-window prefetch may retry after a real slot release, without polling. */
+    subscribe(listener: () => void): () => void {
+        this.listeners.add(listener)
+        return () => { this.listeners.delete(listener) }
     }
 
     /**

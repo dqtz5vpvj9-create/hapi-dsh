@@ -64,6 +64,8 @@
     "docs",
     "src",
     "scripts/build.mjs",
+    "scripts/build-identity.mjs",
+    "scripts/client-bundle.mjs",
     "tsconfig.json",
     "tsconfig.host.json",
     "tsconfig.client.json",
@@ -92,6 +94,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "e2e:warm": "node --import tsx scripts/warm-e2e.ts",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "test": "node --import tsx --test --test-isolation=none tests/*.test.ts",
     "test:e2e": "playwright test",

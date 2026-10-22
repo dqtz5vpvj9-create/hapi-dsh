@@ -36,6 +36,8 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
     limit?: number
     concurrency?: number
     onError?: (error: unknown, sessionId: SessionId) => void
+    /** Materialize only public, session-bound caches; never mount editor DOM. */
+    prepare?: (reference: SessionReference) => void
 } = {}): {
     update(recent: readonly SessionId[]): void
     getSnapshot(): SessionWarmupSnapshot
@@ -71,6 +73,9 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
                     entry.reference = reference
                     void reference.ready.then(() => {
                         if (disposed || entries.get(entry.id) !== entry) return
+                        try { options.prepare?.(reference) }
+                        catch (error) { options.onError?.(error, entry.id) }
+                        if (disposed || entries.get(entry.id) !== entry) return
                         entry.phase = 'ready'; pump()
                     }, error => {
                         if (disposed || entries.get(entry.id) !== entry) return
@@ -90,7 +95,13 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
             const selected = [...new Set(recent)].slice(0, limit)
             const desired = new Set(selected)
             for (const [id, entry] of entries) if (!desired.has(id)) { entries.delete(id); release(entry) }
-            for (const id of selected) if (!entries.has(id)) entries.set(id, { id, phase: 'queued' })
+            // Refresh only queue order, retaining every still-selected entry's
+            // existing reference. A hovered candidate takes the next free slot
+            // instead of waiting behind older background candidates.
+            for (const id of selected) {
+                const entry = entries.get(id) ?? { id, phase: 'queued' as const }
+                entries.delete(id); entries.set(id, entry)
+            }
             pump()
         },
         getSnapshot() {

@@ -40,6 +40,7 @@ import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
+import { bindInitialHistory } from './seamless/index.ts'
 
 const PLATFORM_MODULES = [
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -348,6 +349,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     let renderHostRoot: (() => void) | undefined
     let warmup: ReturnType<typeof createSessionWarmup> | undefined
     let unwarmup: (() => void) | undefined
+    let warmFrame: number | undefined
+    let warmTimer: ReturnType<typeof setTimeout> | undefined
     let warming = false
     let hostUiScope: ReturnType<Context['inject']> | undefined
     let unprovideHostUi: (() => void) | undefined
@@ -380,6 +383,19 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         // warmup, turning a return visit into another cold session open.
         warmup.update([...recentlyViewed.filter(id => ids.has(id)), ...eligible
             .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)).map(row => row.id)])
+    }
+    const warmSession = (id: SessionId): void => {
+        if (!warmup || signal.aborted) return
+        const context = catalog?.ctx ?? root
+        if (!context.sessions.list.getSnapshot().byId[id] || context.workspaces.list.getSnapshot().archivedSessionIds.includes(id)) return
+        const previous = recentlyViewed.indexOf(id)
+        if (previous !== -1) recentlyViewed.splice(previous, 1)
+        recentlyViewed.unshift(id); recentlyViewed.length = Math.min(recentlyViewed.length, 5)
+        warming = true; warmRecent()
+    }
+    const cancelWarmStart = (): void => {
+        if (warmFrame !== undefined) cancelAnimationFrame(warmFrame)
+        if (warmTimer !== undefined) clearTimeout(warmTimer)
     }
     const createSessionPane = (paneId: string, sourceId: string, initial: WorkspaceRenderOptions): PaneRuntime => {
         const context = catalog?.ctx ?? root
@@ -496,6 +512,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let runtime: GraphRuntime | undefined
         let reference: SessionReference | undefined
         let pane: ReturnType<typeof installRemotePane> | undefined
+        let uninitialHistory: (() => void) | undefined
         let unsubscribe: (() => void) | undefined
         let unshortcut: (() => void) | undefined
         let voiceScope: ReturnType<Context['inject']> | undefined
@@ -557,6 +574,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             await ui.stopOwnedVoice().catch(workspace.report)
             lifetime?.abort(); unsubscribe?.(); unsubscribe = undefined
             unshortcut?.(); unshortcut = undefined
+            uninitialHistory?.(); uninitialHistory = undefined
             // Unmount the rendered pane first: its React tree stops issuing
             // calls before the Context contributions and the graph go away.
             pane?.dispose(); pane = undefined
@@ -614,6 +632,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 await waitForCatalogSession(graph.ctx.sessions, sourceId as SessionId, activeSignal)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) return
                 reference = graph.ctx.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
+                if (resource.kind === 'chat' || resource.kind === 'view' && resource.target.type === 'conversation') {
+                    uninitialHistory = bindInitialHistory(surface, reference, navigation.state)
+                }
                 void reference.ready.catch(fail)
                 graph.ctx.uiWorkspace.openSession(sourceId as SessionId)
                 const shortcuts = graph.ctx.get('shortcuts')
@@ -741,8 +762,15 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         if (shared) {
             const context = catalog?.ctx ?? root
             sessionViews = installSessionViewHost(context)
-            warmup = createSessionWarmup(context.sessions)
+            warmup = createSessionWarmup(context.sessions, { prepare: reference => { context.uiConversation.binding(reference.binding) } })
             unwarmup = context.sessions.list.subscribe(warmRecent)
+            // Previously warming started only after the first pane had opened.
+            // Yield a paint, then prepare the five recent tails even in an
+            // empty restored workspace. Hover/focus can prioritize any row.
+            warmFrame = requestAnimationFrame(() => { warmFrame = undefined; warmTimer = setTimeout(() => {
+                warmTimer = undefined
+                if (!signal.aborted) { warming = true; warmRecent() }
+            }, 0) })
             if (catalog) {
                 unprovideHostUi = context.reflect.provide('hapiWorkspaceUi', sharedUi.root)
                 const unchrome = installPaneChrome(context)
@@ -780,9 +808,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             return <div ref={mount} className="hapi-remote-mount" style={{ minHeight: 0, height: '100%', width: '100%' }}/>
         }
         const renderPane: NonNullable<import('./controller.ts').WorkspaceHost['renderPane']> = (reference, resource, options) => <RemoteSession sourceId={reference.sessionId} resource={resource} options={options}/>
-        removeHost = host.id === 'local' ? workspace.bindRenderer('local', renderPane) : workspace.addHost({
+        removeHost = host.id === 'local' ? workspace.bindRenderer('local', renderPane, shared ? warmSession : undefined) : workspace.addHost({
             id: host.id, label: host.label, sessions: catalog!.ctx.sessions, navigation: catalog!.ctx.uiWorkspace, workspaces: catalog!.ctx.workspaces, workspaceState: catalog!.ctx.workspaces.list,
             renderPane, renderConversation: (reference, options) => <RemoteSession sourceId={reference.sessionId} resource={{ kind: 'chat', sessionId: sessionResourceId(host.id, reference.sessionId) }} options={options ?? { paneId: reference.sessionId, focused: true }}/>,
+            ...(shared ? { warmSession } : {}),
         })
         unsubscribeLayout = workspace.store.subscribe(reconcilePanes)
         await catalog?.ctx.sessions.refresh()
@@ -792,13 +821,13 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             stopped = true; unsubscribeLayout?.(); removeHost?.()
             await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
             activePanes.clear()
-            unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
+            cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
             await catalog?.stop(); catalogSurface.remove(); parking.remove()
         } }
     } catch (error) {
         unsubscribeLayout?.(); removeHost?.()
         await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
-        unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
+        cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
         await catalog?.stop(); catalogSurface.remove(); parking.remove(); throw error
     }
 }

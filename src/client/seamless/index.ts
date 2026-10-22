@@ -27,3 +27,5 @@ export {
     DEFAULT_MAX_AUTOMATIC_PAGES_PER_SESSION, SEAMLESS_ATTRIBUTE, SEAMLESS_EVENT_NAME,
 } from './controller.ts'
 export type { SeamlessHistoryEvent, SeamlessHistoryOptions } from './controller.ts'
+export { bindInitialHistory, probeInitialWindow, InitialHistoryPlan, INITIAL_HISTORY_ATTRIBUTE, MAX_INITIAL_HISTORY_PAGES } from './initial.ts'
+export type { InitialHistoryState, InitialWindowProbe } from './initial.ts'

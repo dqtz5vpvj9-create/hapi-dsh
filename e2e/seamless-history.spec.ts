@@ -38,14 +38,14 @@ test.beforeAll(async () => {
 })
 test.afterAll(async () => { await environment?.close() })
 
-async function openPane(page: Page): Promise<Locator> {
+async function openPane(page: Page, name = PANE_NAME, answer = TARGET_ANSWER): Promise<Locator> {
     await page.goto(environment.launchUrl)
     await acknowledgePreviewNotice(page, environment)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-    await page.locator('.hapi-session-open').filter({ hasText: PANE_NAME }).click()
-    const pane = page.getByRole('region', { name: `Pane: ${PANE_NAME}`, exact: true })
+    await page.locator('.hapi-session-open').filter({ hasText: name }).click()
+    const pane = page.getByRole('region', { name: `Pane: ${name}`, exact: true })
     await expect(pane).toBeVisible()
-    await expect(pane.getByText(TARGET_ANSWER, { exact: true })).toBeVisible({ timeout: 60_000 })
+    await expect(pane.getByText(answer, { exact: true })).toBeVisible({ timeout: 60_000 })
     return pane
 }
 
@@ -142,6 +142,36 @@ async function transcriptBlank(pane: Locator): Promise<boolean> {
         return hit === null || hit.closest('[data-conversation-content]') === null
     })
 }
+
+test('opening a long latest Turn automatically includes the previous Turn without leaving tail follow', async ({ page }, info) => {
+    const source = environment.hapi.add('seamless-opening', 'Synthetic Runner', 'machine-alpha')
+    // Each long Turn exceeds the official 500-message initial-window cap.
+    // This fixture returns its complete synthetic source history in one read;
+    // the boundary under test is the real DSH retained window, not source REST
+    // pagination (covered separately by the other fixture/history specs).
+    source.rows = nativeIndexedHistory(source.session.metadata!.codexSessionId!, 3, 520)
+    environment.hapi.emit({ type: 'session-added', sessionId: source.session.id })
+    const errors: string[] = []
+    page.on('pageerror', error => errors.push(error.message))
+    const requests = await olderPageRequests(page)
+    const pane = await openPane(page, 'Native Codex seamless-opening', 'Synthetic final answer 3.')
+    const surface = pane.locator('[data-hapi-initial-history]')
+    await expect(surface).toHaveAttribute('data-hapi-initial-history', 'ready', { timeout: 20_000 })
+    await expect(pane.getByText('Synthetic original input 2.', { exact: true })).toBeVisible()
+    await expect(pane.getByText('Synthetic final answer 2.', { exact: true })).toBeVisible()
+    await expect(pane.getByText('Synthetic final answer 3.', { exact: true })).toBeVisible()
+    // No wheel, key, click on Load earlier, editor mutation, or scroll write:
+    // opening alone must fill the previous Turn while the tail stays owned.
+    await expect(pane.locator('[data-chat-following-tail]')).toHaveCount(1)
+    expect(requests.length).toBeGreaterThan(0)
+    expect(requests.length).toBeLessThanOrEqual(2)
+    const pages = requests.length
+    await page.waitForTimeout(500)
+    expect(requests.length).toBe(pages)
+    expect(environment.hapi.sent.filter(send => send.sessionId === source.session.id)).toEqual([])
+    expect(errors).toEqual([])
+    await info.attach('initial-previous-turn', { body: JSON.stringify({ automaticPages: pages, maximumPages: 2 }), contentType: 'application/json' })
+})
 
 test('an upward gesture at the top pages older history automatically and keeps the reader anchor', async ({ page }, info) => {
     const errors: string[] = []
