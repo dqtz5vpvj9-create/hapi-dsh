@@ -25,6 +25,9 @@ export class SourceMessageNavigation {
         const target = binding && messageNodeTarget(this.ctx.uiConversation.binding(binding).target('chat').getSnapshot(), seq);
         return target ? revealChatElement(root, target, clicked) : undefined;
     }
+    async sourceAnchor(sessionId: SessionId, seq: number): Promise<string | null> {
+        return remoteValue(await this.api.sourceReadingAnchor({ sessionId, seq })).sourceMessageId;
+    }
     async locate(sessionId: SessionId, sourceMessageId: string, signal?: AbortSignal): Promise<{ sessionId: SessionId; seq: SessionSeq }> {
         const located = remoteValue(await this.api.sourceLocateMessage({ sessionId, sourceMessageId }));
         signal?.throwIfAborted();

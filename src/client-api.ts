@@ -137,6 +137,7 @@ export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, Ses
     nativeAnswer(request: NativeAnswerRequest): Promise<RemoteResult<{ submitted: true }>>;
     nativeSchedule(request: { sessionId: string; operationId: string; text: string; scheduledAt: number }): Promise<RemoteResult<DeliveryView>>;
     nativeScheduleRead(request: { sessionId: string; operationId: string }): Promise<RemoteResult<DeliveryView | null>>;
+    sourceReadingAnchor(request: { sessionId: string; seq: number }): Promise<RemoteResult<{ sourceMessageId: string | null }>>;
     sourceLocateMessage(request: { sessionId: string; sourceMessageId: string }): Promise<RemoteResult<{ sessionId: string; seq: number | null }>>;
     nativeSettings(request: { sessionId: string }): Promise<RemoteResult<NativeSettings>>;
     nativeApplySetting(request: NativeApplySetting): Promise<RemoteResult<NativeSettingReceipt>>;
@@ -221,6 +222,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/nativeAnswer': HapiRemoteApi['nativeAnswer'];
         'hapi/nativeSchedule': HapiRemoteApi['nativeSchedule'];
         'hapi/nativeScheduleRead': HapiRemoteApi['nativeScheduleRead'];
+        'hapi/sourceReadingAnchor': HapiRemoteApi['sourceReadingAnchor'];
         'hapi/sourceLocateMessage': HapiRemoteApi['sourceLocateMessage'];
         'hapi/nativeSettings': HapiRemoteApi['nativeSettings'];
         'hapi/nativeApplySetting': HapiRemoteApi['nativeApplySetting'];
@@ -299,6 +301,7 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     nativeDeliveryRecover: deliveryRecoveryRequestSchema, nativeDeliveryCheck: queueRequest,
     nativeSchedule: z.strictObject({ sessionId: id, operationId: z.string().uuid(), text: z.string().trim().min(1).max(1_000_000), scheduledAt: z.number().int().positive() }),
     nativeScheduleRead: z.strictObject({ sessionId: id, operationId: z.string().uuid() }),
+    sourceReadingAnchor: z.strictObject({ sessionId: id, seq: z.number().int().nonnegative() }),
     sourceLocateMessage: z.strictObject({ sessionId: id, sourceMessageId: id }),
     nativeSettings: sessionRequest, nativeApplySetting: nativeApplySettingSchema,
     observedSettings: sessionRequest, observedApplySetting: observedApplySettingSchema, observedSetting: observedSettingReadSchema,
@@ -350,6 +353,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     nativeAnswer: z.object({ submitted: z.literal(true) }),
     nativeSchedule: deliveryViewSchema,
     nativeScheduleRead: deliveryViewSchema.nullable(),
+    sourceReadingAnchor: z.object({ sourceMessageId: id.nullable() }),
     sourceLocateMessage: z.object({ sessionId: id, seq: z.number().int().nonnegative().nullable() }),
     nativeSettings: nativeSettingsSchema, nativeApplySetting: nativeSettingReceiptSchema,
     observedSettings: observedSettingsSchema, observedApplySetting: observedSettingReceiptSchema, observedSetting: observedSettingReceiptSchema,

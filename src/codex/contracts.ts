@@ -1,3 +1,4 @@
+import type { CapacityRecovery } from './observation-types.js'
 /**
  * The subset of HAPI's public Hub contract consumed by the Codex adapter.
  * Source: HAPI 0f8ef697, shared/src/{schemas,apiTypes,sessionSummary}.ts.
@@ -9,6 +10,7 @@ export interface HapiNativeRuntime {
   sequence: number
   status: 'active' | 'idle' | 'notLoaded' | 'systemError' | 'disconnected'
   waitingOn: Array<'approval' | 'input'>
+  capacityRecovery?: CapacityRecovery | null | undefined
   compacting?: boolean
   turnId: string | null
   startedAt: number | null

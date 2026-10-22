@@ -1,3 +1,4 @@
+import { DocumentSelectionButton } from './document-selection.tsx'
 /** HAPI artifact source adapter inside the official resource/tab/document lifecycle. */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
@@ -120,7 +121,7 @@ function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: Artifac
         })
     }
     return <section className="hapi-artifact" data-hapi-artifact-source={reference.source.sourceSessionId}>
-        <header className="hapi-artifact-toolbar"><strong title={loaded?.metadata.fileName ?? reference.document.fileName}>{loaded?.metadata.fileName ?? reference.document.fileName}</strong>
+        <header className="hapi-artifact-toolbar"><DocumentSelectionButton sessionId={props.sessionId} source={reference.source} path={reference.document.kind === 'artifact' ? `artifact:${reference.document.artifactId}` : `generated-media:${reference.document.imageId}`} version={loaded?.metadata.hash} zh={zh}/><strong title={loaded?.metadata.fileName ?? reference.document.fileName}>{loaded?.metadata.fileName ?? reference.document.fileName}</strong>
             {choices.length > 1 && <select aria-label={zh ? '文档显示方式' : 'Document viewer'} value={viewer} onChange={event => choose({ viewer: event.currentTarget.value as ArtifactViewer })}>{choices.map(value => <option key={value} value={value}>{viewerName(value)}</option>)}</select>}
             {(viewer === 'code' || viewer === 'text') && <label><input type="checkbox" checked={wrap} onChange={event => choose({ wrap: event.currentTarget.checked })}/>{zh ? '换行' : 'Wrap'}</label>}
             <button type="button" onClick={refresh} disabled={loading}>{zh ? '重新读取' : 'Reload'}</button>

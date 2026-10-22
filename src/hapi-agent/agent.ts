@@ -273,6 +273,7 @@ export class HapiObservedAgent implements Agent {
   resolveRewindLocalId(id: string) { return this.projector.rewindLocalId(id) }
   resolveRewindLocalIdAtSeq(seq: number) { return this.projector.rewindLocalIdAtSeq(seq) }
   resolveSourceMessageDisplaySeq(id: string) { return this.projector.sourceMessageDisplaySeq(id) }
+  sourceMessageAtDisplaySeq(seq: number): string | undefined { return this.projector.sourceMessageAtDisplaySeq(seq) }
   send(message: UserMessage, target: InboxTarget, wakeup: boolean): void {
     this.assertWritable()
     if (!wakeup) throw new Error('The original HAPI engine does not expose silent context injection')

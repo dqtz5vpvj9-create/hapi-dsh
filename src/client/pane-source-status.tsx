@@ -14,7 +14,7 @@ export function PaneSourceStatus({ target, error, children, t }: {
             if (details.current?.open && event.target instanceof Node && !details.current.contains(event.target)) details.current.open = false
         }
         const escape = (event: KeyboardEvent): void => {
-            if (event.key !== 'Escape' || !details.current?.open) return
+            if (event.key !== 'Escape' || event.isComposing || !details.current?.open) return
             event.stopPropagation(); details.current.open = false; details.current.querySelector('summary')?.focus()
         }
         target.ownerDocument.addEventListener('pointerdown', outside)

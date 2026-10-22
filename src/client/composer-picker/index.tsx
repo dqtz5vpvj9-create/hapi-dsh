@@ -106,7 +106,7 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
             if (target instanceof Node && !Object.values(triggers.current).some(button => button?.contains(target)) && !panelElement()?.contains(target)) close()
         }
         const escape = (event: KeyboardEvent): void => {
-            if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); close(true) }
+            if (event.key === 'Escape' && !event.isComposing) { event.stopPropagation(); event.preventDefault(); close(true) }
         }
         document.addEventListener('pointerdown', outside, true)
         document.addEventListener('focusin', outside, true)

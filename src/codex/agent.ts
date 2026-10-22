@@ -369,6 +369,7 @@ export class NativeCodexAgent implements Agent {
   resolveRewindLocalId(messageId: string): string | undefined { return this.projector.rewindLocalId(messageId) }
   resolveRewindLocalIdAtSeq(seq: number): string | undefined { return this.projector.rewindLocalIdAtSeq(seq) }
   resolveSourceMessageDisplaySeq(id: string): number | undefined { return this.projector.sourceMessageDisplaySeq(id) }
+  sourceMessageAtDisplaySeq(seq: number): string | undefined { return this.projector.sourceMessageAtDisplaySeq(seq) }
 
   get projection(): NonNullable<HapiProjection> {
     const goal = nativeThreadGoalSchema.safeParse(this.source.agentState?.threadGoal)

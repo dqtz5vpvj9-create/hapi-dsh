@@ -1,3 +1,4 @@
+import { capacityRecoverySchema } from './observation-types.js'
 import { z } from 'zod'
 import type {} from '@deepseek-ai/dsh-session-projection/types'
 import { nativeNoticeSchema, nativeThreadGoalSchema, nativeUsageSchema } from './observation-types.js'
@@ -80,6 +81,7 @@ export const hapiProjectionSchema = z.object({
     status: z.enum(['active', 'idle', 'notLoaded', 'systemError', 'disconnected']),
     waitingOn: z.array(z.enum(['approval', 'input'])),
     compacting: z.boolean().optional(),
+    capacityRecovery: capacityRecoverySchema.nullish(),
     turnId: z.string().nullable(),
     startedAt: z.number().nullable(),
     completedAt: z.number().nullable(),

@@ -3,7 +3,7 @@ import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/c
 import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import type { PaneReadingIntent } from './reading-intent.ts'
-import { parseReloadReadingAnchor, placeReadingAnchor, revealChatElement, type ReloadReadingAnchor } from './reading-anchor.ts'
+import { messageNodeTarget, parseReloadReadingAnchor, placeReadingAnchor, revealChatElement, type ReloadReadingAnchor } from './reading-anchor.ts'
 import { keyIntent } from './seamless/intent.ts'
 import type {} from './source-navigation.ts'
 
@@ -21,11 +21,17 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     let retainedAnchor: ReloadReadingAnchor | undefined, readerOwned = false
     let sampleFrame: number | undefined
     let eventRevision = reference.binding.eventSource.getSnapshot().revision
-    const storageKey = `hapi-dsh:reload-reading:${JSON.stringify([navigation.hostId, navigation.paneId, reference.sessionId])}`
+    const projected = ctx.sessions.list.getSnapshot().byId[reference.sessionId]?.projectionValues
+    const native = projected?.hapi ?? projected?.hapiObserved
+    const sourceIdentity = native ? [native.hubId, native.hapiSessionId] : reference.sessionId
+    const sourceAnchors = new Map<number, string>()
+    let anchorTimer: number | undefined
+    const storageKey = `hapi-dsh:reload-reading:${JSON.stringify([navigation.hostId, navigation.paneId, sourceIdentity])}`
     let restored: ReloadReadingAnchor | undefined
     try {
         const entry = window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
-        if (entry?.type === 'reload') restored = parseReloadReadingAnchor(window.sessionStorage.getItem(storageKey))
+        const saved = parseReloadReadingAnchor(window.sessionStorage.getItem(storageKey))
+        if (entry?.type === 'reload' || saved?.sourceMessageId && saved.displayId !== reference.sessionId) restored = saved
         window.sessionStorage.removeItem(storageKey)
     } catch { /* A disabled browser store does not block conversation navigation. */ }
 
@@ -89,9 +95,22 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                 }
                 row.scrollIntoView({ block: 'nearest' }); row.tabIndex = -1; row.focus({ preventScroll: true })
             } else if (reload) {
-                await reference.binding.session.loadThrough(reload.seq as SessionSeq); signal.throwIfAborted()
+                let seq = reload.seq, key = reload.key
+                if (reload.sourceMessageId) {
+                    const service = ctx.get('hapiMessageNavigation')
+                    if (!service) throw new Error('Source navigation is not ready.')
+                    const located = await service.locate(reference.sessionId, reload.sourceMessageId, signal)
+                    if (located.sessionId !== reference.sessionId) {
+                        window.sessionStorage.setItem(storageKey, JSON.stringify(reload))
+                        navigation.openSession(located.sessionId); return
+                    }
+                    seq = located.seq
+                    await reference.binding.session.loadThrough(located.seq); signal.throwIfAborted()
+                    key = messageNodeTarget(ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot(), seq)?.key ?? key
+                }
+                await reference.binding.session.loadThrough(seq as SessionSeq); signal.throwIfAborted()
                 const clicked = new WeakSet<HTMLElement>()
-                const row = await waitFor(() => revealChatElement(root, { key: reload.key, kind: 'message' }, clicked), signal)
+                const row = await waitFor(() => revealChatElement(root, { key, kind: 'message' }, clicked), signal)
                 placeReadingAnchor(scrollport, row, reload.offset)
             } else if (target?.kind === 'latest') {
                 // Activate the official return-to-bottom action when paused;
@@ -162,14 +181,33 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             // loadThrough accepts the durable predecessor, never that fraction.
             // A mixed Assistant can have separate reasoning/response seats.
             // Retain its public flow anchor, not their shared node identity.
-            return { key: element.dataset.chatAnchorKey ?? nodeKey, seq: Math.max(0, Math.floor(node.anchorSeq)), offset: box.top - top }
+            const seq = Math.max(0, Math.floor(node.anchorSeq))
+            return { key: element.dataset.chatAnchorKey ?? nodeKey, seq, offset: box.top - top, displayId: reference.sessionId, ...(sourceAnchors.has(seq) ? { sourceMessageId: sourceAnchors.get(seq)! } : {}) }
         }
     }
     const scheduleSample = (): void => {
         if (disposed || sampleFrame !== undefined) return
         sampleFrame = window.requestAnimationFrame(() => {
             sampleFrame = undefined
-            if (ready && visible() && !pending && request?.phase !== 'waiting' && request?.phase !== 'error') retainedAnchor = readAnchor()
+            if (ready && visible() && !pending && request?.phase !== 'waiting' && request?.phase !== 'error') {
+                retainedAnchor = readAnchor()
+                if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
+                const anchor = retainedAnchor
+                if (!anchor) { try { window.sessionStorage.removeItem(storageKey) } catch { /* optional bookmark */ } }
+                if (anchor?.sourceMessageId) { try { window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)) } catch { /* optional bookmark */ } }
+                if (native && anchor && !anchor.sourceMessageId) anchorTimer = window.setTimeout(() => {
+                    anchorTimer = undefined
+                    const service = ctx.get('hapiMessageNavigation')
+                    if (!service) return
+                    void service.sourceAnchor(reference.sessionId, anchor.seq).then(id => {
+                        if (!id || disposed || retainedAnchor?.seq !== anchor.seq) return
+                        if (sourceAnchors.size >= 32) sourceAnchors.clear()
+                        sourceAnchors.set(anchor.seq, id)
+                        retainedAnchor = { ...retainedAnchor, sourceMessageId: id }
+                        try { window.sessionStorage.setItem(storageKey, JSON.stringify(retainedAnchor)) } catch { /* optional bookmark */ }
+                    }).catch(() => {})
+                }, 250)
+            }
         })
     }
     const eventWindowChanged = (): void => {
@@ -188,8 +226,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         update()
     }
     const remember = (): void => {
-        const anchor = readAnchor()
-        if (anchor) try { window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)) } catch { /* optional anchor persistence */ }
+        const anchor = readAnchor() ?? retainedAnchor
+        try { if (anchor) window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)); else window.sessionStorage.removeItem(storageKey) } catch { /* optional anchor persistence */ }
     }
     const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged), ...(source ? [source.subscribe(update)] : [])]
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
@@ -198,7 +236,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     window.addEventListener('pagehide', remember)
     void reference.ready.then(() => { if (!disposed) { ready = true; update() } }, () => {})
     return () => {
-        disposed = true; pending?.abort(); clearFailure()
+        remember(); disposed = true; pending?.abort(); clearFailure()
+        if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
         if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
         for (const stop of stops) stop()
         for (const event of events) root.removeEventListener(event, reader, { capture: true })

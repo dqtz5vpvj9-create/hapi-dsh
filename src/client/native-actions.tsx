@@ -1,3 +1,4 @@
+import { CapacityRecoveryStatus } from './source-capacity.tsx'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { HapiApprovalAnswer } from '../codex/contracts.ts'
 import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projection-types.ts'
@@ -26,6 +27,7 @@ export interface NativeActionsApi {
     check?(sessionId: string, localId: string): Promise<unknown>
     recover?(sessionId: string, localId: string, action: 'retry' | 'discard'): Promise<unknown>
     answer(sessionId: string, requestId: string, answer: HapiApprovalAnswer, deny?: boolean): Promise<unknown>
+    stop?(sessionId: string): Promise<unknown>
     resume(sessionId: string): Promise<unknown>
 }
 
@@ -258,12 +260,13 @@ export function NativeActions({ sessionId, projection, api, t, statusTarget = nu
     // exceptional states (approvals, deliveries, errors, resume/read-only) render.
     const hasDelivery = delivery.length > 0
     const execution = nativeExecutionStatus(projection)
-    const hasStatus = hasDelivery || Boolean(projection.error) || projection.readOnly || projection.nativeConnection !== 'attached' || Boolean(recovery)
+    const hasStatus = hasDelivery || Boolean(projection.error) || projection.readOnly || projection.nativeConnection !== 'attached' || Boolean(recovery) || Boolean(projection.execution?.capacityRecovery)
     const hasActionable = projection.pendingRequests.length > 0 || hasStatus
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} stateKey={nativeRequestStateKey(projection)} request={request} api={api} disabled={disabled} t={t}/>)}
         {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error || resumeError) || delivery.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
+        <CapacityRecoveryStatus execution={projection.execution} stop={api.stop ? () => api.stop!(sessionId) : undefined} t={t}/>
         {/* A disconnected Codex source is not read-only: sending queues a durable
             turn and Resume reconnects the native session. */}
         {(() => {

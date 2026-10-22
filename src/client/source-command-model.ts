@@ -29,11 +29,23 @@ function object(value: unknown): Record<string, unknown> | undefined {
 function parse(raw: string): unknown {
     try { return JSON.parse(raw) } catch { return raw }
 }
+function powerShell(value: string): boolean { return /^(?:pwsh|powershell)(?:\.exe)?$/i.test(value.split(/[/\\]/).at(-1) ?? '') }
 function commandText(value: unknown): string | null {
-    if (typeof value === 'string') return value || null
+    if (typeof value === 'string') {
+        const match = /^(?:&\s+)?(?:"([^"]+)"|'([^']+)'|(\S+))\s+(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+)*-(?:Command|c)\s+([\s\S]+)$/i.exec(value)
+        if (match && powerShell(match[1] ?? match[2] ?? match[3]!)) {
+            const body = match[4]!.trim()
+            return body || value
+        }
+        return value || null
+    }
     if (!Array.isArray(value) || !value.every(part => typeof part === 'string')) return null
-    // Codex also records argv. Show the shell body for the standard shell -c form.
-    if (value.length === 3 && /(?:^|[/\\])(?:bash|zsh|sh)$/.test(value[0]!) && /^-[a-z]*c$/.test(value[1]!)) return value[2] || null
+    if (value.length === 3 && /(?:^|[/\\])(?:ba|z|da|k)?sh$/.test(value[0]!) && /^-[a-z]*c[a-z]*$/i.test(value[1]!)) return value[2] || null
+    if (powerShell(value[0] ?? '')) {
+        let index = 1
+        while (/^-(?:NoLogo|NoProfile|NonInteractive)$/i.test(value[index] ?? '')) index++
+        if (/^-(?:Command|c)$/i.test(value[index] ?? '') && index === value.length - 2) return value[index + 1] || null
+    }
     return value.map(part => /^[\w./:=+-]+$/.test(part) ? part : JSON.stringify(part)).join(' ') || null
 }
 
@@ -73,4 +85,35 @@ export function sourceToolSummary(block: ToolCallBlock): string | null {
     const patch = typeof input?.patch === 'string' ? input.patch : typeof input?.input === 'string' ? input.input : raw.startsWith('*** Begin Patch') ? raw : ''
     const paths = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1])
     return paths.length ? paths.join(', ') : null
+}
+
+export const SOURCE_TOOL_ALIASES: Readonly<Record<string, readonly string[]>> = {
+    bash: SOURCE_COMMAND_TOOLS, edit: ['CodexPatch', 'apply_patch', 'Edit', 'MultiEdit'],
+    write: ['Write'], read: ['Read', 'read_file'], grep: ['Grep', 'ripgrep'], glob: ['Glob'],
+}
+/** Only the official view input changes; inspect still points to the original call. */
+export function sourceToolBlocks(block: ToolCallBlock, target: string): ToolCallBlock[] {
+    if (target === 'bash') return [sourceShellBlock(block)]
+    const done = 'kind' in block
+    const raw = done ? block.call?.argsRaw ?? '' : block.phase === 'start' ? block.argsRaw : ''
+    const parsed = parse(raw), input = object(parsed) ?? {}
+    let inputs: Record<string, unknown>[] = [input]
+    if (target === 'edit' && block.name === 'MultiEdit' && Array.isArray(input.edits)) {
+        inputs = input.edits.map(edit => ({ file_path: input.file_path, ...object(edit) }))
+    }
+    if (target === 'edit' && (block.name === 'CodexPatch' || block.name === 'apply_patch')) {
+        const changes = object(input.changes)
+        if (changes) inputs = Object.entries(changes).map(([path, change]) => ({ ...object(change), file_path: path }))
+        else {
+            const patch = typeof parsed === 'string' ? parsed : typeof input.patch === 'string' ? input.patch : typeof input.input === 'string' ? input.input : ''
+            const paths = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]!)
+            if (paths.length) inputs = paths.map(file_path => ({ file_path }))
+        }
+    }
+    return (inputs.length ? inputs : [input]).map(value => {
+        const payload = { ...value, ...(typeof value.file_path !== 'string' && typeof value.path === 'string' && ['edit','write','read'].includes(target) ? { file_path: value.path } : {}) }
+        const argsRaw = JSON.stringify(payload), args = PartialArguments.fromText(argsRaw)
+        if (!done) return block.phase === 'start' ? { ...block, name: target, args, argsRaw } : { ...block, name: target, args }
+        return { ...block, name: target, args, call: { name: target, argsRaw } }
+    })
 }

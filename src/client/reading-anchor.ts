@@ -1,5 +1,5 @@
 /** Public Chat identities and DOM disclosure controls; no transcript text is saved. */
-export interface ReloadReadingAnchor { key: string; seq: number; offset: number }
+export interface ReloadReadingAnchor { key: string; seq: number; offset: number; displayId?: string; sourceMessageId?: string }
 export interface ChatReadingTarget { key: string; kind: string; turn?: number }
 interface ReadingNode { key: string; kind: string; anchorSeq: number; location?: { kind: string; turn?: { turn: number } } }
 export function parseReloadReadingAnchor(raw: string | null): ReloadReadingAnchor | undefined {
@@ -7,9 +7,9 @@ export function parseReloadReadingAnchor(raw: string | null): ReloadReadingAncho
     try {
         const value: unknown = JSON.parse(raw)
         if (!value || typeof value !== 'object') return undefined
-        const { key, seq, offset } = value as Partial<ReloadReadingAnchor>
+        const { key, seq, offset, displayId, sourceMessageId } = value as Partial<ReloadReadingAnchor>
         if (typeof key === 'string' && key.length > 0 && typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0
-            && typeof offset === 'number' && Number.isFinite(offset)) return { key, seq, offset }
+            && typeof offset === 'number' && Number.isFinite(offset)) return { key, seq, offset, ...(typeof displayId === 'string' ? { displayId } : {}), ...(typeof sourceMessageId === 'string' ? { sourceMessageId } : {}) }
     } catch { /* Invalid optional reading state starts with the official view. */ }
 }
 export function messageNodeTarget(snapshot: { nodes: { values(): readonly ReadingNode[] } } | undefined, seq: number): ChatReadingTarget | undefined {

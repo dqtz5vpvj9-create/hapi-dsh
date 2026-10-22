@@ -30,3 +30,11 @@ export const nativeUsageSchema = nativeTokenCountSchema.extend({
   total: nativeTokenCountSchema.nullable(),
 })
 export type NativeUsage = z.infer<typeof nativeUsageSchema>
+
+/** Original Runner owns retry scheduling; this is observation only. */
+export const capacityRecoverySchema = z.object({
+  turnId: z.string(), phase: z.enum(['retrying', 'failed', 'waiting', 'continuing']),
+  retryAt: z.number().finite().optional(), attempt: z.number().int().positive().optional(),
+  maxAttempts: z.number().int().positive().optional(), reason: z.enum(['exhausted', 'unverified', 'unconfirmed']).optional(),
+})
+export type CapacityRecovery = z.infer<typeof capacityRecoverySchema>

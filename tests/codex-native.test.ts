@@ -1036,6 +1036,8 @@ test('native cold attach seeds bounded initial context while full history remain
   try {
     const initial = app.service.list()[0]!
     assert.notEqual(initial.resolveSourceMessageDisplaySeq(tail.id), undefined)
+    assert.equal(initial.sourceMessageAtDisplaySeq(initial.resolveSourceMessageDisplaySeq(tail.id)!), tail.id)
+    assert.equal(initial.sourceMessageAtDisplaySeq(-1), undefined)
     release(page([older, tail])); await app.service.settled()
     const current = app.service.list()[0]!
     assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)

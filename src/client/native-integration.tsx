@@ -1,3 +1,5 @@
+import { installDocumentSelections } from './document-selection.tsx'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { Context } from '@deepseek-ai/cordis'
 import { createElement } from 'react'
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
@@ -40,6 +42,11 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
         removeItem: key => localStorage.removeItem(key) }), controls = new NativeControlLedger(api), observedControls = new ObservedControlLedger(api)
     const native: NativeActionsApi = {
         ledger, controls, observedControls, branchLabel: () => ctx.locale.bind('chat')('message.branch'),
+        stop: async sessionId => {
+            const binding = ctx.sessions.binding(sessionId as SessionId)
+            if (!binding) throw new Error('The source conversation is no longer open.')
+            return remoteValue(await binding.session.cancel())
+        },
         cancel: async (sessionId, localId) => remoteValue(await api.nativeCancel({ sessionId, localId })),
         steer: async (sessionId, localId) => remoteValue(await api.nativeSteer({ sessionId, localId })),
         retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
@@ -66,7 +73,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     disposers.push(installSourceFileActions(ctx, api))
     disposers.push(installSourceTerminalActions(ctx, api))
     disposers.push(installLegacyTerminalView(ctx, api))
-    disposers.push(installArtifactPreview(ctx, api))
+    disposers.push(installArtifactPreview(ctx, api), installDocumentSelections(ctx))
     disposers.push(installSourceMarkdown(ctx))
     disposers.push(installNotifySummaryDisplay(ctx, api))
     disposers.push(installSourceVoice(ctx, api))

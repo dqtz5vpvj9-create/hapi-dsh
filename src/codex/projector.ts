@@ -128,6 +128,7 @@ export class NativeProjector {
   rewindLocalId(messageId: string): string | undefined { return this.rewindLocalIds.get(messageId) }
   rewindLocalIdAtSeq(seq: number): string | undefined { return this.rewindLocalIdsBySeq.get(seq) }
   sourceMessageDisplaySeq(id: string): number | undefined { return this.sourceMessageSeqs.get(id) }
+  sourceMessageAtDisplaySeq(seq: number): string | undefined { for (const [id, value] of this.sourceMessageSeqs) if (value === seq) return id; return undefined }
 
   /** Apply a coherent source page; terminal facts settle after that page's items. */
   apply(rows: readonly NativeRow[]): void {

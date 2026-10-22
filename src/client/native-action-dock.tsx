@@ -38,7 +38,7 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
         // metadata rows are gone, so an empty dock must not occupy composer space.
         const hasActions = Boolean(
             projection && (projection.pendingRequests.length > 0 || activeDelivery(projection.delivery) || projection.error
-                || projection.readOnly || projection.nativeConnection !== 'attached')
+                || projection.execution?.capacityRecovery || projection.readOnly || projection.nativeConnection !== 'attached')
             || observed && !observed.dshChild && (observed.pendingRequests.length > 0 || activeDelivery(observed.delivery) || observed.error || observed.readOnly)
             || queued.panel)
         return <>

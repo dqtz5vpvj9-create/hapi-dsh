@@ -362,6 +362,9 @@ export class HapiController extends TypertRemoteService {
     nativeScheduleRead(request: { sessionId: string; operationId: string }) {
         return this.sourceCall(async () => this.sourceAgent(request.sessionId).scheduleReceipt(request.operationId));
     }
+    sourceReadingAnchor(request: { sessionId: string; seq: number }): Promise<{ sourceMessageId: string | null }> {
+        return this.sourceCall(async () => ({ sourceMessageId: this.sourceAgent(request.sessionId).sourceMessageAtDisplaySeq(request.seq) ?? null }));
+    }
     sourceLocateMessage(request: { sessionId: string; sourceMessageId: string }): Promise<{ sessionId: string; seq: number | null }> {
         return this.sourceCall(async () => {
             const agent = this.sourceAgent(request.sessionId);

@@ -56,6 +56,7 @@ export class ObservedProjector {
   rewindLocalId(id: string): string | undefined { return this.rewindIds.get(id) }
   rewindLocalIdAtSeq(seq: number): string | undefined { return this.rewindSeqs.get(seq) }
   sourceMessageDisplaySeq(id: string): number | undefined { return this.sourceSeqs.get(id) }
+  sourceMessageAtDisplaySeq(seq: number): string | undefined { for (const [id, value] of this.sourceSeqs) if (value === seq) return id; return undefined }
 
   beginHistorySeed(): void {
     if (this.session.seq || this.seed) throw new Error('Observed history requires a detached new Session')

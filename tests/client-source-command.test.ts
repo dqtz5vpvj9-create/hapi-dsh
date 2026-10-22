@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { installSourceCommandViews } from '../src/client/source-command-view.tsx'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { StartedToolCall, ToolResultNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceCommandModel, sourceToolSummary, sourceShellBlock } from '../src/client/source-command-model.ts'
+import { sourceCommandModel, sourceToolSummary, sourceShellBlock, sourceToolBlocks } from '../src/client/source-command-model.ts'
 
 test('source shell aliases render the registered official component and leave specialized providers intact', () => {
     const slots = new SlotCore()
@@ -112,4 +112,27 @@ test('compact tools show semantic paths and patches without leaking transport ID
     assert.equal(sourceToolSummary(call({ thread_id: 'opaque', file_path: '/repo/a.ts' })), '/repo/a.ts')
     assert.equal(sourceToolSummary(call({ changes: { '/repo/a.ts': {}, '/repo/b.ts': {} } })), '/repo/a.ts, /repo/b.ts')
     assert.equal(sourceToolSummary(call({ call_id: 'opaque' })), null)
+})
+
+
+test('PowerShell summaries unwrap only a recognized command invocation', () => {
+    assert.equal(sourceCommandModel(call({ command: ['C:\\Windows\\pwsh.exe', '-NoProfile', '-Command', 'Get-Item .'] })).command, 'Get-Item .')
+    assert.equal(sourceCommandModel(call({ command: 'pwsh -NoLogo -NoProfile -c Get-Item .' })).command, 'Get-Item .')
+    assert.equal(sourceCommandModel(call({ command: 'other -c preserve' })).command, 'other -c preserve')
+})
+
+test('patch and file aliases retain source errors and never fabricate an applied diff', () => {
+    const original = { ...result({ changes: { '/a.ts': { old_string: 'a', new_string: 'b' }, '/b.ts': {} } }, 'denied', true), name: 'CodexPatch' }
+    const before = JSON.stringify(original), blocks = sourceToolBlocks(original, 'edit')
+    assert.equal(blocks.length, 2)
+    assert.equal(blocks[0]!.args.text('file_path'), '/a.ts')
+    assert.equal(blocks[0]!.args.text('new_string'), 'b')
+    assert.equal((blocks[0] as ToolResultNode).isError, true)
+    assert.deepEqual((blocks[0] as ToolResultNode).content, original.content)
+    assert.equal((blocks[0] as ToolResultNode).meta, original.meta)
+    assert.equal(JSON.stringify(original), before)
+    const edits = sourceToolBlocks({ ...call({ file_path: '/a', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] }), name: 'MultiEdit' }, 'edit')
+    assert.equal(edits[1]!.args.text('file_path'), '/a')
+    assert.equal(edits[1]!.args.text('new_string'), 'd')
+    assert.equal(sourceToolBlocks({ ...call({ path: '/read' }), name: 'read_file' }, 'read')[0]!.args.text('file_path'), '/read')
 })

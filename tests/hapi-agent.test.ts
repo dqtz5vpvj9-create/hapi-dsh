@@ -120,6 +120,8 @@ test('all existing non-native HAPI flavors enter real official Sessions with ori
       assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
       assert.equal(agent.resolveRewindLocalId('hapi-observed:user:input'), 'input')
       const seq = agent.resolveSourceMessageDisplaySeq('input'); assert.notEqual(seq, undefined)
+      assert.equal(agent.sourceMessageAtDisplaySeq(seq!), 'input')
+      assert.equal(agent.sourceMessageAtDisplaySeq(-1), undefined)
       assert.equal(agent.resolveRewindLocalIdAtSeq(seq!), 'input')
       assert.equal(agent.resolveRewindLocalIdAtSeq(seq! + 1), undefined)
     }
