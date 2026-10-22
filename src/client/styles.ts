@@ -243,6 +243,23 @@ export const workspaceStyles = String.raw`
   .hapi-pane [data-composer-card] .uV2eYG_primary {width:44px;height:44px}
 }
 
+
+/* Compact the official sidebar shell without replacing its plugin slots. */
+[data-slot="sidebar"]:has(.hapi-session-sidebar) [data-window-drag] {min-height:36px;height:36px;padding-top:0;padding-bottom:0;margin-bottom:0}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav {display:flex;flex-direction:row;gap:4px;padding-top:0;padding-bottom:4px;margin-top:0;margin-bottom:0}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>button {flex:1;min-width:0;min-height:32px;height:32px;padding:4px 8px;font-size:12px}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) button:has([class*="newSessionLabelMask"]) {height:34px;min-height:34px;margin-top:2px;margin-bottom:4px}
+.hapi-session-sidebar>header {padding-bottom:2px;min-height:28px}
+.hapi-session-sidebar>header>button:last-child {margin-left:0}
+.hapi-session-meta {gap:5px;white-space:nowrap;overflow:hidden}
+.hapi-session-meta>.hapi-session-source-state {display:inline-flex;flex:none;padding:0;margin-left:auto;gap:4px;flex-wrap:nowrap}
+.hapi-session-meta>.hapi-session-source-state:empty {display:none}
+.hapi-session-date {padding-top:4px;padding-bottom:2px}
+@media(pointer:coarse) {
+ [data-slot="sidebar"]:has(.hapi-session-sidebar) nav>button,
+ [data-slot="sidebar"]:has(.hapi-session-sidebar) button:has([class*="newSessionLabelMask"]),
+ .hapi-session-sidebar>header>.hapi-icon-button {min-height:44px}
+}
 `
 
 export function installWorkspaceStyles(document: Document): () => void {

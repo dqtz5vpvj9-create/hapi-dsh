@@ -550,7 +550,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 : controller.requestNewSession('dsh')}><strong>DSH</strong><span>{t(snapshot.creationContext?.machineId ? 'sourceCreateHelp' : 'dshCreateHelp')}</span></button>
             <button type="button" onClick={() => controller.requestNewSession('codex')}><strong>Codex</strong><span>{t('nativeCreateHelp')}</span></button>
             <button type="button" onClick={() => controller.requestNewSession('source')}><strong>{t('sourceEngines')}</strong><span>{t('sourceCreateHelp')}</span></button>
-            <button type="button" onClick={controller.openNativeLibrary}><strong>{t('nativeHistory')}</strong></button>
+            <button type="button" onClick={() => { setOptionsOpen(false); controller.openNativeLibrary() }}><strong>{t('nativeHistory')}</strong></button>
         </div></Dialog>}
         {snapshot.creation === 'codex' && <Dialog title={t('nativeNew')} close={controller.closeNewSession} t={t}><NativeSessionForm api={api} controller={controller} close={controller.closeNewSession} t={t} uploadInitialFile={uploadInitialFile}/></Dialog>}
         {snapshot.creation === 'source' && <Dialog title={`${t('sourceEngines')} · ${t('newSession')}`} close={controller.closeNewSession} t={t}><SourceSessionForm api={api} controller={controller} close={controller.closeNewSession} t={t} uploadInitialFile={uploadInitialFile}/></Dialog>}
@@ -582,6 +582,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const query = useDebouncedSidebarQuery(searchInput)
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [archived, setArchived] = useState(false)
+    const [optionsOpen, setOptionsOpen] = useState(false)
     const [dateFrom, setDateFrom] = useState(''), [dateThrough, setDateThrough] = useState('')
     const [recency] = useState(() => new SidebarRecency())
     const [bookmarks] = useState(() => new SidebarBookmarks())
@@ -733,8 +734,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     <div className="hapi-session-title"><ActivityDot {...activity} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
                     <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`} title={t('engine')}>{readableEngine(location.engine)}</span>
                         {machineLabel && <span className="hapi-ellipsis">{machineLabel}</span>}{destination ? <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span> : <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1)}</span>}
+                        <span className="hapi-session-source-state"><SessionRowState state={row.sourceRowState} detailed={!mobile || statusMode === 'detailed'} t={t}/></span>
                     </div>
-                    <div className="hapi-session-source-state"><SessionRowState state={row.sourceRowState} detailed={!mobile || statusMode === 'detailed'} t={t}/></div>
                 </button>}</SidebarActionSurface>
             </article>
         </div>
@@ -785,30 +786,10 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         <header><strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length} ${t('sessions')}`}>{tree.length}</span>
             {snapshot.pickingSession && <button type="button" className="hapi-picker-back" onClick={controller.closeSessionPicker}>{t('backToWorkspace')}</button>}
             <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
+            <IconButton label={t('sidebarOptions')} icon="more" onClick={() => setOptionsOpen(true)}/>
         </header>
         <SidebarSearchControls query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
-        <div className="hapi-sidebar-toolbar">
-            <div className="hapi-list-modes" role="group" aria-label={t('allChats')}>
-                <button type="button" aria-pressed={mode === 'recent'} onClick={() => { reseed(); controller.sidebar.change({ mode: 'recent' }) }}>{t('recent')}</button>
-                <button type="button" aria-pressed={mode === 'folders'} onClick={() => { controller.sidebar.change({ mode: 'folders' }) }}>{t('folders')}</button>
-            </div>
-            <select className="hapi-status-select" aria-label={t('statusFilter')} value={filter} onChange={event => controller.sidebar.change({ filter: event.currentTarget.value as SidebarFilter })}>
-                {(['all', 'running', 'attention', 'unread'] as SidebarFilter[]).map(key => <option key={key} value={key}>{t(key)}{counts[key] ? ` · ${counts[key]}` : ''}</option>)}
-            </select>
-            <button type="button" className="hapi-mark-all" onClick={() => controller.sidebar.markAllSeen(matching)} title={t('markAllRead')} aria-label={t('markAllRead')}>✓</button>
-        </div>
-        <details className="hapi-sidebar-options"><summary>{t('sidebarOptions')}</summary>
-            <div className="hapi-session-filters">
-                <select aria-label={t('engine')} value={engine} onChange={event => controller.sidebar.change({ engine: event.currentTarget.value })}><option value="">{t('allEngines')}</option>{engines.map(value => <option key={value} value={value}>{readableEngine(value)}</option>)}</select>
-                <select aria-label={t('machine')} value={machine} onChange={event => controller.sidebar.change({ machine: event.currentTarget.value })}><option value="">{t('allMachines')}</option>{machines.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
-            </div>
-            <label><input type="checkbox" checked={pinInProgressSessions} onChange={event => controller.sidebar.change({ pinInProgressSessions: event.currentTarget.checked })}/>{t('floatActiveSessions')}</label>
-            <label><input type="checkbox" checked={showActiveSessionsOnly} onChange={event => controller.sidebar.change({ showActiveSessionsOnly: event.currentTarget.checked })}/>{t('activeSessionsOnly')}</label>
-            <label>{t('sessionPreviewLimit')}<input type="number" min={1} max={99} step={1} value={sessionPreviewLimit} onChange={event => { if (event.currentTarget.value) controller.sidebar.change({ sessionPreviewLimit: event.currentTarget.valueAsNumber }) }}/></label>
-            <label>{t('mobileStatusMode')}<select aria-label={t('mobileStatusMode')} value={statusMode} onChange={event => controller.sidebar.change({ statusMode: event.currentTarget.value === 'detailed' ? 'detailed' : 'standard' })}>
-                <option value="standard">{t('standardStatus')}</option><option value="detailed">{t('detailedStatus')}</option></select></label>
-        </details>
         <div className="hapi-session-list" aria-label={t('allChats')} ref={setScrollElement}>
             <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={rows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
             {!tree.length && <p className="hapi-list-empty" role="status">{snapshot.catalog.phase === 'ready' ? t('noSessions') : t('loading')}</p>}
@@ -853,12 +834,35 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                 }}/>
             </SidebarScrollAnchor>
         </div>
+        {optionsOpen && <Dialog title={t('sidebarOptions')} close={() => setOptionsOpen(false)} t={t}>
+        <div className="hapi-sidebar-toolbar">
+            <div className="hapi-list-modes" role="group" aria-label={t('allChats')}>
+                <button type="button" aria-pressed={mode === 'recent'} onClick={() => { reseed(); controller.sidebar.change({ mode: 'recent' }) }}>{t('recent')}</button>
+                <button type="button" aria-pressed={mode === 'folders'} onClick={() => { controller.sidebar.change({ mode: 'folders' }) }}>{t('folders')}</button>
+            </div>
+            <select className="hapi-status-select" aria-label={t('statusFilter')} value={filter} onChange={event => controller.sidebar.change({ filter: event.currentTarget.value as SidebarFilter })}>
+                {(['all', 'running', 'attention', 'unread'] as SidebarFilter[]).map(key => <option key={key} value={key}>{t(key)}{counts[key] ? ` · ${counts[key]}` : ''}</option>)}
+            </select>
+            <button type="button" className="hapi-mark-all" onClick={() => controller.sidebar.markAllSeen(matching)} title={t('markAllRead')} aria-label={t('markAllRead')}>✓</button>
+        </div>
+        <div className="hapi-sidebar-options">
+            <div className="hapi-session-filters">
+                <select aria-label={t('engine')} value={engine} onChange={event => controller.sidebar.change({ engine: event.currentTarget.value })}><option value="">{t('allEngines')}</option>{engines.map(value => <option key={value} value={value}>{readableEngine(value)}</option>)}</select>
+                <select aria-label={t('machine')} value={machine} onChange={event => controller.sidebar.change({ machine: event.currentTarget.value })}><option value="">{t('allMachines')}</option>{machines.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+            </div>
+            <label><input type="checkbox" checked={pinInProgressSessions} onChange={event => controller.sidebar.change({ pinInProgressSessions: event.currentTarget.checked })}/>{t('floatActiveSessions')}</label>
+            <label><input type="checkbox" checked={showActiveSessionsOnly} onChange={event => controller.sidebar.change({ showActiveSessionsOnly: event.currentTarget.checked })}/>{t('activeSessionsOnly')}</label>
+            <label>{t('sessionPreviewLimit')}<input type="number" min={1} max={99} step={1} value={sessionPreviewLimit} onChange={event => { if (event.currentTarget.value) controller.sidebar.change({ sessionPreviewLimit: event.currentTarget.valueAsNumber }) }}/></label>
+            <label>{t('mobileStatusMode')}<select aria-label={t('mobileStatusMode')} value={statusMode} onChange={event => controller.sidebar.change({ statusMode: event.currentTarget.value === 'detailed' ? 'detailed' : 'standard' })}>
+                <option value="standard">{t('standardStatus')}</option><option value="detailed">{t('detailedStatus')}</option></select></label>
+        </div>
         <label className="hapi-archived-toggle"><input type="checkbox" checked={archived} onChange={event => setArchived(event.currentTarget.checked)}/>{t('showArchived')}</label>
-        <div className="hapi-sidebar-native"><button type="button" onClick={controller.openNativeLibrary}>{t('nativeHistory')}</button>
+        <div className="hapi-sidebar-native"><button type="button" onClick={() => { setOptionsOpen(false); controller.openNativeLibrary() }}>{t('nativeHistory')}</button>
             <details><summary>{t('machines')} · {snapshot.machines.filter(machine => machine.online).length} / {snapshot.machines.length}</summary>
                 {snapshot.machines.map(machine => <MachineHealthRow key={machine.id} machine={machine} language={language}/>)}
             </details>
         </div>
+        </Dialog>}
         {rename && <RenameDialog title={t('rename')} initial={rename.title} save={title => controller.renameSession(rename.id, title)} close={() => setRename(null)} t={t}/>}
         {sourceDialog && <Dialog title={t(sourceDialog.kind === 'rename' ? 'rename' : sourceDialog.kind === 'export' ? 'exportSession' : 'migrateSession')} close={() => setSourceDialog(null)} t={t}>
             {sourceDialog.kind === 'rename' ? <SourceTitlePanel api={api} source={sourceDialog.source} sessionId={sourceDialog.row.sourceSessionId} active language={language} onRename={title => controller.renameSession(sourceDialog.row.id, title)}/>
