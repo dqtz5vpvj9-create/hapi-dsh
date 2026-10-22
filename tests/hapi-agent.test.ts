@@ -16,6 +16,7 @@ import { HapiRequestError, type HapiApprovalAnswer, type HapiEvent, type HapiMes
 import { HapiAgentService, HapiObservedControl, type HapiAgentServiceOptions, type HapiObservedTransport } from '../src/hapi-agent/index.js'
 import { parseObservedHistory, parseObservedMessage } from '../src/hapi-agent/parser.js'
 import { SourceLifecycle } from '../src/hapi/source-lifecycle.js'
+import { HistoryReadInvalidatedError } from '../src/codex/history-journal.js'
 
 /** Explicit source-protocol fixtures. All DSH scopes, sessions, registries and command execution are real packages. */
 class Fixture implements HapiObservedTransport {
@@ -272,6 +273,31 @@ test('source setting catalogs preserve Pi provider identity and Qoder option ids
     assert.equal(source.requests.filter(item => item.method === 'POST').length, 1)
     pi.metadata!.piSelectedModel = { provider: 'provider-two', modelId: 'same-name' }; pi.metadataVersion++
     assert.equal((await restored.readSetting({ sessionId: agent.id, operationId })).status, 'applied')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('observed settings and confirmation recover a history read collision without fetching history or replaying a write', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-settings-')), source = new Fixture()
+  source.add('claude')
+  const app = await mount(source, directory), controls = new HapiObservedControl(source, app.service, directory)
+  try {
+    const agent = app.service.list()[0]!
+    source.readMessages = async () => { throw new Error('History must stay independent of settings') }
+    agent.refresh = async () => { throw new Error('Settings must not use a full source refresh') }
+    agent.reportError(new HistoryReadInvalidatedError())
+    assert.equal(agent.projection.readOnly, true)
+    assert.equal((await controls.settings({ sessionId: agent.id })).readOnly, false)
+    assert.equal(agent.projection.error, null)
+    const request = { sessionId: agent.id, operationId: randomUUID(), change: { kind: 'effort', value: 'high' } as const }
+    assert.equal((await controls.applySetting(request)).status, 'applied')
+    agent.reportError(new HistoryReadInvalidatedError())
+    assert.equal((await controls.readSetting(request)).status, 'applied')
+    await controls.applySetting(request)
+    assert.equal(source.requests.filter(call => call.method === 'POST').length, 1)
+    agent.reportError(new Error('Original source identity is unavailable'))
+    agent.reportError(new HistoryReadInvalidatedError())
+    assert.equal((await controls.settings({ sessionId: agent.id })).readOnly, true)
+    assert.equal(agent.projection.error, 'Original source identity is unavailable')
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 

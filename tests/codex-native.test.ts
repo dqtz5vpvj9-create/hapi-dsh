@@ -22,6 +22,7 @@ import { DeliveryJournal } from '../src/codex/delivery.js'
 import { NativeApprovals } from '../src/codex/approvals.js'
 import { readNativeHistory } from '../src/codex/history.js'
 import { CodexService, type CodexServiceOptions } from '../src/codex/service.js'
+import { HistoryReadInvalidatedError } from '../src/codex/history-journal.js'
 
 const THREAD = 'native-thread-1'
 const TURN = 'native-turn-1'
@@ -631,6 +632,40 @@ test('attachment admission resolves runner paths before the one native send', as
     assert.equal(uploads, 1)
     assert.equal(fake.sent.length, 1)
     assert.equal(fake.sent[0]?.attachments?.[0]?.path, '/runner/uploads/sample.txt')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native settings recover only history read faults after validating the current source snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-settings-')), fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    fake.historyFailure = new Error('Settings must not read history')
+    fake.source.permissionMode = 'yolo'
+    agent.reportError(new HistoryReadInvalidatedError())
+    assert.equal(agent.projection.readOnlyReason, 'fault')
+    await agent.refreshSettings()
+    assert.equal(agent.projection.readOnly, false)
+    assert.equal(agent.projection.permissionMode, 'yolo')
+    assert.equal(agent.projection.error, null)
+    agent.reportError(new Error('Source operation failed'))
+    agent.reportError(new HistoryReadInvalidatedError())
+    await agent.refreshSettings()
+    assert.equal(agent.projection.readOnly, true)
+    assert.equal(agent.projection.error, 'Source operation failed', 'history retries cannot erase a real fault')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a changed native identity cannot clear a history fault through a settings read', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-settings-identity-')), fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    agent.reportError(new HistoryReadInvalidatedError())
+    fake.source.metadata = { ...fake.source.metadata!, codexSessionId: 'another-native-thread' }; fake.source.metadataVersion++
+    await assert.rejects(agent.refreshSettings())
+    assert.equal(agent.projection.readOnly, true)
+    assert.match(agent.projection.error ?? '', /Source history changed/)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 

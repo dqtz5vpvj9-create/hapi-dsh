@@ -210,6 +210,7 @@ export class NativeCodexAgent implements Agent {
   private initializing = true
   private connected = true
   private fault: string | null = null
+  private historyReadFault = false
   private projectionFingerprint = ''
   private sourceRunning = false
   private lastTitle: string | undefined
@@ -299,13 +300,17 @@ export class NativeCodexAgent implements Agent {
           rows = agent.historyJournal.overlayCache(cached.rows)
           agent.historyStale = true
           agent.fault = 'Cached source history is stale; reconciling with the live source'
+          agent.historyReadFault = true
         } else try {
           checkpoint = agent.historyJournal.checkpoint()
           const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
             : { rows: await readNativeHistory(transport, source.id), complete: true }
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
           agent.historyStale = !tail.complete
-          if (!tail.complete) agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
+          if (!tail.complete) {
+            agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
+            agent.historyReadFault = true
+          }
         } catch (error) {
           options.assertSourceCurrent?.()
           if (error instanceof HistoryReadInvalidatedError) throw error
@@ -536,10 +541,15 @@ export class NativeCodexAgent implements Agent {
 
   /** Settings reads must not queue behind transcript loading or delivery reconciliation. */
   async refreshSettings(): Promise<void> {
-    if (this.disposed) return
+    if (this.disposed) throw new Error('The native Codex observation was detached')
+    this.config.assertSourceCurrent?.()
     const snapshot = await this.transport.getSession(this.binding.hapiSessionId)
-    if (this.disposed) return
+    if (this.disposed) throw new Error('The native Codex observation was detached')
+    this.config.assertSourceCurrent?.()
     this.observe(snapshot)
+    // A fresh, identity-checked source snapshot restores settings after a
+    // read checkpoint collision. It does not claim that history has caught up.
+    if (this.historyReadFault) { this.fault = null; this.historyReadFault = false }
     this.publishProjection()
   }
 
@@ -568,7 +578,7 @@ export class NativeCodexAgent implements Agent {
       }
       await this.journal.reconcileSource()
       if (this.disposed) return
-      this.fault = null
+      this.fault = null; this.historyReadFault = false
       this.syncInbox(); this.publishProjection()
     })()
     this.pendingRefresh = work
@@ -720,6 +730,10 @@ export class NativeCodexAgent implements Agent {
     this.config.assertSourceCurrent?.()
   }
   reportError(error: unknown): void {
+    const historyRead = error instanceof HistoryReadInvalidatedError
+    // A background read retry must not replace a real source/identity fault.
+    if (historyRead && this.fault !== null && !this.historyReadFault) return
+    this.historyReadFault = historyRead
     this.fault = error instanceof Error ? error.message : 'The native Codex observation failed'
     this.publishProjection()
   }

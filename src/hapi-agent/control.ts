@@ -210,7 +210,7 @@ export class HapiObservedControl {
       if (!z.object({ ok: z.literal(true) }).safeParse(response).success) throw new Error('The source did not return a valid setting acknowledgement')
       entry.receipt = { ...entry.receipt, status: 'submitted', updatedAt: Date.now(), message: 'Source acknowledged the setting; awaiting its observed value' }
       this.persist()
-      try { await agent.refresh(); this.reconcile(agent) } catch { /* Read failure cannot reject an accepted mutation. */ }
+      try { await agent.refreshSettings(); this.reconcile(agent) } catch { /* Read failure cannot reject an accepted mutation. */ }
     } catch (error) {
       if (entry.receipt.status !== 'applied') {
         const rejected = !sent || error instanceof HapiRequestError && error.outcome === 'rejected' && [400, 403, 404].includes(error.status ?? 0)
@@ -224,7 +224,7 @@ export class HapiObservedControl {
     const request = observedSettingReadSchema.parse(input), agent = this.agent(request.sessionId)
     const entry = this.entries.get(request.operationId)
     if (!entry || !sameBinding(entry.binding, agent.binding)) throw new HapiRequestError('The source setting receipt does not belong to this engine binding', 'rejected', 404)
-    await agent.refresh(); this.reconcile(agent); return entry.receipt
+    await agent.refreshSettings(); this.reconcile(agent); return entry.receipt
   }
 }
 

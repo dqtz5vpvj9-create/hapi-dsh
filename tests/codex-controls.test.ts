@@ -139,6 +139,7 @@ test('failed model reads can retry and cached catalogs expire without affecting 
 
 test('native settings use authentic owner routes, observed values and exactly one durable submission', async () => {
   await fixture(async (source, directory, control) => {
+    source.source.refresh = async () => { throw new Error('Setting confirmation must not reconcile transcript history') }
     const changes: Array<[NativeSettingChange, string, Record<string, string>]> = [
       [{ kind: 'model', value: 'native-model-b' }, 'model', { model: 'native-model-b' }],
       [{ kind: 'reasoningEffort', value: 'high' }, 'model-reasoning-effort', { modelReasoningEffort: 'high' }],

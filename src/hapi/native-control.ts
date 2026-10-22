@@ -176,7 +176,7 @@ export class NativeControl {
       }
       const pending = this.settingFlights.get(request.operationId)
       if (pending) return pending
-      await agent.refresh()
+      await agent.refreshSettings()
       this.reconcileSettings(agent, valuesOf(agent.sourceSession))
       return previous.receipt
     }
@@ -235,7 +235,7 @@ export class NativeControl {
     }
     this.persist()
     try {
-      await agent.refresh()
+      await agent.refreshSettings()
       this.reconcileSettings(agent, valuesOf(agent.sourceSession))
     } catch (error) {
       entry.receipt = { ...entry.receipt, message: `${entry.receipt.message ?? ''} Current settings are unavailable: ${errorText(error)}`.trim() }

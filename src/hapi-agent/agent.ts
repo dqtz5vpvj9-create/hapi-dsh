@@ -106,6 +106,7 @@ export class HapiObservedAgent implements Agent {
   private initializing = true
   private connected: boolean
   private fault: string | null = null
+  private historyReadFault = false
   private fingerprint = ''
   private lastSelection = ''
   private lastTitle: { title: string; seq: SessionSeq } | undefined
@@ -192,13 +193,17 @@ export class HapiObservedAgent implements Agent {
           rows = agent.historyJournal.overlayCache(cached.rows)
           agent.historyStale = true
           agent.fault = 'Cached source history is stale; reconciling with the live source'
+          agent.historyReadFault = true
         } else try {
           checkpoint = agent.historyJournal.checkpoint()
           const tail = config.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
             : { rows: await readNativeHistory(transport, source.id), complete: true }
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
           agent.historyStale = !tail.complete
-          if (!tail.complete) agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
+          if (!tail.complete) {
+            agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
+            agent.historyReadFault = true
+          }
         } catch (error) {
           config.assertSourceCurrent?.()
           if (error instanceof HistoryReadInvalidatedError) throw error
@@ -396,10 +401,13 @@ export class HapiObservedAgent implements Agent {
   }
   /** Refresh only source settings; history and child discovery keep their own lifecycle. */
   async refreshSettings(): Promise<void> {
-    if (this.disposed) return
+    if (this.disposed) throw new Error('The HAPI source observation was detached')
+    this.config.assertSourceCurrent?.()
     const snapshot = await this.transport.getSession(this.bound.hapiSessionId)
-    if (this.disposed) return
+    if (this.disposed) throw new Error('The HAPI source observation was detached')
+    this.config.assertSourceCurrent?.()
     this.observe(snapshot)
+    if (this.historyReadFault) { this.fault = null; this.historyReadFault = false }
     this.publish()
   }
 
@@ -431,7 +439,7 @@ export class HapiObservedAgent implements Agent {
       }
       await this.journal.reconcileSource()
       if (this.disposed) return
-      this.fault = null; this.syncInbox(); this.publish()
+      this.fault = null; this.historyReadFault = false; this.syncInbox(); this.publish()
     })()
     this.pendingRefresh = work
     try { await work } finally { if (this.pendingRefresh === work) this.pendingRefresh = undefined }
@@ -546,7 +554,13 @@ export class HapiObservedAgent implements Agent {
     this.config.assertSourceCurrent?.()
     if (this.projection.controlledByUser) throw new Error('The source is controlled by its local terminal; switch it to remote control first')
   }
-  reportError(error: unknown): void { this.fault = error instanceof Error ? error.message : 'The HAPI source could not be synchronized'; this.publish() }
+  reportError(error: unknown): void {
+    const historyRead = error instanceof HistoryReadInvalidatedError
+    if (historyRead && this.fault !== null && !this.historyReadFault) return
+    this.historyReadFault = historyRead
+    this.fault = error instanceof Error ? error.message : 'The HAPI source could not be synchronized'
+    this.publish()
+  }
   private rejectWaiters(message: string): void { for (const waiter of this.idleWaiters) waiter.reject(new Error(message)); this.idleWaiters.clear() }
   async dispose(): Promise<void> {
     if (this.disposed) return

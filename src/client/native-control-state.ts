@@ -37,7 +37,7 @@ export class NativeSettingsController {
     refresh = (): Promise<void> => {
         if (this.read) return this.read
         const epoch = this.epoch
-        this.publish({ loading: true })
+        this.publish({ loading: true, error: null })
         this.read = (async () => {
             try {
                 const data = remoteValue(await this.api.nativeSettings({ sessionId: this.sessionId }))

@@ -20,7 +20,7 @@ export class ObservedSettingsController {
     private publish(value: Partial<Snapshot>): void { this.snapshot = { ...this.snapshot, ...value }; for (const listener of this.listeners) listener() }
     refresh = (): Promise<void> => {
         if (this.reading) return this.reading
-        this.publish({ loading: true })
+        this.publish({ loading: true, error: null })
         this.reading = (async () => {
             try {
                 const pending = this.snapshot.pending
