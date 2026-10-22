@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { formatNativeAnswers, parseNativeQuestions, questionAnswered, questionOptions, REQUEST_USER_INPUT_OTHER, selectQuestionOption } from '../src/client/native-input.ts'
-import { NativeActionLedger } from '../src/client/native-state.ts'
+import { NativeActionLedger, nativeRequestStateKey } from '../src/client/native-state.ts'
 import { mergeCreationStates, nativeCreationRequest } from '../src/client/new-session.tsx'
 import type { NativeCreationState } from '../src/client-api.ts'
 
@@ -73,6 +73,66 @@ test('failed native action is visible, is never replayed automatically, and perm
     assert.equal(calls, 2)
     assert.deepEqual(action.getSnapshot().result, { status: 'busy' })
     assert.equal(action.getSnapshot().error, null)
+})
+
+test('display generation changes preserve pending request answers and submission ownership', async () => {
+    const ledger = new NativeActionLedger()
+    const first = { hubId: 'hub', hapiSessionId: 'source', sessionId: 'display-r1' }
+    const next = { ...first, sessionId: 'display-r2' }
+    const questions = parseNativeQuestions({ questions: [{ id: 'scope', question: 'Scope?' }] }).questions
+    const draft = ledger.question(nativeRequestStateKey(first), 'request', questions)
+    draft.answer('scope', { selected: [], userNote: 'keep this answer' })
+    assert.equal(ledger.question(nativeRequestStateKey(next), 'request', questions), draft)
+    const action = ledger.action(nativeRequestStateKey(first), 'approval', 'request')
+    let calls = 0
+    await action.run(async () => { calls++; return { submitted: true } }, true)
+    assert.equal(await ledger.action(nativeRequestStateKey(next), 'approval', 'request').run(async () => { calls++ }, true), false)
+    assert.equal(calls, 1)
+    assert.notEqual(ledger.question(nativeRequestStateKey({ ...next, hubId: 'another-hub' }), 'request', questions), draft)
+})
+
+test('unsubmitted question drafts survive reload and only source resolution removes the saved answer', () => {
+    const records = new Map<string, string>()
+    const storage = { getItem: (key: string) => records.get(key) ?? null,
+        setItem: (key: string, value: string) => { records.set(key, value) }, removeItem: (key: string) => { records.delete(key) } }
+    const questions = parseNativeQuestions({ questions: [
+        { id: 'choice', question: 'Pick', options: [{ label: 'Yes' }] },
+        { id: 'editor', question: 'Edit', inputType: 'editor', prefill: 'initial' },
+    ] }).questions
+    const key = nativeRequestStateKey({ hubId: 'hub', hapiSessionId: 'source' })
+    const original = new NativeActionLedger(storage)
+    const draft = original.question(key, 'request', questions)
+    draft.answer('choice', { selected: ['Yes'], userNote: '' })
+    draft.answer('editor', { selected: [], userNote: 'line one\n  line two\n' })
+    draft.update({ step: 1, error: 'temporary submission error' })
+    original.clear()
+    const restored = new NativeActionLedger(storage)
+    assert.deepEqual(restored.question(key, 'request', questions).getSnapshot(), {
+        step: 1, answers: { choice: { selected: ['Yes'], userNote: '' }, editor: { selected: [], userNote: 'line one\n  line two\n' } }, error: null,
+    })
+    assert.equal(restored.action(key, 'approval', 'request').getSnapshot().submitted, false)
+    restored.resolved(key, ['unrelated'])
+    assert.equal(records.size, 1)
+    restored.resolved(key, ['request'])
+    assert.equal(records.size, 0)
+    assert.equal(new NativeActionLedger(storage).question(key, 'request', questions).getSnapshot().answers.editor!.userNote, 'initial')
+})
+
+test('question draft recovery keeps current question identities and tolerates unavailable storage', () => {
+    const questions = parseNativeQuestions({ questions: [{ id: 'current', question: 'Edit', prefill: 'source default' }] }).questions
+    const stale = new NativeActionLedger({ getItem: () => JSON.stringify({ step: 9, answers: {
+        obsolete: { selected: [], userNote: 'old question' }, current: { selected: [42], userNote: 'bad shape' },
+    } }), setItem() {}, removeItem() {} })
+    assert.deepEqual(stale.question('source', 'request', questions).getSnapshot(), {
+        step: 0, answers: { current: { selected: [], userNote: 'source default' } }, error: null,
+    })
+    for (const getItem of [() => '{broken json', () => { throw new Error('storage unavailable') }]) {
+        const ledger = new NativeActionLedger({ getItem, setItem() { throw new Error('quota exceeded') }, removeItem() { throw new Error('storage unavailable') } })
+        const draft = ledger.question('source', 'request', questions)
+        draft.answer('current', { selected: [], userNote: 'live answer' })
+        assert.equal(draft.getSnapshot().answers.current!.userNote, 'live answer')
+        assert.doesNotThrow(() => ledger.resolved('source', ['request']))
+    }
 })
 
 test('native session creation keeps runner defaults absent and includes explicit worktree controls', () => {

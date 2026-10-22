@@ -127,3 +127,11 @@ workspace-navigation 浏览器专项 **2/2** 已通过：显式 deep link 在 li
 | 生产部署与真实冷/热耗时 | **未部署；当前 GET 503，无法验收** | 后续部署/生产探针记录 |
 
 常驻 Host/browser 的快速检查继续复用 [warm-validation.md](warm-validation.md)，但八检查点 smoke 不等于八份完整 spec。历史冷启动/点击/heap 测量仍保存在 [startup-feedback.md](startup-feedback.md) 和 [one-graph-spike.md](one-graph-spike.md)，不得转记成本轮最终版本或生产达标数字。
+
+## 2026-10-22 后续快速发布
+
+以上表格保留原验收快照，不代表当前部署状态。当前阶段按 [AGENTS.md](../AGENTS.md) 由用户手测界面，Agent 只做相关逻辑、类型、构建与 HTTP 检查。
+
+- `118c33c` 已构建发布：初始补历史最多两页，窗口达到 1500 个事件后停止继续预取；预热缓存超过同一预算时只释放缓存自己的 reference；Conversation 外层不再因正文流和每次草稿更新而重新渲染。50 项相关逻辑测试、Client 类型检查通过。
+- 待回答表单按 Hub 和原始源会话、request ID 保存身份，display generation 改变时继续复用答案与本页的提交回执。未提交的选项、文本及当前问题写入浏览器存储，刷新后恢复；源端确认请求已结束才清理，不自动提交或重发。相关 9 项逻辑测试和 Client 类型检查通过。
+- 上述表单恢复不等于完整编辑器迁移：富草稿、附件、阅读位置的跨 generation 原子迁移以及活跃历史窗口 trim 仍未实现。性能改动也不代表生产 p95 目标已经达标。

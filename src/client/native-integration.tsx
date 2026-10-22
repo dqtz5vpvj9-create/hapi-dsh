@@ -35,7 +35,8 @@ declare module '@deepseek-ai/cordis' {
 
 /** Source-only controls layered on the unchanged official Conversation. */
 export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open: (sessionId: string) => void, refresh: () => void): NativePaneIntegration & { dispose(): void } {
-    const ledger = new NativeActionLedger(), controls = new NativeControlLedger(api), observedControls = new ObservedControlLedger(api)
+    const ledger = new NativeActionLedger({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value),
+        removeItem: key => localStorage.removeItem(key) }), controls = new NativeControlLedger(api), observedControls = new ObservedControlLedger(api)
     const native: NativeActionsApi = {
         ledger, controls, observedControls, branchLabel: () => ctx.locale.bind('chat')('message.branch'),
         cancel: async (sessionId, localId) => remoteValue(await api.nativeCancel({ sessionId, localId })),

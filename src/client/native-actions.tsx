@@ -3,7 +3,7 @@ import type { HapiApprovalAnswer } from '../codex/contracts.ts'
 import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projection-types.ts'
 import { composerAdmission, type WorkspaceTranslate } from './locales.ts'
 import { formatNativeAnswers, nativeUrlConfirmed, openNativeInputUrl, parseNativeQuestions, questionAnswered, questionOptions, selectQuestionOption, type NativeQuestionAnswer } from './native-input.ts'
-import { NativeActionLedger } from './native-state.ts'
+import { NativeActionLedger, nativeRequestStateKey } from './native-state.ts'
 import { deliveryActions, deliveryStatusText, deliveryRecoveryDisabled, nativeExecutionStatus, observedExecutionStatus, executionStatusText } from './native-status.ts'
 import { errorMessage } from './controller.ts'
 import { PaneSourceStatus } from './pane-source-status.tsx'
@@ -79,13 +79,13 @@ function SourceErrorLine({ sessionId, identity, errors = NONE_NOTICES, failure =
     </details>
 }
 
-function NativeRequest({ sessionId, request, api, disabled, t }: {
-    sessionId: string; request: ApprovalView; api: NativeActionsApi; disabled: boolean; t: WorkspaceTranslate
+function NativeRequest({ sessionId, stateKey, request, api, disabled, t }: {
+    sessionId: string; stateKey: string; request: ApprovalView; api: NativeActionsApi; disabled: boolean; t: WorkspaceTranslate
 }) {
-    const action = api.ledger.action(sessionId, 'approval', request.requestId)
+    const action = api.ledger.action(stateKey, 'approval', request.requestId)
     const state = useSyncExternalStore(action.subscribe, action.getSnapshot)
     const parsed = useMemo(() => parseNativeQuestions(request.arguments), [request.arguments])
-    const draft = api.ledger.question(sessionId, request.requestId, parsed.questions)
+    const draft = api.ledger.question(stateKey, request.requestId, parsed.questions)
     const draftState = useSyncExternalStore(draft.subscribe, draft.getSnapshot)
     const { answers } = draftState
     const step = Math.min(Math.max(draftState.step, 0), Math.max(parsed.questions.length - 1, 0))
@@ -185,7 +185,7 @@ function NativeDelivery({ sessionId, delivery, api, disabled, recoveryDisabled, 
 
 /** Original HAPI engines share controls, never pretend to be Codex or a DSH loop. */
 export function ObservedActions({ sessionId, projection, api, t, statusTarget = null, recovery }: { sessionId: string; projection: HapiObservedProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate; statusTarget?: HTMLElement | null; recovery?: ReactNode }) {
-    useEffect(() => { if (projection) api.ledger.resolved(sessionId, projection.resolvedRequests.map(row => row.requestId)) }, [projection, sessionId, api])
+    useEffect(() => { if (projection) api.ledger.resolved(nativeRequestStateKey(projection), projection.resolvedRequests.map(row => row.requestId)) }, [projection, api])
     // Per-pane-graph identity for remote failure evidence; never a page-global slot.
     const hubId = projection?.hubId, hapiSessionId = projection?.hapiSessionId, machineId = projection?.machineId ?? null, engine = projection?.flavor
     useEffect(() => {
@@ -211,7 +211,7 @@ export function ObservedActions({ sessionId, projection, api, t, statusTarget = 
     const hasActionable = projection.pendingRequests.length > 0 || hasStatus
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
-        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
+        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} stateKey={nativeRequestStateKey(projection)} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
         {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error) || deliveries.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
         {(() => {
             const admission = composerAdmission({ readOnly: projection.readOnly, readOnlyReason: projection.readOnlyReason })
@@ -234,7 +234,7 @@ export function NativeActions({ sessionId, projection, api, t, statusTarget = nu
     const [resuming, setResuming] = useState(false)
     const [resumeError, setResumeError] = useState<string | null>(null)
     useEffect(() => {
-        if (projection) api.ledger.resolved(sessionId, projection.resolvedRequests.map(request => request.requestId))
+        if (projection) api.ledger.resolved(nativeRequestStateKey(projection), projection.resolvedRequests.map(request => request.requestId))
     }, [api, sessionId, projection])
     const hubId = projection?.hubId, hapiSessionId = projection?.hapiSessionId, machineId = projection?.machineId ?? null
     const nativeConnection = projection?.nativeConnection
@@ -262,7 +262,7 @@ export function NativeActions({ sessionId, projection, api, t, statusTarget = nu
     const hasActionable = projection.pendingRequests.length > 0 || hasStatus
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
-        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
+        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} stateKey={nativeRequestStateKey(projection)} request={request} api={api} disabled={disabled} t={t}/>)}
         {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error || resumeError) || delivery.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
         {/* A disconnected Codex source is not read-only: sending queues a durable
             turn and Resume reconnects the native session. */}
