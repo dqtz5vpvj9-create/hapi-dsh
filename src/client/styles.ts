@@ -190,21 +190,17 @@ export const workspaceStyles = String.raw`
 /* ===========================================================================
  * R8 — HAPI-style compact workspace composer (official bar retained).
  * Route C: no takeover, no repackage-private API. Official attach/editor/Stop/
- * Send nodes stay owned by ui-conversation; this block only compresses geometry
- * and reveals plugin-owned controls through public slots. Pinned-hash class
+ * Send nodes stay owned by ui-conversation; this block compacts toolbar chrome
+ * and reveals plugin-owned controls through public slots. The editor retains
+ * official auto-growth, font sizing and scroll limits. Pinned-hash class
  * names are confined to this compatibility block (dependency is pinned).
  * ========================================================================== */
 .hapi-pane [data-composer-seat] {} /* anchor for readers */
 .hapi-pane [data-composer-seat] .wSkVaW_composerStack {gap:4px}
 .hapi-pane [data-composer-card] {
-  --dsh-composer-text-max-height: calc(4 * 23px);
   box-sizing:border-box;border-radius:20px;padding:5px 8px 3px;gap:2px;
   background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);
-  font-size:14px;line-height:22px;
 }
-.hapi-pane [data-composer-card] .uV2eYG_scroll {max-height:var(--dsh-composer-text-max-height);margin-right:0}
-.hapi-pane [data-composer-card] .uV2eYG_input {min-height:23px;padding:1px 6px 1px 10px;line-height:22px}
-.hapi-pane [data-composer-card] .uV2eYG_placeholder {inset:1px 6px auto 10px}
 .hapi-pane [data-composer-card] .uV2eYG_row {flex-wrap:nowrap;align-items:center;gap:4px;min-height:26px;padding:2px 0 0}
 .hapi-pane [data-composer-card] .uV2eYG_tools,
 .hapi-pane [data-composer-card] .uV2eYG_modes {gap:4px}
