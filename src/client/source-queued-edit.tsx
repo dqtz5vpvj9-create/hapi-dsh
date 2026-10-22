@@ -88,7 +88,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
       if (sessionId !== props.sessionId || !delivery.editable) return
       setOpened(true); void value.start(delivery.localId, delivery.messageId)
     } }
-  const visible = state.receipts.length > 0 || state.pending.length > 0 || state.error || state.busy
+  const visible = state.receipts.some(receipt => !state.restored.includes(receipt.operationId)) || state.pending.length > 0 || state.error || state.busy
   const panel = visible ? <details className="hapi-queued-edit-recovery" open={opened || Boolean(state.error) || unsettled.length > 0} data-hapi-queued-edits={props.sessionId}>
     <summary onClick={event => { event.preventDefault(); setOpened(!opened) }}>{tr('Queued message edits', '排队消息编辑')} · {state.receipts.length + state.pending.length}</summary>
     <p>{tr('Edit first cancels the original queued message. Only a confirmed cancellation restores its text; a future time opens the scheduled-message editor. Nothing is sent automatically.',
