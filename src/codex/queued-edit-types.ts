@@ -26,7 +26,7 @@ export const sourceQueuedEditReceiptsSchema = z.array(sourceQueuedEditReceiptSch
 
 /** Match the original UI: retained attachment references precede the body. */
 export function queuedEditRestoreText(candidate: Pick<SourceQueuedEditCandidate, 'text' | 'attachmentNames'>): string {
-  return candidate.text.trim() || candidate.attachmentNames.join(', ')
+  return candidate.text || candidate.attachmentNames.join(', ')
 }
 export function queuedEditRestoreSchedule(candidate: Pick<SourceQueuedEditCandidate, 'scheduledAt'>, now: number): number | null {
   return candidate.scheduledAt !== null && candidate.scheduledAt > now ? candidate.scheduledAt : null

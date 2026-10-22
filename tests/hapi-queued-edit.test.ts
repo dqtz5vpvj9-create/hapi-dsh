@@ -51,7 +51,7 @@ function fixture(source: QueueSource): SourceQueuedEditAgent {
   const snapshot = structuredClone(sourceSession)
   return { id: 'hapi-codex-current', logicalSessionId: 'hapi-codex-logical', sourceSession: snapshot,
     queuedEditCandidate: localId => localId === source.row.localId ? queuedEditCandidate(source.row, 'Must use original payload') : undefined,
-    refresh: async () => {},
+    refresh: async () => {}, refreshSettings: async () => {},
   }
 }
 function mount(source: QueueSource, agent: SourceQueuedEditAgent, directory: string) {
@@ -72,8 +72,21 @@ test('queue restoration retains original attachment references and absolute sche
   assert.equal(queuedEditCandidate({ ...row, content: { message: row.content } }, 'wrapper')?.text, candidate.text)
 })
 
+test('image-only and mixed queued uploads restore actual Runner paths and exact body whitespace', () => {
+  const row = queuedRow()
+  row.content = { role: 'user', content: { type: 'text', text: '', attachments: [
+    { id: 'image', filename: 'capture.png', path: '/runner/uploads/capture.png', mimeType: 'image/png', size: 10 },
+  ] } }
+  assert.equal(queuedEditRestoreText(queuedEditCandidate(row, '')!), '@/runner/uploads/capture.png')
+  row.content = { role: 'user', content: { type: 'text', text: '  keep whitespace\n', attachments: [
+    { id: 'file', filename: 'file a.txt', path: '/runner/uploads/file a.txt', mimeType: 'text/plain', size: 10 },
+  ] } }
+  assert.equal(queuedEditRestoreText(queuedEditCandidate(row, '')!), '@"/runner/uploads/file a.txt"\n  keep whitespace\n')
+})
+
 test('an edit persists original payload then cancels the exact source row once, including duplicate concurrent RPCs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-queue-edit-')), source = new QueueSource(), agent = fixture(source), service = mount(source, agent, directory)
+  agent.refresh = async () => { throw new Error('Queue editing must not wait for transcript reconciliation') }
   try {
     const [first, again] = await Promise.all([service.execute(request), service.execute(request)])
     assert.equal(first.status, 'cancelled'); assert.equal(first.proof, 'source-reply'); assert.deepEqual(first, again)

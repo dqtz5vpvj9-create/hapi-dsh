@@ -14,6 +14,7 @@ export interface SourceQueuedEditAgent {
   readonly logicalSessionId: string
   readonly sourceSession: HapiSession
   queuedEditCandidate(localId: string): SourceQueuedEditCandidate | undefined
+  refreshSettings(): Promise<void>
   refresh(history?: boolean): Promise<void>
 }
 export interface SourceQueuedEditSessions { get(id: string): SourceQueuedEditAgent | undefined }
@@ -80,7 +81,7 @@ export class SourceQueuedEdits {
     }
     if (this.storageFault) throw new HapiRequestError(this.storageFault, 'rejected', 503)
     const agent = this.agent(request.sessionId, true), originalIdentity = identity(this.client.hubId, agent.sourceSession)
-    await agent.refresh()
+    await agent.refreshSettings()
     if (this.agent(request.sessionId, true) !== agent || !equal(identity(this.client.hubId, agent.sourceSession), originalIdentity)) throw new HapiRequestError('The source identity changed before queue editing', 'rejected', 409)
     const candidate = agent.queuedEditCandidate(request.localId)
     if (!candidate) throw new HapiRequestError('This input is not a confirmed, editable original queue row. A live dispatch or local echo cannot be edited.', 'rejected', 409)

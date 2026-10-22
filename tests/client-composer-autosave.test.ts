@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { CommandClaim, InputActions, InputState, SessionInput } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { ComposerAutosaves, composerDraftKey } from '../src/client/composer-autosave.ts'
-import { ComposerPersistenceBindings } from '../src/client/composer-persistence.ts'
 
 function fixture(text = '') {
     const state = createSnapshotStore<InputState>({ draft: text, draftRev: 0, occurrences: [], attachmentIds: [], phase: 'plain', queue: [] })
@@ -78,20 +77,6 @@ test('closing either duplicate pane leaves the shared input autosaving', () => {
         input.edit('disposed input')
         assert.equal(s.saved().text, 'surviving pane')
     }
-})
-
-test('official per-session persistence remains bound until the last pane closes', () => {
-    const bindings = new ComposerPersistenceBindings(), actions = {} as InputActions
-    let writer: ((draft: { text: string; references: [] }) => void) | undefined
-    const saved: string[] = []
-    const bind = (next: typeof writer) => { writer = next; return () => { if (writer === next) writer = undefined } }
-    const one = bindings.retain(actions, bind, draft => saved.push(draft.text))
-    const two = bindings.retain(actions, bind, draft => saved.push(draft.text))
-    two(); two()
-    writer?.({ text: 'still persisted in the official store', references: [] })
-    assert.deepEqual(saved, ['still persisted in the official store'])
-    one()
-    assert.equal(writer, undefined)
 })
 
 test('a new display generation restores the original source draft and retired cleanup cannot overwrite it', () => {

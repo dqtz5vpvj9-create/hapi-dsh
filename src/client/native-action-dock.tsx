@@ -8,6 +8,7 @@ import { useSourceQueuedEditing } from './source-queued-edit.tsx'
 import { NativePlanControls } from './native-plan.tsx'
 import { useLayoutEffect, useState } from 'react'
 import { useWorkspacePane } from './surface/pane-context.tsx'
+import { installSourceQueueOwnership, SourceQueue, sourceQueueStyles } from './source-queue.tsx'
 
 type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
 
@@ -17,6 +18,7 @@ type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'ha
  */
 export function installNativeActionDock(ctx: Context, native: NativeActionsApi, api: HapiRemoteApi): () => void {
     const sourceView = installSourceStateView(ctx)
+    const queueOwnership = installSourceQueueOwnership(ctx)
     const SourceDock = (props: SourceDockProps) => {
         const { sessionId, useProjection, t } = props
         const queued = useSourceQueuedEditing(ctx, api, props)
@@ -47,9 +49,13 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
                 planId={projection.planId} disabled={projection.readOnly || projection.nativeConnection !== 'attached'} t={t}
                 identity={{ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: 'codex-native',
                     ...(projection.machineId === null ? {} : { machineId: projection.machineId }) }}/>}
+            {(projection || observed && !observed.sidechain) && <SourceQueue rows={(projection ?? observed)!.delivery} sessionId={sessionId}
+                api={actions} disabled={(projection ?? observed)!.readOnly} steer={Boolean(projection) || Boolean(observed?.capabilities.steer)}
+                zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
+            {queued.panel}
             {hasActions && <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
-                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t} statusTarget={statusTarget} recovery={queued.panel}/>
-                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t} statusTarget={statusTarget} recovery={queued.panel}/>
+                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t} statusTarget={statusTarget}/>
+                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t} statusTarget={statusTarget}/>
             </div>}
         </>
     }
@@ -57,5 +63,6 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
         name: 'conversation.input.dock', id: 'hapi.source-controls', order: -100, locale: 'hapiWorkspace',
     }, SourceDock))
     const style = document.createElement('style'); style.textContent = `.hapi-queued-edit-recovery{font-size:12px;min-width:0;padding:8px;border:1px solid var(--border-secondary,#8884);border-radius:8px}.hapi-queued-edit-recovery pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:150px;overflow:auto}.hapi-queued-edit-recovery section{padding:8px 0;border-top:1px solid var(--border-secondary,#8884)}.hapi-queued-edit-recovery small{display:block;overflow-wrap:anywhere}.hapi-queued-edit-recovery button{cursor:pointer;margin:4px 4px 4px 0}.hapi-queued-edit-recovery button:disabled{opacity:.5;cursor:default}`; document.head.append(style)
-    return () => { stopDock(); sourceView.dispose(); style.remove() }
+    style.textContent += sourceQueueStyles
+    return () => { stopDock(); queueOwnership(); sourceView.dispose(); style.remove() }
 }
