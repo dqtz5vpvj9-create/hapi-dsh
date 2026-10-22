@@ -66,7 +66,7 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
                 <Glyph kind="permission"/><span data-picker-label>{permissionLabel(summary.permission, tr)}</span><Glyph kind="down"/>
             </button>
         </span> : summary.permission !== null && <span className="hapi-source-permission" data-hapi-source-permission>{permissionLabel(summary.permission, tr)}</span>}
-        {summary.collaboration && <span className="hapi-source-collaboration" data-hapi-source-collaboration>{summary.collaboration === 'plan' ? tr('Plan', '规划') : summary.collaboration}</span>}
+        {summary.collaboration && <span className="hapi-source-collaboration" data-hapi-source-collaboration={summary.collaboration}>{summary.collaboration === 'plan' ? tr('Plan', '规划') : summary.collaboration}</span>}
         <button ref={refs.actions} type="button" className="hapi-picker-overflow hapi-overflow-trigger" data-hapi-composer-overflow="" {...shared('actions')}
             aria-label={tr('More input controls', '更多输入控件')} title={tr('More input controls', '更多输入控件')} onClick={() => onToggle('actions')}>
             <Glyph kind="more"/>{attention && <span className="hapi-picker-attention" aria-label={tr('Parked draft needs attention', '暂存草稿需要处理')}/>}

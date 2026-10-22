@@ -205,6 +205,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
         <header className="hapi-pane-header" data-hapi-pane-header={pane.id}>
+            <span className="hapi-mobile-header-picker"><IconButton label={t('allChats')} icon="sidebar" onClick={controller.requestSessionPicker}/></span>
             <div className="hapi-pane-heading" data-hapi-pane-drag title={[title, location.machineName, summary?.cwd, t('paneDrag')].filter(Boolean).join('\n')} draggable={!hidden}
                 onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>
                 {summary && <ActivityDot {...activity} model={(nativeProjection(summary) ?? observedProjection(summary))?.model} t={t}/>}
@@ -458,19 +459,18 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 </div>
             })}
         </div>
+        <footer className="hapi-statusbar">
         {mobile && <nav className="hapi-mobile-pane-bar" aria-label={t('pane')}>
-            <IconButton label={t('allChats')} icon="sidebar" onClick={controller.requestSessionPicker}/>
             <div className="hapi-pane-tabs" role="tablist" aria-label={t('pane')} ref={paneTabs}>
                 {panes(active.root).map((pane, index) => {
                     const paneName = paneTitle(pane, snapshot.catalog.byId, t('newPane'))
                     return <button type="button" role="tab" key={pane.id} aria-selected={pane.id === activePane.id} onClick={() => controller.store.focus(pane.id)}
-                        title={paneName}><span>P{index + 1}</span><span>{readableTitle(paneName, t, 36)}</span></button>
+                        title={paneName}><span>P{index + 1}</span></button>
                 })}
             </div>
             <button type="button" className="hapi-pane-add" aria-label={t('newPane')} onClick={() => { controller.store.split('horizontal'); controller.requestSessionPicker() }}>P+</button>
             <PaneMenu pane={activePane} window={active} controller={controller} t={t}/>
         </nav>}
-        <footer className="hapi-statusbar">
             <div role="tablist" aria-label={t('window')} className="hapi-window-tabs" ref={windowTabs}>
                 {layout.windows.map((window, index) => {
                     const paneCount = panes(window.root).length
