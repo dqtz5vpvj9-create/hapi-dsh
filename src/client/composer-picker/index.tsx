@@ -152,12 +152,12 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
             </label>)}
         </div>}
         {!data && loading && <p className="hapi-picker-note" role="status">{tr('Loading settings…', '正在读取设置…')}</p>}
-        {data && (sourceLocked || (visible === 'permission' ? !data.editable.permission : !data.editable.model && !data.editable.effort && !data.editable.fast))
-            && <p className="hapi-picker-note">{tr('The source currently does not allow these changes.', '源会话当前不允许修改这些设置。')}</p>}
+        {data && (visible === 'permission' ? !data.editable.permission : !data.editable.model && !data.editable.effort && !data.editable.fast)
+            && <p className="hapi-picker-note">{tr('These settings are unavailable in the current source snapshot. Refresh to check again.', '当前源快照中的设置暂不可用，请刷新重查。')}</p>}
         {pending && <PendingNote pending={pending} data={data} tr={tr}/>}
         {data?.warnings.map((message, index) => <p key={index} className="hapi-picker-note">{message}</p>)}
         {error && <p className="hapi-picker-note" role="alert">{error}</p>}
-        {(error || pending) && <button className="hapi-picker-refresh" type="button" disabled={loading || busy} onClick={() => { void refresh() }}>{tr('Check source result', '检查源会话结果')}</button>}
+        {(error || pending || data?.readOnly) && <button className="hapi-picker-refresh" type="button" disabled={loading || busy} onClick={() => { void refresh() }}>{tr('Check source result', '检查源会话结果')}</button>}
     </div>
     // Keep our own action subtree mounted while closed: parking may hold an
     // unresolved save and original attachment bytes. Hidden panes hide this
@@ -185,9 +185,9 @@ function NativeControls({ ctx, native, props }: { ctx: Context; native: NativeCo
     if (!source) return null
     return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.reasoningEffort, permission: source.permissionMode ?? null, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
         permissionCapable data={data} loading={state.loading} busy={state.busy} pending={nativePickerPending(state.pending)}
-        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
+        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked}
         refresh={controller.refresh} apply={async action => {
-            if (locked || source.readOnly) return false
+            if (locked) return false
             const latest = controller.getSnapshot().data
             const change = latest ? nativePickerChange(nativePickerData(latest), action) : undefined
             return change ? controller.apply(change) : false
@@ -210,9 +210,9 @@ function ObservedControls({ ctx, observed, props }: { ctx: Context; observed: Ob
     if (!source) return null
     return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.effort, permission: source.permissionMode, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
         permissionCapable={source.capabilities.permissions} data={data} loading={state.loading} busy={state.busy} pending={state.pending}
-        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
+        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked}
         refresh={controller.refresh} apply={async action => {
-            if (locked || source.readOnly || action.kind === 'permission' && !source.capabilities.permissions
+            if (locked || action.kind === 'permission' && !source.capabilities.permissions
                 || action.kind === 'model' && !source.capabilities.model || action.kind === 'effort' && !source.capabilities.effort) return false
             const latest = controller.getSnapshot().data
             const change = latest ? observedPickerChange(observedPickerData(latest), action) : undefined

@@ -152,3 +152,5 @@ workspace-navigation 浏览器专项 **2/2** 已通过：显式 deep link 在 li
 - 按 HAPI 对照图调整 Codex glass：浅色正文与输入表面使用白色，侧栏使用浅冷灰，边界降低对比；Pane 焦点改为标题栏短标记，去掉整圈强调色。正文及 composer 使用窗格可用宽度，保留中性消息底色与自定义字体设置。修正侧栏选项收拢时误改的新建菜单历史入口。外观逻辑测试 7 项通过，Client 类型检查后仅发布前端；视觉效果交由用户手测。
 
 - 修复原生会话空草稿 Ctrl/Cmd+Enter 的批量插话：官方 session/updateQueue 的 steer 转到原源队列，按 journal 消息 ID 或外部消息映射查找 localId；只允许已确认 queued 的条目，失败结果保持失败，子会话不路由到父源。普通 DSH 保留官方实现。Host/Client 类型检查、10 项控制器与队列映射测试通过；没有实际投递用户消息进行验证。
+
+- 设置面板移除历史 projection.readOnly 对独立设置快照的额外锁定，仍按最新设置 readOnly/能力检查提交。输入提交中的暂时禁用不再显示为源权限拒绝；只读快照提供刷新入口。当前源实际 settings/projection 均 readOnly=false、连接 attached。6 项 picker 逻辑测试通过；界面由用户手测。
