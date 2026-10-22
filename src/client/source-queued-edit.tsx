@@ -48,7 +48,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
         },
         restore(receipt, before, mode = 'empty') {
           if (receipt.status !== 'cancelled' || receipt.proof === null) return { ok: false, reason: 'The original source has not confirmed cancellation' }
-          if (receipt.hubId !== source.sourceHubId || receipt.sourceSessionId !== source.sourceSessionId || receipt.sessionId !== props.sessionId) return { ok: false, reason: 'The original edit belongs to a different source owner' }
+          if (receipt.hubId !== source.sourceHubId || receipt.sourceSessionId !== source.sourceSessionId) return { ok: false, reason: 'The original edit belongs to a different source owner' }
           const current = input()
           if (!queuedEditComposerMatches(before.composer, current.composer)) return { ok: false,
             reason: 'The composer changed or was reopened while cancellation was pending. Your newer draft was kept; the cancelled message remains below for explicit recovery.' }
@@ -103,8 +103,8 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
       <pre>{queuedEditRestoreText(receipt.candidate)}</pre>
       {receipt.candidate.scheduledAt && <time dateTime={new Date(receipt.candidate.scheduledAt).toISOString()}>{new Date(receipt.candidate.scheduledAt).toLocaleString()}</time>}
       {receipt.error && <p>{receipt.error}</p>}
-      {receipt.sessionId !== props.sessionId && <p>{tr('Previous display generation: retained read-only. This receipt cannot replace the current composer.', '此回执属于上一显示代次，仅供读取，不会替换当前输入框。')}</p>}
-      {receipt.sessionId === props.sessionId && receipt.status === 'cancelled' && receipt.proof !== null && !state.restored.includes(receipt.operationId)
+      {receipt.sessionId !== props.sessionId && <p>{tr('Recovered from an earlier view of this source. Restore it explicitly below.', '这是原会话较早视图保留的编辑，可在下方手动恢复。')}</p>}
+      {receipt.status === 'cancelled' && receipt.proof !== null && !state.restored.includes(receipt.operationId)
         && <><button type="button" disabled={state.busy} onClick={() => { void value.restoreNow(receipt.operationId) }}>{tr('Restore cancelled draft', '恢复已取消的草稿')}</button>
           <button type="button" disabled={state.busy} onClick={() => { void value.restoreNow(receipt.operationId, 'append') }}>{tr('Append to current draft', '追加到当前草稿')}</button></>}
       {['unknown', 'submitting'].includes(receipt.status) && <button type="button" disabled={state.busy} onClick={() => { void value.read(receipt.operationId) }}>{tr('Read this edit', '查询本次编辑')}</button>}

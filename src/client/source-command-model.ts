@@ -1,6 +1,7 @@
 import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 
 export const SOURCE_COMMAND_TOOLS = ['CodexBash', 'Bash', 'shell_command', 'run_shell_command', 'exec_command', 'local_shell'] as const
+export const SOURCE_COMPACT_TOOLS = ['CodexPatch', 'apply_patch'] as const
 
 function object(value: unknown): Record<string, unknown> | undefined {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
@@ -36,4 +37,20 @@ export function sourceCommandModel(block: ToolCallBlock) {
         : block.error?.code === 'interrupted' ? 'stopped'
         : block.isError || (exitCode !== null && exitCode !== 0) ? 'error' : 'done'
     return { command, description, raw, resultRaw, output, exitCode, status }
+}
+
+/** Prefer useful paths/queries over opaque source IDs, with the full payload on expansion. */
+export function sourceToolSummary(block: ToolCallBlock): string | null {
+    const done = 'kind' in block
+    const raw = done ? block.call?.argsRaw ?? '' : block.phase === 'start' ? block.argsRaw : ''
+    const input = object(parse(raw))
+    for (const key of ['description', 'file_path', 'path', 'pattern', 'query', 'url']) {
+        const value = input?.[key] ?? block.args.text(key)
+        if (typeof value === 'string' && value.trim()) return value
+    }
+    const changes = object(input?.changes)
+    if (changes) return Object.keys(changes).join(', ') || null
+    const patch = typeof input?.patch === 'string' ? input.patch : typeof input?.input === 'string' ? input.input : raw.startsWith('*** Begin Patch') ? raw : ''
+    const paths = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1])
+    return paths.length ? paths.join(', ') : null
 }

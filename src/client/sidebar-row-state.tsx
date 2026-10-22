@@ -35,7 +35,7 @@ export function SessionRowState({ state, detailed, t }: { state: CatalogSession[
     const pending = state.pendingRequestsCount, scheduled = state.futureScheduledMessageCount, background = state.backgroundTaskCount
     const scheduledTime = state.nextScheduledAt === null ? null : sourceTimeMilliseconds(state.nextScheduledAt)
     return <>
-        {state.serviceTier === 'fast' && <span className="hapi-session-tier" aria-label={t('fastServiceTier')} title={t('fastServiceTier')}>FAST</span>}
+        {state.serviceTier === 'fast' && <span className="hapi-session-tier" aria-label={t('fastServiceTier')} title={t('fastServiceTier')}>ϟ</span>}
         {progress && <span className="hapi-session-todos" aria-label={t('todoProgress', progress)} title={t('todoProgress', progress)}><span aria-hidden="true">◈</span> {progress.completed}/{progress.total}</span>}
         {pending !== null && pending > 0 && <span className="hapi-session-request-count" title={t('pendingRequestCount', { n: pending })} aria-label={t('pendingRequestCount', { n: pending })}>! {pending}</span>}
         {detailed && background !== null && background > 0 && <span className="hapi-session-background-count" title={t('backgroundTaskCount', { n: background })} aria-label={t('backgroundTaskCount', { n: background })}>◌ {background}</span>}

@@ -26,7 +26,7 @@ export function MachineHealthRow({ machine, language }: { machine: CatalogMachin
     const tr = (en: string, cn: string) => language.startsWith('zh') ? cn : en
     const presentation = machineHealthPresentation(machine.health, machine.platform)
     return <details className="hapi-machine-row" data-source-machine={machine.id} style={{ padding: '5px 0' }}>
-        <summary style={{ cursor: 'pointer', overflowWrap: 'anywhere' }}><span className={`hapi-dot hapi-dot-${machine.online ? 'running' : 'offline'}`}/>{machine.label}
+        <summary style={{ cursor: 'pointer', overflowWrap: 'anywhere' }}><span className={`hapi-dot hapi-dot-${machine.online ? 'running' : 'offline'}`}/><svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true" style={{ verticalAlign: 'middle', marginInlineEnd: 5 }}><rect x="3" y="3" width="14" height="10" rx="1"/><path d="M10 13v4M6 17h8"/></svg>{machine.label}
             <small style={{ marginInlineStart: '6px' }}>{machine.online ? tr('Online', '在线') : tr('Offline', '离线')}</small>
             {!!presentation?.metrics.length && <span style={{ display: 'block', fontSize: '11px', opacity: 0.8 }}>{presentation.metrics.map(row => `${row.label} ${row.percent}%`).join(' · ')}</span>}
         </summary>

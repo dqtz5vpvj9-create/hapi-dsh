@@ -256,6 +256,11 @@ export const workspaceStyles = String.raw`
 .hapi-session-meta>.hapi-session-source-state {display:inline-flex;flex:none;padding:0;margin-left:auto;gap:4px;flex-wrap:nowrap}
 .hapi-session-meta>.hapi-session-source-state:empty {display:none}
 .hapi-session-date {padding-top:4px;padding-bottom:2px}
+.hapi-session-tier{background:none;padding:0;font-size:14px;line-height:1;color:var(--hapi-secondary)}
+.hapi-session-row{border-radius:6px}
+.hapi-pane-header{min-height:32px;font-size:12px}
+.hapi-window-bar{min-height:30px}
+.hapi-draft-recovery{font-size:12px;padding:4px 10px;color:var(--hapi-secondary)}
 @media(pointer:coarse) {
  [data-slot="sidebar"]:has(.hapi-session-sidebar) nav>button,
  [data-slot="sidebar"]:has(.hapi-session-sidebar) button:has([class*="newSessionLabelMask"]),

@@ -385,6 +385,17 @@ export class WorkspaceController {
 
     readingIntent = (paneId: string): PaneReadingIntent | undefined => this.reading.read(paneId)
 
+    releaseHiddenHistory(paneId: string, reference: SessionReference): boolean {
+        if (!this.options.deferHiddenSessions) return false
+        const layout = this.store.getSnapshot(), active = layout.windows.find(window => window.id === layout.activeWindowId)
+        const visible = active && panes(active.root).some(pane => pane.id === paneId
+            && (!layout.zoomed[active.id] || layout.focused[active.id] === paneId))
+        const lease = this.leases.get(paneId)
+        if (visible || this.paneCloseGuards.get(paneId)?.size || lease?.reference?.binding !== reference.binding) return false
+        this.leases.delete(paneId); lease.reference.release(); this.publish()
+        return true
+    }
+
     /** Explicit destinations belong to this view occurrence, never global focus. */
     locateInPane(paneId: string, sessionId: string, target: PaneReadingTarget): void {
         const pane = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)
@@ -417,8 +428,10 @@ export class WorkspaceController {
 
     /** One entry point for the official sidebar and this workspace's controls. */
     requestNewSession = (engine: 'choose' | 'dsh' | 'codex' | 'source' = 'choose', context?: WorkspaceCreationContext): void => {
+        const focused = this.store.focusedPane().resource
         const creationContext = context ? { ...context }
-            : this.snapshot.creation === 'choose' && engine !== 'choose' ? this.snapshot.creationContext : null
+            : this.snapshot.creation === 'choose' && engine !== 'choose' ? this.snapshot.creationContext
+            : sessionCreationContext(focused.kind === 'empty' ? undefined : this.snapshot.catalog.byId[focused.sessionId])
         this.publish({ creation: engine, creationContext })
         this.options.reveal?.()
     }
@@ -436,7 +449,14 @@ export class WorkspaceController {
     }
     closeSessionPicker = (): void => { this.publish({ pickingSession: false }) }
     setMachines(machines: readonly CatalogMachine[]): void {
-        this.snapshot = { ...this.snapshot, machines }
+        // Machine identity, not a hostname shared by multiple real machines.
+        const unique = new Map<string, CatalogMachine>()
+        for (const machine of machines) {
+            const previous = unique.get(machine.id)
+            if (!previous || Number(machine.online) > Number(previous.online)
+                || machine.online === previous.online && (machine.lastSeenAt ?? 0) >= (previous.lastSeenAt ?? 0)) unique.set(machine.id, machine)
+        }
+        this.snapshot = { ...this.snapshot, machines: [...unique.values()] }
         this.publish({ catalog: this.aggregateCatalog() })
     }
     setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {

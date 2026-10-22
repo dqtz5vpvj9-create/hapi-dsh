@@ -65,7 +65,7 @@ test('busy, invoked and missing durable storage cannot prefill or dispatch anoth
   await controller.start('original-local'); assert.equal(api.writes.length, 0); assert.match(controller.getSnapshot().error ?? '', /storage/)
 })
 
-test('same-source receipts from a previous display generation remain readable but cannot prefill a new generation', async () => {
+test('previous-generation receipts require explicit recovery and matching original source ownership', async () => {
   const api = new Api(); api.saved = receipt({ sessionId: 'previous-display', operationId: uuid, localId: 'local' })
   let restored = 0
   const controller = new SourceQueuedEditController(api, 'current-display', store(), 'current-journal',
@@ -73,8 +73,8 @@ test('same-source receipts from a previous display generation remain readable bu
     { hubId: source.sourceHubId, sourceSessionId: source.sourceSessionId, logicalSessionId: 'logical' })
   await controller.load(); assert.equal(controller.getSnapshot().error, null)
   assert.equal(controller.getSnapshot().receipts[0]?.sessionId, 'previous-display')
-  assert.equal(restored, 0); await controller.restoreNow(uuid); assert.equal(restored, 0)
-  assert.match(controller.getSnapshot().error ?? '', /previous display generation/)
+  assert.equal(restored, 0); await controller.restoreNow(uuid); assert.equal(restored, 1)
+  assert.equal(controller.getSnapshot().error, null)
   assert.equal(api.writes.length, 0)
   api.saved.hubId = 'another-hub'
   const foreign = new SourceQueuedEditController(api, 'current-display', store(), 'other-journal',

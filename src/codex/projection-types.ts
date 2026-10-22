@@ -12,6 +12,7 @@ export const deliveryViewSchema = z.object({
   localId: z.string(),
   messageId: z.string(),
   text: z.string(),
+  attachmentNames: z.array(z.string()).optional(),
   mode: z.enum(['queue', 'steer']),
   state: deliveryStateSchema,
   createdAt: z.number(),

@@ -699,7 +699,10 @@ export class NativeCodexAgent implements Agent {
       scheduledAt: raw.scheduledAt ?? null,
       state: raw.deliveryState ?? 'queued', error: null,
     })
-    return [...entries.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined, cancelable: entry.state === 'queued' }))
+    return [...entries.values()].map(entry => {
+      const candidate = this.queuedEditCandidate(entry.localId)
+      return { ...entry, attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
+    })
       .sort((a, b) => a.createdAt - b.createdAt)
   }
 

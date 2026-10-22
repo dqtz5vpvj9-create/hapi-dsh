@@ -153,3 +153,7 @@ Conversation 窗格默认复用所属 Host 的一个真实官方 Client graph，
 ## 许可证与来源
 
 本项目采用 [AGPL-3.0-only](LICENSE)，包含从 HAPI 适配的工作区与原生输入契约。官方 DSH 以未修改的 MIT 许可依赖使用。来源、固定提交和第三方声明见 [NOTICE](NOTICE)。相应版本完整源码保存在本仓库和 GitHub Release 对应标签中。
+
+### 本机一键发布
+
+在已有本机部署上运行 `npm run deploy` 发布客户端，或运行 `npm run deploy:host` 发布 Host 与客户端。命令使用当前账号的私有 `~/.config/hapi-dsh/launch-url`，完成类型检查、逻辑测试、构建及 HTTP 可达性检查。Host 发布会先确认本机没有普通 DSH 会话执行，只重启 `hapi-dsh-host.service`。界面由用户手测；该命令不会提交工作树或推送 Git。插件的执行边界见[插件兼容说明](docs/plugin-compatibility.md)。

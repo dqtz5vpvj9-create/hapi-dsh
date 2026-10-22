@@ -233,6 +233,9 @@ test('source timestamps and new-in-directory context retain actual machine ident
     assert.equal(controller.getSnapshot().creationContext, null)
     controller.requestNewSessionInDirectory('native'); controller.requestNewSession()
     assert.equal(controller.getSnapshot().creationContext, null)
+    controller.openSession('native')
+    controller.requestNewSession()
+    assert.deepEqual(controller.getSnapshot().creationContext, expected)
     controller.requestNewSessionInDirectory('dsh')
     assert.deepEqual(controller.getSnapshot().creationContext, { hostId: 'local', directory: '/host/project' })
     controller.openNativeLibrary()
@@ -777,5 +780,25 @@ test('window and pane navigation saves local view state without producing shared
     await turn()
     assert.equal(writes.length, count)
     assert.equal(JSON.parse(source.memory.get(source.options.storageKey)!).zoomed[controller.store.active().id], true)
+    controller.dispose(); source.disposeMain()
+})
+
+
+test('large hidden history can release only its own unguarded view and reopens on selection', () => {
+    const source = fixture(); source.add('old'); source.add('current')
+    const controller = new WorkspaceController({ ...source.options, deferHiddenSessions: true })
+    controller.openSession('old')
+    const pane = controller.store.focusedPane().id, originalWindow = controller.store.active().id
+    const reference = controller.getSnapshot().leases.get(pane)!.reference!
+    assert.equal(controller.releaseHiddenHistory(pane, reference), false)
+    controller.store.createWindow(); controller.openSession('current')
+    const unguard = controller.registerPaneCloseGuard(pane, () => false)
+    assert.equal(controller.releaseHiddenHistory(pane, reference), false)
+    unguard()
+    assert.equal(controller.releaseHiddenHistory(pane, reference), true)
+    assert.equal(controller.getSnapshot().leases.has(pane), false)
+    assert.equal(source.actions.length, 0)
+    controller.store.selectWindow(originalWindow)
+    assert.notEqual(controller.getSnapshot().leases.get(pane)?.reference, reference)
     controller.dispose(); source.disposeMain()
 })

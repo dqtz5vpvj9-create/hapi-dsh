@@ -1,7 +1,9 @@
 import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 /** Durable bytes around the published official composer attachment owner. */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { composerDraftKey } from './composer-autosave.ts';
+import { DraftOwnership } from './draft-ownership.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { InboxState } from '@deepseek-ai/dsh-agent/types';
@@ -66,6 +68,8 @@ class AttachmentStore {
     }
 }
 const attachmentStore = new AttachmentStore();
+const ownership = new DraftOwnership();
+const pendingWrites = new Map<string, Promise<void>>();
 type InputProps = PropsRuntime<'conversation.input.dock'>;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -74,14 +78,14 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
     style.textContent = '.hapi-attachment-recovery{font-size:12px;padding:8px 12px;border:1px solid var(--border-secondary,#8885);border-radius:8px;overflow-wrap:anywhere}.hapi-attachment-recovery p{margin:4px 0 8px}.hapi-attachment-recovery button{font:inherit;border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,Canvas);color:inherit;border-radius:5px;padding:4px 8px;margin:2px;cursor:pointer}.hapi-attachment-recovery button:disabled{opacity:.5;cursor:default}.hapi-attachment-recovery pre{white-space:pre-wrap;max-height:120px;overflow:auto}.hapi-attachment-recovery [role=alert]{color:var(--text-error,#d45d62)}';
     document.head.append(style);
     const scope = ctx.inject(['hapiWorkspaceUi'], owner => {
-        const Recovery = ({ props, identity }: { props: InputProps; identity: string }) => {
+        const Recovery = ({ props, identity, legacyIdentity }: { props: InputProps; identity: string; legacyIdentity: string }) => {
             const state = props.useInput(value => value), pending = props.useSession(value => value.pendingSubmissions), current = useRef(props); current.current = props;
             const [backup, setBackup] = useState<SavedAttachments | null>(null), [error, setError] = useState<string | null>(null);
             const [loading, setLoading] = useState(true), [review, setReview] = useState(false);
             const lifecycle = useMemo(() => new AbortController(), [identity]);
             const saved = useRef<SavedAttachments | null>(null), ready = useRef(false), blocked = useRef(false), restoring = useRef(false);
             const latest = useRef<SavedAttachments | null>(null);
-            const writes = useRef(Promise.resolve()), persistenceError = useRef<Error | null>(null), revision = useRef(0);
+            const writes = useRef(pendingWrites.get(identity) ?? Promise.resolve()), persistenceError = useRef<Error | null>(null), revision = useRef(0);
             const storedRevision = useRef<string | null>(null), prepared = useRef<string | null>(null);
             const tr = (en: string, zh: string) => owner.locale.getSnapshot().active.startsWith('zh') ? zh : en;
             const live = () => {
@@ -133,6 +137,9 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                         if (!lifecycle.signal.aborted && expected === revision.current) { setBackup(value); setError(null); }
                     } catch (reason) { persistenceError.current = new Error(message(reason)); if (!lifecycle.signal.aborted) setError(message(reason)); }
                 });
+                pendingWrites.set(identity, writes.current);
+                const currentWrite = writes.current;
+                void currentWrite.finally(() => { if (pendingWrites.get(identity) === currentWrite) pendingWrites.delete(identity); });
                 await writes.current;
                 if (persistenceError.current) throw persistenceError.current;
             };
@@ -154,7 +161,12 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                 finally { restoring.current = false; if (!lifecycle.signal.aborted) setLoading(false); }
             };
             useEffect(() => {
-                void attachmentStore.read(identity).then(async entry => {
+                void writes.current.then(async () => {
+                    const entry = await attachmentStore.read(identity);
+                    if (entry) return entry;
+                    const legacy = await attachmentStore.read(legacyIdentity);
+                    return legacy?.value ? attachmentStore.write(identity, null, legacy.value) : null;
+                }).then(async entry => {
                     if (lifecycle.signal.aborted) return;
                     const value = entry?.value ?? null; storedRevision.current = entry?.revision ?? null;
                     saved.current = latest.current = value; setBackup(value); ready.current = true;
@@ -217,9 +229,14 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
         };
         const Seat = (props: InputProps) => {
             const pane = useWorkspacePane(owner), native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
-            if (!pane || observed?.sidechain || !source && /^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId)) return null;
-            const identity = JSON.stringify([pane.hostId, pane.paneId, source?.hubId ?? 'dsh', source?.hapiSessionId ?? props.sessionId]);
-            return <Recovery key={identity} props={props} identity={identity}/>;
+            const eligible = pane && !observed?.sidechain && (source || !/^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId));
+            const identity = eligible ? composerDraftKey(pane.hostId, props.sessionId, source ?? undefined) : '';
+            const token = useMemo(() => ({}), [identity]);
+            useEffect(() => identity ? ownership.retain(identity, token) : undefined, [identity, token]);
+            const currentOwner = useSyncExternalStore(ownership.subscribe, () => ownership.owner(identity));
+            if (!eligible || currentOwner !== token) return null;
+            const legacyIdentity = JSON.stringify([pane.hostId, pane.paneId, source?.hubId ?? 'dsh', source?.hapiSessionId ?? props.sessionId]);
+            return <Recovery key={identity} props={props} identity={identity} legacyIdentity={legacyIdentity}/>;
         };
         return owner.slots.inject('conversation.input.dock', () => owner.slots.register({ name: 'conversation.input.dock', id: 'hapi.attachment-recovery', order: -90 }, Seat));
     });

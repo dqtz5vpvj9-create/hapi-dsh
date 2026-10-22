@@ -201,6 +201,11 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register({
         name: 'sidebar.workspaces', priority: -100, locale: 'hapiWorkspace',
     }, Sidebar)))
+    disposers.push(ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark', priority: -100 },
+        ({ size }) => createElement('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, 'aria-hidden': true },
+            createElement('path', { d: 'M3 3h18v18H3zM12 3v18M3 12h18' })))))
+    disposers.push(ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name', priority: -100 },
+        () => createElement('strong', { style: { fontSize: 16, letterSpacing: '-.02em' } }, 'HAPI'))))
     const Fork = (props: Omit<NativeForkActionProps, 'controls' | 'open'>) => createElement(NativeForkAction, { ...props, controls, open: sessionId => {
         void controller.refresh(); controller.openSession(sessionId, 'horizontal')
     } })

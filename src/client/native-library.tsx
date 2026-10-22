@@ -218,6 +218,33 @@ export function NativeMachinePanel({ api, machineId, language }: { api: HapiRemo
     </div>;
 }
 
+export function NativeGoalEditor({ api, sessionId, language }: { api: HapiRemoteApi; sessionId: string; language?: string | undefined }) {
+    const tr = words(language), state = useRead<NativeSessionTools>(sessionId, async () => remoteValue(await api.nativeSessionTools({ sessionId })));
+    const operation = useOperation(api), [objective, setObjective] = useState(''), [editing, setEditing] = useState(false);
+    useEffect(() => { if (!editing) setObjective(state.data?.goal?.objective ?? ''); }, [state.data?.goal?.objective, editing]);
+    const perform = async (command: Extract<NativeSourceAction, { kind: 'goal' }>['command']) => {
+        if (!nativeToolAllowed(state.data, sessionId, { kind: 'goal', command })) return;
+        const result = await operation.run(async operationId => remoteValue(await api.nativeSourceOperation({ operationId, sessionId, action: { kind: 'goal', command } })));
+        if (result?.status === 'confirmed') { setEditing(false); await state.refresh(); }
+    };
+    const locked = !state.data || state.loading || state.data.readOnly || operation.busy;
+    return <div>
+        {state.loading && <p role="status">{tr('Loading goal…', '正在读取目标…')}</p>}
+        {state.error && <p role="alert">{state.error}</p>}
+        <form onSubmit={event => { event.preventDefault(); void perform({ action: 'set', objective: objective.trim() }); }}>
+            <label>{tr('What should the agent finish?', '希望 Agent 完成什么？')}<textarea autoFocus value={objective}
+                placeholder={tr('Describe the outcome and when to stop.', '描述要完成的结果，以及何时可以结束。')}
+                onChange={event => { setEditing(true); setObjective(event.currentTarget.value); }}/></label>
+            <div className="hapi-button-row"><button type="submit" disabled={locked || !objective.trim()}>{tr('Save goal', '保存目标')}</button>
+                {state.data?.goal && <><button type="button" disabled={locked} onClick={() => { void perform({ action: state.data!.goal!.status === 'paused' ? 'resume' : 'pause' }); }}>{state.data.goal.status === 'paused' ? tr('Resume', '继续') : tr('Pause', '暂停')}</button>
+                    <button type="button" disabled={locked} onClick={() => { void perform({ action: 'clear' }); }}>{tr('Clear goal', '清除目标')}</button></>}
+            </div>
+        </form>
+        {state.data?.goal && <small>{state.data.goal.status} · {state.data.goal.tokensUsed.toLocaleString()} tokens</small>}
+        <OperationStatus operation={operation} language={language}/>
+    </div>;
+}
+
 export function NativeSessionToolsPanel({ api, sessionId, machineId, onOpen, onSuccessor, language, initialAction }: {
     api: HapiRemoteApi; sessionId: string; machineId?: string | null | undefined; onOpen: (id: string) => void; language?: string | undefined;
     initialAction?: 'archive' | 'reopen' | 'pin' | 'restart' | 'delete' | undefined;

@@ -78,7 +78,7 @@ export function captureScheduleDraft(store: ScheduleStorage | undefined, source:
 export function restoreCancelledSchedule(store: ScheduleStorage | undefined, source: WorkbenchSource, sessionId: string,
   before: ScheduleDraftCapture, receipt: SourceQueuedEditReceipt, now = Date.now()): { ok: true } | { ok: false; reason: string } {
   if (receipt.status !== 'cancelled' || receipt.proof === null) return { ok: false, reason: 'Only an original confirmed cancellation can restore an edit' }
-  if (receipt.sessionId !== sessionId || receipt.hubId !== source.sourceHubId || receipt.sourceSessionId !== source.sourceSessionId
+  if (receipt.hubId !== source.sourceHubId || receipt.sourceSessionId !== source.sourceSessionId
     || before.key !== scheduleKey(source, sessionId)) return { ok: false, reason: 'The original schedule belongs to another source session' }
   const time = queuedEditRestoreSchedule(receipt.candidate, now)
   if (time === null) return { ok: false, reason: 'The original scheduled time is no longer in the future' }

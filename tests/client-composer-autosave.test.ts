@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { CommandClaim, InputActions, InputState, SessionInput } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { ComposerAutosaves, composerDraftKey } from '../src/client/composer-autosave.ts'
+import { ComposerAutosaves, composerDraftKey, readComposerRecoveries, appendRecoveredDraft } from '../src/client/composer-autosave.ts'
 
 function fixture(text = '') {
     const state = createSnapshotStore<InputState>({ draft: text, draftRev: 0, occurrences: [], attachmentIds: [], phase: 'plain', queue: [] })
@@ -160,5 +160,17 @@ test('storage failure keeps live text, reports once, and the next edit can save 
     s.storage.setItem = original
     input.edit('saved after recovery')
     assert.equal(s.saved().text, 'saved after recovery')
+    stop()
+})
+
+
+test('a conflicting official draft preserves the backup and append keeps both texts', () => {
+    const s = setup(), old = fixture('newer backup'); s.bind(old)()
+    const current = fixture('older official'); const stop = s.bind(current)
+    const recovered = readComposerRecoveries(s.storage, s.key)
+    assert.equal(recovered[0]?.text, 'newer backup')
+    assert.equal(current.composer.state.getSnapshot().draft, 'older official')
+    appendRecoveredDraft(current.composer, current.actions, recovered[0]!)
+    assert.equal(current.composer.state.getSnapshot().draft, 'older official\n\nnewer backup')
     stop()
 })

@@ -17,6 +17,7 @@ import { installSourceComposerBridge } from './source-composer.tsx';
 import { SourceMigrationPanel } from './source-history.tsx';
 import { SourceTitlePanel } from './source-title-panel.tsx';
 import { installSourceComposerParking } from './source-composer-parking.tsx';
+import { installComposerGoal } from './composer-goal.tsx';
 import { SourceCollaborationPanel } from './source-collaboration.tsx';
 import { SourceDshChildPanel } from './source-dsh-child.tsx';
 import { installShareReceiver } from './share-receiver.tsx';
@@ -55,6 +56,7 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     const disposers: Array<() => void> = [];
     const composer = installSourceComposerBridge(ctx); disposers.push(() => composer.dispose());
     disposers.push(installShareReceiver(ctx, composer));
+    disposers.push(installComposerGoal(ctx, api));
     const parking = installSourceComposerParking(ctx, api, composer);
     disposers.push(() => parking.dispose());
     const language = (): string => ctx.locale.getSnapshot().active;

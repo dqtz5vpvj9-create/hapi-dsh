@@ -27,6 +27,11 @@ import { installSourceAppearance } from './appearance/index.tsx'
 import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
+import { HostBootQueue } from './surface/host-boot-queue.ts'
+import { canReleaseHistory } from './surface/history-retention.ts'
+import type { UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
+import type { HapiProjection } from '../codex/projection-types.ts'
+import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
 import { resolveOriginalSession } from './source-session-resolver.ts'
 import { createGraphStore, graphStorage, GRAPH_STORE_MODULE } from './runtime-store.ts'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
@@ -438,6 +443,28 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let view: SessionViewHandle | undefined
         let opening: ReturnType<typeof observePaneOpening> | undefined
         let starting = false, disposed = false, retired = false
+        let historyTimer: ReturnType<typeof setTimeout> | undefined
+        const historySubscriptions: Array<() => void> = []
+        const scheduleHistoryRelease = (): void => {
+            if (historyTimer !== undefined || presentation.visible || disposed || retired || !reference) return
+            historyTimer = setTimeout(() => {
+                historyTimer = undefined
+                if (!reference || disposed || retired || !view || ui.voice.getSnapshot()
+                    || !surface.querySelector('[data-chat-following-tail]')) return
+                const binding = reference.binding, session = binding.session.getSnapshot()
+                const input = context.conversation.input.for(binding.ctx).state.getSnapshot()
+                const source = (binding.session.projections.faceOf('hapi').getSnapshot() as HapiProjection)
+                    ?? (binding.session.projections.faceOf('hapiObserved').getSnapshot() as HapiObservedProjection)
+                const questions = binding.session.projections.faceOf('userQuestions').getSnapshot() as UserQuestionProjectionView | undefined
+                if (!canReleaseHistory({ visible: presentation.visible, events: binding.eventSource.getSnapshot().entries.length,
+                    running: session.running, pending: session.pendingSubmissions.length + (source?.pendingRequests.length ?? 0),
+                    draft: input.draft, attachments: input.attachmentIds.length, phase: input.phase, questions: questions?.active.length ?? 0 })) return
+                if (workspace.releaseHiddenHistory(paneId, reference)) {
+                    activePanes.delete(paneId)
+                    void result.stop().catch(workspace.report)
+                }
+            }, 1_000)
+        }
         const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
             .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
         const navigation: WorkspacePaneNavigation = {
@@ -478,6 +505,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     await waitForCatalogSession(context.sessions, sourceId as SessionId, activeSignal)
                     if (disposed || retired || activeSignal.aborted) return
                     reference = context.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
+                    historySubscriptions.push(reference.binding.eventSource.subscribe(scheduleHistoryRelease), reference.binding.session.subscribe(scheduleHistoryRelease))
                     void reference.ready.then(binding => opening?.referenceReady(binding.session.getSnapshot().blank), () => opening?.stop('error'))
                     renderHostRoot?.()
                     view = sessionViews!.mount({ paneId, instanceId: `${paneId}:${++sharedViewSequence}`, reference, target: surface, navigation,
@@ -509,6 +537,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             }
             if (next.visible) activate()
             else if (!view) surface.dataset.hapiPaneDeferred = 'true'
+            if (!next.visible) scheduleHistoryRelease()
         }
         const retention = createPaneRetention(() => {
             opening?.stop()
@@ -519,6 +548,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }, async () => {
             if (disposed) return
             disposed = true; lifetime.abort()
+            clearTimeout(historyTimer); for (const stop of historySubscriptions) stop()
             surface.removeEventListener('keydown', capture, true); surface.removeEventListener('keydown', bubble)
             surface.removeEventListener('pointerdown', focus, true); surface.removeEventListener('focusin', focus, true)
             try {
@@ -895,6 +925,11 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     const running = new Map<string, { abort: AbortController; runtime?: HostRuntime }>()
     const logical = new Map<string, string>()
     const reported = new Map<string, string>()
+    const boots = new HostBootQueue(() => {
+        const resource = workspace.store.focusedPane().resource
+        return resource.kind === 'empty' ? undefined : parseSessionResourceId(resource.sessionId).hostId
+    })
+    const unprioritize = workspace.store.subscribe(boots.prioritize)
     const containShortcuts = (event: KeyboardEvent): void => {
         if (remoteKeyboardEvents.has(event) || event.composedPath().some(node => node instanceof Element && node.matches('[data-hapi-host]:not([data-hapi-graph="shared"])'))) {
             // stopPropagation still allows every listener on this Document to
@@ -931,7 +966,9 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                 if (!host.online || running.has(host.id)) continue
                 const entry: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
                 running.set(host.id, entry)
-                void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi, shared).then(async runtime => {
+                boots.add(host.id, async () => {
+                if (entry.abort.signal.aborted || lifetime.signal.aborted) return
+                await bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi, shared).then(async runtime => {
                     if (entry.abort.signal.aborted || lifetime.signal.aborted) { await runtime.stop(); return }
                     entry.runtime = runtime; reported.delete(host.id); workspace.catalogHostReady(host.id, host.label)
                 }).catch(error => {
@@ -941,6 +978,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                     workspace.catalogHostFailed(host.id, host.label, message)
                     if (reported.get(host.id) !== message) { reported.set(host.id, message); workspace.report(message) }
                 })
+                })
             }
         } catch (error) { if (!lifetime.signal.aborted) { workspace.sourceCatalogFailed(error); workspace.report(error) } }
         finally { polling = false }
@@ -948,7 +986,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     void poll()
     const timer = setInterval(() => { void poll() }, 3000)
     return async () => {
-        lifetime.abort(); clearInterval(timer)
+        lifetime.abort(); clearInterval(timer); unprioritize(); boots.dispose()
         unresolveSource()
         document.removeEventListener('keydown', containShortcuts)
         for (const entry of running.values()) entry.abort.abort()

@@ -153,7 +153,9 @@ export class SourceQueuedEditController {
       const received = remoteValue(await this.api.sourceQueuedEditRead({ sessionId: this.sessionId, operationId }))
       if (!received) throw new Error('The Host did not return the original cancellation receipt; the current draft was kept')
       const receipt = this.observe(received)
-      if (receipt.sessionId !== this.sessionId) throw new Error('This receipt belongs to a previous display generation. Its original text is retained read-only and cannot replace this generation’s composer.')
+      // observe() already checks the original Hub, source Session and logical
+      // identity. An explicit recovery may cross display generations; the
+      // automatic path above remains bound to its original editor occurrence.
       if (receipt?.status === 'cancelled' && receipt.proof !== null) this.restore(receipt, before, mode)
     } catch (error) { this.publish({ error: describe(error) }) }
     finally { this.publish({ busy: false }) }

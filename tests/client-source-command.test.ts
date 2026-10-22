@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import type { StartedToolCall, ToolResultNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceCommandModel } from '../src/client/source-command-model.ts'
+import { sourceCommandModel, sourceToolSummary } from '../src/client/source-command-model.ts'
 
 function call(input: Record<string, unknown>): StartedToolCall {
     return { phase: 'start', name: 'CodexBash', callId: 'call-1', turn: 1, step: 1, time: 1, subCalls: [],
@@ -62,4 +62,10 @@ test('preparing calls use the public live argument reader', () => {
     const model = sourceCommandModel({ ...preparing, phase: 'preparing' })
     assert.equal(model.command, 'printf')
     assert.equal(model.status, 'preparing')
+})
+
+test('compact tools show semantic paths and patches without leaking transport IDs into summaries', () => {
+    assert.equal(sourceToolSummary(call({ thread_id: 'opaque', file_path: '/repo/a.ts' })), '/repo/a.ts')
+    assert.equal(sourceToolSummary(call({ changes: { '/repo/a.ts': {}, '/repo/b.ts': {} } })), '/repo/a.ts, /repo/b.ts')
+    assert.equal(sourceToolSummary(call({ call_id: 'opaque' })), null)
 })

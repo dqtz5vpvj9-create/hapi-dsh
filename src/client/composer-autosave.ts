@@ -23,7 +23,7 @@ export function composerDraftSnapshot(state: InputState): DraftSnapshot {
 }
 
 /** Restore through the published editor verbs, preserving reference identities. */
-function restoreDraft(composer: Composer, actions: Pick<InputActions, 'insertText'>, draft: z.infer<typeof draftSchema>): void {
+export function restoreDraft(composer: Composer, actions: Pick<InputActions, 'insertText'>, draft: z.infer<typeof draftSchema>): void {
     composer.setDraft(draft.text)
     // Rightmost spans first: earlier clipboard offsets are still plain text.
     for (const reference of [...draft.references].reverse()) {
@@ -36,6 +36,19 @@ function restoreDraft(composer: Composer, actions: Pick<InputActions, 'insertTex
             start: offset + 1, end: offset + 2, draftRev: composer.state.getSnapshot().draftRev,
         })) throw new Error('The saved draft reference separator could not be restored. The saved copy was retained.')
     }
+}
+
+export function composerRecoveryKey(key: string): string { return `${key}:recovered` }
+export type RecoveredComposerDraft = z.infer<typeof draftSchema>
+export function readComposerRecoveries(storage: Pick<Storage, 'getItem'>, key: string): RecoveredComposerDraft[] {
+    return z.array(draftSchema).parse(JSON.parse(storage.getItem(composerRecoveryKey(key)) ?? '[]'))
+}
+
+export function appendRecoveredDraft(composer: Composer, actions: Pick<InputActions, 'insertText'>, draft: RecoveredComposerDraft): void {
+    const current = composerDraftSnapshot(composer.state.getSnapshot())
+    const prefix = current.text ? `${current.text}\n\n` : ''
+    restoreDraft(composer, actions, { text: prefix + draft.text, references: [...current.references,
+        ...draft.references.map(reference => ({ ...reference, offset: prefix.length + reference.offset }))] })
 }
 
 interface AutosaveOptions {
@@ -92,6 +105,14 @@ export class ComposerAutosaves {
             const raw = storage.getItem(key)
             const saved = raw === null ? null : savedSchema.parse(JSON.parse(raw)).draft
             const state = composer.state.getSnapshot()
+            if (saved?.text && state.draft && saved.text !== state.draft) {
+                // A stale official draft can coexist with a newer local backup.
+                // Keep both before choosing the already mounted editor.
+                const copies = readComposerRecoveries(storage, key)
+                if (!copies.some(copy => JSON.stringify(copy) === JSON.stringify(saved))) {
+                    storage.setItem(composerRecoveryKey(key), JSON.stringify([...copies, saved]))
+                }
+            }
             // Existing official/user input wins. Never restore during a send.
             if (saved?.text && !state.draft && !state.attachmentIds.length && state.phase === 'plain') {
                 restoreDraft(composer, actions, saved)

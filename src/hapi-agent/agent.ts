@@ -532,7 +532,10 @@ export class HapiObservedAgent implements Agent {
       localId, messageId: row.id, text: item.text, mode: item.mode, createdAt: row.createdAt,
       state: row.deliveryState ?? 'queued', scheduledAt: row.scheduledAt ?? null, error: null,
     })
-    return [...values.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined, cancelable: entry.state === 'queued' }))
+    return [...values.values()].map(entry => {
+      const candidate = this.queuedEditCandidate(entry.localId)
+      return { ...entry, attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
+    })
       .sort((a, b) => a.createdAt - b.createdAt)
   }
   private syncInbox(): void {

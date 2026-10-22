@@ -22,7 +22,10 @@ function QueueRow({ row, sessionId, api, disabled, steer, zh }: {
     const state = useSyncExternalStore(action.subscribe, action.getSnapshot)
     const available = deliveryActions(row, steer)
     return <div className="hapi-source-queue-row" data-hapi-queue-id={row.localId}>
-        <span title={row.text}>{row.text || (zh ? '附件消息' : 'Attachment message')}</span>
+        <span title={[row.text, ...row.attachmentNames ?? []].filter(Boolean).join('\n')}>
+            {row.text || row.attachmentNames?.join(', ') || (zh ? '附件消息' : 'Attachment message')}
+            {!!row.text && !!row.attachmentNames?.length && <small className="hapi-queue-files"> · {row.attachmentNames.join(', ')}</small>}
+        </span>
         {available.edit && api.queuedEditing && <button type="button" disabled={state.busy || api.queuedEditing.busy}
             title={zh ? '取消排队并取回编辑' : 'Cancel queue and edit'} aria-label={zh ? '编辑排队消息' : 'Edit queued message'}
             onClick={() => api.queuedEditing?.edit(sessionId, row)}><QueueIcon kind="edit"/></button>}
