@@ -134,6 +134,7 @@ workspace-navigation 浏览器专项 **2/2** 已通过：显式 deep link 在 li
 
 - 用户最终确认：保留每个 Pane 的独立标题栏；effort 改为滑杆；Codex glass 立即设为默认。新的默认覆盖上文旧计划中的 radio 与非默认 Glass 选择。
 - 没有已存外观偏好时，首屏启用 Codex glass；已有明确主题选择或关闭外观的设置继续生效。OLED 黑色背景、降低透明度和 forced-colors 的降级路径保留。外观与 picker 定向逻辑测试 13/13、Client 类型检查通过，界面交由用户手测。
+- CodexBash 的通用摘要原先优先取参数中的 `thread_id`，掩盖了已存在的 `command`。通过公开 `tool.call.toolview` 为 CodexBash、Bash、shell_command、run_shell_command、exec_command、local_shell 注册紧凑命令视图：命令在下一行截断，展开后显示完整命令、stdout/stderr 和原始记录；非零退出码并入同条状态。官方工具树、子调用、定位和自动审批拒绝展示仍由官方插件负责。中间输出默认折叠。6 项合成记录逻辑测试与 Client 类型检查通过；这不表示任意第三方工具都已有专用视图。
 
 - `118c33c` 已构建发布：初始补历史最多两页，窗口达到 1500 个事件后停止继续预取；预热缓存超过同一预算时只释放缓存自己的 reference；Conversation 外层不再因正文流和每次草稿更新而重新渲染。50 项相关逻辑测试、Client 类型检查通过。
 - 待回答表单按 Hub 和原始源会话、request ID 保存身份，display generation 改变时继续复用答案与本页的提交回执。未提交的选项、文本及当前问题写入浏览器存储，刷新后恢复；源端确认请求已结束才清理，不自动提交或重发。相关 9 项逻辑测试和 Client 类型检查通过。
