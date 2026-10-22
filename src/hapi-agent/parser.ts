@@ -111,7 +111,8 @@ function usageOf(value: unknown, base: ObservedBase, inclusive: boolean): Observ
   const context = count(info.contextTokens ?? info.context_tokens) ?? input + (inclusive ? 0 : (cached ?? 0) + (creation ?? 0)) + output
   const window = count(info.modelContextWindow ?? info.model_context_window ?? info.context_window)
   return { id: base.key, createdAt: base.createdAt, model: base.model, inputTokens: input, outputTokens: output,
-    cachedInputTokens: cached, cacheCreationTokens: creation, contextTokens: context, contextWindow: window && window > 0 ? window : null }
+    cachedInputTokens: cached, cacheCreationTokens: creation, inputIncludesCache: inclusive,
+    contextTokens: context, contextWindow: window && window > 0 ? window : null }
 }
 
 function fingerprint(item: ObservedItem): ObservedItem {

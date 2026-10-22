@@ -17,6 +17,8 @@ export const observedUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative(), outputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative().nullable(),
   cacheCreationTokens: z.number().int().nonnegative().nullable(),
+  /** Wire accounting, independent of the engine label. Absent in older snapshots. */
+  inputIncludesCache: z.boolean().optional(),
   contextTokens: z.number().int().nonnegative(), contextWindow: z.number().positive().nullable(),
 })
 export type ObservedUsage = z.infer<typeof observedUsageSchema>
