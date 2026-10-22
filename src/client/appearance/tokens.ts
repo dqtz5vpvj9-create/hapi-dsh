@@ -34,7 +34,7 @@ function colors(preferences: AppearancePreferences, scheme: ColorScheme): Record
         '--dsw-alias-bg-base': color.background, '--dsw-alias-bg-layer-1': surface ?? palette?.dialog ?? color.surface,
         '--dsw-alias-bg-layer-2': color.surface, '--dsw-alias-bg-layer-3': hover,
         '--dsw-alias-bg-module-platform': color.surface, '--dsw-alias-bg-multi-select': hover,
-        '--dsw-specific-sidebar-fill': color.background, '--dsw-specific-sidebar-nav-item-active': hover,
+        '--dsw-specific-sidebar-fill': preferences.palette === 'glass' ? color.surface : color.background, '--dsw-specific-sidebar-nav-item-active': hover,
         '--dsw-specific-sidebar-nav-item-hover': color.surface, '--dsw-specific-input-major': surface ?? palette?.dialog ?? color.surface,
         '--dsw-alias-label-primary': color.text, '--dsw-alias-label-primary-dimmed': color.text,
         '--dsw-alias-label-secondary': color.hint, '--dsw-alias-label-tertiary': color.hint, '--dsw-alias-label-caption': color.hint,

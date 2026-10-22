@@ -550,7 +550,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                 : controller.requestNewSession('dsh')}><strong>DSH</strong><span>{t(snapshot.creationContext?.machineId ? 'sourceCreateHelp' : 'dshCreateHelp')}</span></button>
             <button type="button" onClick={() => controller.requestNewSession('codex')}><strong>Codex</strong><span>{t('nativeCreateHelp')}</span></button>
             <button type="button" onClick={() => controller.requestNewSession('source')}><strong>{t('sourceEngines')}</strong><span>{t('sourceCreateHelp')}</span></button>
-            <button type="button" onClick={() => { setOptionsOpen(false); controller.openNativeLibrary() }}><strong>{t('nativeHistory')}</strong></button>
+            <button type="button" onClick={controller.openNativeLibrary}><strong>{t('nativeHistory')}</strong></button>
         </div></Dialog>}
         {snapshot.creation === 'codex' && <Dialog title={t('nativeNew')} close={controller.closeNewSession} t={t}><NativeSessionForm api={api} controller={controller} close={controller.closeNewSession} t={t} uploadInitialFile={uploadInitialFile}/></Dialog>}
         {snapshot.creation === 'source' && <Dialog title={`${t('sourceEngines')} · ${t('newSession')}`} close={controller.closeNewSession} t={t}><SourceSessionForm api={api} controller={controller} close={controller.closeNewSession} t={t} uploadInitialFile={uploadInitialFile}/></Dialog>}

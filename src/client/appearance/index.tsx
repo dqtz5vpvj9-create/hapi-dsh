@@ -85,6 +85,9 @@ export function installSourceAppearance(ctx: Context): () => void {
 }
 
 const styles = `
+/* Let each pane use its available width, including the official composer. */
+.hapi-pane .wSkVaW_body,.hapi-pane .wSkVaW_embeddedBody {--dsh-chat-content-width:100%;--dsh-composer-card-max-width:100%}
+.hapi-pane .Sixlwa_userStack {max-width:90%}
 /* Pinned official Chat factory markup. Keep message roles neutral in every theme. */
 .hapi-pane .Sixlwa_bubble {background:var(--hapi-user-message-surface,var(--dsw-specific-bubble));border:0;border-radius:10px;box-shadow:none;background-image:none;padding:10px 14px;max-width:88%;font-size:max(15px,var(--dsh-content-font-size,15px));line-height:1.6}
 .hapi-pane .Sixlwa_bubble::before,.hapi-pane .Sixlwa_bubble::after {content:none}

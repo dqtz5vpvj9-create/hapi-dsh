@@ -18,10 +18,11 @@ export const workspaceStyles = String.raw`
 .hapi-workspace-stage {position:relative;flex:1;min-height:0;min-width:0;overflow:hidden}
 .hapi-window {position:absolute;inset:0;visibility:hidden;pointer-events:none}.hapi-window-active {visibility:visible;pointer-events:auto}
 .hapi-pane {position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;padding:2px;box-sizing:border-box;outline:0;container-type:inline-size;container-name:hapi-pane}
-.hapi-pane::after {content:"";position:absolute;inset:2px;border:1px solid transparent;border-radius:var(--hapi-radius);pointer-events:none;z-index:3}
+.hapi-pane::after {content:"";position:absolute;inset:2px;border:1px solid transparent;border-radius:0;pointer-events:none;z-index:3}
 .hapi-pane:hover::after {border-color:var(--hapi-border)}
-.hapi-pane-focused::after {border-color:var(--hapi-accent)}
-.hapi-pane-header {position:relative;z-index:4;display:flex;align-items:center;flex-wrap:wrap;flex:0 0 auto;gap:2px;min-width:0;min-height:34px;padding:2px 5px;border-bottom:1px solid var(--hapi-border);border-radius:var(--hapi-radius) var(--hapi-radius) 0 0;background:var(--hapi-muted);color:var(--hapi-fg);font:var(--hapi-font-chrome)}
+.hapi-pane-focused::after {border-color:var(--hapi-border)}
+.hapi-pane-focused>.hapi-pane-header {box-shadow:inset 2px 0 var(--hapi-accent)}
+.hapi-pane-header {position:relative;z-index:4;display:flex;align-items:center;flex-wrap:wrap;flex:0 0 auto;gap:2px;min-width:0;min-height:34px;padding:2px 5px;border-bottom:1px solid var(--hapi-border);border-radius:0;background:var(--hapi-muted);color:var(--hapi-fg);font:var(--hapi-font-chrome)}
 .hapi-pane-heading {display:flex;align-items:center;gap:7px;flex:1 1 80px;min-width:0;max-width:100%;padding:3px;cursor:grab}
 .hapi-pane-heading>span:last-child {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
 .hapi-pane-heading[draggable=true]:active {cursor:grabbing}

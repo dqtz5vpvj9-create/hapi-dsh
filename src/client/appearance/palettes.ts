@@ -52,7 +52,7 @@ type ThemePalette = {
 }
 
 export const COLOR_THEME_OPTIONS: ReadonlyArray<ColorThemeOption> = [
-    { value: 'glass', labelKey: 'settings.display.colorTheme.glass', preview: { light: '#f6f6f4', dark: '#222426', accent: '#526c67' } },
+    { value: 'glass', labelKey: 'settings.display.colorTheme.glass', preview: { light: '#ffffff', dark: '#222426', accent: '#3f655c' } },
     { value: 'default', labelKey: 'settings.display.colorTheme.default', preview: { light: '#ffffff', dark: '#1c1c1e', accent: '#111827' } },
     { value: 'codex', labelKey: 'settings.display.colorTheme.codex', preview: { light: '#fafafa', dark: '#151515', accent: '#171717' } },
     { value: 'notion', labelKey: 'settings.display.colorTheme.notion', preview: { light: '#fafafa', dark: '#191919', accent: '#3183d8' } },
@@ -75,7 +75,7 @@ export const COLOR_THEME_OPTIONS: ReadonlyArray<ColorThemeOption> = [
 
 const PALETTES: Record<Exclude<ColorThemePreset, 'default'>, Record<'light' | 'dark', ThemePalette>> = {
     glass: {
-        light: palette('#526c67', '#f6f6f4', '#222426', '#6b706e', '#eceeeb'),
+        light: { ...palette('#3f655c', '#ffffff', '#25272a', '#777d83', '#f7f8fa'), dialog: '#ffffff', surface: '#f5f6f8', surfaceHover: '#eef1f4', border: 'rgba(15, 23, 42, 0.07)' },
         dark: palette('#9ab9ad', '#1b1d1e', '#f1f3f1', '#a2aaa5', '#282c2a'),
     },
     codex: {
