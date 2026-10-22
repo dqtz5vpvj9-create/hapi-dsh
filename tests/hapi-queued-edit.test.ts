@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { HapiApprovalAnswer, HapiCancelResult, HapiEvent, HapiMessage, HapiMessagesPage, HapiQueuedState, HapiSendMessage, HapiSession, HapiTransport } from '../src/codex/contracts.js'
 import { HapiRequestError } from '../src/codex/contracts.js'
-import { queuedEditCandidate } from '../src/codex/queued-edit-candidate.js'
+import { queuedAttachments, queuedEditCandidate } from '../src/codex/queued-edit-candidate.js'
 import { queuedEditRestoreSchedule, queuedEditRestoreText } from '../src/codex/queued-edit-types.js'
 import { SourceQueuedEdits, type SourceQueuedEditAgent } from '../src/hapi/queued-edit.js'
 
@@ -58,6 +58,16 @@ function mount(source: QueueSource, agent: SourceQueuedEditAgent, directory: str
   return new SourceQueuedEdits(source, { get: id => id === agent.id ? agent : undefined }, directory)
 }
 const request = { sessionId: 'hapi-codex-current', operationId: operation, localId: 'original-local' }
+
+test('queue previews retain upload ownership and discard arbitrary preview URLs', () => {
+  const row = queuedRow()
+  row.content = { role: 'user', content: { text: '', attachments: [
+    { filename: '图.png', path: '/runner/uploads/图.png', mimeType: 'image/png', size: 10, previewUrl: 'https://elsewhere.test/private' },
+    { filename: 'missing-path.png', mimeType: 'image/png', size: 10 },
+  ] } }
+  assert.deepEqual(queuedAttachments(row), [{ filename: '图.png', path: '/runner/uploads/图.png', mimeType: 'image/png', size: 10 }])
+  assert.deepEqual(queuedAttachments(undefined), [])
+})
 
 test('queue restoration retains original attachment references and absolute schedule, and rejects dispatching or invoked rows', () => {
   const row = queuedRow(), candidate = queuedEditCandidate(row, 'Short display preview')!

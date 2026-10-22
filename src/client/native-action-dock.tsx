@@ -8,7 +8,8 @@ import { useSourceQueuedEditing } from './source-queued-edit.tsx'
 import { NativePlanControls } from './native-plan.tsx'
 import { useLayoutEffect, useState } from 'react'
 import { useWorkspacePane } from './surface/pane-context.tsx'
-import { installSourceQueueOwnership, SourceQueue, sourceQueueStyles } from './source-queue.tsx'
+import { SourceQueue, sourceQueueStyles } from './source-queue.tsx'
+import { installSourceQueueOwnership } from './source-queue-ownership.ts'
 
 type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
 
@@ -50,6 +51,7 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
                 identity={{ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: 'codex-native',
                     ...(projection.machineId === null ? {} : { machineId: projection.machineId }) }}/>}
             {(projection || observed && !observed.sidechain) && <SourceQueue rows={(projection ?? observed)!.delivery} sessionId={sessionId}
+                source={{ sourceHubId: (projection ?? observed)!.hubId, sourceSessionId: (projection ?? observed)!.hapiSessionId }}
                 api={actions} disabled={(projection ?? observed)!.readOnly} steer={Boolean(projection) || Boolean(observed?.capabilities.steer)}
                 zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
             {queued.panel}

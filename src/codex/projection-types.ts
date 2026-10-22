@@ -8,11 +8,17 @@ export const deliveryStateSchema = z.enum([
   'dispatching', 'accepted', 'queued', 'invoked', 'indeterminate', 'rejected', 'cancelled', 'discarded',
 ])
 
+export const queuedAttachmentSchema = z.object({
+  filename: z.string(), path: z.string(), mimeType: z.string(), size: z.number().nonnegative(),
+})
+export type QueuedAttachment = z.infer<typeof queuedAttachmentSchema>
+
 export const deliveryViewSchema = z.object({
   localId: z.string(),
   messageId: z.string(),
   text: z.string(),
   attachmentNames: z.array(z.string()).optional(),
+  attachments: z.array(queuedAttachmentSchema).optional(),
   mode: z.enum(['queue', 'steer']),
   state: deliveryStateSchema,
   createdAt: z.number(),

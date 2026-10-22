@@ -32,7 +32,7 @@ import { ObservedChildren } from '../hapi-agent/children.js'
 import { ObservedScopeIndex } from '../hapi-agent/scopes.js'
 import { parseObservedHistory, parseObservedMessage } from '../hapi-agent/parser.js'
 import { sourceTeamProjection, acceptSourceStructuredState } from '../source-collaboration-types.js'
-import { queuedEditCandidate as readQueuedEditCandidate } from './queued-edit-candidate.js'
+import { queuedAttachments, queuedEditCandidate as readQueuedEditCandidate } from './queued-edit-candidate.js'
 
 export interface NativeCodexOptions {
   stateDirectory: string
@@ -701,7 +701,7 @@ export class NativeCodexAgent implements Agent {
     })
     return [...entries.values()].map(entry => {
       const candidate = this.queuedEditCandidate(entry.localId)
-      return { ...entry, attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
+      return { ...entry, attachments: queuedAttachments(this.queued.get(entry.localId)?.raw), attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
     })
       .sort((a, b) => a.createdAt - b.createdAt)
   }

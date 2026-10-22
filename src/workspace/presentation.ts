@@ -10,9 +10,9 @@ import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
 import { documentName } from './documents.ts'
 import { dshPaneTitle } from './dsh-view.ts'
 
-export type ActivityKind = 'error' | 'permission' | 'input' | 'running' | 'background' | 'idle' | 'offline'
+export type ActivityKind = 'error' | 'permission' | 'input' | 'running' | 'background' | 'completed' | 'idle' | 'offline'
 export type SessionActivity = { kind: ActivityKind; running: boolean; pending: boolean; compacting: boolean }
-export const activityPriority: Record<ActivityKind, number> = { error: 6, permission: 5, input: 4, running: 3, background: 2, idle: 1, offline: 0 }
+export const activityPriority: Record<ActivityKind, number> = { error: 6, permission: 5, input: 4, running: 3, background: 2, completed: 1.5, idle: 1, offline: 0 }
 
 export function nativeProjection(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): HapiProjection {
     const value: unknown = row?.projectionValues && Reflect.get(row.projectionValues, 'hapi')
@@ -22,6 +22,13 @@ export function nativeProjection(row: Pick<WorkspaceCatalogRow, 'projectionValue
 export function observedProjection(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): HapiObservedProjection {
     const value: unknown = row?.projectionValues && Reflect.get(row.projectionValues, 'hapiObserved')
     return value && typeof value === 'object' && Reflect.get(value, 'ownership') === 'hapi-runner' ? value as HapiObservedProjection : null
+}
+
+/** A source completion timestamp is evidence; a quiet connection alone is not. */
+export function sessionCompletedAt(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): number | undefined {
+    const native = nativeProjection(row), execution = native?.execution
+    return execution?.status === 'idle' && !native?.error && execution.completedAt !== null
+        && execution.completedAt >= (execution.startedAt ?? 0) ? execution.completedAt : undefined
 }
 
 export function sessionActivity(row: Pick<WorkspaceCatalogRow, 'running' | 'projectionValues' | 'hostOnline' | 'sourceRowState'> | undefined): SessionActivity {
@@ -39,7 +46,8 @@ export function sessionActivity(row: Pick<WorkspaceCatalogRow, 'running' | 'proj
         : waiting.includes('approval') || blocking.some(request => !input(request.tool)) ? 'permission'
         : waiting.includes('input') || blocking.some(request => input(request.tool)) ? 'input'
         : (native?.execution ? native.execution.status === 'active' : observed ? observed.thinking : row.running) ? 'running'
-        : (row.sourceRowState?.backgroundTaskCount ?? 0) > 0 ? 'background' : 'idle'
+        : (row.sourceRowState?.backgroundTaskCount ?? 0) > 0 ? 'background'
+        : !pending && sessionCompletedAt(row) !== undefined ? 'completed' : 'idle'
     return { kind, running: kind === 'running' || kind === 'background', pending, compacting: native?.execution?.compacting === true }
 }
 

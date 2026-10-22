@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import type { ReactElement } from 'react'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
-import { editableSourceQueue, installSourceQueueOwnership } from '../src/client/source-queue.tsx'
+import { editableSourceQueue, installSourceQueueOwnership } from '../src/client/source-queue-ownership.ts'
 import type { DeliveryView } from '../src/codex/projection-types.ts'
 
 const require = createRequire(import.meta.url)

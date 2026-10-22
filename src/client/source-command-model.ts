@@ -1,7 +1,27 @@
 import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { PartialArguments } from '@deepseek-ai/dsh-util-values'
 
 export const SOURCE_COMMAND_TOOLS = ['CodexBash', 'Bash', 'shell_command', 'run_shell_command', 'exec_command', 'local_shell'] as const
 export const SOURCE_COMPACT_TOOLS = ['CodexPatch', 'apply_patch'] as const
+
+/** Presentation adapter for the official Bash row; the stored call is untouched. */
+export function sourceShellBlock(block: ToolCallBlock): ToolCallBlock {
+    const model = sourceCommandModel(block), done = 'kind' in block
+    if (!model.command) return { ...block, name: 'bash' }
+    const input = object(parse(model.raw))
+    const workdir = input?.workdir ?? input?.cwd
+    const payload = { command: model.command,
+        ...(!done || model.exitCode !== null ? { description: model.description || model.command.split('\n')[0] } : {}),
+        ...(typeof workdir === 'string' ? { workdir } : {}) }
+    const argsRaw = JSON.stringify(payload), args = PartialArguments.fromText(argsRaw)
+    if (!done) return block.phase === 'start' ? { ...block, name: 'bash', args, argsRaw } : { ...block, name: 'bash', args }
+    // Missing exit data uses the official persistent/generic path, never its
+    // default-success parser. Only real exit codes receive a shell marker.
+    const output = model.exitCode === null ? model.output : `${model.output}\n[exit code: ${model.exitCode}]`
+    return { ...block, name: 'bash', args, call: { name: 'bash', argsRaw },
+        content: block.content.some(part => part.type !== 'text') ? block.content : [{ type: 'text', text: output }],
+        isError: model.exitCode === null || block.error ? block.isError : false }
+}
 
 function object(value: unknown): Record<string, unknown> | undefined {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined

@@ -1,4 +1,5 @@
 export const en = {
+    completedResult: 'Completed', latestResult: 'Latest completed result',
     sourceStateView: 'Source state', sourceStateHelp: 'Connection, identity and delivery reported by the original HAPI Runner. These facts do not imply that the engine is running.', sourceStateUnavailable: 'No source state is available in this session window.', sourceHub: 'Source Hub', sourceSession: 'Source session', sourceThread: 'Native thread', sourceExecution: 'Native execution state',
     originalConversation: 'Original conversation', technicalDetails: 'Technical details',
     sourceLoading: 'Reading the original conversation. The catalog is still syncing; this conversation is being loaded first.',
@@ -96,6 +97,7 @@ export const en = {
 } as const
 
 export const zh: Record<keyof typeof en, string> = {
+    completedResult: '已完成', latestResult: '最新完成的结果',
     sourceStateView: '源会话状态', sourceStateHelp: '原 HAPI Runner 报告的连接、身份和投递状态。存在这些信息并不表示引擎正在运行。', sourceStateUnavailable: '当前会话窗口尚无源状态。', sourceHub: '源 Hub', sourceSession: '源会话', sourceThread: '原生线程', sourceExecution: '原生执行状态',
     originalConversation: '原有会话', technicalDetails: '技术详情',
     sourceLoading: '正在读取原始会话。目录仍在同步，这个会话会优先加载。',

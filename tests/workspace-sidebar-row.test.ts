@@ -4,10 +4,11 @@ import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { CatalogSession } from '../src/client-api.ts'
+import { hapiProjectionSchema } from '../src/codex/projection-types.ts'
 import { SessionRowState } from '../src/client/sidebar-row-state.tsx'
 import { en, type WorkspaceTranslate } from '../src/client/locales.ts'
 import { sessionRelativeTime, sourceTimeMilliseconds } from '../src/workspace/sidebar-row.ts'
-import { sessionActivity } from '../src/workspace/presentation.ts'
+import { sessionActivity, sessionCompletedAt } from '../src/workspace/presentation.ts'
 
 const t: WorkspaceTranslate = (key, params) => en[key].replace(/\{(\w+)\}/g, (_, field: string) => String(params?.[field] ?? field))
 const empty: NonNullable<CatalogSession['sourceRowState']> = { todoProgress: null, futureScheduledMessageCount: null, nextScheduledAt: null,
@@ -44,4 +45,21 @@ test('a real connected background task keeps running status, but a disconnected 
     assert.deepEqual(sessionActivity(row), { kind: 'background', running: true, pending: true, compacting: false })
     assert.deepEqual(sessionActivity({ ...row, hostOnline: false }), { kind: 'offline', running: false, pending: true, compacting: false })
     assert.equal(sessionActivity({ ...row, sourceRowState: empty }).kind, 'idle')
+})
+
+test('completion needs an original completion timestamp after the latest start', () => {
+    const source = hapiProjectionSchema.parse({ engine: 'codex', nativeConnection: 'attached', pendingRequests: [], error: null,
+        hubId: 'hub', hapiSessionId: 'source', logicalSessionId: 'display', displayRevision: 1, machineId: null, machineName: null,
+        nativeId: 'thread', nativeHome: null, readOnly: false, model: 'astra', reasoningEffort: null, delivery: [], resolvedRequests: [],
+        execution: { owner: 'native', generation: 'one', sequence: 1, turnId: 'turn', status: 'idle', waitingOn: [], startedAt: 100, completedAt: 200 } })!
+    const row = { running: false, hostOnline: true, projectionValues: { hapi: source } }
+    assert.equal(sessionCompletedAt(row), 200)
+    assert.equal(sessionActivity(row).kind, 'completed')
+    assert.equal(sessionActivity({ ...row, hostOnline: false }).kind, 'offline')
+    source.execution!.completedAt = 50
+    assert.equal(sessionCompletedAt(row), undefined)
+    assert.equal(sessionActivity(row).kind, 'idle')
+    source.execution!.status = 'active'
+    assert.equal(sessionActivity(row).kind, 'running')
+    assert.equal(sessionCompletedAt(row), undefined)
 })

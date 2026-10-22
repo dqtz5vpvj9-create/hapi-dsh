@@ -38,6 +38,7 @@ export const workspaceStyles = String.raw`
 .hapi-native-dock:empty,.hapi-native-dock:not(:has(.hapi-native-request)):not(:has(.hapi-native-plan)) {display:none}
 .hapi-dot {display:inline-block;width:6px;height:6px;border-radius:50%;flex:0 0 6px;background:var(--hapi-secondary);opacity:.45}
 .hapi-dot-running {background:var(--hapi-accent);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--hapi-accent) 12%,transparent)}
+.hapi-dot-completed{background:#438adc;opacity:1}.hapi-dot-latest{width:9px;height:9px}.hapi-dot-astra{background:#d9a32b;box-shadow:0 0 0 3px #d9a32b20}
 .hapi-pane-body {display:flex;flex:1;min-width:0;min-height:0;position:relative;isolation:isolate;z-index:0;overflow:hidden;border-radius:0 0 4px 4px;background:var(--hapi-bg)}
 .hapi-pane-body>div {width:100%;min-height:0}.hapi-conversation {display:flex;flex-direction:column;min-width:0;min-height:0;flex:1;height:100%;overflow:hidden}
 .hapi-source-download {display:inline-flex;align-items:center;flex:0 0 auto;gap:6px;min-width:max-content;font:var(--hapi-font-small);white-space:nowrap}.hapi-source-download>button {border:1px solid var(--hapi-border);border-radius:6px;background:var(--hapi-bg);color:var(--hapi-fg);padding:5px 8px;font:inherit;white-space:nowrap;cursor:pointer}.hapi-source-download>button:disabled {opacity:.5;cursor:wait}.hapi-source-download>.hapi-error {max-width:220px}

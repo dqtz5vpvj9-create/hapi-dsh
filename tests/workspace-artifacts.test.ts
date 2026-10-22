@@ -8,7 +8,7 @@ import { artifactResourceAddress, documentPaneTarget, parseArtifactResourceAddre
     parseGeneratedMediaResourceAddress, parseSourceDocumentResourceAddress, type ArtifactReference, type GeneratedMediaReference } from '../src/workspace/artifacts.ts'
 import { artifactPresentation, artifactViewers, loadArtifact, readArtifactBytes, type ArtifactApi } from '../src/client/artifact-content.ts'
 import { borrowArtifactBodies, DOCUMENT_PREFIX } from '../src/client/artifact-bodies.ts'
-import { sourceDocumentImageUrl, sourceDocumentPath } from '../src/client/source-document-path.ts'
+import { sourceAttachmentImageUrl, sourceDocumentImageUrl, sourceDocumentPath } from '../src/client/source-document-path.ts'
 import { initialWorkspace, parseWorkspaceState, WorkspaceStore } from '../src/client/model.ts'
 import { bindSourceResources } from '../src/workspace/legacy.ts'
 import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
@@ -23,6 +23,19 @@ function metadata(overrides: Partial<WorkbenchResponse<'nativeDocument'>> = {}):
 }
 const fileArtifact = (path: string): string => `session-file:${Buffer.from(path).toString('base64url')}`
 const base = 'https://workspace.example/dsh/'
+
+test('queue thumbnails use the source-authorized artifact route for uploads outside cwd', () => {
+    const file = { filename: '图.png', path: 'C:\\uploads\\图.png', mimeType: 'image/png', size: 10 }
+    const url = new URL(sourceAttachmentImageUrl(reference.source, file, base)!)
+    assert.equal(url.origin, new URL(base).origin)
+    assert.equal(url.pathname, '/hapi-dsh/workbench/document')
+    const request = JSON.parse(url.searchParams.get('request')!)
+    assert.deepEqual(request.source, reference.source)
+    assert.equal(request.document.kind, 'artifact')
+    assert.equal(sessionFileArtifactPath(request.document.artifactId), file.path)
+    assert.equal(sourceAttachmentImageUrl(reference.source, { ...file, mimeType: 'image/svg+xml' }, base), undefined)
+    assert.equal(sourceAttachmentImageUrl(reference.source, file, 'file:///local.html'), undefined)
+})
 
 test('original session-file identities strictly decode real Unicode and Windows paths, never opaque locators', () => {
     for (const path of ['/repo/报告 #1?.md', 'C:\\project\\源码.ts', '../shared/notes.md']) assert.equal(sessionFileArtifactPath(fileArtifact(path)), path)

@@ -159,7 +159,8 @@
     "socket.io-client": "4.8.3",
     "ws": "8.21.0",
     "yaml": "2.8.2",
-    "zod": "4.4.3"
+    "zod": "4.4.3",
+    "@deepseek-ai/dsh-util-values": "0.2.1-rc.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.5"

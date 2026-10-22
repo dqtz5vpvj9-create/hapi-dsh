@@ -1,6 +1,18 @@
 import type { HapiMessage } from './contracts.js'
 import { envelopeFor, record } from './native.js'
 import { sourceQueuedEditCandidateSchema, type SourceQueuedEditCandidate } from './queued-edit-types.js'
+import { queuedAttachmentSchema, type QueuedAttachment } from './projection-types.js'
+
+/** Original upload descriptors only. Untrusted preview URLs never enter the projection. */
+export function queuedAttachments(row: HapiMessage | undefined): QueuedAttachment[] {
+  if (!row) return []
+  const envelope = envelopeFor(row.content), content = record(envelope?.content)
+  if (envelope?.role !== 'user' || !Array.isArray(content?.attachments)) return []
+  return content.attachments.flatMap(value => {
+    const parsed = queuedAttachmentSchema.safeParse(value)
+    return parsed.success ? [parsed.data] : []
+  })
+}
 
 /** Read original row payloads, not a shortened display preview or local echo. */
 export function queuedEditCandidate(row: HapiMessage, parsedText: string): SourceQueuedEditCandidate | undefined {

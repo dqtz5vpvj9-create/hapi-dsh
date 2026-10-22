@@ -1,8 +1,52 @@
 /** Synthetic source records exercise presentation only; no source execution or browser is used. */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createElement, type ComponentType } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
+import type { Context } from '@deepseek-ai/cordis'
+import { installSourceCommandViews } from '../src/client/source-command-view.tsx'
+import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { StartedToolCall, ToolResultNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceCommandModel, sourceToolSummary } from '../src/client/source-command-model.ts'
+import { sourceCommandModel, sourceToolSummary, sourceShellBlock } from '../src/client/source-command-model.ts'
+
+test('source shell aliases render the registered official component and leave specialized providers intact', () => {
+    const slots = new SlotCore()
+    const root = slots.register({ name: 'root', children: { 'tool.call.toolview': { kind: 'keyed', scope: 'session' } } } as never, (() => null) as never)
+    const Official = (props: ToolCallViewProps) => createElement('span', { 'data-official-bash': props.toolName }, props.block.args.text('command'))
+    const native = slots.register({ name: 'tool.call.toolview', key: 'bash', locale: 'conversation' } as never, Official as never)
+    const facade = { register: slots.register.bind(slots), subscribe: slots.subscribe.bind(slots), entriesOfSlot: slots.entriesOfSlot.bind(slots),
+        inject: (_name: string, install: () => () => void) => install() }
+    const stop = installSourceCommandViews({ slots: facade } as unknown as Context)
+    const alias = slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'CodexBash')!
+    assert.ok(alias); assert.equal(alias.locale, 'conversation')
+    const html = renderToStaticMarkup(createElement(alias.component as ComponentType<ToolCallViewProps>,
+        { phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash' } as ToolCallViewProps))
+    assert.equal(html, '<span data-official-bash="bash">pwd</span>')
+    const Specialized = () => null
+    const remove = slots.register({ name: 'tool.call.toolview', key: 'CodexBash', priority: 0 } as never, Specialized as never)
+    assert.equal(slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'CodexBash')!.component, Specialized)
+    stop(); remove(); native(); root()
+})
+
+test('source shell calls adapt to official Bash data without rewriting the original record', () => {
+    const original = call({ command: ['/bin/bash', '-lc', 'printf hello'], cwd: '/work', description: 'Read greeting' })
+    const before = JSON.stringify(original), adapted = sourceShellBlock(original)
+    assert.equal(adapted.name, 'bash')
+    assert.equal(adapted.args.text('command'), 'printf hello')
+    assert.equal(adapted.args.text('description'), 'Read greeting')
+    assert.equal(adapted.args.text('workdir'), '/work')
+    assert.equal(JSON.stringify(original), before)
+})
+
+test('official shell exit markers reflect real source codes and missing codes stay unknown', () => {
+    const adapted = sourceShellBlock(result({ cmd: 'check' }, { output: 'failure details', exit_code: 2 }, true)) as ToolResultNode
+    assert.equal(adapted.call?.name, 'bash')
+    assert.deepEqual(adapted.content, [{ type: 'text', text: 'failure details\n[exit code: 2]' }])
+    const unknown = sourceShellBlock(result({ cmd: 'check' }, 'unknown process status')) as ToolResultNode
+    assert.deepEqual(unknown.content, [{ type: 'text', text: 'unknown process status' }])
+    assert.equal(unknown.args.text('description'), undefined)
+})
 
 function call(input: Record<string, unknown>): StartedToolCall {
     return { phase: 'start', name: 'CodexBash', callId: 'call-1', turn: 1, step: 1, time: 1, subCalls: [],

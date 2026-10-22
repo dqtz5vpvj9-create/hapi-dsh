@@ -26,7 +26,7 @@ import { ObservedScopeIndex } from './scopes.js'
 import { ObservedChildren } from './children.js'
 import { SourceDshChildren } from './dsh-children.js'
 import { sourceTeamProjection, acceptSourceStructuredState } from '../source-collaboration-types.js'
-import { queuedEditCandidate as readQueuedEditCandidate } from '../codex/queued-edit-candidate.js'
+import { queuedAttachments, queuedEditCandidate as readQueuedEditCandidate } from '../codex/queued-edit-candidate.js'
 
 export interface HapiObservedTransport extends HapiTransport {
   readonly isConnected?: boolean
@@ -534,7 +534,7 @@ export class HapiObservedAgent implements Agent {
     })
     return [...values.values()].map(entry => {
       const candidate = this.queuedEditCandidate(entry.localId)
-      return { ...entry, attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
+      return { ...entry, attachments: queuedAttachments(this.queued.get(entry.localId)?.row), attachmentNames: candidate?.attachmentNames ?? [], editable: candidate !== undefined, cancelable: entry.state === 'queued' }
     })
       .sort((a, b) => a.createdAt - b.createdAt)
   }

@@ -10,7 +10,7 @@ import { NativeSessionForm } from './new-session.tsx'
 import { SourceSessionForm } from './source-session.tsx'
 import { NativeForkContent } from './native-controls.tsx'
 import { DshSessionForm } from './dsh-session.tsx'
-import { nativeProjection, observedProjection, paneTitle, sessionActivity, sessionDestinations, sessionFolder, windowActivity, windowAlias, windowTitle, type ActivityKind } from '../workspace/presentation.ts'
+import { nativeProjection, observedProjection, paneTitle, sessionActivity, sessionCompletedAt, sessionDestinations, sessionFolder, windowActivity, windowAlias, windowTitle, type ActivityKind } from '../workspace/presentation.ts'
 import { useNarrowViewport, useWorkspaceViewport } from '../workspace/viewport.ts'
 import { useDebouncedSidebarQuery } from './sidebar-search-query.ts'
 import { pendingTarget } from '../workspace/pending-target.ts'
@@ -45,7 +45,7 @@ import { SidebarBookmarks } from '../workspace/sidebar-bookmarks.ts'
 import { localDayKey, matchesSidebarTime, SidebarRecency, sidebarDayLabel, sidebarTimeRange } from '../workspace/sidebar-time.ts'
 import { nextSidebarPreview, previousSidebarPreview, sidebarActiveRoots, sidebarActivityBuckets, sidebarBranchFacts, sidebarPreview, sidebarSessionActive, type SidebarActivityBucket } from '../workspace/sidebar-sections.ts'
 
-const activityLabel: Record<ActivityKind, WorkspaceKey> = { error: 'activityError', permission: 'waitingPermission', input: 'waitingInput', running: 'running', background: 'background', idle: 'idle', offline: 'offline' }
+const activityLabel: Record<ActivityKind, WorkspaceKey> = { error: 'activityError', permission: 'waitingPermission', input: 'waitingInput', running: 'running', background: 'background', completed: 'completedResult', idle: 'idle', offline: 'offline' }
 const sourceResolutionLabel: Record<SourceResolutionStatus, WorkspaceKey> = {
     loading: 'sourceLoading', 'not-found': 'sourceNotFound', removed: 'sourceRemoved', denied: 'sourceDenied',
     transport: 'sourceTransport', 'not-ready': 'sourceNotReady', ambiguous: 'sourceAmbiguous', identity: 'sourceIdentityMismatch', unknown: 'sourceResolveFailed',
@@ -66,10 +66,11 @@ function errorParts(message: string, t: WorkspaceTranslate): { summary: string; 
     return { summary: raw ? t('errorSummary') : first.length > 180 ? `${first.slice(0, 180)}…` : first,
         detail: raw || text.includes('\n') || first !== text ? text : null }
 }
-function ActivityDot({ kind, pending, compacting, t }: { kind: ActivityKind; pending?: boolean; compacting?: boolean; t: WorkspaceTranslate }) {
-    const title = t(compacting && kind === 'running' ? 'compacting' : activityLabel[kind])
+function ActivityDot({ kind, pending, compacting, model, latest, t }: { kind: ActivityKind; pending?: boolean; compacting?: boolean; model?: string | null | undefined; latest?: boolean; t: WorkspaceTranslate }) {
+    const astra = kind === 'running' && /astra/i.test(model ?? '')
+    const title = [astra ? model : null, t(latest && kind === 'completed' ? 'latestResult' : compacting && kind === 'running' ? 'compacting' : activityLabel[kind])].filter(Boolean).join(' · ')
     return <span className={`hapi-activity hapi-activity-${kind}`} data-activity={kind} title={title} aria-label={title}>
-        <span className={`hapi-dot hapi-dot-${kind}`}/>{pending && kind !== 'permission' && kind !== 'input' && <span className="hapi-pending-badge" title={t('attention')}>!</span>}
+        <span className={`hapi-dot hapi-dot-${kind}${astra ? ' hapi-dot-astra' : ''}${latest && kind === 'completed' ? ' hapi-dot-latest' : ''}`}/>{pending && kind !== 'permission' && kind !== 'input' && <span className="hapi-pending-badge" title={t('attention')}>!</span>}
     </span>
 }
 
@@ -206,7 +207,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         <header className="hapi-pane-header" data-hapi-pane-header={pane.id}>
             <div className="hapi-pane-heading" data-hapi-pane-drag title={[title, location.machineName, summary?.cwd, t('paneDrag')].filter(Boolean).join('\n')} draggable={!hidden}
                 onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>
-                {summary && <ActivityDot kind={activity.kind} pending={activity.pending} compacting={activity.compacting} t={t}/>}
+                {summary && <ActivityDot {...activity} model={(nativeProjection(summary) ?? observedProjection(summary))?.model} t={t}/>}
                 <span>{readableTitle(title, t, 200)}</span>
             </div>
             <div className="hapi-pane-toolbar" role="group" aria-label={t('paneActions')}>
@@ -596,6 +597,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const language = document.documentElement.lang || 'en'
     const input = useRef<HTMLInputElement>(null)
     const rows = useMemo(() => snapshot.catalog.ids.map(id => snapshot.catalog.byId[id]).filter(row => row !== undefined), [snapshot.catalog])
+    const latestCompleted = useMemo(() => rows.filter(row => sessionActivity(row).kind === 'completed')
+        .reduce<WorkspaceCatalogRow | undefined>((latest, row) => (sessionCompletedAt(row) ?? 0) > (sessionCompletedAt(latest) ?? 0) ? row : latest, undefined)?.id, [rows])
     const orderedIds = recency.reconcile(rows)
     const searchIndex = useMemo(() => buildSidebarSearchIndex(rows, query, sessionLocation), [rows, query])
     const activityDates = useMemo(() => new Set([...rows, ...snapshot.sourceDiscovery?.sessions ?? []].map(row => localDayKey(row.updatedAt))), [rows, snapshot.sourceDiscovery])
@@ -731,7 +734,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                 </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined, filter === 'attention' ? pendingTarget(row) : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
                     onPointerEnter={() => controller.preloadSession(row.id)} onFocus={() => controller.preloadSession(row.id)}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
-                    <div className="hapi-session-title"><ActivityDot {...activity} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
+                    <div className="hapi-session-title"><ActivityDot {...activity} model={(nativeProjection(row) ?? observedProjection(row))?.model} latest={row.id === latestCompleted} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
                     <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`} title={t('engine')}>{readableEngine(location.engine)}</span>
                         {machineLabel && <span className="hapi-ellipsis">{machineLabel}</span>}{destination ? <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span> : <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1)}</span>}
                         <span className="hapi-session-source-state"><SessionRowState state={row.sourceRowState} detailed={!mobile || statusMode === 'detailed'} t={t}/></span>
