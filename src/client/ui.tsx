@@ -73,7 +73,7 @@ function ActivityDot({ kind, pending, compacting, t }: { kind: ActivityKind; pen
     </span>
 }
 
-export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'vertical' | 'add' | 'close' | 'zoom' | 'grid' | 'restore' | 'more' | 'search' | 'refresh' | 'sidebar' | 'help'; size?: number }) {
+export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'vertical' | 'add' | 'close' | 'zoom' | 'grid' | 'restore' | 'more' | 'search' | 'refresh' | 'sidebar' | 'help' | 'folder'; size?: number }) {
     const paths = {
         horizontal: 'M3 3h18v18H3zM12 3v18', vertical: 'M3 3h18v18H3zM3 12h18',
         add: 'M12 5v14M5 12h14', close: 'm6 6 12 12M6 18 18 6', zoom: 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5',
@@ -81,6 +81,7 @@ export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'verti
         more: 'M5 12h.01M12 12h.01M19 12h.01', search: 'M20 20l-5-5M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
         refresh: 'M20 7a9 9 0 0 0-16 2M20 3v5h-5M4 17a9 9 0 0 0 16-2M4 21v-5h5',
         sidebar: 'M3 3h18v18H3zM9 3v18', help: 'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5M12 18h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+        folder: 'M3 7V4h6l2 3h10v13H3zM3 10h18',
     }
     return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind]}/></svg>
 }
@@ -195,13 +196,32 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         return () => { document.removeEventListener('visibilitychange', seen) }
     }, [hidden, focused, snapshot.pickingSession, summary?.id, summary?.updatedAt, controller, pane.resource])
     const title = !summary && lease?.sourceResolution ? t('originalConversation') : paneTitle(pane, snapshot.catalog.byId, t('newPane'))
+    const activity = sessionActivity(summary)
+    const zoomed = snapshot.layout.zoomed[window.id] === true && focused
     return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { visibility: 'hidden', pointerEvents: 'none', ...(lastVisibleSize.current ?? {}) } : {}) }}
         data-pane-id={pane.id} data-session-id={pane.resource.kind === 'chat' ? pane.resource.sessionId : ''} aria-hidden={hidden}
         data-hapi-pane-state={pane.resource.kind === 'empty' ? 'empty' : hidden && !lease?.reference ? 'deferred' : lease?.status ?? 'opening'}
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
-        <div className="hapi-pane-grip" data-hapi-pane-drag aria-hidden="true" title={t('paneDrag')} draggable={!hidden}
-            onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}/>
+        <header className="hapi-pane-header" data-hapi-pane-header={pane.id}>
+            <div className="hapi-pane-heading" data-hapi-pane-drag title={[title, location.machineName, summary?.cwd, t('paneDrag')].filter(Boolean).join('\n')} draggable={!hidden}
+                onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>
+                {summary && <ActivityDot kind={activity.kind} pending={activity.pending} compacting={activity.compacting} t={t}/>}
+                <span>{readableTitle(title, t, 200)}</span>
+            </div>
+            <div className="hapi-pane-toolbar" role="group" aria-label={t('paneActions')}>
+                <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
+                <IconButton label={t(zoomed ? 'unzoom' : 'zoom')} icon="zoom" pressed={zoomed}
+                    onClick={() => { controller.store.focus(pane.id); controller.store.toggleZoom() }}/>
+                <IconButton label={t('projectFiles')} icon="folder" disabled={pane.resource.kind === 'empty'} onClick={() => {
+                    if (pane.resource.kind === 'empty') return
+                    controller.store.focus(pane.id)
+                    controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' })
+                }}/>
+                <IconButton label={t('closePane')} icon="close" onClick={() => controller.store.closePane(pane.id)}/>
+                <PaneMenu pane={pane} window={window} controller={controller} t={t}/>
+            </div>
+        </header>
         <div className="hapi-pane-body">
             {pane.resource.kind === 'empty' ? <div className="hapi-empty"><WorkspaceIcon kind="grid" size={34}/><h2>{t('chooseSession')}</h2><p>{t('emptyHelp')}</p><button type="button" onClick={controller.requestSessionPicker}>{t('openConversation')}</button><button type="button" onClick={create}>{t('newSession')}</button><kbd>Ctrl B → %</kbd></div>
                 : lease?.status === 'failed' ? (() => {
@@ -224,9 +244,9 @@ function PaneMenuItems({ pane, window, controller, t }: { pane: PaneNode; window
     const split = (axis: 'horizontal' | 'vertical'): void => { controller.store.focus(pane.id); controller.store.split(axis); controller.requestSessionPicker() }
     return <>
         {pane.resource.kind !== 'empty' && <>
-            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('pluginViewsBeside')}</button>
-            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('projectFiles')}</button>
-            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') controller.openTab('terminal', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) }}>{t('terminal')}</button>
+            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') { controller.store.focus(pane.id); controller.openTab('guide', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) } }}>{t('pluginViewsBeside')}</button>
+            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') { controller.store.focus(pane.id); controller.openTab('files', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) } }}>{t('projectFiles')}</button>
+            <button type="button" onClick={() => { if (pane.resource.kind !== 'empty') { controller.store.focus(pane.id); controller.openTab('terminal', { sessionId: pane.resource.sessionId, beside: 'horizontal' }) } }}>{t('terminal')}</button>
         </>}
         {row?.hostId === 'local' && sourceIdentity(row) && <button type="button" onClick={() => controller.openNativeTools(row.id)}>{t('sessionTools')}</button>}
         <button type="button" onClick={() => { controller.store.focus(pane.id); controller.requestSessionPicker() }}>{t('openConversation')}</button>

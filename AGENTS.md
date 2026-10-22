@@ -19,6 +19,7 @@ Build a distributable DSH plugin composition with one cross-machine session side
 
 - 当前阶段由用户直接验收上线后的界面。Agent 不运行浏览器界面测试、截图或视觉检查，也不把这些检查作为上线门禁。
 - Agent 完成类型检查、必要的逻辑测试和构建后，按现有部署流程上线；只核对服务启动与 HTTP 可达性。交付时明确说明界面尚未由 Agent 验收。
+- 优先快速开发、快速上线，让用户立即手测。检查限定在本次改动范围；仅改前端时使用客户端构建与现有热更新流程。
 - 此阶段规则优先于历史交接文档中关于定向 E2E、截图和界面验收的要求；保留已有认证、数据安全和发布约束。
 
 ## Collaboration responsibilities

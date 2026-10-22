@@ -7,6 +7,14 @@ No official Conversation header is hidden to make the workspace appear smaller.
 
 ## Compact navigation without losing plugin actions
 
+Each pane has a persistent title bar, including empty, loading, and failed
+panes. Its buttons add a split beside that pane, zoom or restore that pane,
+open files using that pane's source session, close that pane, and open its own
+actions menu. These controls remain available on the visible mobile pane.
+Closing uses the existing view close guards and does not stop source execution.
+The 2026-10-22 restoration was checked with TypeScript, existing layout/controller
+logic tests, and a client build; UI acceptance belongs to the user this stage.
+
 Each pane's existing actions menu contains its Host's Conversation, contributed
 main panels, original Settings launcher, and plugin-view guide. The separate
 always-visible Host navigation row has been removed. The menu also retains the
@@ -21,9 +29,8 @@ On a narrow viewport, the same tools move to the focused pane's bottom menu.
 Inactive panes keep their plugin graph and state but do not add another visible
 tools menu.
 
-The outer pane title remains the drag handle on desktop. Mobile uses the pane
-switcher and the original official session header instead of showing both pane
-headers. Menus remain keyboard accessible and use the existing outside-click
+The outer pane title remains the drag handle on desktop. Mobile also retains
+the pane switcher below the conversation. Menus remain keyboard accessible and use the existing outside-click
 and Escape dismissal behavior. Touch menu actions have a minimum 44px height.
 
 ## Text, source status, and installation

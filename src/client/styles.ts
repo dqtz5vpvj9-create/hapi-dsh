@@ -21,9 +21,13 @@ export const workspaceStyles = String.raw`
 .hapi-pane::after {content:"";position:absolute;inset:2px;border:1px solid transparent;border-radius:var(--hapi-radius);pointer-events:none;z-index:3}
 .hapi-pane:hover::after {border-color:var(--hapi-border)}
 .hapi-pane-focused::after {border-color:var(--hapi-accent)}
-.hapi-pane-grip {position:absolute;top:2px;left:14px;right:14px;height:6px;z-index:5;opacity:0;cursor:grab;border-radius:0 0 3px 3px;background:linear-gradient(var(--hapi-border),transparent);transition:opacity .12s}
-.hapi-pane:hover>.hapi-pane-grip,.hapi-pane-focused>.hapi-pane-grip {opacity:.55}
-.hapi-pane-grip[draggable=true]:active {cursor:grabbing;opacity:.9}
+.hapi-pane-header {position:relative;z-index:4;display:flex;align-items:center;flex-wrap:wrap;flex:0 0 auto;gap:2px;min-width:0;min-height:34px;padding:2px 5px;border-bottom:1px solid var(--hapi-border);border-radius:var(--hapi-radius) var(--hapi-radius) 0 0;background:var(--hapi-muted);color:var(--hapi-fg);font:var(--hapi-font-chrome)}
+.hapi-pane-heading {display:flex;align-items:center;gap:7px;flex:1 1 80px;min-width:0;max-width:100%;padding:3px;cursor:grab}
+.hapi-pane-heading>span:last-child {min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+.hapi-pane-heading[draggable=true]:active {cursor:grabbing}
+.hapi-pane-toolbar {display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:0 1 auto;gap:1px;min-width:0;margin-left:auto}
+.hapi-pane-toolbar>.hapi-icon-button,.hapi-pane-toolbar>.hapi-menu>summary {width:28px;height:28px}
+.hapi-pane-header:has(.hapi-menu[open]) {z-index:8}
 .hapi-dot {display:inline-block;width:6px;height:6px;border-radius:50%;flex:0 0 6px;background:var(--hapi-secondary);opacity:.45}
 .hapi-dot-running {background:var(--hapi-accent);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--hapi-accent) 12%,transparent)}
 .hapi-pane-body {display:flex;flex:1;min-width:0;min-height:0;position:relative;isolation:isolate;z-index:0;overflow:hidden;border-radius:0 0 4px 4px;background:var(--hapi-bg)}
@@ -87,6 +91,7 @@ export const workspaceStyles = String.raw`
 .hapi-session-menu-heading {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:270px;padding:5px 9px;color:var(--hapi-secondary);font:var(--hapi-font-small)}.hapi-sidebar-context>button[data-danger=true] {color:var(--hapi-danger)}
 .hapi-source-export {display:flex;flex-direction:column;gap:9px}.hapi-source-export>h3,.hapi-source-export>p {margin:0}.hapi-source-export>label {display:flex;align-items:center;gap:10px}.hapi-source-export>label select {flex:1}
 @media (pointer:coarse) {.hapi-sidebar-context>button,.hapi-menu-content>button,.hapi-pane-tools-button {min-height:44px}.hapi-menu>summary,.hapi-mobile-pane-bar>.hapi-icon-button {min-width:36px;min-height:36px}}
+@media (pointer:coarse) {.hapi-pane-toolbar>.hapi-icon-button,.hapi-pane-toolbar>.hapi-menu>summary {min-width:44px;min-height:44px}}
 .hapi-notice {display:flex;align-items:center;gap:8px;padding:5px 10px;background:var(--hapi-muted);border-bottom:1px solid var(--hapi-border);border-left:3px solid var(--hapi-danger);font:var(--hapi-font-chrome);color:var(--hapi-secondary);flex:0 0 auto}.hapi-notice>span {flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hapi-session-sidebar {display:flex;flex:1;flex-direction:column;min-height:0;width:100%;box-sizing:border-box;padding:5px 8px 0;overflow:hidden}
 .hapi-session-sidebar>header {display:flex;align-items:center;gap:6px;padding:2px 4px 6px;font:var(--hapi-font-chrome)}.hapi-session-sidebar>header>strong {font-weight:600}.hapi-session-sidebar>header>span {font:var(--hapi-font-small);color:var(--hapi-secondary)}.hapi-session-sidebar>header>button {margin-left:auto;width:24px;height:24px}
