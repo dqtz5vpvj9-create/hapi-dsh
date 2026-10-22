@@ -335,6 +335,9 @@ export class HapiController extends TypertRemoteService {
     nativeCancel(request: NativeQueueRequest): Promise<HapiCancelResult> {
         return this.sourceCall(() => this.sourceAgent(request.sessionId).cancelQueued(request.localId));
     }
+    nativeSteerInbox(sessionId: string, itemId: string): Promise<HapiSteerResult> {
+        return this.sourceCall(() => this.sourceAgent(sessionId).steerInbox(itemId));
+    }
     nativeSteer(request: NativeQueueRequest): Promise<HapiSteerResult> {
         return this.sourceCall(() => this.sourceAgent(request.sessionId).steerQueued(request.localId));
     }

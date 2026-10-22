@@ -477,6 +477,12 @@ export class NativeCodexAgent implements Agent {
     const value = this.queued.get(localId)
     return value ? readQueuedEditCandidate(value.raw, value.row.text) : undefined
   }
+  async steerInbox(itemId: string) {
+    const delivery = this.deliveries().find(row =>
+      (this.journal.get(row.localId)?.message?.id ?? `hapi:${row.localId}`) === itemId)
+    if (!delivery || delivery.state !== 'queued') throw new Error('Source queue item is no longer confirmed queued; refresh its receipt before steering')
+    return this.steerQueued(delivery.localId)
+  }
   async steerQueued(localId: string): Promise<HapiSteerResult> {
     this.assertWritable()
     if (this.deliveries().some(delivery => delivery.localId === localId && delivery.scheduledAt && delivery.scheduledAt > Date.now())) {

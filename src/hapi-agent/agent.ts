@@ -347,6 +347,12 @@ export class HapiObservedAgent implements Agent {
     const value = this.queued.get(localId)
     return value ? readQueuedEditCandidate(value.row, value.item.text) : undefined
   }
+  async steerInbox(itemId: string) {
+    const delivery = this.deliveries().find(row =>
+      (this.journal.get(row.localId)?.message?.id ?? `hapi-observed:${row.localId}`) === itemId)
+    if (!delivery || delivery.state !== 'queued') throw new Error('Source queue item is no longer confirmed queued; refresh its receipt before steering')
+    return this.steerQueued(delivery.localId)
+  }
   async steerQueued(localId: string) {
     this.assertWritable()
     if (!this.projection.capabilities.steer) throw new Error('This source engine does not support live steering')

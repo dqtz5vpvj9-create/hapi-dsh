@@ -55,7 +55,9 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
     saveSelection: async (value: unknown) => { saved.push(value) },
   } as unknown as Context['agentDefaultModel'])
   const renames: unknown[] = []
+  const steers: unknown[] = []
   ctx.provide('hapi', {
+    nativeSteerInbox: async (sessionId: string, itemId: string) => { steers.push({ sessionId, itemId }); return itemId === 'failed' ? { status: 'failed', error: 'Source outcome unknown', localId: itemId } : { status: 'steered', localId: itemId } },
     renameNativeSession: async (request: unknown) => { renames.push(request); return { title: 'Observed source title', seq: SessionSeq(9) } },
     renameObservedSession: async (request: unknown) => { renames.push(request); return { title: 'Original engine title', seq: SessionSeq(11) } },
   } as unknown as Context['hapi'])
@@ -98,7 +100,7 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
     const peer: PeerScope = { id: 'native-controller-stream-fixture' as PeerId, ctx, principal, interactions: 'answer', signal, dispose: async () => {} }
     return gateway.stream({ peer, namespace: 'session', method, args })
   }
-  return { ctx, controller, original, ordinaryAgent, invoke, stream, saved, renames, entry,
+  return { ctx, controller, original, ordinaryAgent, invoke, stream, saved, renames, steers, entry,
     get resolverRegistrations() { return resolverRegistrations }, close: () => ctx.fiber.dispose() }
 }
 
@@ -267,5 +269,35 @@ test('ordinary DSH selectModel, rename, fork validation, queue removal and cance
       assert.deepEqual(app.controller.cancel({ sessionId: regular.session.id }), { accepted: true })
       assert.deepEqual(regular.cancellations, [[{ kind: 'user' }, { keepInbox: true }]])
     } finally { await app.close() }
+  }
+})
+
+ test('official queue steer routes native and observed IDs through source receipts and preserves failures', async () => {
+  const app = await mount()
+  try {
+    for (const sessionId of [nativeId, SessionId(`hapi-observed-${'b'.repeat(32)}`)]) {
+      assert.deepEqual(await app.controller.updateQueue({ sessionId, itemId: 'original-message-id' as never, action: { kind: 'steer' } }), { accepted: true })
+      assert.deepEqual(app.steers.at(-1), { sessionId, itemId: 'original-message-id' })
+      await assert.rejects(app.controller.updateQueue({ sessionId, itemId: 'failed' as never, action: { kind: 'steer' } }), /Source outcome unknown/)
+    }
+    assert.equal(app.steers.length, 4)
+  } finally { await app.close() }
+})
+
+test('source inbox steering resolves original message IDs and refuses unconfirmed rows', async () => {
+  const { NativeCodexAgent } = await import('../src/codex/agent.ts')
+  const { HapiObservedAgent } = await import('../src/hapi-agent/agent.ts')
+  for (const [AgentClass, prefix] of [[NativeCodexAgent, 'hapi:'], [HapiObservedAgent, 'hapi-observed:']] as const) {
+    const calls: string[] = []
+    const fixture = {
+      deliveries: () => [{ localId: 'owned', state: 'queued' }, { localId: 'external', state: 'queued' }, { localId: 'unknown', state: 'indeterminate' }],
+      journal: { get: (id: string) => id === 'owned' ? { message: { id: 'official-message-id' } } : undefined },
+      steerQueued: async (id: string) => { calls.push(id); return { status: 'steered' as const, localId: id } },
+    }
+    const steer = (id: string) => AgentClass.prototype.steerInbox.call(fixture as never, id)
+    await steer('official-message-id'); await steer(`${prefix}external`)
+    await assert.rejects(steer(`${prefix}unknown`), /no longer confirmed queued/)
+    await assert.rejects(steer('unrelated-id'), /no longer confirmed queued/)
+    assert.deepEqual(calls, ['owned', 'external'])
   }
 })

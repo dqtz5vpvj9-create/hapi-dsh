@@ -114,7 +114,13 @@ export class NativeAwareSessionController extends TypertRemoteService {
   attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue> { return this.ordinary.attachment(request) }
 
   @Remote('updateQueue')
-  updateQueue(request: SessionUpdateQueueRequest): Promise<SessionUpdateQueueValue> {
+  async updateQueue(request: SessionUpdateQueueRequest): Promise<SessionUpdateQueueValue> {
+    if (!isSourceChildDisplayId(request.sessionId) && (isNativeDisplayId(request.sessionId) || isObservedDisplayId(request.sessionId)) && request.action.kind === 'steer') {
+      const result = await this.ctx.hapi.nativeSteerInbox(request.sessionId, request.itemId)
+      if (result.status === 'failed') throw new RemoteError('hapi/request', result.error,
+        { outcome: 'indeterminate', sourceCode: 'native_steer_failed' })
+      return { accepted: true }
+    }
     if (isNativeDisplayId(request.sessionId)) return Promise.reject(new RemoteError('hapi/request',
       'Native Codex queue changes use the asynchronous native controls; source confirmation owns queue retirement.',
       { outcome: 'rejected', sourceCode: 'native_queue_control_required' }))
