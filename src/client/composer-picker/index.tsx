@@ -53,7 +53,7 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
         effort: data ? data.effort : initial.effort,
         permission: data ? data.permission : initial.permission,
         serviceTier: data ? data.serviceTier : initial.serviceTier,
-        readOnly: initial.readOnly || Boolean(data?.readOnly), permissionAvailable, collaboration: initial.collaboration ?? null,
+        permissionAvailable, collaboration: initial.collaboration ?? null,
     }
     const close = useCallback((restoreFocus = false): void => {
         setOpen(null)
@@ -181,9 +181,9 @@ function NativeControls({ ctx, native, props }: { ctx: Context; native: NativeCo
     const controller = useMemo(() => native.settings(props.sessionId), [native, props.sessionId])
     const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const data = useMemo(() => state.data ? nativePickerData(state.data) : null, [state.data])
-    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.reasoningEffort, source?.permissionMode, source?.serviceTier, source?.collaborationMode])
+    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.reasoningEffort, source?.permissionMode, source?.serviceTier, source?.collaborationMode, source?.nativeConnection, source?.readOnly])
     if (!source) return null
-    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.reasoningEffort, permission: source.permissionMode ?? null, readOnly: source.readOnly, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
+    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.reasoningEffort, permission: source.permissionMode ?? null, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
         permissionCapable data={data} loading={state.loading} busy={state.busy} pending={nativePickerPending(state.pending)}
         error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
         refresh={controller.refresh} apply={async action => {
@@ -206,9 +206,9 @@ function ObservedControls({ ctx, observed, props }: { ctx: Context; observed: Ob
             model: result.editable.model && Boolean(source?.capabilities.model), effort: result.editable.effort && Boolean(source?.capabilities.effort),
             permission: result.editable.permission && Boolean(source?.capabilities.permissions) } }
     }, [state.data, source?.capabilities.model, source?.capabilities.effort, source?.capabilities.permissions])
-    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.effort, source?.permissionMode, source?.serviceTier, source?.collaborationMode])
+    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.effort, source?.permissionMode, source?.serviceTier, source?.collaborationMode, source?.connection, source?.readOnly])
     if (!source) return null
-    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.effort, permission: source.permissionMode, readOnly: source.readOnly, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
+    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.effort, permission: source.permissionMode, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
         permissionCapable={source.capabilities.permissions} data={data} loading={state.loading} busy={state.busy} pending={state.pending}
         error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
         refresh={controller.refresh} apply={async action => {

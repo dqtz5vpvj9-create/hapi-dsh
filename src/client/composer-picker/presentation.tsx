@@ -33,13 +33,11 @@ export interface SourceControlSummary {
     effort: string | null
     permission: string | null
     permissionAvailable: boolean
-    readOnly: boolean
     serviceTier: string | null
     collaboration?: string | null
 }
 
-/** This is the only source toolbar group. Permission support is independent
- * of the current lock, and Standard never hides permission/read-only state. */
+/** Source execution permission is separate from a temporary settings lock. */
 export function SourceControlRow({ summary, sessionId, open, panelId, pending, attention, refs = {}, onToggle, tr }: {
     summary: SourceControlSummary; sessionId: string; open: PickerMode | null; panelId: string
     pending: boolean; attention: boolean; refs?: Partial<Record<PickerMode, Ref<HTMLButtonElement>>>
@@ -69,7 +67,6 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
             </button>
         </span> : summary.permission !== null && <span className="hapi-source-permission" data-hapi-source-permission>{permissionLabel(summary.permission, tr)}</span>}
         {summary.collaboration && <span className="hapi-source-collaboration" data-hapi-source-collaboration>{summary.collaboration === 'plan' ? tr('Plan', '规划') : summary.collaboration}</span>}
-        {summary.readOnly && summary.permission !== 'read-only' && <span className="hapi-source-readonly" data-hapi-source-readonly>{tr('Read only', '只读')}</span>}
         <button ref={refs.actions} type="button" className="hapi-picker-overflow hapi-overflow-trigger" data-hapi-composer-overflow="" {...shared('actions')}
             aria-label={tr('More input controls', '更多输入控件')} title={tr('More input controls', '更多输入控件')} onClick={() => onToggle('actions')}>
             <Glyph kind="more"/>{attention && <span className="hapi-picker-attention" aria-label={tr('Parked draft needs attention', '暂存草稿需要处理')}/>}
