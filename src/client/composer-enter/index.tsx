@@ -7,6 +7,7 @@ import { ComposerEnterBehavior, captureComposerEnter, type ComposerEnterIssue } 
 import { readComposerEnterPreference, writeComposerEnterPreference } from './preferences.ts'
 import type { ComposerEnterAttachments } from './attachments.ts'
 import { arbitrateComposerEnter } from './triggers.ts'
+import { useWorkspacePane } from '../surface/pane-context.tsx'
 
 const issues: Record<ComposerEnterIssue, readonly [string, string]> = {
   unavailable: ['The original attachment owner is not ready. Your draft and files are retained.', '原附件组件尚未就绪。草稿和附件均已保留。'],
@@ -22,19 +23,20 @@ export function installComposerEnter(ctx: Context, composer: ComposerEnterAttach
     const preference = () => readComposerEnterPreference(preferences)
     const language = () => owner.locale.getSnapshot().active
     const Seat = (props: PropsRuntime<'conversation.input.right'>) => {
-      const seat = useRef<HTMLSpanElement | null>(null), current = useRef(props)
-      useLayoutEffect(() => { current.current = props })
+      const pane = useWorkspacePane(owner)
+      const seat = useRef<HTMLSpanElement | null>(null), current = useRef({ props, pane })
+      useLayoutEffect(() => { current.current = { props, pane } })
       useLayoutEffect(() => {
         const card = seat.current?.closest<HTMLElement>('[data-composer-card]')
         if (!card) return
         const behavior = new ComposerEnterBehavior({ preference, current() {
-          const latest = current.current, binding = owner.sessions.binding(latest.sessionId)
+          const latest = current.current.props, binding = owner.sessions.binding(latest.sessionId)
           if (!binding) return undefined
           const input = owner.conversation.input.for(binding.ctx)
           return {
             identity: binding, actions: latest.inputActions, state: input.state.getSnapshot(),
             blocked: owner.conversation.blocks.storeFor(latest.sessionId).getSnapshot() !== undefined
-              || owner.get('hapiWorkspacePane')?.state.getSnapshot().visible === false,
+              || current.current.pane?.state.getSnapshot().visible === false,
             arbitrate: () => arbitrateComposerEnter(owner.inputTriggers.sessionOf(binding.ctx)),
             attachments: () => composer.inspectSubmission(latest.sessionId, latest.inputActions, input.state.getSnapshot().attachmentIds),
             notify: issue => input.notify('error', issues[issue][language().startsWith('zh') ? 1 : 0]),

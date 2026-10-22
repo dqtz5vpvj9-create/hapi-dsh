@@ -196,6 +196,43 @@ test('source delivery remains unknown after disconnect and restart, without auto
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('observed cache attach keeps live output moving while a blocked history snapshot backfills a missing row', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-live-first-')), source = new Fixture()
+  source.add('claude')
+  const cached = [input(), codex('cached', 2, { type: 'message', message: 'Cached source answer' })]
+  source.rows.set('claude', cached)
+  let app = await mount(source, directory), release: ((value: HapiMessagesPage) => void) | undefined
+  try {
+    await app.close()
+    const missing = codex('missing', 3, { type: 'message', message: 'Previously missing source row' })
+    const live = codex('live', 4, { type: 'message', message: 'Live source answer' })
+    const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+    const read = source.readMessages.bind(source)
+    const snapshot = await read('claude')
+    source.readMessages = () => blocked
+    app = await mount(source, directory, { fastHistorySeed: true })
+    const initial = app.service.list()[0]!
+    assert.match(initial.projection.error ?? '', /stale/)
+    source.emit({ type: 'message-received', sessionId: 'claude', message: live })
+    for (let index = 0; index < 200 && initial.resolveSourceMessageDisplaySeq(live.id) === undefined; index++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(live.id), undefined, 'live output does not wait for full history')
+    release!({ ...snapshot, messages: [...cached, missing] }); release = undefined
+    await app.service.settled()
+    const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
+      event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
+    assert.deepEqual(answers, ['Cached source answer', 'Previously missing source row', 'Live source answer'])
+    assert.equal(current.binding.nativeId, initial.binding.nativeId)
+    assert.equal(current.projection.error, null)
+    assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
+  } finally {
+    release?.({ messages: [], page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
+      nextBeforeSeq: null, nextBeforeAt: null, nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: null, snapshotHeadAt: null, hasMore: false } })
+    await app.close(); await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('Pi extension answers preserve editor payload and wait for actual final completedRequests', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-')), source = new Fixture(), pi = source.add('pi')
   pi.agentState!.requests = { editor: { tool: 'request_user_input', arguments: { questions: [{ id: 'editor', header: 'Edit', question: 'Edit', required: true,
@@ -406,5 +443,44 @@ test('a failed original-source resume leaves an explicit retryable delivery with
     await agent.journal.settled()
     assert.deepEqual(source.sendTargets, ['claude'], 'only the explicit retry delivers')
     assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('observed removal during initial history prevents a stale catalog from recreating the source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-removed-attach-')), fixture = new Fixture(), source = fixture.add('pi')
+  let release!: (value: HapiMessagesPage) => void, reading!: () => void
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve }), started = new Promise<void>(resolve => { reading = resolve })
+  const original = fixture.readMessages.bind(fixture), snapshot = await original(source.id)
+  fixture.readMessages = async () => { reading(); return blocked }
+  const mounting = mount(fixture, directory)
+  await started; fixture.emit({ type: 'session-removed', sessionId: source.id }); release(snapshot)
+  const app = await mounting
+  try {
+    await app.service.settled(); assert.equal(app.service.list().length, 0)
+    await app.service.refreshCatalog(); assert.equal(app.service.list().length, 0)
+    assert.equal(fixture.sent.length, 0); assert.equal(fixture.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('observed replacement preparation retries independently of the disposed old Agent', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-replacement-retry-')), fixture = new Fixture(), source = fixture.add('pi')
+  const latest = codex('latest', 3, { type: 'message', message: 'Current answer' })
+  fixture.rows.set(source.id, [input(), latest])
+  const resets: Array<[string, string]> = []
+  const app = await mount(fixture, directory, { onDisplayReset: (before, after) => { resets.push([before, after]) } })
+  try {
+    const previous = app.service.list()[0]!, missing = codex('older', 2, { type: 'message', message: 'Recovered answer' })
+    const original = fixture.getSession.bind(fixture); let snapshots = 0
+    fixture.getSession = async id => { if (++snapshots === 2) throw new Error('Replacement source temporarily unavailable'); return original(id) }
+    fixture.rows.set(source.id, [input(), missing, latest])
+    fixture.emit({ type: 'message-updated', sessionId: source.id })
+    for (let index = 0; index < 300 && (app.service.list()[0]?.displayRevision ?? 0) < 2; index++) await new Promise(resolve => setTimeout(resolve, 10))
+    await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.ok(current); assert.ok(current.displayRevision >= 2)
+    assert.notEqual(current.resolveSourceMessageDisplaySeq(missing.id), undefined)
+    assert.equal(app.ctx.sessions.get(previous.id), undefined)
+    assert.deepEqual(resets, [[previous.id, current.id]])
+    assert.equal(fixture.sent.length, 0); assert.equal(fixture.aborts, 0); assert.equal(fixture.answers.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

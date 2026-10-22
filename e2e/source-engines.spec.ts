@@ -39,7 +39,10 @@ test.describe('original HAPI engines in the unified official Conversation', () =
         environment.hapi.consume(sourceId, environment.hapi.sent[0]!.message.localId);
         await expect(pane.getByText('Source response to: A real composer submission to the original Claude owner', { exact: true })).toBeVisible();
 
-        await pane.getByRole('combobox', { name: 'Conversation tools', exact: true }).selectOption('hapi-session-tools');
+        // R8 keeps source tools in the compact composer overflow.
+        await pane.locator('[data-hapi-composer-overflow] > summary').click();
+        await pane.getByRole('group', { name: 'More input controls', exact: true })
+            .getByRole('button', { name: 'Session tools', exact: true }).click();
         const tools = pane.getByRole('region', { name: 'Session tools', exact: true });
         await tools.getByRole('combobox', { name: 'Pin', exact: true }).selectOption('global');
         await expect.poll(() => environment.hapi.require(sourceId).session.globalPinned).toBe(true);

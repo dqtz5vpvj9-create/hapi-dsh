@@ -128,6 +128,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     const sourceQuery = new URL(location.href).searchParams
     const controller = new WorkspaceController({
         sessions: ctx.sessions, navigation: ctx.uiWorkspace, workspaceState: ctx.workspaces.list, workspaces: ctx.workspaces,
+        deferHiddenSessions: sourceQuery.get('hapiGraph') === 'shared',
         storageKey: `hapi-dsh:workspace:v1:${location.origin}${location.pathname}`,
         ...(storage ? { storage } : {}),
         persistence: createWorkspacePersistence(api), reveal: () => ctx.layout.selectPanel(null),

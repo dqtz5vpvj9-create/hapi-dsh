@@ -7,8 +7,10 @@ import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-api-session-controller/types'
 import { NativeApprovals } from '../codex/approvals.js'
 import { DeliveryJournal } from '../codex/delivery.js'
-import { readNativeHistory } from '../codex/history.js'
+import { readNativeHistory, readNativeHistoryTail } from '../codex/history.js'
 import { NativeHistoryCache } from '../codex/history-cache.js'
+import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, type HistoryCheckpoint } from '../codex/history-journal.js'
+import { SourceHistorySync } from '../codex/history-sync.js'
 import { NativeHistoryChangedError } from '../codex/projector.js'
 import { HapiRequestError, type HapiApprovalAnswer, type HapiAttachment, type HapiEvent, type HapiMessage, type HapiSession, type HapiTransport } from '../codex/contracts.js'
 import type { DeliveryView } from '../codex/projection-types.js'
@@ -34,12 +36,19 @@ export interface HapiObservedOptions extends ObservedContentOptions {
   stateDirectory: string
   displayRevision?: number
   resolveAttachments?: (sourceId: string, message: UserMessage) => Promise<HapiAttachment[]>
-  onHistoryChanged?: (agent: HapiObservedAgent, rows: HapiMessage[]) => Promise<void>
+  onHistoryChanged?: (agent: HapiObservedAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint) => Promise<void>
   /**
    * HAPI resume for an inactive original session. Only an explicit
    * `session_inactive` (HTTP 409) delivery rejection may use it, once.
    */
   resumeSession?: (hapiSessionId: string) => Promise<string>
+  /** Service-owned receive journal, captured before asynchronous event work. */
+  historyJournal?: SourceHistoryJournal
+  historyCheckpoint?: HistoryCheckpoint
+  /** Service lifecycle guard; removed sources cannot register after async preparation. */
+  assertSourceCurrent?: () => void
+  /** Opt-in until client draft/attachment/scroll transfer across reseeds is verified. */
+  fastHistorySeed?: boolean
 }
 
 class ObservedInbox implements Inbox {
@@ -102,9 +111,16 @@ export class HapiObservedAgent implements Agent {
   private lastTitle: { title: string; seq: SessionSeq } | undefined
   private pendingRefresh: Promise<void> | undefined
   private lastActivity = false
+  private readonly historyJournal: SourceHistoryJournal
+  private readonly historyOrder = new SourceHistoryOrder()
+  private readonly historySync: SourceHistorySync
+  private historyStale = false
+  private rowWork: Promise<void> = Promise.resolve()
 
   private constructor(parent: Context, readonly transport: HapiObservedTransport, source: HapiSession, private readonly config: HapiObservedOptions) {
     this.source = source; this.bound = observedBinding(transport.hubId, source)
+    this.historyJournal = config.historyJournal ?? new SourceHistoryJournal()
+    this.historySync = new SourceHistorySync(history => this.refresh(history), error => this.reportError(error))
     this.logicalSessionId = observedSessionId(transport.hubId, source.id)
     this.displayRevision = config.displayRevision ?? 0
     this.id = this.displayRevision ? SessionId(`${this.logicalSessionId}-r${this.displayRevision}`) : this.logicalSessionId
@@ -127,9 +143,10 @@ export class HapiObservedAgent implements Agent {
       source: () => this.source, isCurrent: () => !this.disposed, changed: () => this.publish(),
       historyChanged: async () => {
         if (this.disposed) return
+        const checkpoint = this.historyJournal.checkpoint()
         const rows = await readNativeHistory(this.transport, this.bound.hapiSessionId)
         if (!this.config.onHistoryChanged) throw new NativeHistoryChangedError('The original DSH child history changed; reacquire the source display')
-        await this.config.onHistoryChanged(this, rows)
+        await this.config.onHistoryChanged(this, this.historyJournal.merge(rows, checkpoint), checkpoint)
       },
       state: () => ({ hubId: this.bound.hubId, hapiSessionId: this.bound.hapiSessionId, flavor: this.bound.flavor,
         machineId: this.bound.machineId, machineName: this.source.metadata?.host ?? this.bound.machineId,
@@ -168,16 +185,40 @@ export class HapiObservedAgent implements Agent {
     const agent = new HapiObservedAgent(ctx, transport, source, config)
     try {
       let rows = initialRows
+      let checkpoint = config.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
-        try { rows = await readNativeHistory(transport, source.id); agent.cache.write(rows) }
-        catch (error) { rows = agent.cache.read() ?? []; agent.fault = error instanceof Error ? error.message : 'Source history is unavailable' }
+        const cached = config.fastHistorySeed ? agent.cache.snapshot() : undefined
+        if (cached) {
+          rows = agent.historyJournal.overlayCache(cached.rows)
+          agent.historyStale = true
+          agent.fault = 'Cached source history is stale; reconciling with the live source'
+        } else try {
+          checkpoint = agent.historyJournal.checkpoint()
+          const tail = config.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
+            : { rows: await readNativeHistory(transport, source.id), complete: true }
+          rows = agent.historyJournal.merge(tail.rows, checkpoint)
+          agent.historyStale = !tail.complete
+          if (!tail.complete) agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
+        } catch (error) {
+          config.assertSourceCurrent?.()
+          if (error instanceof HistoryReadInvalidatedError) throw error
+          checkpoint = agent.historyJournal.checkpoint()
+          rows = agent.historyJournal.overlayCache((cached ?? agent.cache.snapshot())?.rows ?? [])
+          agent.historyStale = true
+          agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
+        }
+      } else {
+        rows = agent.historyJournal.merge(rows, checkpoint)
       }
-      agent.projector.beginHistorySeed(); await agent.applyRows(rows, true)
+      agent.projector.beginHistorySeed(); await agent.applyRows(rows, true, checkpoint)
       agent.currentSession = agent.ctx.sessions.prepare(agent.id, { seed: agent.projector.historySeed(), meta: agent.meta() })
       agent.projector.finishHistorySeed(agent.session)
       agent.initializing = false; agent.observe(source)
       if (!agent.fault) await agent.journal.reconcileSource()
       agent.syncInbox(); agent.publish()
+      config.assertSourceCurrent?.()
+      agent.historyJournal.assertCurrent(checkpoint)
+      agent.cache.write(rows, !agent.historyStale)
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindObservedCommands(agent)
@@ -187,6 +228,11 @@ export class HapiObservedAgent implements Agent {
       return agent
     } catch (error) { await agent.dispose(); throw error }
   }
+
+  /** Start only after the service has published this Agent in its registry. */
+  startHistorySync(): void { if (this.historyStale) this.historySync.request(true) }
+  requestHistorySync(): void { this.historyStale = true; this.historySync.request(true) }
+  async settled(): Promise<void> { await this.historySync.settled(); await this.rowWork }
 
   get binding(): ObservedBinding { return this.bound }
   get childSessions() { return [...this.children.list(), ...this.dshChildren.list()] }
@@ -308,48 +354,60 @@ export class HapiObservedAgent implements Agent {
     if (!this.lastTitle || this.lastTitle.title !== title.trim()) throw new Error('The source has not confirmed the requested title')
     return this.lastTitle
   }
-  async handleEvent(event: HapiEvent): Promise<void> {
+  async handleEvent(event: HapiEvent, checkpoint = this.historyJournal.checkpoint()): Promise<void> {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       this.connected = event.data?.status === 'connected'
-      if (this.connected) await this.refresh(true)
+      if (this.connected) { this.historyStale = true; this.historySync.request(true) }
       else { this.rejectWaiters('Source activity is unavailable until its owner reconnects'); this.publish() }
       return
     }
     if (event.sessionId !== this.bound.hapiSessionId) return
-    if (event.type === 'message-received') await this.applyRows([event.message])
+    if (event.type === 'message-received') await this.applyRows([event.message], false, checkpoint)
     else if (event.type === 'messages-consumed') {
       for (const id of event.localIds) { this.journal.update(id, 'invoked'); this.queued.delete(id) }
-      await this.refresh(true)
+      this.historySync.request(true)
     } else if (['messages-dispatching', 'messages-indeterminate', 'messages-requeued'].includes(event.type) && 'localIds' in event) {
       for (const id of event.localIds) this.journal.update(id, event.type === 'messages-dispatching' ? 'dispatching' : event.type === 'messages-indeterminate' ? 'indeterminate' : 'queued')
-      await this.refresh(true)
+      this.historySync.request(true)
     } else if (event.type === 'message-cancelled') {
       if (event.localId) { this.journal.update(event.localId, 'cancelled'); this.queued.delete(event.localId) }
       this.syncInbox(); this.publish()
-    } else if (['messages-invalidated', 'message-updated', 'scheduled-matured'].includes(event.type)) await this.refresh(true)
+    } else if (['messages-invalidated', 'message-updated', 'scheduled-matured'].includes(event.type)) {
+      this.historyStale = true; this.historySync.request(true)
+    }
     else if (event.type === 'session-removed') { this.connected = false; this.publish() }
-    else await this.refresh()
+    else this.historySync.request(false)
   }
   async refresh(history = false): Promise<void> {
     if (this.pendingRefresh) { await this.pendingRefresh; if (history && !this.disposed) return this.refresh(true); return }
     const work = (async () => {
       if (this.disposed) return
-      this.observe(await this.transport.getSession(this.bound.hapiSessionId))
+      const snapshot = await this.transport.getSession(this.bound.hapiSessionId)
+      if (this.disposed) return
+      this.observe(snapshot)
       let rows: HapiMessage[] | undefined
+      let checkpoint: HistoryCheckpoint | undefined
       try {
-        if (history) {
-          rows = await readNativeHistory(this.transport, this.bound.hapiSessionId); this.cache.write(rows)
-          await this.applyRows(rows, true)
+        if (history || this.historyStale) {
+          checkpoint = this.historyJournal.checkpoint()
+          rows = await readNativeHistory(this.transport, this.bound.hapiSessionId)
+          if (this.disposed) return
+          rows = this.historyJournal.merge(rows, checkpoint)
+          await this.applyRows(rows, true, checkpoint)
         }
         await this.dshChildren.refresh(history)
       } catch (error) {
         if (error instanceof NativeHistoryChangedError && this.config.onHistoryChanged) {
-          await this.config.onHistoryChanged(this, rows ?? await readNativeHistory(this.transport, this.bound.hapiSessionId)); return
+          checkpoint ??= this.historyJournal.checkpoint()
+          const replacement = this.historyJournal.merge(rows ?? await readNativeHistory(this.transport, this.bound.hapiSessionId), checkpoint)
+          await this.config.onHistoryChanged(this, replacement, checkpoint); return
         }
         throw error
       }
-      await this.journal.reconcileSource(); this.fault = null; this.syncInbox(); this.publish()
+      await this.journal.reconcileSource()
+      if (this.disposed) return
+      this.fault = null; this.syncInbox(); this.publish()
     })()
     this.pendingRefresh = work
     try { await work } finally { if (this.pendingRefresh === work) this.pendingRefresh = undefined }
@@ -384,11 +442,31 @@ export class HapiObservedAgent implements Agent {
     const selectionKey = JSON.stringify(selection)
     if (selectionKey !== this.lastSelection) { this.session.append('model/selection', selection); this.lastSelection = selectionKey }
   }
-  private async applyRows(rows: readonly HapiMessage[], authoritative = false): Promise<void> {
+  private applyRows(rows: readonly HapiMessage[], authoritative = false, checkpoint = this.historyJournal.checkpoint()): Promise<void> {
+    const work = this.rowWork.then(async () => {
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      const merged = authoritative ? this.historyJournal.merge(rows, checkpoint, !this.historyStale) : rows
+      if (!this.initializing && authoritative && this.historyOrder.needsReseed(merged)) {
+        throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
+      }
+      await this.applyRowsNow(merged, authoritative, checkpoint)
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      this.historyOrder.accept(merged, authoritative)
+      if (authoritative && !this.initializing) { this.cache.write(merged); this.historyStale = false }
+    })
+    this.rowWork = work.catch(() => {})
+    return work
+  }
+
+  private async applyRowsNow(rows: readonly HapiMessage[], authoritative: boolean, checkpoint: HistoryCheckpoint): Promise<void> {
     this.sourceScopes.update(rows, authoritative)
     const items = authoritative ? parseObservedHistory(rows, this.sourceScopes) : rows.flatMap(row => parseObservedMessage(row, this.sourceScopes))
     await this.content.prepare(items)
     if (this.disposed) return
+    this.config.assertSourceCurrent?.()
+    this.historyJournal.assertCurrent(checkpoint)
     if (authoritative) {
       const observed = new Set(items.filter(item => item.scopeId === null).map(item => item.key))
       for (const key of this.projector.projectedKeys) if (!observed.has(key)) throw new NativeHistoryChangedError('The original HAPI history was truncated or replaced')
@@ -441,6 +519,7 @@ export class HapiObservedAgent implements Agent {
     // journal submission; only the original engine owning local input is a
     // real read-only owner, and a detached observation cannot own new input.
     if (this.disposed) throw new Error('The source observation was detached')
+    this.config.assertSourceCurrent?.()
     if (this.projection.controlledByUser) throw new Error('The source is controlled by its local terminal; switch it to remote control first')
   }
   reportError(error: unknown): void { this.fault = error instanceof Error ? error.message : 'The HAPI source could not be synchronized'; this.publish() }
@@ -448,6 +527,7 @@ export class HapiObservedAgent implements Agent {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true; this.rejectWaiters('The source observation was detached'); this.projector?.abandonStream()
+    this.historySync.dispose()
     await this.children?.dispose()
     await this.dshChildren?.dispose()
     this.detachAgent?.(); this.detachSession?.(); await this.journal?.settled(); await this.scope.dispose()

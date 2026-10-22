@@ -60,3 +60,85 @@ test('legacy leaves keep the real Cordis slots receiver and follow original relo
         await original.dispose(); await declarations.dispose()
     } finally { await root.fiber.dispose() }
 })
+
+for (const name of names) test(`legacy ${name} follower retires before queued notifications reach a disposing Context`, async () => {
+    const root = new Context()
+    new SlotRegistry(root)
+    const originalKey = 'official-terminal', legacyKey = 'legacy-terminal'
+    const Original = () => null, Replacement = () => null, Borrowed = () => null
+    let replaceOriginal!: () => void, installations = 0, cleaned = false
+    try {
+        const declarations = root.plugin({ name: 'test-pane-declarations', inject: ['slots'], apply(ctx: Context) {
+            ctx.slots.register({ name: 'root', children: {
+                'sidebar.right.pane.tab': { kind: 'keyed', scope: 'session' },
+                'sidebar.right.pane.tab.title': { kind: 'keyed', scope: 'session' },
+            } } as never, Original as never)
+        } })
+        await declarations
+        const official = root.plugin({ name: 'test-official-terminal', inject: ['slots'], apply(ctx: Context) {
+            let remove = ctx.slots.register({ name, key: originalKey }, Original)
+            replaceOriginal = () => { remove(); remove = ctx.slots.register({ name, key: originalKey }, Replacement) }
+            return () => { remove() }
+        } })
+        await official
+        const composed = root.plugin({ name: 'test-legacy-terminal', inject: ['slots'], apply(ctx: Context) {
+            const stop = followLegacyTerminalSeat(ctx, name, originalKey, legacyKey, () => ({}), () => { installations++; return Borrowed })
+            return () => { cleaned = true; stop() }
+        } })
+        await composed; await tick()
+        assert.equal(installations, 1)
+
+        // The real SlotCore queues this change before Cordis queues the
+        // disposer work. The owner is already inactive when that batch runs,
+        // although its unsubscribe callback has not been reached yet.
+        replaceOriginal()
+        const retiring = composed.dispose()
+        assert.equal(composed.ctx.fiber.uid, null)
+        assert.equal(cleaned, false)
+        await retiring; await tick()
+
+        assert.equal(installations, 1, 'No new component/effect may be created for the retired owner')
+        assert.equal(cleaned, true)
+        const remaining = root.get('slots')!.entriesOfSlot(name)
+        assert.deepEqual(remaining.map(entry => entry.options.key), [originalKey])
+        assert.equal(remaining[0]!.component, Replacement)
+    } finally { await root.fiber.dispose() }
+})
+
+test('legacy follower ignores a notification already captured before its synchronous stop', async () => {
+    const root = new Context()
+    new SlotRegistry(root)
+    const name = 'sidebar.right.pane.tab' as const, originalKey = 'official-terminal', legacyKey = 'legacy-terminal'
+    const Original = () => null, Replacement = () => null, Borrowed = () => null
+    let replaceOriginal!: () => void, stopBorrow = (): void => {}, installations = 0, retireOnChange = false
+    let stopEarlier = (): void => {}
+    try {
+        const declarations = root.plugin({ name: 'test-pane-declarations', inject: ['slots'], apply(ctx: Context) {
+            ctx.slots.register({ name: 'root', children: { [name]: { kind: 'keyed', scope: 'session' } } } as never, Original as never)
+        } })
+        await declarations
+        const official = root.plugin({ name: 'test-official-terminal', inject: ['slots'], apply(ctx: Context) {
+            let remove = ctx.slots.register({ name, key: originalKey }, Original)
+            replaceOriginal = () => { remove(); remove = ctx.slots.register({ name, key: originalKey }, Replacement) }
+            return () => { remove() }
+        } })
+        await official
+        const slots = root.get('slots')!
+        // SlotCore snapshots listeners before walking the batch. An earlier
+        // owner may retire this follower while its callback is in that snapshot.
+        stopEarlier = slots.subscribe(name, () => { if (retireOnChange) stopBorrow() })
+        const composed = root.plugin({ name: 'test-legacy-terminal', inject: ['slots'], apply(ctx: Context) {
+            stopBorrow = followLegacyTerminalSeat(ctx, name, originalKey, legacyKey, () => ({}), () => { installations++; return Borrowed })
+            return () => { stopBorrow() }
+        } })
+        await composed; await tick()
+        retireOnChange = true; replaceOriginal()
+        await tick()
+
+        assert.notEqual(composed.ctx.fiber.uid, null, 'The explicit stop must work even while its plugin remains active')
+        assert.equal(installations, 1, 'An already captured callback cannot resurrect the stopped follower')
+        assert.deepEqual(slots.entriesOfSlot(name).map(entry => entry.options.key), [originalKey])
+        assert.equal(slots.entriesOfSlot(name)[0]!.component, Replacement)
+        stopBorrow(); stopBorrow()
+    } finally { stopEarlier(); await root.fiber.dispose() }
+})

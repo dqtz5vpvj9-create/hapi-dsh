@@ -1,3 +1,4 @@
+import { useWorkspacePane } from './surface/pane-context.tsx'
 /** A view-local hand-off into the actual official composer, preserving semantic chips. */
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -21,7 +22,7 @@ export function installShareReceiver(ctx: Context, existingBridge?: SourceCompos
         const Receiver = (props: PropsRuntime<'conversation.input.dock'>) => {
             const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
             const current = useRef({ props, source, observed }); current.current = { props, source, observed };
-            const input = props.useInput(value => value), pane = owner.get('hapiWorkspacePane');
+            const input = props.useInput(value => value), pane = useWorkspacePane(owner);
             const state = useSyncExternalStore(inbox.subscribe, inbox.getSnapshot);
             const language = useSyncExternalStore(listener => owner.locale.subscribe(listener), () => owner.locale.getSnapshot().active);
             const tr = (en: string, zh: string) => language.startsWith('zh') ? zh : en;

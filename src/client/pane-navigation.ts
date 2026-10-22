@@ -22,6 +22,8 @@ export interface WorkspacePaneNavigation extends WorkspaceUiScope {
     retainForDraftTransfer(): () => void
     /** Only call after a confirmed source operation returns a ready successor. */
     openSuccessor(displaySessionId: string): Promise<void>
+    /** Navigate this pane without changing another pane's session binding. */
+    openSession(displaySessionId: string, options?: { beside?: SplitAxis }): void
     /** Reveal this graph's own unchanged Conversation, retaining every tab. */
     revealConversation(): void
     openResource(address: string, options?: { kind?: string; params?: NavigationValue; beside?: SplitAxis }): void

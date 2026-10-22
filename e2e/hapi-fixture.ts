@@ -20,7 +20,7 @@ export interface NativeFixture {
     session: HapiSession
     rows: HapiMessage[]
     /** Explicit per-session history page override (remote hotfix hook). */
-    readHistory?: (url: URL) => HapiMessagesPage
+    readHistory?: (url: URL) => HapiMessagesPage | Promise<HapiMessagesPage>
 }
 /** Opt-in bounded Hub-faithful history paging for one fixture session. */
 export interface HistoryPaging {
@@ -119,10 +119,15 @@ export class HapiWireFixture {
             agentState: { requests: {}, completedRequests: {}, controlledByUser: false }, model: flavor === 'claude' ? 'sonnet' : 'fixture-pi', effort: 'medium', permissionMode: 'default' };
         const fixture = { session, rows: [] as HapiMessage[] }; this.sessions.set(id, fixture);
         this.readStates[id] = { seenAt: 0, manualUnreadAt: null, version: 0 }; this.workbench.seed(session);
-        fixture.rows.push({ id: `user-${key}`, localId: `original-user-${key}`, seq: 1, createdAt: at, invokedAt: at,
-            content: { role: 'user', content: { type: 'text', text: `Original ${flavor} input` } } });
-        this.observedAnswer(fixture, `Original ${flavor} answer in the official DSH Conversation.`);
+        // Supplied history exists before this source is announced. Publishing
+        // default live rows first would make them a real unindexed suffix that
+        // the receive journal must preserve even after REST uses options.rows.
         if (options.rows) fixture.rows = options.rows;
+        else {
+            fixture.rows.push({ id: `user-${key}`, localId: `original-user-${key}`, seq: 1, createdAt: at, invokedAt: at,
+                content: { role: 'user', content: { type: 'text', text: `Original ${flavor} input` } } });
+            this.observedAnswer(fixture, `Original ${flavor} answer in the official DSH Conversation.`);
+        }
         if (options.paging) this.historyPaging.set(id, options.paging);
         this.emit({ type: 'session-added', sessionId: id }); return fixture;
     }
@@ -306,8 +311,8 @@ export class HapiWireFixture {
                 if (body.agent === 'claude' || body.agent === 'pi' || body.agent === 'cursor') {
                     if (!id) {
                         const machineId = decodeURIComponent(url.pathname.split('/')[3]!);
-                        const created = this.addObserved(body.agent, `created-${this.spawns.size}`, machineId);
-                        created.rows = []; created.session.metadata!.path = body.directory;
+                        const created = this.addObserved(body.agent, `created-${this.spawns.size}`, machineId, { rows: [] });
+                        created.session.metadata!.path = body.directory;
                         if (body.model) created.session.model = body.model;
                         if (body.effort) created.session.effort = body.effort;
                         if (body.permissionMode) created.session.permissionMode = body.permissionMode;
@@ -410,7 +415,7 @@ export class HapiWireFixture {
                 return;
             }
             if (tail === 'messages' && request.method === 'GET') {
-                if (fixture.readHistory) { send(fixture.readHistory(url)); return; }
+                if (fixture.readHistory) { send(await fixture.readHistory(url)); return; }
                 const paging = this.historyPaging.get(id);
                 if (paging) { send(this.historyPage(fixture, paging, url)); return; }
                 send({ messages: fixture.rows, page: { direction: 'latest', limit: 200, epoch: 1, reset: false,

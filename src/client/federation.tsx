@@ -38,6 +38,8 @@ import { documentPaneTarget } from '../workspace/artifacts.ts'
 import { legacyTerminalPaneTarget } from './legacy-session-terminal.tsx'
 import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
+import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
+import { createSessionWarmup } from './surface/session-warmup.ts'
 
 const PLATFORM_MODULES = [
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -141,7 +143,7 @@ async function refreshBootstrap(host: FederationHost, resources: HostResources, 
  * by the longest serial arrival chain. The loader still owns compilation
  * (`resources.compiled` is unchanged and one wrapper per Host URL).
  */
-async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false, prefetchBundles = false): Promise<GraphRuntime> {
+async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false, prefetchBundles = false, sharedHost = false): Promise<GraphRuntime> {
     const origin = window.location.origin
     const baseUrl = new URL(host.basePath, origin).href
     const directFetch = transport(host, signal)
@@ -159,8 +161,14 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     const captured = new WeakSet<KeyboardEvent>()
     const bubbled = new WeakSet<KeyboardEvent>()
     const registrations: Array<{ target: EventTarget; type: string; listener: EventListenerOrEventListenerObject; installed: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = []
+    const inputSurface = sharedHost ? Object.assign(new EventTarget(), { contains(node: Node | null): boolean {
+        if (surface.contains(node)) return true
+        const element = node instanceof Element ? node : node?.parentElement
+        const pane = element?.closest<HTMLElement>('[data-hapi-host]')
+        return pane?.dataset.hapiHost === host.id && pane.dataset.hapiGraph === 'shared' && pane.dataset.hapiVisible === 'true'
+    } }) : surface
     const input = createPaneInputRouter({
-        surface, visible: () => navigation?.state.getSnapshot().visible !== false && !surface.hidden,
+        surface: inputSurface, visible: () => navigation?.state.getSnapshot().visible !== false && !surface.hidden,
         activeElement: () => document.activeElement,
         resetDrag() {
             // The original plugin owns the cleanup callback. Invoke only this
@@ -326,25 +334,148 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
 }
 
 /** One catalog graph per Host and one independently owned UI graph per editable pane. */
-async function bootHost(root: Context, workspace: WorkspaceController, host: FederationHost, signal: AbortSignal, sharedUi: ReturnType<typeof createWorkspaceUiBridge>): Promise<HostRuntime> {
-    const resources = await loadHostResources(root, host, signal)
+async function bootHost(root: Context, workspace: WorkspaceController, host: FederationHost, signal: AbortSignal, sharedUi: ReturnType<typeof createWorkspaceUiBridge>, shared = false): Promise<HostRuntime> {
+    // A local shared view uses the already activated primary graph. Fetch the
+    // bootstrap only when a compatibility plugin-view graph actually needs it.
+    let resourcesPromise: Promise<HostResources> | undefined
+    const resourcesForHost = (): Promise<HostResources> => resourcesPromise ??= loadHostResources(root, host, signal)
     const catalogSurface = document.createElement('div')
     catalogSurface.hidden = true; catalogSurface.dataset.hapiCatalogHost = host.id
     document.body.append(catalogSurface)
     let catalog: GraphRuntime | undefined
+    let sessionViews: ReturnType<typeof installSessionViewHost> | undefined
+    let hostRenderer: ReturnType<typeof createRoot> | undefined
+    let renderHostRoot: (() => void) | undefined
+    let warmup: ReturnType<typeof createSessionWarmup> | undefined
+    let unwarmup: (() => void) | undefined
+    let warming = false
+    let hostUiScope: ReturnType<Context['inject']> | undefined
+    let unprovideHostUi: (() => void) | undefined
+    let unhostChrome: (() => void) | undefined
     let removeHost: (() => void) | undefined
     // Pane roots outlive their position in the workspace React tree. Moving a
     // pane, hiding a window, or visiting a primary Host plugin page must preserve
     // its editor, dialogs, Client Context, and SessionReference. The layout owns
     // these roots; component unmount only parks their DOM.
     type Resource = Exclude<PaneResource, { kind: 'empty' }>
-    interface PaneRuntime { sourceId: string; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; stop(force?: boolean): Promise<void> }
+    interface PaneRuntime { sourceId: string; shared?: boolean; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; stop(force?: boolean): Promise<void> }
     const activePanes = new Map<string, PaneRuntime>()
     const allPanes = new Set<PaneRuntime>()
     const parking = document.createElement('div')
     parking.hidden = true; parking.dataset.hapiParkedHost = host.id
     document.body.append(parking)
     let unsubscribeLayout: (() => void) | undefined
+    let sharedViewSequence = 0
+    const recentlyViewed: SessionId[] = []
+    const sharedConversation = (resource: Resource): boolean => shared && (resource.kind === 'chat' || resource.kind === 'view' && resource.target.type === 'conversation')
+    const warmRecent = (): void => {
+        if (!warming || !warmup) return
+        const context = catalog?.ctx ?? root
+        const rows = Object.values(context.sessions.list.getSnapshot().byId)
+        const archived = new Set(context.workspaces.list.getSnapshot().archivedSessionIds)
+        const eligible = rows.filter(row => !archived.has(row.id))
+        const ids = new Set(eligible.map(row => row.id))
+        // Keep the warm lease while a pane is visible. Otherwise closing its
+        // final view retires the official binding before the catalog can notify
+        // warmup, turning a return visit into another cold session open.
+        warmup.update([...recentlyViewed.filter(id => ids.has(id)), ...eligible
+            .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)).map(row => row.id)])
+    }
+    const createSessionPane = (paneId: string, sourceId: string, initial: WorkspaceRenderOptions): PaneRuntime => {
+        const context = catalog?.ctx ?? root
+        const surface = document.createElement('div')
+        surface.className = 'hapi-remote-pane hapi-shared-pane'
+        surface.dataset.hapiHost = host.id; surface.dataset.hapiPaneInstance = paneId
+        surface.dataset.hapiGraph = 'shared'
+        Object.assign(surface.style, { display: 'flex', flexDirection: 'column', minHeight: '0', height: '100%', width: '100%', overflow: 'hidden' })
+        parking.append(surface)
+        const ui = sharedUi.createScope()
+        const resourceId = sessionResourceId(host.id, sourceId)
+        const lifetime = new AbortController()
+        const activeSignal = AbortSignal.any([signal, lifetime.signal])
+        let presentation = { focused: initial.focused, visible: initial.visible !== false }
+        const listeners = new Set<() => void>()
+        let reference: SessionReference | undefined
+        let view: SessionViewHandle | undefined
+        let starting = false, disposed = false, retired = false
+        const navigation: WorkspacePaneNavigation = {
+            ...ui, paneId, hostId: host.id,
+            state: { getSnapshot: () => presentation, subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } } },
+            catalog: { getSnapshot: () => workspace.getSnapshot().catalog.byId[resourceId], subscribe: workspace.subscribe },
+            registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
+            retainForDraftTransfer: () => retention.retain(),
+            openSuccessor: id => workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, id), paneId),
+            openSession: (id, options) => { workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside) },
+            revealConversation: () => { workspace.store.focus(paneId); workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation') },
+            openResource: (address, options = {}) => workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openTab: (kind, options = {}) => workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openPanel: (panelId, options = {}) => workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openView: (target, options = {}) => workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+        }
+        // Primary graph shortcuts already receive DOM events once. Only a
+        // remote Host needs its facade's captured listeners dispatched here.
+        const capture = (event: KeyboardEvent): void => { catalog?.dispatch(event, true) }
+        const bubble = (event: KeyboardEvent): void => { catalog?.dispatch(event, false) }
+        // Portal events bubble through shell.overlay's React tree, not through
+        // WorkspacePane. Native ownership follows the actual DOM occurrence.
+        const focus = (): void => { if (!disposed && !retired && presentation.visible) workspace.store.focus(paneId) }
+        surface.addEventListener('keydown', capture, true); surface.addEventListener('keydown', bubble)
+        surface.addEventListener('pointerdown', focus, true); surface.addEventListener('focusin', focus, true)
+        const activate = (): void => {
+            if (disposed || retired || starting || view) return
+            starting = true; delete surface.dataset.hapiPaneDeferred; surface.dataset.hapiPaneBooting = 'true'
+            void (async () => {
+                try {
+                    await waitForCatalogSession(context.sessions, sourceId as SessionId, activeSignal)
+                    if (disposed || retired || activeSignal.aborted) return
+                    reference = context.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
+                    renderHostRoot?.()
+                    view = sessionViews!.mount({ paneId, instanceId: `${paneId}:${++sharedViewSequence}`, reference, target: surface, navigation,
+                        onReady: () => {
+                            delete surface.dataset.hapiPaneBooting; surface.dataset.hapiPaneBooted = 'true'
+                            const id = sourceId as SessionId, previous = recentlyViewed.indexOf(id)
+                            if (previous !== -1) recentlyViewed.splice(previous, 1)
+                            recentlyViewed.unshift(id); recentlyViewed.length = Math.min(recentlyViewed.length, 5)
+                            warming = true; warmRecent()
+                        },
+                        onError: error => { if (!disposed && !activeSignal.aborted) workspace.report(error) },
+                    })
+                } catch (error) {
+                    if (!disposed && !activeSignal.aborted) { surface.textContent = errorMessage(error); surface.setAttribute('role', 'alert'); workspace.report(error) }
+                } finally { starting = false }
+            })()
+        }
+        const update = (_resource: Resource, options: WorkspaceRenderOptions): void => {
+            if (retired || disposed) return
+            const next = { focused: options.focused, visible: options.visible !== false }
+            surface.dataset.hapiFocused = String(next.focused); surface.dataset.hapiVisible = String(next.visible)
+            if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
+                presentation = next; for (const listener of listeners) listener()
+            }
+            if (next.visible) activate()
+            else if (!view) surface.dataset.hapiPaneDeferred = 'true'
+        }
+        const retention = createPaneRetention(() => {
+            retired = true; presentation = { focused: false, visible: false }
+            for (const listener of listeners) listener()
+            surface.hidden = true; parking.append(surface)
+            void ui.stopOwnedVoice().catch(workspace.report)
+        }, async () => {
+            if (disposed) return
+            disposed = true; lifetime.abort()
+            surface.removeEventListener('keydown', capture, true); surface.removeEventListener('keydown', bubble)
+            surface.removeEventListener('pointerdown', focus, true); surface.removeEventListener('focusin', focus, true)
+            try {
+                await view?.dispose(); view = undefined
+                reference?.release(); reference = undefined
+                await ui.dispose()
+            } finally { listeners.clear(); surface.remove(); allPanes.delete(result) }
+        })
+        const result: PaneRuntime = { sourceId, shared: true, surface, activate, update, stop: retention.stop }
+        allPanes.add(result)
+        update({ kind: 'chat', sessionId: resourceId }, initial)
+        return result
+    }
     const createPane = (paneId: string, sourceId: string, resource: Resource, initial: WorkspaceRenderOptions): PaneRuntime => {
         const surface = document.createElement('div')
         surface.className = 'hapi-remote-pane'
@@ -390,6 +521,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             readLegacyScratchlist: ui.readLegacyScratchlist,
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
+            openSession: (id, options) => { workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside) },
             openSuccessor: displaySessionId => workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, displaySessionId), paneId),
             state: { getSnapshot: () => presentation, subscribe(listener) { presentationListeners.add(listener); return () => { presentationListeners.delete(listener) } } },
             catalog: { getSnapshot: () => workspace.getSnapshot().catalog.byId[resourceId], subscribe: workspace.subscribe },
@@ -448,6 +580,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 renderer.render(<div className="hapi-empty" role="alert"><p>{errorMessage(reason)}</p><button type="button" onClick={() => { if (boot.begin()) { surface.dataset.hapiPaneBooting = 'true'; void start() } }}>Retry</button></div>)
             }
             try {
+                const resources = await resourcesForHost()
                 // Refresh the cached Host snapshot first: the rows a pane boots come
                 // from it, so a pane opened after a Host graph revision must not boot
                 // the stale revision fetched when the page started.
@@ -580,9 +713,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     }
     const getPane = (paneId: string, sourceId: string, resource: Resource, options: WorkspaceRenderOptions): PaneRuntime => {
         const current = activePanes.get(paneId)
-        if (current?.sourceId === sourceId) { current.update(resource, options); return current }
+        if (current?.sourceId === sourceId && Boolean(current.shared) === sharedConversation(resource)) { current.update(resource, options); return current }
         if (current) void current.stop()
-        const next = createPane(paneId, sourceId, resource, options)
+        const next = sharedConversation(resource) ? createSessionPane(paneId, sourceId, options) : createPane(paneId, sourceId, resource, options)
         activePanes.set(paneId, next)
         return next
     }
@@ -600,10 +733,40 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }
     }
     try {
-        if (host.id !== 'local') catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, 'catalog', signal)
+        if (host.id !== 'local') {
+            const resources = await resourcesForHost()
+            if (shared) { catalogSurface.hidden = false; catalogSurface.style.display = 'contents'; catalogSurface.dataset.hapiSharedHost = host.id }
+            catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, false, shared)
+        }
+        if (shared) {
+            const context = catalog?.ctx ?? root
+            sessionViews = installSessionViewHost(context)
+            warmup = createSessionWarmup(context.sessions)
+            unwarmup = context.sessions.list.subscribe(warmRecent)
+            if (catalog) {
+                unprovideHostUi = context.reflect.provide('hapiWorkspaceUi', sharedUi.root)
+                const unchrome = installPaneChrome(context)
+                // AppFrame installs the public scope once, but its implicit
+                // current-session composer must not duplicate a portal editor.
+                const unmain = context.slots.inject('main', () => context.slots.register({ name: 'main', key: 'conversation', priority: -100 }, () => null))
+                unhostChrome = () => { unmain(); unchrome() }
+                hostUiScope = context.inject(['slots', 'locale', 'sessions', 'uiSession', 'uiConversation', 'conversation', 'sidebarRight', 'hapiWorkspaceUi'], owner => {
+                    const disposers = [installSourceVoice(owner, root.remote.hapi), installTurnSharing(owner), installShareReceiver(owner), installSourceAppearance(owner), installSourceTerminalActions(owner, root.remote.hapi)]
+                    return () => { for (const dispose of disposers.reverse()) dispose() }
+                })
+                await hostUiScope
+                renderHostRoot = () => {
+                    if (hostRenderer) return
+                    const mount = document.createElement('div'); mount.hidden = true; catalogSurface.append(mount)
+                    hostRenderer = createRoot(mount)
+                    hostRenderer.render(context.slots.renderSlot('root', {}))
+                }
+            }
+        }
         function RemoteSession({ sourceId, resource, options }: { sourceId: string; resource: Resource; options: WorkspaceRenderOptions }) {
             const mount = useRef<HTMLDivElement>(null)
             const paneId = options.paneId
+            const sharedView = sharedConversation(resource)
             useLayoutEffect(() => {
                 const target = mount.current!
                 const view = getPane(paneId, sourceId, resource, options)
@@ -612,7 +775,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     view.update(resource, { ...options, visible: false, focused: false })
                     if (view.surface.parentElement === target) parking.append(view.surface)
                 }
-            }, [sourceId, paneId])
+            }, [sourceId, paneId, sharedView])
             useLayoutEffect(() => { activePanes.get(paneId)?.update(resource, options) }, [paneId, resource, options.focused, options.visible, options.toolsTarget])
             return <div ref={mount} className="hapi-remote-mount" style={{ minHeight: 0, height: '100%', width: '100%' }}/>
         }
@@ -629,17 +792,20 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             stopped = true; unsubscribeLayout?.(); removeHost?.()
             await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
             activePanes.clear()
+            unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
             await catalog?.stop(); catalogSurface.remove(); parking.remove()
         } }
     } catch (error) {
         unsubscribeLayout?.(); removeHost?.()
         await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
+        unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
         await catalog?.stop(); catalogSurface.remove(); parking.remove(); throw error
     }
 }
 
 /** Reconcile paired Hosts and native display revisions in the single workspace. */
 export function installFederation(ctx: Context, workspace: WorkspaceController): () => Promise<void> {
+    const shared = new URL(location.href).searchParams.get('hapiGraph') === 'shared'
     const lifetime = new AbortController()
     const unresolveSource = workspace.installSourceResolver((source, signal) => resolveOriginalSession(ctx.remote.hapi, ctx.sessions, source, AbortSignal.any([lifetime.signal, signal])))
     let preferenceStorage: Storage | undefined
@@ -652,7 +818,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     const logical = new Map<string, string>()
     const reported = new Map<string, string>()
     const containShortcuts = (event: KeyboardEvent): void => {
-        if (remoteKeyboardEvents.has(event) || event.composedPath().some(node => node instanceof Element && node.matches('[data-hapi-host]'))) {
+        if (remoteKeyboardEvents.has(event) || event.composedPath().some(node => node instanceof Element && node.matches('[data-hapi-host]:not([data-hapi-graph="shared"])'))) {
             // stopPropagation still allows every listener on this Document to
             // run: official Modal's Escape/Tab and Menu's navigation retain
             // their normal behavior. No primary window command sees the key.
@@ -663,7 +829,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     let polling = false
     const local: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
     running.set('local', local)
-    void bootHost(ctx, workspace, { id: 'local', label: 'DSH', online: true, basePath: '/' }, AbortSignal.any([lifetime.signal, local.abort.signal]), sharedUi).then(async runtime => {
+    void bootHost(ctx, workspace, { id: 'local', label: 'DSH', online: true, basePath: '/' }, AbortSignal.any([lifetime.signal, local.abort.signal]), sharedUi, shared).then(async runtime => {
         if (lifetime.signal.aborted) await runtime.stop()
         else local.runtime = runtime
     }).catch(error => { if (!lifetime.signal.aborted) workspace.report(error) })
@@ -687,7 +853,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                 if (!host.online || running.has(host.id)) continue
                 const entry: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
                 running.set(host.id, entry)
-                void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi).then(async runtime => {
+                void bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi, shared).then(async runtime => {
                     if (entry.abort.signal.aborted || lifetime.signal.aborted) { await runtime.stop(); return }
                     entry.runtime = runtime; reported.delete(host.id); workspace.catalogHostReady(host.id, host.label)
                 }).catch(error => {

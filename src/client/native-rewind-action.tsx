@@ -9,6 +9,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from './pane-navigation.ts'
 import { SourceMessageNavigation } from './source-navigation.ts'
 import type {} from '../hapi-agent/projection-types.ts'
+import { useWorkspacePane } from './surface/pane-context.tsx'
 
 /** Public keyed-slot composition: retain the official row, add one native action. */
 export function installNativeRewindAction(ctx: Context, api: HapiRemoteApi, refresh: () => void): () => void {
@@ -30,6 +31,7 @@ export function installNativeRewindAction(ctx: Context, api: HapiRemoteApi, refr
             if (!original || original.children || original.store || original.inject) return
             const Official = original.component as ComponentType<ChatNodeViewProps<'user'>>
             const NativeUserRow = (props: ChatNodeViewProps<'user'>) => {
+                const pane = useWorkspacePane(ctx)
                 const native = props.useProjection('hapi')
                 const observed = props.useProjection('hapiObserved')
                 const anchor = useRef<HTMLDivElement>(null)
@@ -44,7 +46,8 @@ export function installNativeRewindAction(ctx: Context, api: HapiRemoteApi, refr
                     {(['fork', 'rewind'] as const).filter(kind => kind === 'fork' ? observed.capabilities.forkAtMessage : observed.capabilities.rewindToMessage).map(kind =>
                         <SourceHistoryAction key={kind} api={api} sessionId={props.sessionId} messageSeq={props.node.data.seq} kind={kind}
                             language={ctx.locale.getSnapshot().active} onChanged={refresh} onOpen={id => {
-                                ctx.get('hapiWorkspacePane')?.revealConversation(); ctx.uiWorkspace.openSession(id as SessionId)
+                                if (pane) pane.openSession(id)
+                                else ctx.uiWorkspace.openSession(id as SessionId)
                             }}/>)}</div>}</>
                 return source ? <div ref={anchor} className="hapi-source-message">{row}</div> : row
             }

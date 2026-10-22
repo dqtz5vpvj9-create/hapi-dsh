@@ -41,7 +41,8 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
         retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
         answer: async (sessionId, requestId, answer, deny) => remoteValue(await api.nativeAnswer({ sessionId, requestId, answer, ...(deny === undefined ? {} : { deny }) })),
         resume: async sessionId => remoteValue(await api.resumeSession({ sessionId })),
-        // Per graph api instance: concurrent panes cannot share this identity.
+        // One Host API can serve several panes; diagnostics retain each
+        // session identity and capture the request's own identity at dispatch.
         identify: identity => setDiagnosticIdentity(api, identity),
     }
     // Page-global, copyable evidence for remote/console/window failures. This

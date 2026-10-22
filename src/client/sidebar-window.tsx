@@ -89,7 +89,12 @@ export function SidebarWindow<T extends { id: string }>({ items, scrollElement, 
         const margin = list.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop
         setScrollMargin(previous => Math.abs(margin - previous) > .5 ? margin : previous)
     }, [scrollElement])
-    useLayoutEffect(measureMargin, [measureMargin, items, narrow, renderItem])
+    // The recent list is the first content child, except for the empty-state
+    // message. A new row/render callback identity does not move its origin.
+    // Measuring on each catalog/refcount publication forces page layout during
+    // session binds; actual viewport changes remain observed below, while the
+    // virtualizer independently measures changed row heights.
+    useLayoutEffect(measureMargin, [measureMargin, items.length, narrow])
     useLayoutEffect(() => {
         const ResizeObserverClass = scrollElement?.ownerDocument.defaultView?.ResizeObserver
         if (!scrollElement || !ResizeObserverClass) return

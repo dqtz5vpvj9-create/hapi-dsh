@@ -1,3 +1,4 @@
+import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 /** Durable bytes around the published official composer attachment owner. */
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -215,7 +216,7 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
             </div>;
         };
         const Seat = (props: InputProps) => {
-            const pane = owner.get('hapiWorkspacePane'), native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
+            const pane = useWorkspacePane(owner), native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
             if (!pane || observed?.sidechain || !source && /^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId)) return null;
             const identity = JSON.stringify([pane.hostId, pane.paneId, source?.hubId ?? 'dsh', source?.hapiSessionId ?? props.sessionId]);
             return <Recovery key={identity} props={props} identity={identity}/>;

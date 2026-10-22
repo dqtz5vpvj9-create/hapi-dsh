@@ -21,6 +21,7 @@ import { voiceToolOwner } from './tools.ts';
 import { VoiceCredentialsPanel, VoicePreferencesPanel, useVoicePreferences, words } from './settings.tsx';
 import { voiceError } from './assistant.ts';
 import { VOICE_BACKEND_LABELS } from '../../voice/protocol/voicePickerCatalog.ts';
+import { useWorkspacePane } from '../surface/pane-context.tsx';
 
 type ComposerProps = PropsRuntime<'conversation.input.left'>;
 function Dialog({ title, close, minimize, children }: { title: string; close(): void; minimize(): void; children: ReactNode }) {
@@ -36,7 +37,7 @@ function VoiceComposer({ ctx, api, transport, catalog, ui, language, binding, so
     ctx: Context; api: HapiRemoteApi; transport: SourceVoiceTransport; catalog: VoiceCatalog; ui: WorkspaceUiScope; language: string;
     binding: SessionBinding; source: WorkbenchSource | null; composer: ComposerProps; readOnly: boolean;
 }) {
-    const tr = words(language), navigation = ctx.get('hapiWorkspacePane'), identity = `${navigation?.paneId ?? 'main'}:${binding.sessionId}`;
+    const tr = words(language), navigation = useWorkspacePane(ctx), identity = `${navigation?.paneId ?? 'main'}:${binding.sessionId}`;
     const dictationId = `${identity}:dictation`, assistantId = `${identity}:voice`;
     const ownerId = useSyncExternalStore(ui.voice.subscribe, ui.voice.getSnapshot);
     const { preferences } = useVoicePreferences(ui.preferences, catalog);
@@ -145,22 +146,23 @@ function VoiceComposer({ ctx, api, transport, catalog, ui, language, binding, so
 
 function installVoiceSeats(ctx: Context, api: HapiRemoteApi, shared: WorkspaceUiScope): () => void {
     const transport = new SourceVoiceTransport(api), catalog = new VoiceCatalog(api), disposers: Array<() => void> = [];
-    const getUi = () => ctx.get('hapiWorkspacePane') ?? shared;
     const language = () => ctx.locale.getSnapshot().active;
     const Composer = (props: ComposerProps) => {
         const lang = useSyncExternalStore(listener => ctx.locale.subscribe(listener), language);
+        const ui = useWorkspacePane(ctx) ?? shared;
         const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed;
         const source = useMemo(() => projection ? { sourceSessionId: projection.hapiSessionId, sourceHubId: projection.hubId,
             ...(projection.machineId ? { machineId: projection.machineId } : {}) } : null, [projection?.hapiSessionId, projection?.hubId, projection?.machineId]);
         const binding = ctx.sessions.binding(props.sessionId);
         if (!binding || observed?.sidechain) return null;
-        return <VoiceComposer key={props.sessionId} ctx={ctx} api={api} transport={transport} catalog={catalog} ui={getUi()} language={lang}
+        return <VoiceComposer key={props.sessionId} ctx={ctx} api={api} transport={transport} catalog={catalog} ui={ui} language={lang}
             binding={binding} source={source} composer={props} readOnly={Boolean(projection?.readOnly)}/>;
     };
     const Settings = (_props: PropsRuntime<'settings.section'>) => {
         const lang = useSyncExternalStore(listener => ctx.locale.subscribe(listener), language);
+        const ui = useWorkspacePane(ctx) ?? shared;
         return <section className="hapi-voice-settings" aria-label={words(lang)('Voice and dictation settings', '语音与听写设置')}><h2>{words(lang)('Voice and dictation', '语音与听写')}</h2>
-            <VoicePreferencesPanel api={api} store={getUi().preferences} catalog={catalog} language={lang}/><VoiceCredentialsPanel api={api} catalog={catalog} language={lang}/></section>;
+            <VoicePreferencesPanel api={api} store={ui.preferences} catalog={catalog} language={lang}/><VoiceCredentialsPanel api={api} catalog={catalog} language={lang}/></section>;
     };
     disposers.push(ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/voice', order: 85 }, Composer)));
     disposers.push(ctx.slots.inject('settings.section', () => ctx.slots.register({ name: 'settings.section', id: 'hapi-voice', order: 36, label: () => words(language())('Voice and dictation', '语音与听写') }, Settings)));

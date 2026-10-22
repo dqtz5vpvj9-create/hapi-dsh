@@ -1,3 +1,4 @@
+import { useWorkspacePane } from '../surface/pane-context.tsx'
 /** Additive metadata owned by the real source session. The official header,
  * lineage, menus and contributions from every other plugin remain mounted. */
 import { useEffect, useState, useSyncExternalStore } from 'react'
@@ -75,7 +76,7 @@ export function sourceHeader(ctx: Context, state: AppearanceState) {
         const native = useProjection('hapi'), observed = useProjection('hapiObserved')
         const appearance = useSyncExternalStore(state.subscribe, state.getSnapshot)
         const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
-        const navigation = ctx.get('hapiWorkspacePane'), catalog = useSyncExternalStore(navigation?.catalog.subscribe ?? emptySubscribe, navigation?.catalog.getSnapshot ?? noRow)
+        const navigation = useWorkspacePane(ctx), catalog = useSyncExternalStore(navigation?.catalog.subscribe ?? emptySubscribe, navigation?.catalog.getSnapshot ?? noRow)
         const [now, setNow] = useState(Date.now)
         useEffect(() => {
             if (!appearance.header.lastActive) return

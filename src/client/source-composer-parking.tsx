@@ -1,3 +1,4 @@
+import { useSharedWorkspacePane, useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -21,7 +22,8 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
         const [viewId] = useState(() => randomId());
         const files = useRef<readonly { id: string; file: File }[]>([]);
         const actions = useRef(props.inputActions); actions.current = props.inputActions;
-        const pane = ctx.get('hapiWorkspacePane');
+        const pane = useWorkspacePane(ctx);
+        const sharedPane = useSharedWorkspacePane();
         const controller = useMemo(() => new ComposerParkingController(api, source,
             JSON.stringify([source.sourceHubId, source.sourceSessionId, pane?.paneId ?? 'root']), snapshot => {
                 const binding = ctx.sessions.binding(props.sessionId); if (!binding) return false;
@@ -69,7 +71,11 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
                     {journal && ['preparing', 'discarding'].includes(journal.state) && <button type="button" disabled={state.busy} onClick={() => {
                         if (journal.state === 'discarding' || window.confirm(tr('Discard this saved parking attempt? The current composer and existing notes are kept.', '放弃这次暂存尝试？当前输入框和已有笔记会保留。'))) void controller.discard();
                     }}>{tr('Discard pending park', '放弃暂存尝试')}</button>}
-                    <button type="button" onClick={() => { ctx.sidebarRight.openTab('hapi-notes'); setExpanded(false); }}>{tr('Open scratchlist', '打开备忘录')}</button>
+                    <button type="button" onClick={() => {
+                        if (sharedPane) sharedPane.openTab('hapi-notes');
+                        else ctx.sidebarRight.openTabIn(props.sessionId, 'hapi-notes');
+                        setExpanded(false);
+                    }}>{tr('Open scratchlist', '打开备忘录')}</button>
                 </div>
             </section>}
         </span>;

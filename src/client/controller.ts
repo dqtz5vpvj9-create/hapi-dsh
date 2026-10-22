@@ -49,6 +49,9 @@ export interface WorkspaceOptions {
      * keeps emitting events; production default is 30s.
      */
     catalogSettleMs?: number
+    /** Acquire restored session references only when their window first becomes
+     * visible. References already acquired keep their draft/scroll lifetime. */
+    deferHiddenSessions?: boolean
 }
 
 export interface WorkspaceHost {
@@ -820,8 +823,12 @@ export class WorkspaceController {
             const current = this.store.getSnapshot()
             const rebound = bindSourceResources(current, this.snapshot.catalog.byId, this.sourceBindingScope())
             if (rebound !== current) this.store.replace(rebound)
-            const expected = new Map(this.store.getSnapshot().windows.flatMap(window => panes(window.root))
+            const layout = this.store.getSnapshot()
+            const expected = new Map(layout.windows.flatMap(window => panes(window.root))
                 .flatMap(pane => pane.resource.kind !== 'empty' ? [[pane.id, pane.resource] as const] : []))
+            const active = layout.windows.find(window => window.id === layout.activeWindowId)
+            const visible = new Set((active ? panes(active.root) : []).filter(pane => !layout.zoomed[layout.activeWindowId]
+                || pane.id === layout.focused[layout.activeWindowId]).map(pane => pane.id))
             this.pruneSourceResolutions(expected.values())
             // Release only retired occurrences. No cancel, abort, or archive call.
             for (const [id, lease] of this.leases) {
@@ -832,6 +839,11 @@ export class WorkspaceController {
             }
             for (const [paneId, resource] of expected) {
                 const previous = this.leases.get(paneId)
+                // Parked restore entries retain their durable resource identity
+                // without opening history, invoking a source resolver, or
+                // reporting a missing-session failure before first visibility.
+                // An already retained pane keeps its generation while hidden.
+                if (this.options.deferHiddenSessions && !visible.has(paneId) && !previous?.reference) continue
                 if (previous && !previous.waitingForCatalog) continue
                 let hostId = 'local'
                 let sessionId = resource.sessionId

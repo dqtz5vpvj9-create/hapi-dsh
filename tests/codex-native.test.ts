@@ -46,7 +46,7 @@ class FakeHapi implements HapiTransport {
   queue: HapiQueuedState = { queuedLocalIds: [], invokedLocalMessages: [] }
   rows: HapiMessage[] = []
   reads: HapiMessagesQuery[] = []
-  readHook: ((query: HapiMessagesQuery) => HapiMessagesPage) | undefined
+  readHook: ((query: HapiMessagesQuery) => HapiMessagesPage | Promise<HapiMessagesPage>) | undefined
   source: HapiSession = {
     id: 'hapi-session-1', namespace: 'test', seq: 1, createdAt: 1000, updatedAt: 1000,
     active: true, activeAt: 1000, thinking: false, thinkingAt: 1000,
@@ -943,5 +943,172 @@ test('a different resumed session id is rebound before delivery and persisted as
     agent.followup(outbound('r4-after-rebind', 'Next message'))
     await agent.journal.settled()
     assert.deepEqual(fake.sendTargets, ['resumed-native-session', 'resumed-native-session'])
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+async function eventuallyNative(predicate: () => boolean): Promise<void> {
+  for (let index = 0; index < 200; index++) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  assert.ok(predicate(), 'the live projection should advance without waiting for history')
+}
+
+test('native cached display returns before a blocked history read and live output survives older backfill', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-live-first-')), fake = new FakeHapi()
+  fake.rows = [user(), agentBody('message', { message: 'Cached answer' }, 'cached')]
+  let app = await mount(fake, directory), release: ((value: HapiMessagesPage) => void) | undefined
+  try {
+    await app.close()
+    const missing = agentBody('message', { message: 'Between cache and attach' }, 'missing')
+    missing.createdAt = 1300; missing.seq = 3
+    const live = agentBody('message', { message: 'Live during backfill' }, 'live')
+    live.createdAt = 1400; live.seq = 4
+    const history = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+    fake.readHook = () => history
+    app = await mount(fake, directory, { fastHistorySeed: true })
+    const initial = app.service.list()[0]!
+    assert.match(initial.projection.error ?? '', /stale/)
+    assert.equal(initial.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
+    await eventuallyNative(() => initial.resolveSourceMessageDisplaySeq(live.id) !== undefined)
+    // The snapshot was taken before the live row reached the source index.
+    release!(page([...fake.rows, missing])); release = undefined
+    await app.service.settled()
+    const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
+      event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
+    assert.deepEqual(answers, ['Cached answer', 'Between cache and attach', 'Live during backfill'])
+    assert.equal(current.binding.threadId, initial.binding.threadId)
+    assert.equal(current.displayRevision, initial.displayRevision + 1)
+    assert.equal(current.projection.error, null)
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { release?.(page(fake.rows)); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native cold attach seeds one latest page while full history remains blocked', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-cold-tail-')), fake = new FakeHapi()
+  const tail = agentBody('message', { message: 'Latest bounded answer' }, 'tail')
+  tail.createdAt = 1300; tail.seq = 3
+  const older = user()
+  let release!: (value: HapiMessagesPage) => void, reads = 0
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+  fake.readHook = () => ++reads === 1 ? page([tail], { hasMore: true, nextBeforeAt: 1300, nextBeforeSeq: 3 }) : blocked
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(tail.id), undefined)
+    release(page([older, tail])); await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
+    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(current.binding.threadId, initial.binding.threadId)
+  } finally { release(page([older, tail])); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native events arriving during the first history response are captured before the Agent exists', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-attach-race-')), fake = new FakeHapi()
+  let release!: (value: HapiMessagesPage) => void, reading!: () => void
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { reading = resolve })
+  fake.readHook = () => { reading(); return blocked }
+  const mounting = mount(fake, directory)
+  await started
+  const live = agentBody('message', { message: 'Arrived before attach completed' }, 'live')
+  fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
+  release(page([user()]))
+  const app = await mounting
+  try {
+    await app.service.settled()
+    const agent = app.service.list()[0]!
+    assert.notEqual(agent.resolveSourceMessageDisplaySeq(live.id), undefined)
+    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(agent.displayRevision, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native failed cache reconciliation retries automatically without a later source event', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-stale-retry-')), fake = new FakeHapi()
+  fake.rows = [user()]
+  let app = await mount(fake, directory)
+  try {
+    await app.close(); fake.historyFailure = new Error('Transient history read failure')
+    app = await mount(fake, directory); await app.service.settled()
+    assert.match(app.service.list()[0]!.projection.error ?? '', /Transient/)
+    const answer = agentBody('message', { message: 'Recovered without another event' }, 'recovered')
+    fake.rows.push(answer); fake.historyFailure = undefined
+    for (let index = 0; index < 250 && app.service.list()[0]!.resolveSourceMessageDisplaySeq(answer.id) === undefined; index++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    await app.service.settled()
+    assert.notEqual(app.service.list()[0]!.resolveSourceMessageDisplaySeq(answer.id), undefined)
+    assert.equal(app.service.list()[0]!.projection.error, null)
+    assert.equal(fake.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native default seed waits for complete initial history and needs no routine display replacement', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-safe-seed-')), fake = new FakeHapi()
+  const latest = agentBody('message', { message: 'Latest answer' }, 'latest')
+  let release!: (value: HapiMessagesPage) => void, reading!: () => void, mounted = false
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve }), started = new Promise<void>(resolve => { reading = resolve })
+  fake.readHook = query => query.beforeSeq === undefined ? page([latest], { hasMore: true, nextBeforeAt: latest.createdAt, nextBeforeSeq: latest.seq })
+    : (reading(), blocked)
+  const mounting = mount(fake, directory).then(app => { mounted = true; return app })
+  await started
+  assert.equal(mounted, false, 'cache-first / partial first paint requires explicit fastHistorySeed')
+  release(page([user()]))
+  const app = await mounting
+  try {
+    await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.equal(current.displayRevision, 0)
+    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
+    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(current.projection.error, null)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native removal during initial history cannot announce or resurrect the deleted source', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-removed-attach-')), fake = new FakeHapi()
+  let release!: (value: HapiMessagesPage) => void, reading!: () => void
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve }), started = new Promise<void>(resolve => { reading = resolve })
+  fake.readHook = () => { reading(); return blocked }
+  const mounting = mount(fake, directory)
+  await started
+  fake.emit({ type: 'session-removed', sessionId: fake.source.id })
+  release(page([user()]))
+  const app = await mounting
+  try {
+    await app.service.settled()
+    assert.equal(app.service.list().length, 0)
+    assert.equal(app.ctx.sessions.get(SessionId(nativeSessionId(fake.hubId, fake.source.id))), undefined)
+    await app.service.refreshCatalog()
+    assert.equal(app.service.list().length, 0, 'a stale catalog cannot undo a source removal')
+    assert.equal(fake.aborts, 0); assert.equal(fake.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native replacement preparation failure retries after old Agent disposal without another source event', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-replacement-retry-')), fake = new FakeHapi()
+  const latest = agentBody('message', { message: 'Latest before repair' }, 'latest')
+  latest.createdAt = 1300; latest.seq = 3; fake.rows = [user(), latest]
+  const resets: Array<[string, string]> = [], errors: string[] = []
+  const app = await mount(fake, directory, { onDisplayReset: (before, after) => { resets.push([before, after]) }, onError: error => { errors.push(error.message) } })
+  try {
+    const previous = app.service.list()[0]!, missing = agentBody('message', { message: 'Older recovered answer' }, 'older')
+    const original = fake.getSession.bind(fake); let snapshots = 0
+    fake.getSession = async id => { if (++snapshots === 2) throw new Error('Replacement source temporarily unavailable'); return original(id) }
+    fake.rows = [user(), missing, latest]
+    fake.emit({ type: 'message-updated', sessionId: fake.source.id })
+    for (let index = 0; index < 300 && (app.service.list()[0]?.displayRevision ?? 0) < 2; index++) await new Promise(resolve => setTimeout(resolve, 10))
+    await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.ok(current, 'service-owned retry survives disposal of the failed display')
+    assert.ok(current.displayRevision >= 2, 'the failed replacement namespace is never reused')
+    assert.notEqual(current.resolveSourceMessageDisplaySeq(missing.id), undefined)
+    assert.equal(app.ctx.sessions.get(previous.id), undefined)
+    assert.deepEqual(resets, [[previous.id, current.id]])
+    assert.ok(errors.some(error => error.includes('temporarily unavailable')))
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0); assert.equal(fake.answers.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

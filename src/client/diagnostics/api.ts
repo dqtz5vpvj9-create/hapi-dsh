@@ -3,7 +3,7 @@
  * Only allowlisted operational fields are recorded (method name, status, code,
  * request id, outcome, timing, timeout/abort); bodies and messages never are. */
 import type { HapiRemoteApi } from '../../client-api.ts'
-import { diagnosticsCore, safeIdentity, safeToken, type DiagnosticIdentity, type DiagnosticsCore } from './state.ts'
+import { DIAGNOSTICS_LIMIT, diagnosticsCore, safeIdentity, safeToken, type DiagnosticIdentity, type DiagnosticsCore } from './state.ts'
 
 const INSTRUMENTED = Symbol.for('hapi-dsh.diagnostics.api')
 const IDENTITIES = Symbol.for('hapi-dsh.diagnostics.api.identity')
@@ -50,22 +50,37 @@ type AnyFunction = (...args: unknown[]) => unknown
 
 type MutableApi = HapiRemoteApi & { [INSTRUMENTED]?: true; [IDENTITIES]?: Map<string, DiagnosticIdentity> }
 
-/** Identity is keyed by the pane graph's own api object, so concurrent panes
- * never share a mutable identity slot. */
+/** One Host API can serve many panes. Retain only a bounded, sanitized identity
+ * index by display session, with no focused-pane or last-seen fallback. */
 export function setDiagnosticIdentity(api: HapiRemoteApi, identity: DiagnosticIdentity): void {
+  let clean: DiagnosticIdentity | undefined
+  try { clean = safeIdentity(identity) } catch { return }
+  if (!clean?.sessionId) return
   const target = api as MutableApi
   let map = target[IDENTITIES]
   if (!map) {
     map = new Map()
     try { Object.defineProperty(target, IDENTITIES, { value: map, configurable: true }) } catch { return }
   }
-  const clean = safeIdentity(identity)
-  if (clean) map.set('current', clean)
-  else map.delete('current')
+  map.delete(clean.sessionId); map.set(clean.sessionId, clean)
+  while (map.size > DIAGNOSTICS_LIMIT) map.delete(map.keys().next().value!)
 }
 
-function currentIdentity(api: HapiRemoteApi): DiagnosticIdentity | undefined {
-  return (api as MutableApi)[IDENTITIES]?.get('current')
+function requestIdentity(api: HapiRemoteApi, request: unknown): DiagnosticIdentity | undefined {
+  try {
+    if (request === null || typeof request !== 'object') return undefined
+    // Only the protocol's own data field is eligible. Diagnostics must not
+    // execute request getters, traverse bodies, or guess from source/Host ids.
+    const descriptor = Object.getOwnPropertyDescriptor(request, 'sessionId')
+    const sessionId = safeToken(descriptor && 'value' in descriptor ? descriptor.value : undefined)
+    const map = (api as MutableApi)[IDENTITIES]
+    const identity = sessionId ? map?.get(sessionId) : undefined
+    if (!sessionId || !map || !identity) return undefined
+    map.delete(sessionId); map.set(sessionId, identity)
+    // Pending requests keep their invocation identity across focus changes,
+    // identity updates and bounded-index eviction.
+    return { ...identity }
+  } catch { return undefined }
 }
 
 function methodsOf(api: object): string[] {
@@ -89,10 +104,9 @@ export function instrumentHapiApi(api: HapiRemoteApi, core: DiagnosticsCore = di
   const target = api as unknown as Record<PropertyKey, unknown>
   if (target[INSTRUMENTED] === true) return () => {}
   const originals = new Map<string, AnyFunction>()
-  const recordFailure = (name: string, error: unknown, startedAt: number): void => {
+  const recordFailure = (name: string, error: unknown, startedAt: number, identity: DiagnosticIdentity | undefined): void => {
     try {
       const failure = failureOf(error)
-      const identity = currentIdentity(api)
       core.add({ source: 'remote', event: failure.timeout ? 'remote.timeout' : failure.aborted ? 'remote.aborted' : 'remote.rejected',
         method: `hapi/${name}`, durationMs: Date.now() - startedAt, ...failure, ...(identity ? { identity } : {}) })
     } catch { /* diagnostics must never change the result */ }
@@ -102,17 +116,18 @@ export function instrumentHapiApi(api: HapiRemoteApi, core: DiagnosticsCore = di
     originals.set(name, original)
     const wrapped = (...args: unknown[]): unknown => {
       const startedAt = Date.now()
+      const identity = requestIdentity(api, args[0])
       let result: unknown
-      try { result = original.apply(api, args) } catch (error) { recordFailure(name, error, startedAt); throw error }
+      try { result = original.apply(api, args) } catch (error) { recordFailure(name, error, startedAt, identity); throw error }
       if (result === null || typeof result !== 'object') return result
       if (typeof read(result, 'then') !== 'function') {
-        if (isResult(result) && result.ok === false) recordFailure(name, read(result, 'error'), startedAt)
+        if (isResult(result) && result.ok === false) recordFailure(name, read(result, 'error'), startedAt, identity)
         return result
       }
       return Promise.resolve(result as Promise<unknown>).then((value: unknown) => {
-        if (isResult(value) && value.ok === false) recordFailure(name, read(value, 'error'), startedAt)
+        if (isResult(value) && value.ok === false) recordFailure(name, read(value, 'error'), startedAt, identity)
         return value
-      }, (error: unknown) => { recordFailure(name, error, startedAt); throw error })
+      }, (error: unknown) => { recordFailure(name, error, startedAt, identity); throw error })
     }
     try {
       Object.defineProperty(api, name, { value: wrapped, configurable: true, writable: true })

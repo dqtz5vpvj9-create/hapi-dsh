@@ -1,3 +1,4 @@
+import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 /** A live official composer endpoint; neither editor nor submission is replaced. */
 import { useEffect, useMemo, useRef } from 'react';
@@ -26,7 +27,7 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
         const handoffs = owner.hapiWorkspaceUi.handoffs;
         const Receiver = (props: Props) => {
             const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed;
-            const input = props.useInput(value => value), pane = owner.get('hapiWorkspacePane');
+            const input = props.useInput(value => value), pane = useWorkspacePane(owner);
             const latest = useRef({ props, projection, observed }); latest.current = { props, projection, observed };
             const source = useMemo(() => projection && !observed?.sidechain && pane ? {
                 hubId: projection.hubId, sessionId: projection.hapiSessionId, displayId: props.sessionId, hostId: pane.hostId,

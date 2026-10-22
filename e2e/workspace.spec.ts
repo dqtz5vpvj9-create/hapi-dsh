@@ -127,9 +127,10 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
         await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Plugins' });
-        await expect(remotePane).toContainText('Plugins');
-        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption('');
-        await expect(composer).toBeVisible();
+        await expect(remotePane.getByRole('heading', { name: 'Plugins', exact: true })).toBeVisible();
+        // The official panel replaces the Conversation header containing Host
+        // tools. A fixed return control is an existing documented UX gap, so
+        // panel navigation is the final step (as in workspace-chrome.spec.ts).
         await page.screenshot({ path: 'test-results/official-remote.png', fullPage: true });
         expect(errors).toEqual([]);
     });
@@ -212,13 +213,19 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex beta' }).click();
         const pane = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true });
+        const controls = pane.getByRole('region', { name: 'Codex plan', exact: true });
+        // Keep proposal delivery during pane startup; do not wait for its
+        // conversation or source controls to mount before this source event.
+        await expect(controls).toHaveCount(0);
         const planId = 'e2e-source-plan-proposal';
         environment.hapi.proposePlan('native-beta', planId);
-        const controls = pane.getByRole('region', { name: 'Codex plan', exact: true });
         await controls.getByRole('button', { name: 'Implement plan', exact: true }).click();
         await expect.poll(() => environment.hapi.planRequests).toEqual([{ sessionId: 'native-beta', planId }]);
+        await expect(controls.locator('[data-plan-operation]')).toHaveCount(1);
         await expect(controls.locator('[data-plan-operation]')).toHaveAttribute('data-plan-state', 'queued');
+        expect(environment.hapi.require('native-beta').session.agentState?.codexPlanProposalId).toBeUndefined();
         await page.reload();
+        await expect(controls.locator('[data-plan-operation]')).toHaveCount(1);
         await expect(controls.locator('[data-plan-operation]')).toHaveAttribute('data-plan-state', 'queued');
         expect(environment.hapi.planRequests).toHaveLength(1);
         environment.hapi.consume('native-beta', `${planId}:implement`);

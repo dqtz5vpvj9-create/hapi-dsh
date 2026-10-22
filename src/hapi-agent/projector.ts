@@ -259,6 +259,10 @@ export class ObservedProjector {
     this.responseInTurn = true
     let live = this.live
     if (live && live.item.key !== item.key) { this.flushLive(); live = undefined }
+    // REST can seed a longer cumulative snapshot before an older queued SSE
+    // frame is applied. A provisional prefix cannot shrink that same stream;
+    // non-prefix corrections and final source text still follow normal rules.
+    if (live && item.live && live.item.reasoning === item.reasoning && live.item.text.startsWith(item.text)) return
     const step = live?.step, projectedText = item.reasoning ? item.text : stripNotifySummaryFooter(item.text)
     if (live && !projectedText.startsWith(live.text)) { this.abandonStream(); live = undefined }
     if (!live) {

@@ -201,11 +201,26 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(420)
             const composer = native.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions', exact: true })
             await composer.fill('Mobile workspace draft saved through the official editor')
+            await native.locator('[data-hapi-composer-overflow] > summary').click()
             const park = native.getByRole('button', { name: 'Park draft', exact: true })
             await expect(park).toBeEnabled()
             const parkBox = (await park.boundingBox())!
-            expect(parkBox.height).toBeLessThan(40)
+            // R8 puts this action in the overflow menu, whose coarse-pointer
+            // buttons deliberately retain the existing 44px touch target.
+            expect(parkBox.height).toBeGreaterThanOrEqual(44)
+            expect(parkBox.x).toBeGreaterThanOrEqual(0)
             expect(parkBox.x + parkBox.width).toBeLessThanOrEqual(420)
+            const overflowBox = (await native.locator('.hapi-composer-overflow-panel').boundingBox())!
+            expect(overflowBox.x).toBeGreaterThanOrEqual(0)
+            expect(overflowBox.x + overflowBox.width).toBeLessThanOrEqual(420)
+            // A clipped absolute menu can have a visible bounding box while
+            // transcript rows receive its pointer events. Verify the real target.
+            await expect.poll(() => park.evaluate(element => {
+                const box = element.getBoundingClientRect()
+                return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2))
+                    && element.contains(document.elementFromPoint(box.x + 4, box.y + 4))
+                    && element.contains(document.elementFromPoint(box.right - 4, box.bottom - 4))
+            })).toBe(true)
             await park.click()
             const parked = native.getByRole('region', { name: 'Parked composer draft', exact: true })
             await expect(parked).toContainText('Saved to scratchlist. The parked draft was cleared.')

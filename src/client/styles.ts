@@ -255,10 +255,13 @@ export const workspaceStyles = String.raw`
 @container hapi-pane (max-width:420px) {
   [data-composer-card] {border-radius:16px;padding:4px 6px 2px}
   [data-composer-card] .uV2eYG_row {overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap;gap:3px}
+  /* Horizontal scrolling also clips vertically. Let the open menu escape its
+     row; the closed row keeps its compact horizontal scroll behavior. */
+  [data-composer-card]:has(.hapi-composer-overflow[open]) .uV2eYG_row {overflow:visible}
   [data-composer-card] .uV2eYG_row::-webkit-scrollbar {display:none}
   [data-composer-card] .uV2eYG_select {max-width:96px}
   .hapi-composer-overflow {order:-1}
-  .hapi-composer-overflow-panel {position:absolute;left:auto;right:0;width:min(calc(100cqw - 12px),100vw - 24px)}
+  .hapi-composer-overflow-panel {position:absolute;left:0;right:auto;width:min(calc(100cqw - 12px),100vw - 24px)}
   .hapi-composer-overflow-title {font-size:11px}
 }
 @media (pointer:coarse) {

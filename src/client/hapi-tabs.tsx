@@ -20,6 +20,7 @@ import { installSourceComposerParking } from './source-composer-parking.tsx';
 import { SourceCollaborationPanel } from './source-collaboration.tsx';
 import { SourceDshChildPanel } from './source-dsh-child.tsx';
 import { installShareReceiver } from './share-receiver.tsx';
+import { useSharedWorkspacePane, useWorkspacePane } from './surface/pane-context.tsx';
 
 const definitions = [
     { kind: 'hapi-notes', en: 'Scratchlist', zh: '备忘录' },
@@ -58,23 +59,14 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     const language = (): string => ctx.locale.getSnapshot().active;
     const title = (kind: Kind): string => { const item = definitions.find(row => row.kind === kind)!; return language().startsWith('zh') ? item.zh : item.en; };
     const style = document.createElement('style'); style.textContent = styles; document.head.append(style); disposers.push(() => style.remove());
-    const openConversation = (sessionId: string) => {
-        ctx.get('hapiWorkspacePane')?.revealConversation();
-        ctx.uiWorkspace.openSession(sessionId as SessionId);
-    };
-    const openSuccessor = (sessionId: string) => {
-        const pane = ctx.get('hapiWorkspacePane');
-        if (!pane) { ctx.get('hapiWorkspaceUi')?.handoffs.report(new Error('Open the original conversation in a workspace pane before moving its draft.')); return; }
-        void pane.openSuccessor(sessionId).catch(error => ctx.get('hapiWorkspaceUi')?.handoffs.report(error));
-    };
     const useLanguage = () => useSyncExternalStore(listener => ctx.locale.subscribe(listener), language);
-    const Library = ({ active }: { active: boolean }) => {
+    const Library = ({ active, onOpen }: { active: boolean; onOpen(sessionId: string): void }) => {
         const lang = useLanguage(); const [machines, setMachines] = useState<CatalogMachine[]>([]); const [error, setError] = useState<string | null>(null);
         useEffect(() => { if (!active) return; let disposed = false;
             void api.catalog().then(remoteValue).then(result => { if (!disposed) { setMachines(result.machines); setError(null); } }, failure => { if (!disposed) setError(failure instanceof Error ? failure.message : String(failure)); });
             return () => { disposed = true; };
         }, [active]);
-        return <>{error && <p role="alert" className="hapi-error">{error}</p>}<NativeLibraryPanel api={api} machines={machines} onOpen={openConversation} language={lang}/></>;
+        return <>{error && <p role="alert" className="hapi-error">{error}</p>}<NativeLibraryPanel api={api} machines={machines} onOpen={onOpen} language={lang}/></>;
     };
     for (const definition of definitions) {
         const id = `hapi-dsh/${definition.kind}`;
@@ -82,11 +74,20 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
             ...(definition.kind === 'hapi-library' ? { guide: [{ id: 'hapi-library', order: 90, title: () => title(definition.kind) }] } : {}) }));
         const Body = (props: TabProps) => {
             const { tab } = props.useTabInfo(); const lang = useLanguage();
+            const pane = useWorkspacePane(ctx);
+            const openConversation = (sessionId: string) => {
+                if (pane) pane.openSession(sessionId);
+                else ctx.uiWorkspace.openSession(sessionId as SessionId);
+            };
+            const openSuccessor = (sessionId: string) => {
+                if (!pane) { ctx.get('hapiWorkspaceUi')?.handoffs.report(new Error('Open the original conversation in a workspace pane before moving its draft.')); return; }
+                void pane.openSuccessor(sessionId).catch(error => pane.handoffs.report(error));
+            };
             const native = props.useProjection('hapi'); const observed = props.useProjection('hapiObserved'); const projection = native ?? observed;
             const source = useMemo(() => projection ? { sourceSessionId: projection.hapiSessionId, sourceHubId: projection.hubId,
                 ...(projection.machineId ? { machineId: projection.machineId } : {}) } : undefined,
             [projection?.hapiSessionId, projection?.hubId, projection?.machineId]);
-            if (definition.kind === 'hapi-library') return <Library active={tab.visible}/>;
+            if (definition.kind === 'hapi-library') return <Library active={tab.visible} onOpen={openConversation}/>;
             if (observed?.dshChild) return <section className="hapi-source-panel">
                 <SourceDshChildPanel api={api} sessionId={props.sessionId} initialState={observed.dshChild} active={tab.visible} language={lang}/>
                 <button type="button" onClick={() => openConversation(observed.dshChild!.parentSessionId)}>{lang.startsWith('zh') ? '打开父会话' : 'Open parent conversation'}</button>
@@ -116,7 +117,7 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
             if (definition.kind === 'hapi-schedule') return <SourceSchedulePanel key={props.sessionId} {...shared} readOnly={projection.readOnly} delivery={projection.delivery} draftStorage={ctx.get('hapiWorkspaceUi')?.sourceScheduleDrafts}/>;
             if (definition.kind === 'hapi-history') return <SourceHistoryPanel key={props.sessionId} {...shared} exportPreferences={ctx.get('hapiWorkspaceUi')?.preferences} onJump={async messageId => {
                 const navigation = ctx.get('hapiMessageNavigation'); if (!navigation) throw new Error('Conversation navigation is not ready.');
-                ctx.get('hapiWorkspacePane')?.revealConversation();
+                pane?.revealConversation();
                 await navigation.reveal(props.sessionId, messageId, tab.signal);
             }}/>;
             const useNote = async (note: SourceNote, urls: Record<string, string>) => {
@@ -137,13 +138,13 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
                     removeAdded();
                     throw new Error(lang.startsWith('zh') ? '输入框已发生变化，笔记仍保留，请重试。' : 'The composer changed. The note is retained; try inserting it again.');
                 }
-                props.inputActions.persistDraft(); ctx.get('hapiWorkspacePane')?.revealConversation();
+                props.inputActions.persistDraft(); pane?.revealConversation();
                 ctx.conversation.input.for(binding.ctx).focus();
             };
             // Only the notes tab asks the root browser for its one original
             // source-session key; isolated plugin storage stays isolated.
             let legacyRaw: string | null = null, legacyReadError: string | null = null;
-            try { legacyRaw = ctx.get('hapiWorkspacePane')?.readLegacyScratchlist(source.sourceSessionId) ?? null; }
+            try { legacyRaw = pane?.readLegacyScratchlist(source.sourceSessionId) ?? null; }
             catch (error) { legacyReadError = error instanceof Error ? error.message : String(error); }
             return <SourceNotesPanel key={props.sessionId} {...shared} onUse={useNote} legacyRaw={legacyRaw} legacyReadError={legacyReadError}/>;
         };
@@ -153,6 +154,7 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     // separate Park-draft seat: official attach/editor/Send stay untouched.
     const Tools = (props: PropsRuntime<'conversation.input.left'>) => {
         const lang = useLanguage(); const native = props.useProjection('hapi'); const observed = props.useProjection('hapiObserved');
+        const pane = useSharedWorkspacePane();
         const [attention, setAttention] = useState(false);
         if (!native && !observed || observed?.sidechain) return null;
         const chinese = lang.startsWith('zh');
@@ -166,7 +168,10 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
                 <parking.Action {...props} onAttention={setAttention}/>
                 <div className="hapi-composer-overflow-section">
                     <span className="hapi-composer-overflow-title">{chinese ? '会话工具' : 'Conversation tools'}</span>
-                    {definitions.map(row => <button type="button" key={row.kind} onClick={() => ctx.sidebarRight.openTab(row.kind)}>{title(row.kind)}</button>)}
+                    {definitions.map(row => <button type="button" key={row.kind} onClick={() => {
+                        if (pane) pane.openTab(row.kind);
+                        else ctx.sidebarRight.openTabIn(props.sessionId, row.kind);
+                    }}>{title(row.kind)}</button>)}
                 </div>
             </div>
         </details>;
@@ -174,8 +179,12 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     disposers.push(ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/source-tools', order: 95 }, Tools)));
     const TeamShortcut = (props: PropsRuntime<'conversation.session.header.utilities'>) => {
         const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), team = (native ?? observed)?.team; const lang = useLanguage();
+        const pane = useSharedWorkspacePane();
         if (!team || observed?.sidechain) return null;
-        return <button type="button" className="hapi-team-shortcut" onClick={() => ctx.sidebarRight.openTab('hapi-collaboration')}
+        return <button type="button" className="hapi-team-shortcut" onClick={() => {
+            if (pane) pane.openTab('hapi-collaboration');
+            else ctx.sidebarRight.openTabIn(props.sessionId, 'hapi-collaboration');
+        }}
             aria-label={`${lang.startsWith('zh') ? '打开团队' : 'Open team'}: ${team.teamName}`}>{team.teamName} · {team.members?.length ?? 0}</button>;
     };
     disposers.push(ctx.slots.inject('conversation.session.header.utilities', () => ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'hapi-dsh/team', order: 90 }, TeamShortcut)));

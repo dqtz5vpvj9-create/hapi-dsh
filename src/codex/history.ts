@@ -19,6 +19,12 @@ function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
 
 interface Pass { rows: HapiMessage[]; complete: boolean }
 
+/** One atomic latest page gives a cold display a bounded first response. */
+export async function readNativeHistoryTail(transport: HapiTransport, sessionId: string): Promise<Pass> {
+  const result = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
+  return { rows: uniqueNewestFirst(result.messages), complete: !result.page.hasMore && !result.page.reset }
+}
+
 /**
  * Read one bounded, latest-first pass pinned to one HAPI message epoch.
  *

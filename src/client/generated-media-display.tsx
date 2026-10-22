@@ -10,6 +10,7 @@ import { sourcePathAddress } from './source-path-actions.tsx'
 import type {} from './pane-navigation.ts'
 import type {} from '../hapi-agent/projection-types.ts'
 import type {} from '../codex/projection-types.ts'
+import { useWorkspacePane } from './surface/pane-context.tsx'
 
 export const SOURCE_MEDIA_DATA = 'hapi-generated-media'
 type SourceMediaTurn = readonly SourceGeneratedMediaRecord[]
@@ -46,12 +47,12 @@ export function installGeneratedMediaDisplay(ctx: Context): () => void {
         const source = sourcePathAddress(native ?? observed)
         const stream = props.turn.data.source(SOURCE_MEDIA_DATA), records = useSyncExternalStore(stream.subscribe, stream.getSnapshot)
         const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active), zh = language.startsWith('zh')
+        const pane = useWorkspacePane(ctx)
         if (!source || !records?.length) return null
         return <div className="hapi-generated-media-links" data-hapi-generated-media={props.turn.turn}>
             {records.flatMap(record => record.files.map(file => {
                 const address = generatedMediaResourceAddress({ source, document: { kind: 'generated-media', imageId: file.imageId, fileName: file.fileName, mimeType: file.mimeType } })
                 const open = (): void => {
-                    const pane = ctx.get('hapiWorkspacePane')
                     if (pane) pane.openResource(address)
                     else ctx.sidebarRight.openResourceIn(props.sessionId, address)
                 }

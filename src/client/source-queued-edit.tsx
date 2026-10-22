@@ -1,3 +1,4 @@
+import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
@@ -24,7 +25,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
   const [viewId] = useState(() => randomId())
   const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
   const tr = (en: string, zh: string): string => language.startsWith('zh') ? zh : en
-  const pane = ctx.get('hapiWorkspacePane')
+  const pane = useWorkspacePane(ctx)
   const value = useMemo(() => {
     if (!projection || observed?.sidechain) return null
     const source: WorkbenchSource = { sourceHubId: projection.hubId, sourceSessionId: projection.hapiSessionId,
@@ -56,7 +57,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
             if (!restored.ok) return restored
             window.dispatchEvent(new CustomEvent(scheduleRestoredEvent, { detail: { key: before.schedule.key } }))
             if (pane) pane.openTab('hapi-schedule')
-            else ctx.sidebarRight.openTab('hapi-schedule')
+            else ctx.sidebarRight.openTabIn(props.sessionId, 'hapi-schedule')
           } else {
             // Compare and write are in one synchronous JS turn. This public
             // operation replaces semantic chips intentionally after the user

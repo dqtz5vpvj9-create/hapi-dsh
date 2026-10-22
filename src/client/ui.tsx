@@ -539,7 +539,19 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
 }
 
 export function SessionSidebar({ controller, controls, api, wide, expandSidebar, useWorkspaces, t }: SessionSidebarProps) {
-    const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
+    // Lease readiness and layout-save acknowledgements do not change sidebar
+    // rows. Retain its snapshot until a field consumed below actually changes;
+    // otherwise every session bind rebuilds the entire virtualized sidebar.
+    const sidebarSnapshot = useMemo(() => {
+        let previous = controller.getSnapshot()
+        return () => {
+            const next = controller.getSnapshot()
+            if (next.catalog !== previous.catalog || next.layout !== previous.layout
+                || next.pickingSession !== previous.pickingSession || next.machines !== previous.machines) previous = next
+            return previous
+        }
+    }, [controller])
+    const snapshot = useSyncExternalStore(controller.subscribe, sidebarSnapshot)
     const sidebar = useSyncExternalStore(controller.sidebar.subscribe, controller.sidebar.getSnapshot)
     const { engine, machine, mode, filter, collapsed, expanded, folderOrder, pinInProgressSessions, showActiveSessionsOnly, sessionPreviewLimit, statusMode } = sidebar.preferences
     const workspaces = useWorkspaces(state => state)

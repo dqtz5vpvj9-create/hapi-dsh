@@ -5,6 +5,7 @@ import { NativeActions, ObservedActions, type NativeActionsApi } from './native-
 import { installSourceStateView } from './source-state-view.tsx'
 import type { HapiRemoteApi } from '../client-api.ts'
 import { useSourceQueuedEditing } from './source-queued-edit.tsx'
+import { NativePlanControls } from './native-plan.tsx'
 
 type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
 
@@ -32,6 +33,13 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
             || queued.panel)
         return <>
             <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}${native.branchLabel ? `${scope} [data-turn-tail] [data-clock="end"] button[aria-label="${CSS.escape(native.branchLabel())}"]{display:none!important}` : ''}`}</style>
+            {/* The initial read also restores a receipt after its proposal has
+                been consumed. The component returns null without a plan or
+                receipt, so this must stay outside the other action gates. */}
+            {projection && native.controls && <NativePlanControls ledger={native.controls} sessionId={sessionId}
+                planId={projection.planId} disabled={projection.readOnly || projection.nativeConnection !== 'attached'} t={t}
+                identity={{ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: 'codex-native',
+                    ...(projection.machineId === null ? {} : { machineId: projection.machineId }) }}/>}
             {hasActions && <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
                 <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t}/>
                 <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t}/>

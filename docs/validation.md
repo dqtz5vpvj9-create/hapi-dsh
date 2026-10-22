@@ -142,3 +142,75 @@ npm run test:e2e
 - `e2e/pane-surface.spec.ts`：3/3，`e2e/seamless-history.spec.ts`：5/5。
 - 全量 Playwright 套件没有在本构建上重跑；上表各项按定向 spec 与 live 探针的实际范围记录，不扩大成全产品回归证明。
 - 已知缺口（未在本批修复）：pane 切到官方 Plugins 等 main panel 后，官方 header 被面板页替换，当前没有从该面板直接回到 Conversation 的固定入口；用户可重新从侧栏打开会话或换 pane。列为后续可用性项，不阻塞本批。
+
+## 2026-10-22 架构 A 与 source history / live 连续性
+
+本节是本次接手后的代码与验证记录，不覆盖前文历史批次的结果。架构 A 使用固定 DSH `0.2.1-rc.2` / `687f282e8625c6b8d11ff58211a90524be2e4317` 的公开 `SessionProvider`、`conversation.content` factory 与 Host shell 扩展点；没有修改或嵌入上游实现。实现细节和 rollout 条件见 [one-graph-spike.md](one-graph-spike.md)，后端语义见 [live-history.md](live-history.md)。
+
+### 本次修复的实际边界
+
+实际代码核查修正了交接中的一项归因：两种 source service 在 catalog discovery 之前就已经订阅全局 HAPI SSE，并非每个 pane 读完 history 才开始订阅。需要修复的是**收包之后、Agent 发布之前以及异步 history 合并期间的窗口**。原路径缺少 initial attach 的 live suffix 合并、失败缓存的自动对账，并让完整 history refresh 占用 source 事件队列；资源导入等后续 `await` 也可能跨过 rewind、删除或 source identity 变化。
+
+| 实现 | 本次行为与限制 |
+| --- | --- |
+| 每 Host 一个官方 Client graph | 共享 conversation 路径用显式 session reference 挂载各 pane，关闭仅释放 view/reference；Host chrome、settings 和官方右栏仍是共享资源。非 conversation plugin-view 保留原兼容路径。共享模式须显式选择 `?hapiGraph=shared`，普通 URL 仍走原路径。 |
+| 接收时 journal | 服务在进入异步队列前同步记录事件。每 source 最多 1,024 条事件、8 MiB 序列化正文，另有最多 4,096 条固定大小的已逐出 identity 证明。预算不等于整个 Host 的堆上限，不包含完整历史、官方 Session、内容资源或在途工作。journal 在内存中，Host 重启仍依赖源历史。 |
+| 历史与 live 合并 | 按源序号/时间排序，以 stream id、localId 或原 row id 去重；保留读取期间到达的更新以及尚未被 REST 索引的 live 行。final/invoked 不被 provisional/queued 回退，同一 provisional stream 不被较短旧前缀截断。允许源对最终内容作合法修正，不能仅按正文长度判断任意改写的新旧。 |
+| generation 与 source lifetime | invalidation、删除和已知 reconnect gap 使旧 checkpoint 失效；异步内容准备完成后和 Session 发布前再次核验。删除立即退休旧 lifetime，慢 attach 不能复活已删除源；remove/add 使用新 incarnation 和 display revision。 |
+| writable owner 与替换失败 | display 替换先退休旧 Agent，再创建新 Agent，避免同一源的 delivery/approval durable journal 出现两个可写 owner。替换重试属于 service，不依赖已销毁 Agent；瞬时准备失败后没有新 SSE 也能继续恢复。pane 关闭不停止 native 执行。 |
+| stale 与后台对账 | history refresh 脱离 live 队列，按 source 单飞，并共享四个后台刷新槽位。cache fallback 明确 stale；失败以 1 秒起、最多 30 秒的退避自动只读重试。逐出证明不足时仍保持 stale，不把无法证明连续的 snapshot 标为完整。普通 metadata 更新不再无条件重读完整历史。 |
+| 初始 seed 的保守默认 | `fastHistorySeed?: boolean` 是 agent/service 的内部构造参数，默认 false；生产 composition 未传入，配置 schema、CLI 和环境变量均未新增启用入口。默认初次 attach 仍等完整 epoch-stable history，journal 保留其间 live。实验性 cache/latest-200 首屏只能显式启用，不能据此宣称默认首屏已经不受历史读取阻塞。 |
+
+关闭 fast seed 的原因是固定 DSH 的追加式 display：后续补入更早历史可能必须创建新的 `-rN` display。相同 source 换代前的 rich draft、reference/command chips、附件恢复和滚动锚点尚缺安全迁移事务。现有跨 source handoff 不能替代它。默认全量 seed 避免正常打开都发生这种换代，但不解决既有 rewind、identity 变化或不完整缓存恢复所需的换代风险。
+
+本次还修正了四项共享、卸载与界面集成问题：
+
+- 旧 Terminal slot 跟随器通过公开 Context/Fiber 生命周期判断 owner 已退休，在异步 unload 的订阅清理前停止新注册；不再向 inactive Context 创建 effect。仍使用官方 leaf 和原服务 receiver，没有复制 store/children，也没有过滤全部页面异常。
+- 原 `NativePlanControls` 组件在既有生产 dock 中漏挂载。现恢复到其他 action gate 之外，让首次只读查询可以找回已经消费 proposal 的 durable receipt；无真实 plan/receipt 时仍返回空结果，不恢复 routine 行或空 dock。浏览器用例保留 pane 启动期间立即送入 proposal，未用等待 pane ready 掩盖竞态，并检查实施一次、消费 proposal 后 reload 恢复同一 receipt。
+- 共享 Host API 的诊断身份改为有界 session 索引，并在调用时复制准确身份。只检查请求自有的 `sessionId` 数据字段，不执行 getter、不遍历正文；Host 级和未知身份请求不借用最后一个 pane。并发切换、迟到失败和索引逐出不会改写在途请求身份，原返回值、异常和 API receiver 保持不变。
+- 窄屏 composer 的 overflow 菜单此前被工具行裁切：`overflow-x:auto` 同时令纵向 overflow 成为 auto，菜单虽然有布局尺寸，点击却落到背后的正文。现在仅在 ≤420px pane 的菜单打开时让该行 `overflow:visible`，并把菜单锚定到入口左侧；关闭时保留原横向滚动。未移动官方 composer 节点，也未提高全局层级。专项同时验证面板左右边界、三个实际命中点以及真实点击后的暂存回执与零发送。
+
+### 本次提交的验证范围
+
+以下严格区分已完成检查点。用户要求先提交当前版本，因此最终类型检查与构建完成后停止追加浏览器批次；尚未执行的复跑明确保留。后续三条 diagnostics 回归没有重新计入先前完整 micro 报告。
+
+| 检查 | 已取得的结果 |
+| --- | --- |
+| 完整 `npm run test:micro` | 922 项：921 通过、1 项按设计 opt-in skip、0 失败；包含 Host/Client/E2E TypeScript。随后 `npm run build` 通过。 |
+| 最后的 diagnostics 调整 | `tests/source-diagnostics.test.ts` 9/9 通过，Client 与 E2E TypeScript 通过；其中新增 3 条。**未重跑包含这三条的完整 925 项 gate**，不把数量相加写成完整套件已通过。 |
+| 最后一次构建 | diagnostics 修改后的 `npm run build` 通过；窄屏菜单 CSS 修复后的最终 E2E TypeScript 与 `npm run build` 也均通过。 |
+| 前一构建的定向浏览器 | `composer-enter` 2、`pane-surface` 3、`queued-edit` 3、`sidebar-details` 2，共 10 个不同用例通过。这是前一检查点的范围，不视为最后构建全部重跑。 |
+| 共享 runtime 检查点的 18 个定向浏览器用例 | 初轮 15 通过、3 失败、0 跳过，耗时 611.3 秒。失败分别是 rewind 的第二次鼠标分页被官方滚动锚点处正文拦截、shared composer 的测试 Host 在用例执行前启动超时，以及移动端沿用旧按钮高度断言。同一生产构建上，定向复跑的 rewind 与 shared composer 通过；移动端高度断言修正后进一步暴露了实际的菜单裁切问题，随后按上文修复。完整范围：`live-history` 2、`native-history` 4、`one-graph` 2、`shared-composer` 1、`shared-restore` 1、`source-engines` 1、`workspace-chrome` 2、`workspace` 5。 |
+| 菜单 CSS 修复后的浏览器范围 | 独立的官方运行时/合成 source 探针通过：修复前命中正文，修复后三个点均命中 Park 按钮，真实点击暂存一条笔记、清空 editor、零发送、零页面异常。最后构建的 `workspace-chrome` 桌面/移动端正式 spec 尚未复跑；按用户“先提交一版”的要求保留该项，不把探针写成正式 spec 已通过。 |
+
+后端回归覆盖 initial attach 中 live 到达、history 阻塞期间继续投影、重叠去重、旧前缀、epoch/generation 屏障、异步资源准备时 invalidation、stale 无后续 SSE 重试、pending attach 删除、立即 remove/add、失败替换重试、writable owner 退休和 journal 字节/证明上限。相关用例执行固定官方 Session/Agent/projection 接口，source 与资源内容为明确的协议 fixture。
+
+本批浏览器运行的是未修改的固定 DSH 进程、官方 Loader/AppFrame/Conversation 和本仓库生产插件；HAPI、源文件/PTY、模型及 provider endpoints 为合成协议服务。浏览器为 **Chrome/HeadlessChrome 145.0.7632.6，单 worker**，不同于前文旧批次所用 executable。没有使用真实账号、真实 source 会话写操作或生产部署来验证这些流程，也没有把完整 Playwright、tarball 打包、干净安装或 npm package gate 列为本轮已执行项。
+
+### 浏览器夹具与既有 UI 断言修正
+
+本次失败分析区分了产品问题与不成立的测试前提：
+
+- `addObserved({ rows })` 现在先采用调用方提供的行，不再预先通过 SSE 发出随后被替换掉的默认 answer/ready。旧行为会制造真实源不会承诺的“历史中消失、却已收到”的幽灵消息；journal 正确保留未索引 live 后，这个夹具问题才变得可见。
+- Codex 活动流用例使用正确的 `nativeExecution`、独立 turn id 和 native terminal；含 execution 生命周期的 observed 历史中，答案与 terminal 归属同一 turn。通用 Pi 消息不能直接冒充 native Codex 输入；缺少 execution 的答案也不能作为 terminal 排序证明。
+- 官方初始 retained window 有界。rewind 用例先验证剩余末尾和被删除末尾，再驱动公开 `Load earlier` 验证最早正文；不要求全部历史初始就在 DOM 中，也不通过私有接口展开历史。
+- rewind 的第一轮鼠标分页已成功将正文从 250–274 扩展到 225–274；第二次按钮点击受官方保留滚动锚点影响，被正文拦截。历史数据用例改用该官方按钮的焦点与键盘 Enter 激活，并等待实际行数增长，继续验证最早的 `Bulk answer 0`。没有强制鼠标点击或调用私有分页接口，也不把鼠标 hit testing 与锚点的交互列为已修复。
+- `source-engines`、`workspace-chrome` 和相关 workspace 断言与已经交付的 R8/R8b 紧凑 composer、routine 行移除相符，真实审批、计划和异常仍保留。“暂存草稿”已在 overflow 菜单中，触屏下沿用既有 44px 最小点击区域；测试不再要求旧 inline 按钮的高度小于 40px，这个高度规则没有改变。之后发现的菜单裁切问题有独立 CSS 修复和实际命中检查。官方 Plugins 面板替换 header 后缺少固定返回 Conversation 入口仍是已记录缺口；测试不把不存在的 header 控件当作返回路径。
+
+### 性能与 rollout 尚未完成的条件
+
+最近一次无 CPU profiler 的性能检查点随上述定向批次在 2026-10-22 02:35:15 UTC 启动；`one-graph` 的本地与远端两条均通过。它位于最后的窄屏打开菜单 CSS 修复之前；该 CSS 修复后没有再次测量性能。以下是已准入、已建立测试 catalog 的本地合成结果，不是生产 fresh browser / 冷隧道测量：
+
+| 指标 | 最近性能检查点的结果 | 边界 |
+| --- | --- | --- |
+| warm 点击到内容元素 / 实际正文 p95 | **101.8 / 101.9 ms** | 10 次交替绑定，nearest-rank p95 即该组最大值；本轮低于 150 ms，元素与正文差最多 0.2 ms。 |
+| whole-page used heap，0 / 1 / 2 / 4 pane | **65.83 / 68.95 / 70.28 / 74.02 MiB** | 显式 GC 后的 Chromium 堆；1→2 增加 1.33 MiB，2→4 增加 3.74 MiB，不是固定 per-pane 成本。 |
+| 本地新增 pane / 重绑定的 graph 请求 | **0** | 统计 bootstrap / plugin 行请求，基线为已经 ready 的 Host。 |
+| 远端首个 view 之前 / 第二个 view 新增请求 | **7 / 0** | 首个计数受 harness 的准入与缓存状态影响，不能当作完整冷 Host bundle 数量。 |
+| 13-pane 恢复的 workspace / 活动正文 | **6,170 / 6,896 ms** | 首次 4 view、9 deferred；窗口激活新增 graph 请求 0；启动匹配请求 4。布局预先建立，不能推算生产 17.41 秒的改善幅度。 |
+
+13-pane 浏览器用例还确认第一次激活其他窗口后分别保留 9、13 个 view，切回与 reload 保留原草稿和分屏比例，关闭/切换没有发送 native abort。两种 source 的 live-history 用例确认 attach 期间与被阻塞 refresh 期间的 live suffix 正文各出现一次，后者在历史读取放行前已经可见，刷新后仍不重复。
+
+前一无 profiler 检查点的 warm p95 为 **273.9 ms**，四 pane 堆为 **73.89 MiB**，0-pane 基线则为 41.53 MiB。两轮存在时序/采样状态差异；最后一轮达到本地阈值不构成跨轮稳定性或生产 p95 保证，也不能与交接中另一机器的 77.8 MB 直接作严格内存优劣比较。完整样本和较早诊断分析保留在 [one-graph-spike.md](one-graph-spike.md)。
+
+缓存恢复正文 <500 ms 仍未验收。每 Host graph 复用本身不消除首次 Host boot、源全量历史读取和隧道成本，不能据此宣称生产恢复 13 pane 已摆脱 17 秒级首屏。共享路径继续 opt-in；改默认前仍需旧 per-pane storage 中的 rich draft 迁移、同一 source display 换代保护及实际生产冷/热测量。Phase 2 的 warm reference 数量有界并不等于官方 retained history window 已 trim；固定公开接口没有安全原地 trim 能力，该项仍未完成。P1/P2 composer parity 也不因本次共享 graph 与连续性修复自动完成。

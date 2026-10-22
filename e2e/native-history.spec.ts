@@ -64,7 +64,8 @@ test.describe('native source history rendering', () => {
             const fixture = environment.hapi.addObserved('pi', 'protocol-rows')
             append(environment, fixture, userText('fixture-input-1', 'Real observed question'))
             append(environment, fixture, agentCodex({ type: 'message', id: 'pi-answer-protocol',
-                message: 'Real observed answer despite protocol rows.', streamSnapshot: true }))
+                message: 'Real observed answer despite protocol rows.', streamSnapshot: true,
+                nativeExecution: { threadId: 'observed-fixture', turnId: 'turn-1', itemId: 'answer' } }))
             append(environment, fixture, agentCodex({ type: 'native-turn',
                 nativeExecution: { threadId: 'observed-fixture', turnId: 'turn-1', turn: { status: 'completed', started: true, ended: true } } }))
             append(environment, fixture, agentCodex({ type: 'thread_goal_updated', threadId: 'observed-fixture',
@@ -159,7 +160,27 @@ test.describe('native source history rendering', () => {
             const pane = await open(page, environment, 'Source pi history-rewind')
             await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('Native history changed repeatedly', { timeout: 15_000 })
             await expect(pane.locator('[data-conversation-scroll]')).not.toContainText('history unavailable')
-            await expect(pane.getByText(/Bulk answer 0/).first()).toBeVisible()
+            // The official first window contains recent turns. Verify the
+            // rewind tail first, then use its public paging control to inspect
+            // the beginning; initial absence of turn zero is not data loss.
+            await expect(pane.getByText('Bulk answer 274', { exact: true })).toBeVisible()
+            await expect(pane.getByText('Bulk answer 299', { exact: true })).toHaveCount(0)
+            const firstAnswer = pane.getByText('Bulk answer 0', { exact: true })
+            const renderedRows = pane.locator('[data-chat-flow]:not([data-step-process-content]) [data-chat-anchor-key]')
+            for (let pageIndex = 0; pageIndex < 20 && await firstAnswer.count() === 0; pageIndex++) {
+                const loadEarlier = pane.getByRole('button', { name: 'Load earlier', exact: true })
+                await expect(loadEarlier).toBeEnabled()
+                const before = await renderedRows.count()
+                // The official paging anchor can reassert the scroll position
+                // during pointer hit testing. Use the public button's keyboard
+                // activation for this history-data check; do not force a click.
+                await loadEarlier.focus()
+                await expect(loadEarlier).toBeFocused()
+                await page.keyboard.press('Enter')
+                await expect.poll(() => renderedRows.count()).toBeGreaterThan(before)
+            }
+            await pane.locator('[data-conversation-scroll]').evaluate(element => { element.scrollTop = 0 })
+            await expect(firstAnswer).toBeVisible()
             expect(rewound).toBe(true)
             expect(pages).toBeGreaterThan(2)
             expect(errors).toEqual([])
