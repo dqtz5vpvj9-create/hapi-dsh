@@ -40,6 +40,7 @@ import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
+import { observePaneOpening } from './surface/pane-opening.ts'
 import { bindInitialHistory } from './seamless/index.ts'
 
 const PLATFORM_MODULES = [
@@ -413,6 +414,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const listeners = new Set<() => void>()
         let reference: SessionReference | undefined
         let view: SessionViewHandle | undefined
+        let opening: ReturnType<typeof observePaneOpening> | undefined
         let starting = false, disposed = false, retired = false
         const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
             .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
@@ -447,11 +449,14 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const activate = (): void => {
             if (disposed || retired || starting || view) return
             starting = true; delete surface.dataset.hapiPaneDeferred; surface.dataset.hapiPaneBooting = 'true'
+            opening = observePaneOpening(surface, { hostId: host.id, sessionId: sourceId },
+                context.sessions.binding(sourceId as SessionId)?.session.getSnapshot().openState === 'open')
             void (async () => {
                 try {
                     await waitForCatalogSession(context.sessions, sourceId as SessionId, activeSignal)
                     if (disposed || retired || activeSignal.aborted) return
                     reference = context.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
+                    void reference.ready.then(binding => opening?.referenceReady(binding.session.getSnapshot().blank), () => opening?.stop('error'))
                     renderHostRoot?.()
                     view = sessionViews!.mount({ paneId, instanceId: `${paneId}:${++sharedViewSequence}`, reference, target: surface, navigation,
                         onReady: () => {
@@ -461,9 +466,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                             recentlyViewed.unshift(id); recentlyViewed.length = Math.min(recentlyViewed.length, 5)
                             warming = true; warmRecent()
                         },
-                        onError: error => { if (!disposed && !activeSignal.aborted) workspace.report(error) },
+                        onError: error => { opening?.stop('error'); if (!disposed && !activeSignal.aborted) workspace.report(error) },
                     })
                 } catch (error) {
+                    opening?.stop('error')
                     if (!disposed && !activeSignal.aborted) { surface.textContent = errorMessage(error); surface.setAttribute('role', 'alert'); workspace.report(error) }
                 } finally { starting = false }
             })()
@@ -471,6 +477,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const update = (_resource: Resource, options: WorkspaceRenderOptions): void => {
             if (retired || disposed) return
             const next = { focused: options.focused, visible: options.visible !== false }
+            if (!next.visible) opening?.stop('hidden')
             surface.dataset.hapiFocused = String(next.focused); surface.dataset.hapiVisible = String(next.visible)
             if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
                 presentation = next; for (const listener of listeners) listener()
@@ -479,6 +486,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             else if (!view) surface.dataset.hapiPaneDeferred = 'true'
         }
         const retention = createPaneRetention(() => {
+            opening?.stop()
             retired = true; presentation = { focused: false, visible: false }
             for (const listener of listeners) listener()
             surface.hidden = true; parking.append(surface)

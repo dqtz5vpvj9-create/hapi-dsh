@@ -99,7 +99,7 @@ export function DiagnosticsOverlay({ core }: { core: DiagnosticsCore }) {
   const copy = (): void => { void copyText(core.format()).then(ok => flash(ok ? labels.copied : labels.copyFailed)) }
   const clear = (): void => { core.clear(); flash(labels.cleared) }
   if (!snapshot.drawerOpen) {
-    if (!snapshot.entries.length) return null
+    if (!snapshot.entries.some(entry => entry.source !== 'performance')) return null
     return <button type="button" style={styles.chip} data-hapi-diagnostics-chip="" aria-label={`${labels.chip} · ${snapshot.entries.length}`}
       title={`${labels.title} · ${snapshot.entries.length}`} onClick={() => core.openDrawer(true)}>{labels.chip} {snapshot.entries.length}</button>
   }

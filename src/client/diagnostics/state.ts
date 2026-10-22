@@ -15,9 +15,9 @@ export type DiagnosticEvent =
   | 'remote.rejected' | 'remote.failed' | 'remote.timeout' | 'remote.aborted'
   | 'connection.changed' | 'console.error' | 'console.warn'
   | 'window.error' | 'window.unhandledrejection'
-  | 'source.error' | 'source.plan' | 'pagination'
+  | 'source.error' | 'source.plan' | 'pagination' | 'pane.opening'
 
-export type DiagnosticSource = 'remote' | 'connection' | 'console' | 'window' | 'source' | 'pagination'
+export type DiagnosticSource = 'remote' | 'connection' | 'console' | 'window' | 'source' | 'pagination' | 'performance'
 
 /** Per-event source identity; never a page-global mutable context. */
 export interface DiagnosticIdentity {
