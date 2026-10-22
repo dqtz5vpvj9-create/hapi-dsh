@@ -12,6 +12,11 @@ panes. Its buttons add a split beside that pane, zoom or restore that pane,
 open files using that pane's source session, close that pane, and open its own
 actions menu. These controls remain available on the visible mobile pane.
 Closing uses the existing view close guards and does not stop source execution.
+The duplicate workspace-wide title/tool row has been removed. Source errors,
+read-only explanations and delivery receipts live behind the affected pane's
+title-bar status button, leaving only pending approvals/questions in the input
+area. Vacant panes and windows are pruned after conversation selection or
+creation ends; an entirely empty workspace retains its current single pane.
 The 2026-10-22 restoration was checked with TypeScript, existing layout/controller
 logic tests, and a client build; UI acceptance belongs to the user this stage.
 

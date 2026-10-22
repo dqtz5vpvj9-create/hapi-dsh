@@ -167,3 +167,39 @@ test('tmux prefix handles timeout, send-prefix, composition and mapped actions',
     runWorkspaceCommand(store, 'closePane', () => {})
     assert.equal(panes(store.active().root).length, 1)
 })
+
+test('empty windows collapse to the current single pane and cleanup is idempotent', () => {
+    const store = workspace()
+    store.split('horizontal')
+    store.createWindow(); store.createWindow()
+    store.split('vertical')
+    const kept = store.focusedPane().id, active = store.active().id
+    store.pruneEmptyPanes()
+    assert.equal(store.getSnapshot().windows.length, 1)
+    assert.equal(store.active().id, active)
+    assert.equal(store.focusedPane().id, kept)
+    assert.equal(panes(store.active().root).length, 1)
+    const clean = store.getSnapshot()
+    store.pruneEmptyPanes()
+    assert.equal(store.getSnapshot(), clean)
+})
+
+test('vacancy cleanup retains occupied resources, identities, close guards and surviving split proportions', () => {
+    let sequence = 0, guards = 0
+    const next = () => `cleanup-${++sequence}`
+    const store = new WorkspaceStore(initialWorkspace(next), next, () => { guards++; return false })
+    store.openSession('history-still-loading'); const first = store.focusedPane().id
+    store.split('horizontal', { kind: 'chat', sessionId: 'running-source' }); const second = store.focusedPane().id
+    const split = store.active().root
+    assert.equal(split.type, 'split')
+    store.resize(split.id, 0, 3, 1)
+    store.split('vertical')
+    const occupiedWindow = store.active().id
+    store.createWindow()
+    store.pruneEmptyPanes()
+    assert.equal(guards, 0)
+    assert.equal(store.getSnapshot().windows.length, 1)
+    assert.equal(store.active().id, occupiedWindow)
+    assert.deepEqual(panes(store.active().root).map(pane => pane.id), [first, second])
+    assert.deepEqual(paneRectangles(store.active().root).map(({ width, height }) => [width, height]), [[75, 100], [25, 100]])
+})

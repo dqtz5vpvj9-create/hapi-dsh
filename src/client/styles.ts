@@ -28,6 +28,13 @@ export const workspaceStyles = String.raw`
 .hapi-pane-toolbar {display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;flex:0 1 auto;gap:1px;min-width:0;margin-left:auto}
 .hapi-pane-toolbar>.hapi-icon-button,.hapi-pane-toolbar>.hapi-menu>summary {width:28px;height:28px}
 .hapi-pane-header:has(.hapi-menu[open]) {z-index:8}
+.hapi-pane-status-slot {display:flex;flex:0 0 auto}.hapi-pane-status-slot:empty {display:none}
+.hapi-pane-source-status>summary {width:28px;height:28px}
+.hapi-pane-source-status[data-hapi-status-error=true]>summary {color:var(--hapi-danger)}
+.hapi-pane-source-details {width:340px;max-width:min(340px,calc(100vw - 24px));padding:10px;gap:9px;white-space:normal;overflow-wrap:anywhere}
+.hapi-pane-source-details p {margin:4px 0}.hapi-pane-source-details pre {white-space:pre-wrap;max-height:200px;overflow:auto}
+.hapi-pane-source-details button {font:inherit;cursor:pointer}
+.hapi-native-dock:empty,.hapi-native-dock:not(:has(.hapi-native-request)):not(:has(.hapi-native-plan)) {display:none}
 .hapi-dot {display:inline-block;width:6px;height:6px;border-radius:50%;flex:0 0 6px;background:var(--hapi-secondary);opacity:.45}
 .hapi-dot-running {background:var(--hapi-accent);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--hapi-accent) 12%,transparent)}
 .hapi-pane-body {display:flex;flex:1;min-width:0;min-height:0;position:relative;isolation:isolate;z-index:0;overflow:hidden;border-radius:0 0 4px 4px;background:var(--hapi-bg)}

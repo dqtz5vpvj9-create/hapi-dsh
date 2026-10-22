@@ -6,6 +6,8 @@ import { installSourceStateView } from './source-state-view.tsx'
 import type { HapiRemoteApi } from '../client-api.ts'
 import { useSourceQueuedEditing } from './source-queued-edit.tsx'
 import { NativePlanControls } from './native-plan.tsx'
+import { useLayoutEffect, useState } from 'react'
+import { useWorkspacePane } from './surface/pane-context.tsx'
 
 type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
 
@@ -20,6 +22,11 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
         const queued = useSourceQueuedEditing(ctx, api, props)
         const actions: NativeActionsApi = { ...native, ...(queued.actions ? { queuedEditing: queued.actions } : {}) }
         const projection = useProjection('hapi'), observed = useProjection('hapiObserved')
+        const pane = useWorkspacePane(ctx)
+        const [statusTarget, setStatusTarget] = useState<HTMLElement | null>(null)
+        useLayoutEffect(() => {
+            setStatusTarget(pane ? document.querySelector<HTMLElement>(`[data-hapi-pane-status="${CSS.escape(pane.paneId)}"]`) : null)
+        }, [pane?.paneId, sessionId])
         sourceView.useSourceState(sessionId, Boolean(projection || observed))
         if (!(projection || observed)) return null
         const scope = `.hapi-host-frame [data-conversation-session="${CSS.escape(sessionId)}"]`
@@ -41,9 +48,8 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
                 identity={{ hubId: projection.hubId, sessionId, hapiSessionId: projection.hapiSessionId, engine: 'codex-native',
                     ...(projection.machineId === null ? {} : { machineId: projection.machineId }) }}/>}
             {hasActions && <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
-                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t}/>
-                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t}/>
-                {queued.panel}
+                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t} statusTarget={statusTarget} recovery={queued.panel}/>
+                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t} statusTarget={statusTarget} recovery={queued.panel}/>
             </div>}
         </>
     }

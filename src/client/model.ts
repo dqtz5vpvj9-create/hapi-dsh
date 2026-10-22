@@ -294,6 +294,31 @@ export class WorkspaceStore {
 
     canRestoreWindow(): boolean { return this.closed !== undefined }
 
+    /** Remove vacant layout leaves without touching retained conversations or resources. */
+    pruneEmptyPanes(): void {
+        const occupied = this.state.windows.some(window => panes(window.root).some(pane => pane.resource.kind !== 'empty'))
+        const keep = occupied ? null : this.focusedPane().id
+        let changed = false
+        const windows: WorkspaceWindow[] = []
+        const focused: Record<string, string> = {}, zoomed: Record<string, boolean> = {}
+        for (const window of this.state.windows) {
+            let root: WorkspaceNode | null = window.root
+            for (const pane of panes(window.root)) {
+                if (pane.resource.kind === 'empty' && pane.id !== keep && root) {
+                    root = removePane(root, pane.id); changed = true
+                }
+            }
+            if (!root) continue
+            const remaining = panes(root), previous = this.state.focused[window.id]
+            windows.push(root === window.root ? window : { ...window, root })
+            focused[window.id] = remaining.find(pane => pane.id === previous)?.id ?? remaining[0]!.id
+            zoomed[window.id] = remaining.length > 1 && this.state.zoomed[window.id] === true
+        }
+        if (!changed) return
+        const activeWindowId = windows.some(window => window.id === this.state.activeWindowId) ? this.state.activeWindowId : windows[0]!.id
+        this.commit({ ...this.state, windows, focused, zoomed, activeWindowId })
+    }
+
     restoreWindow(): void {
         if (!this.closed) return
         if (this.state.windows.length >= 64) throw new Error('The workspace has reached its window limit')

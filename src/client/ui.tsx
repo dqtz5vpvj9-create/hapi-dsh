@@ -210,6 +210,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
                 <span>{readableTitle(title, t, 200)}</span>
             </div>
             <div className="hapi-pane-toolbar" role="group" aria-label={t('paneActions')}>
+                <div className="hapi-pane-status-slot" data-hapi-pane-status={pane.id}/>
                 <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
                 <IconButton label={t(zoomed ? 'unzoom' : 'zoom')} icon="zoom" pressed={zoomed}
                     onClick={() => { controller.store.focus(pane.id); controller.store.toggleZoom() }}/>
@@ -290,6 +291,9 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
     const paneTabs = useRef<HTMLDivElement>(null)
     const active = controller.store.active()
     const activePane = controller.store.focusedPane()
+    useEffect(() => {
+        if (!snapshot.pickingSession && !snapshot.creation) controller.store.pruneEmptyPanes()
+    }, [controller, layout.revision, snapshot.pickingSession, snapshot.creation])
     useLayoutEffect(() => {
         windowTabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
         paneTabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -432,25 +436,6 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         ['o', 'nextPane'], ['← ↑ → ↓ / h j k l', 'focusDirection'], ['w', 'windowList'], ['z', 'zoom'], ['x', 'closePane'], ['u', 'restoreWindow'], ['1…9', 'windowNumber'],
     ]
     return <div ref={workspaceRoot} style={visibleHeight === undefined ? undefined : { maxHeight: visibleHeight }} className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="" onClickCapture={links.capture}>
-        <header className="hapi-workspace-toolbar">
-            <div className="hapi-workspace-brand"><WorkspaceIcon kind="grid"/><strong>HAPI</strong>{layout.windows.length > 1 && <span>{windowAlias(active, layout.windows.indexOf(active) + 1)}</span>}</div>
-            <div className="hapi-workspace-current" aria-label={t('pane')} title={paneTitle(activePane, snapshot.catalog.byId, t('newPane'))}>
-                {readableTitle(paneTitle(activePane, snapshot.catalog.byId, t('newPane')), t, 100)}
-            </div>
-            <div className="hapi-workspace-tools">
-                <details className="hapi-menu"><summary aria-label={t('newSession')} title={t('newSession')}><WorkspaceIcon kind="add"/></summary><div className="hapi-menu-content">
-                    <button type="button" onClick={() => controller.requestNewSession('dsh')}>DSH · {t('newSession')}</button>
-                    <button type="button" onClick={() => controller.requestNewSession('codex')}>Codex · {t('newSession')}</button>
-                    <button type="button" onClick={() => controller.requestNewSession('source')}>{t('sourceEngines')} · {t('newSession')}</button>
-                    <button type="button" onClick={controller.openNativeLibrary}>{t('nativeHistory')}</button>
-                </div></details>
-                <IconButton label={t('splitHorizontal')} icon="horizontal" onClick={() => action(() => { controller.store.split('horizontal'); controller.requestSessionPicker() })}/>
-                <IconButton label={t('splitVertical')} icon="vertical" onClick={() => action(() => { controller.store.split('vertical'); controller.requestSessionPicker() })}/>
-                <IconButton label={t(layout.zoomed[active.id] ? 'unzoom' : 'zoom')} icon="zoom" pressed={layout.zoomed[active.id] === true} onClick={() => controller.store.toggleZoom()}/>
-                <IconButton label={t('restoreWindow')} icon="restore" disabled={!controller.store.canRestoreWindow()} onClick={() => action(() => controller.store.restoreWindow())}/>
-                <IconButton label={t('shortcuts')} icon="help" onClick={() => setHelp(true)}/>
-            </div>
-        </header>
         {runnerSkew}
         {snapshot.notice && <div className="hapi-notice" role="alert"><span title={snapshot.notice}>{snapshot.notice}</span>{snapshot.conflict ? <><button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button><button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button></> : snapshot.persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retry')}</button>}<IconButton label={t('dismiss')} icon="close" onClick={controller.clearNotice}/></div>}
         <WorkspaceLinkNotice links={links} language={language}/>

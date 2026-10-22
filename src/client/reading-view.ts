@@ -38,7 +38,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         const abort = (): void => finish(undefined, signal.reason ?? new Error('Navigation cancelled'))
         const observer = new MutationObserver(check)
         const timer = window.setTimeout(() => finish(undefined, new Error('The conversation target is not visible yet. Retry after loading finishes.')), 5000)
-        observer.observe(root, { childList: true, subtree: true, attributes: true })
+        observer.observe(root.closest('.hapi-pane') ?? root, { childList: true, subtree: true, attributes: true })
         signal.addEventListener('abort', abort, { once: true })
         if (signal.aborted) abort(); else check()
     })
@@ -81,7 +81,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                 await service.revealSequence(reference.sessionId, located.seq, signal, root)
             } else if (target?.kind === 'approval' || target?.kind === 'delivery') {
                 const selector = target.kind === 'approval' ? '[data-hapi-request-id]' : '[data-hapi-delivery-id]'
-                const row = await waitFor(() => [...root.querySelectorAll<HTMLElement>(selector)]
+                const scope = target.kind === 'delivery' ? root.closest('.hapi-pane') ?? root : root
+                const row = await waitFor(() => [...scope.querySelectorAll<HTMLElement>(selector)]
                     .find(element => target.kind === 'approval' ? element.dataset.hapiRequestId === target.requestId : element.dataset.hapiDeliveryId === target.localId), signal)
                 for (let ancestor = row.parentElement; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
                     if (ancestor.tagName === 'DETAILS') (ancestor as HTMLDetailsElement).open = true

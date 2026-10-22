@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { HapiApprovalAnswer } from '../codex/contracts.ts'
 import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projection-types.ts'
 import { composerAdmission, type WorkspaceTranslate } from './locales.ts'
@@ -6,6 +6,7 @@ import { formatNativeAnswers, nativeUrlConfirmed, openNativeInputUrl, parseNativ
 import { NativeActionLedger } from './native-state.ts'
 import { deliveryActions, deliveryStatusText, deliveryRecoveryDisabled, nativeExecutionStatus, observedExecutionStatus, executionStatusText } from './native-status.ts'
 import { errorMessage } from './controller.ts'
+import { PaneSourceStatus } from './pane-source-status.tsx'
 import type { NativeControlLedger } from './native-control-state.ts'
 import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
 import type { ObservedControlLedger } from './observed-controls.tsx'
@@ -183,7 +184,7 @@ function NativeDelivery({ sessionId, delivery, api, disabled, recoveryDisabled, 
 }
 
 /** Original HAPI engines share controls, never pretend to be Codex or a DSH loop. */
-export function ObservedActions({ sessionId, projection, api, t }: { sessionId: string; projection: HapiObservedProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate }) {
+export function ObservedActions({ sessionId, projection, api, t, statusTarget = null, recovery }: { sessionId: string; projection: HapiObservedProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate; statusTarget?: HTMLElement | null; recovery?: ReactNode }) {
     useEffect(() => { if (projection) api.ledger.resolved(sessionId, projection.resolvedRequests.map(row => row.requestId)) }, [projection, sessionId, api])
     // Per-pane-graph identity for remote failure evidence; never a page-global slot.
     const hubId = projection?.hubId, hapiSessionId = projection?.hapiSessionId, machineId = projection?.machineId ?? null, engine = projection?.flavor
@@ -206,25 +207,29 @@ export function ObservedActions({ sessionId, projection, api, t }: { sessionId: 
     // stats) are intentionally absent: only actionable or exceptional states render.
     const hasDelivery = deliveries.length > 0
     const execution = observedExecutionStatus(projection)
-    const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error) || projection.readOnly
+    const hasStatus = hasDelivery || Boolean(projection.error) || projection.readOnly || Boolean(recovery)
+    const hasActionable = projection.pendingRequests.length > 0 || hasStatus
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
+        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
+        {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error) || deliveries.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
         {(() => {
             const admission = composerAdmission({ readOnly: projection.readOnly, readOnlyReason: projection.readOnlyReason })
             return admission && <p className="hapi-composer-admission" role="status" data-hapi-composer-admission={admission.resume ? 'resume' : 'read-only'}>{t(admission.key)}</p>
         })()}
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
-        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
         {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate' || row.state === 'rejected')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
             <p data-hapi-execution-status={execution}>{translate(t, 'Source execution', '源端执行')} · {executionStatusText(execution, t)}</p>
             {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} recoveryDisabled={deliveryRecoveryDisabled(projection)} steer={projection.capabilities.steer} t={t}/>)}
         </details>}
+        {recovery}
+        </PaneSourceStatus>}
     </aside>
 }
 
 /** Native-only control surface adjacent to, never replacing, DSH's composer. */
-export function NativeActions({ sessionId, projection, api, t }: {
-    sessionId: string; projection: HapiProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate
+export function NativeActions({ sessionId, projection, api, t, statusTarget = null, recovery }: {
+    sessionId: string; projection: HapiProjection | undefined; api: NativeActionsApi; t: WorkspaceTranslate; statusTarget?: HTMLElement | null; recovery?: ReactNode
 }) {
     const [resuming, setResuming] = useState(false)
     const [resumeError, setResumeError] = useState<string | null>(null)
@@ -253,10 +258,12 @@ export function NativeActions({ sessionId, projection, api, t }: {
     // exceptional states (approvals, deliveries, errors, resume/read-only) render.
     const hasDelivery = delivery.length > 0
     const execution = nativeExecutionStatus(projection)
-    const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error)
-        || projection.readOnly || projection.nativeConnection !== 'attached'
+    const hasStatus = hasDelivery || Boolean(projection.error) || projection.readOnly || projection.nativeConnection !== 'attached' || Boolean(recovery)
+    const hasActionable = projection.pendingRequests.length > 0 || hasStatus
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
+        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
+        {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error || resumeError) || delivery.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
         {/* A disconnected Codex source is not read-only: sending queues a durable
             turn and Resume reconnects the native session. */}
         {(() => {
@@ -270,11 +277,12 @@ export function NativeActions({ sessionId, projection, api, t }: {
         }}>{resuming ? t('awaitingConfirmation') : t('resume')}</button>}
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={resumeError} t={t}/>
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
-        {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
         {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate' || row.state === 'rejected')}>
             <summary>{t('nativeDelivery')} · {delivery.length}</summary>
             <p data-hapi-execution-status={execution}>{translate(t, 'Source execution', '源端执行')} · {executionStatusText(execution, t)}</p>
             {delivery.map(row => <NativeDelivery key={row.localId} sessionId={sessionId} delivery={row} api={api} disabled={disabled} recoveryDisabled={deliveryRecoveryDisabled(projection)} t={t}/>) }
         </details>}
+        {recovery}
+        </PaneSourceStatus>}
     </aside>
 }
