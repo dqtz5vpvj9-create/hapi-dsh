@@ -1,15 +1,13 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { HapiApprovalAnswer } from '../codex/contracts.ts'
 import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projection-types.ts'
-import type { WorkspaceTranslate } from './locales.ts'
+import { composerAdmission, type WorkspaceTranslate } from './locales.ts'
 import { formatNativeAnswers, nativeUrlConfirmed, openNativeInputUrl, parseNativeQuestions, questionAnswered, questionOptions, selectQuestionOption, type NativeQuestionAnswer } from './native-input.ts'
 import { NativeActionLedger } from './native-state.ts'
 import { errorMessage } from './controller.ts'
 import type { NativeControlLedger } from './native-control-state.ts'
-import { NativeSettingsControls } from './native-controls.tsx'
-import { NativePlanControls } from './native-plan.tsx'
 import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
-import { ObservedSettingsControls, type ObservedControlLedger } from './observed-controls.tsx'
+import type { ObservedControlLedger } from './observed-controls.tsx'
 import { openDiagnostics, recordConnection, recordSourceErrors, recordSourceFailure, translate, type DiagnosticIdentity } from './diagnostics/index.ts'
 
 export interface NativeActionsApi {
@@ -75,24 +73,6 @@ function SourceErrorLine({ sessionId, identity, errors = NONE_NOTICES, failure =
         </section>)}
         <button type="button" data-hapi-diagnostics-open="" style={quietButtonStyle} onClick={openDiagnostics}>{translate(t, 'Open diagnostics', '打开诊断')}</button>
     </details>
-}
-
-/** Error notices collapse into the diagnostics line; compact/summary notices stay readable but closed. */
-function SourceNoticePanel({ sessionId, identity, notices, t }: {
-    sessionId: string; identity?: DiagnosticIdentity | undefined; notices: readonly SourceNoticeLike[]; t: WorkspaceTranslate
-}) {
-    const { errors, others } = splitSourceNotices(notices)
-    if (!errors.length && !others.length) return null
-    return <>
-        <SourceErrorLine sessionId={sessionId} identity={identity} errors={errors} t={t}/>
-        {others.length > 0 && <details className="hapi-native-notices" data-hapi-source-notices="">
-            <summary>{t('nativeNotices')} · {others.length}</summary>
-            {others.map(notice => <section key={notice.id} data-native-notice={notice.id}>
-                <header><span>{notice.kind}</span><time dateTime={new Date(notice.createdAt).toISOString()}>{new Date(notice.createdAt).toLocaleTimeString()}</time></header>
-                <SourceNoticeText notice={notice}/>
-            </section>)}
-        </details>}
-    </>
 }
 
 function NativeRequest({ sessionId, request, api, disabled, t }: {
@@ -212,15 +192,17 @@ export function ObservedActions({ sessionId, projection, api, t }: { sessionId: 
     }, [sessionId, connection, hubId, hapiSessionId])
     if (!projection || projection.dshChild) return null
     const deliveries = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
+    // Routine metadata rows (source settings / context / native messages / turn
+    // stats) are intentionally absent: only actionable or exceptional states render.
+    const hasDelivery = deliveries.length > 0
+    const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error) || projection.readOnly
+    if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
-        <div className="hapi-native-status"><span>{projection.flavor} · {projection.connection}</span><span>{projection.controlledByUser ? t('sourceControlled') : projection.thinking ? t('running') : t('idle')}</span></div>
-        {Reflect.get(projection, 'sidechain') ? <span>{t('sourceReadOnly')}</span> : api.observedControls && <ObservedSettingsControls ledger={api.observedControls} sessionId={sessionId} t={t}/>}
+        {(() => {
+            const admission = composerAdmission({ readOnly: projection.readOnly, readOnlyReason: projection.readOnlyReason })
+            return admission && <p className="hapi-composer-admission" role="status" data-hapi-composer-admission={admission.resume ? 'resume' : 'read-only'}>{t(admission.key)}</p>
+        })()}
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
-        {projection.usage && <details className="hapi-native-usage"><summary>{t('contextUsage')} · {projection.usage.contextTokens.toLocaleString()}{projection.usage.contextWindow ? ` / ${projection.usage.contextWindow.toLocaleString()}` : ''}</summary><dl>
-            <div><dt>{t('inputTokens')}</dt><dd>{projection.usage.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.outputTokens.toLocaleString()}</dd></div>
-            {projection.usage.cachedInputTokens !== null && <div><dt>{t('cachedTokens')}</dt><dd>{projection.usage.cachedInputTokens.toLocaleString()}</dd></div>}
-        </dl></details>}
-        <SourceNoticePanel sessionId={sessionId} identity={identity} notices={projection.notices} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
         {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
             {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} steer={projection.capabilities.steer} t={t}/>)}
@@ -255,26 +237,26 @@ export function NativeActions({ sessionId, projection, api, t }: {
     if (!projection) return null
     const delivery = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
     const disabled = projection.readOnly || projection.nativeConnection !== 'attached'
+    // Routine metadata rows are intentionally absent; only actionable or
+    // exceptional states (approvals, deliveries, errors, resume/read-only) render.
+    const hasDelivery = delivery.length > 0
+    const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error)
+        || projection.readOnly || projection.nativeConnection !== 'attached'
+    if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
-        <div className="hapi-native-status"><span>Codex · {projection.nativeConnection}</span><span>{projection.execution?.status ?? ''}</span></div>
-        {api.controls && <NativeSettingsControls ledger={api.controls} sessionId={sessionId} disabled={disabled} t={t}/>}
-        {api.controls && <NativePlanControls ledger={api.controls} sessionId={sessionId} planId={projection.planId} disabled={disabled} t={t} identity={identity}/>}
-        {projection.nativeConnection !== 'attached' && <button type="button" disabled={resuming} onClick={() => {
+        {/* A disconnected Codex source is not read-only: sending queues a durable
+            turn and Resume reconnects the native session. */}
+        {(() => {
+            const admission = composerAdmission({ nativeConnection: projection.nativeConnection, readOnly: projection.readOnly, readOnlyReason: projection.readOnlyReason })
+            return admission && <p className="hapi-composer-admission" role="status" data-hapi-composer-admission={admission.resume ? 'resume' : 'read-only'}>{t(admission.key)}</p>
+        })()}
+        {projection.nativeConnection !== 'attached' && <button type="button" className="hapi-composer-resume" disabled={resuming} onClick={() => {
             if (resuming) return
             setResuming(true); setResumeError(null)
             void api.resume(sessionId).catch(error => setResumeError(errorMessage(error))).finally(() => setResuming(false))
         }}>{resuming ? t('awaitingConfirmation') : t('resume')}</button>}
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={resumeError} t={t}/>
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
-        {projection.usage && <details className="hapi-native-usage"><summary>{t('contextUsage')} · {projection.usage.contextTokens.toLocaleString()}{projection.usage.contextWindow ? ` / ${projection.usage.contextWindow.toLocaleString()}` : ''}</summary>
-            <dl><div><dt>{t('inputTokens')}</dt><dd>{projection.usage.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.outputTokens.toLocaleString()}</dd></div>
-                {projection.usage.cachedInputTokens !== null && <div><dt>{t('cachedTokens')}</dt><dd>{projection.usage.cachedInputTokens.toLocaleString()}</dd></div>}
-            </dl>{projection.usage.total && <><strong>{t('totalUsage')}</strong><dl><div><dt>{t('inputTokens')}</dt><dd>{projection.usage.total.inputTokens.toLocaleString()}</dd></div><div><dt>{t('outputTokens')}</dt><dd>{projection.usage.total.outputTokens.toLocaleString()}</dd></div></dl></>}
-        </details>}
-        {projection.threadGoal && <details className="hapi-native-goal"><summary>{t('threadGoal')} · {projection.threadGoal.status}</summary><p>{projection.threadGoal.objective}</p>
-            <dl><div><dt>{t('tokensUsed')}</dt><dd>{projection.threadGoal.tokensUsed.toLocaleString()}{projection.threadGoal.tokenBudget == null ? '' : ` / ${projection.threadGoal.tokenBudget.toLocaleString()}`}</dd></div><div><dt>{t('goalTime')}</dt><dd>{Math.round(projection.threadGoal.timeUsedSeconds)}s</dd></div></dl>
-        </details>}
-        <SourceNoticePanel sessionId={sessionId} identity={identity} notices={projection.notices ?? []} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
         {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate')}>
             <summary>{t('nativeDelivery')} · {delivery.length}</summary>

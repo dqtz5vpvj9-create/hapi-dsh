@@ -109,16 +109,11 @@ export const workspaceStyles = String.raw`
 .hapi-dialog::backdrop {background:#0005}.hapi-dialog>header {display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:14px}.hapi-dialog h2 {margin:0;font:var(--hapi-font-title)}.hapi-dialog p {font:var(--hapi-font-chrome);color:var(--hapi-secondary);line-height:1.6}
 .hapi-dialog form>label {display:flex;flex-direction:column;gap:6px;font:var(--hapi-font-chrome)}.hapi-dialog input {border:1px solid var(--hapi-border);border-radius:6px;background:var(--hapi-bg);color:inherit;font:inherit;padding:9px}.hapi-dialog .hapi-button-row {justify-content:flex-end;margin-top:14px}
 .hapi-shortcuts {font:var(--hapi-font-chrome)}.hapi-shortcuts>div {display:flex;align-items:center;gap:16px;margin:9px 0}.hapi-shortcuts dt {width:82px;flex:0 0 auto}.hapi-shortcuts dd {margin:0}.hapi-shortcuts kbd {background:var(--hapi-muted);border:1px solid var(--hapi-border);border-radius:4px;padding:3px 7px;font:11px ui-monospace,monospace}
-.hapi-native {min-width:0;max-height:none;flex:0 0 auto;border-top:1px solid var(--hapi-border);background:var(--hapi-bg);font:var(--hapi-font-small);line-height:1.5;padding:7px 12px}.hapi-native-status {display:flex;align-items:center;justify-content:space-between;gap:6px;color:var(--hapi-secondary);font:var(--hapi-font-small);padding:3px 0}
-.hapi-native-request {border:1px solid var(--hapi-border);border-left:2px solid var(--hapi-accent);padding:8px;border-radius:5px;margin:6px 0}.hapi-native-request>header {display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.hapi-state {font:var(--hapi-font-small);color:var(--hapi-secondary)}
+.hapi-native {min-width:0;max-height:none;flex:0 0 auto;border-top:0;background:transparent;font:var(--hapi-font-small);line-height:1.5;padding:0 2px}.hapi-native-request {border:1px solid var(--hapi-border);border-left:2px solid var(--hapi-accent);padding:8px;border-radius:5px;margin:6px 0}.hapi-native-request>header {display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}.hapi-state {font:var(--hapi-font-small);color:var(--hapi-secondary)}
 .hapi-native fieldset {border:0;border-top:1px solid var(--hapi-border);padding:8px 0;margin:8px 0}.hapi-native legend {padding:0;font:var(--hapi-font-chrome);line-height:1.6}.hapi-native textarea {width:100%;box-sizing:border-box;resize:vertical;min-height:48px;background:var(--hapi-bg);border:1px solid var(--hapi-border);border-radius:var(--dsw-radius-xs,4px);color:inherit;padding:7px;font:var(--hapi-font-chrome);margin-top:5px}
 .hapi-native-option {display:flex;align-items:flex-start;gap:7px;padding:5px 0;cursor:pointer}.hapi-native-option input {accent-color:var(--hapi-accent)}.hapi-native-option small {display:block;color:var(--hapi-secondary);font:var(--hapi-font-small);line-height:1.5}.hapi-native .hapi-button-row {gap:5px;margin-top:7px}.hapi-native button {font-size:10px;padding:5px 8px}
 .hapi-native-create>label,.hapi-create-models>label {display:flex;flex-direction:column;gap:5px;margin:10px 0;font:var(--hapi-font-chrome)}.hapi-native-create select {border:1px solid var(--hapi-border);border-radius:6px;padding:8px;font:inherit;color:var(--hapi-fg);background:var(--hapi-bg);min-width:0}.hapi-create-models {display:flex;gap:10px}.hapi-create-models>label {flex:1;min-width:0}.hapi-native-create>.hapi-create-checkbox {flex-direction:row;align-items:center;gap:7px}.hapi-create-checkbox>input {accent-color:var(--hapi-accent)}
 .hapi-native details>summary {cursor:pointer;color:var(--hapi-secondary);font:var(--hapi-font-small);padding:3px 0}.hapi-native pre {max-height:160px;overflow:auto;font:11px/1.6 var(--ds-font-family-code,ui-monospace,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.hapi-native-delivery {padding:7px 0;border-top:1px solid var(--hapi-border)}.hapi-delivery-heading {display:flex;align-items:center;justify-content:space-between;gap:8px}.hapi-error {color:var(--hapi-danger);font:var(--hapi-font-small);line-height:1.5;overflow-wrap:anywhere;margin:6px 0;padding:5px 8px;border-left:2px solid var(--hapi-danger);border-radius:var(--dsw-radius-xs,4px);background:color-mix(in srgb,var(--hapi-danger) 7%,transparent)}
-.hapi-native .hapi-native-settings-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;border:0;padding:4px 0;margin:4px 0}.hapi-native-settings-fields>label {display:flex;flex-direction:column;gap:4px;font-size:10px;color:var(--hapi-secondary)}
-.hapi-native-settings-fields select {min-width:0;background:var(--hapi-muted);border:1px solid var(--hapi-border);border-radius:var(--dsw-radius-xs,4px);padding:5px;color:var(--hapi-fg);font:var(--hapi-font-small)}
-.hapi-native-settings p {font:var(--hapi-font-small);line-height:1.6;margin:5px 0}.hapi-native-settings code,.hapi-fork-receipt>code {display:block;overflow-wrap:anywhere;font:10px ui-monospace,monospace;color:var(--hapi-secondary)}
-.hapi-native-plan {padding:5px 0;border-top:1px solid var(--hapi-border);margin-top:5px}.hapi-native-plan p {font:var(--hapi-font-small);line-height:1.6;margin:5px 0}.hapi-plan-receipt {margin-top:7px}.hapi-plan-receipt code {overflow-wrap:anywhere;font:10px ui-monospace,monospace;color:var(--hapi-secondary)}
 .hapi-fork-receipt {margin-top:15px;padding-top:12px;border-top:1px solid var(--hapi-border)}.hapi-fork-receipt>header {font:var(--hapi-font-chrome);margin-bottom:5px}.hapi-fork-receipt details {margin-top:10px;font:var(--hapi-font-small)}.hapi-fork-receipt summary {cursor:pointer}
 .hapi-risk-checkbox {display:flex;align-items:flex-start;gap:6px;margin:8px 0;font:var(--hapi-font-small);line-height:1.6}.hapi-risk-checkbox input {accent-color:var(--hapi-accent);margin-top:2px}
 .hapi-native-fork-action {display:inline-flex;align-items:center;justify-content:center;border:0;background:transparent;color:var(--hapi-secondary);width:24px;height:24px;padding:4px;border-radius:4px;cursor:pointer}.hapi-native-fork-action:hover {color:var(--hapi-accent);background:var(--hapi-hover)}
@@ -154,7 +149,7 @@ export const workspaceStyles = String.raw`
 .hapi-source-panel>.hapi-source-panel {height:auto;min-height:0;overflow:visible;padding:16px 0;border-top:1px solid var(--hapi-border,#8884)}
 .hapi-native-search {display:flex;gap:6px;flex-wrap:wrap}.hapi-native-search input {min-width:100px;flex:1}.hapi-native-history-list {max-height:46dvh;overflow:auto}.hapi-native-history-list article,.hapi-machine-panel article {border:1px solid var(--hapi-border);border-radius:5px;padding:10px;margin:7px 0;overflow-wrap:anywhere}.hapi-native-history-list article>header {display:flex;gap:7px;align-items:center}.hapi-native-history-list article p {margin:5px 0}.hapi-native-history-list input[type=checkbox] {accent-color:var(--hapi-accent)}.hapi-native-history-list code,.hapi-operation-status code {font:10px ui-monospace,monospace;overflow-wrap:anywhere}.hapi-operation-status p {margin:4px 0}.hapi-native-confirm {border:1px solid #bf8e3a;border-radius:6px;padding:10px;margin:7px 0}.hapi-native-confirm>button {margin-right:7px}.hapi-device-login {padding:10px;border:1px solid var(--hapi-border);border-radius:6px}.hapi-device-login code {display:block;font:20px ui-monospace,monospace;margin:8px 0}
 .hapi-native-user-actions {display:flex;justify-content:flex-end;margin:0 0 9px}.hapi-native-rewind {font:var(--hapi-font-small);color:var(--hapi-secondary)}.hapi-native-rewind button {border:0;background:transparent;color:inherit;font:inherit;padding:4px 7px;cursor:pointer}.hapi-native-rewind button:hover {color:var(--hapi-accent,#359b6c)}.hapi-native-rewind>[role=group] {display:flex;flex-wrap:wrap;gap:5px;padding:8px;border:1px solid var(--hapi-border,#8884);border-radius:5px}
-.hapi-native-usage dl,.hapi-native-goal dl {display:flex;gap:14px;flex-wrap:wrap;margin:6px 0}.hapi-native-usage dl>div,.hapi-native-goal dl>div {display:grid;gap:3px}.hapi-native-usage dt,.hapi-native-goal dt {color:var(--hapi-secondary)}.hapi-native-usage dd,.hapi-native-goal dd {margin:0;font:var(--hapi-font-small);font-family:var(--ds-font-family-code,ui-monospace,monospace)}.hapi-native-notices>section {border-top:1px solid var(--hapi-border);margin-top:5px}.hapi-native-notices header {display:flex;justify-content:space-between;color:var(--hapi-secondary);font:var(--hapi-font-small);padding-top:5px}.hapi-native-notices pre {max-height:220px}.hapi-native-question-progress {font:var(--hapi-font-small);color:var(--hapi-secondary)}.hapi-native-url {overflow-wrap:anywhere;color:var(--hapi-secondary);font:var(--hapi-font-small)}
+.hapi-native-question-progress {font:var(--hapi-font-small);color:var(--hapi-secondary)}.hapi-native-url {overflow-wrap:anywhere;color:var(--hapi-secondary);font:var(--hapi-font-small)}
 
 /* Narrow pane splits: demote metadata before content, keep one row of tools. */
 @container hapi-pane (max-width:560px) {
@@ -180,6 +175,99 @@ export const workspaceStyles = String.raw`
 .hapi-notification-stack.hapi-notification-stack article {padding:10px 12px;border-radius:var(--hapi-radius);font:var(--hapi-font-chrome);box-shadow:0 3px 16px #0002}
 .hapi-notification-stack.hapi-notification-stack article p {margin:4px 0;max-height:88px}
 .hapi-notification-stack.hapi-notification-stack .hapi-notification-dismiss {font-size:16px!important}
+/* ===========================================================================
+ * R8 — HAPI-style compact workspace composer (official bar retained).
+ * Route C: no takeover, no repackage-private API. Official attach/editor/Stop/
+ * Send nodes stay owned by ui-conversation; this block only compresses geometry
+ * and reveals plugin-owned controls through public slots. Pinned-hash class
+ * names are confined to this compatibility block (dependency is pinned).
+ * ========================================================================== */
+.hapi-pane [data-composer-seat] {} /* anchor for readers */
+.hapi-pane [data-composer-seat] .wSkVaW_composerStack {gap:4px}
+.hapi-pane [data-composer-card] {
+  --dsh-composer-text-max-height: calc(4 * 23px);
+  box-sizing:border-box;border-radius:20px;padding:5px 8px 3px;gap:2px;
+  background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);
+  font-size:14px;line-height:22px;
+}
+.hapi-pane [data-composer-card] .uV2eYG_scroll {max-height:var(--dsh-composer-text-max-height);margin-right:0}
+.hapi-pane [data-composer-card] .uV2eYG_input {min-height:23px;padding:1px 6px 1px 10px;line-height:22px}
+.hapi-pane [data-composer-card] .uV2eYG_placeholder {inset:1px 6px auto 10px}
+.hapi-pane [data-composer-card] .uV2eYG_row {flex-wrap:nowrap;align-items:center;gap:4px;min-height:26px;padding:2px 0 0}
+.hapi-pane [data-composer-card] .uV2eYG_tools,
+.hapi-pane [data-composer-card] .uV2eYG_modes {gap:4px}
+.hapi-pane [data-composer-card] .uV2eYG_trailing {gap:5px;margin-left:auto}
+.hapi-pane [data-composer-card] .uV2eYG_standardControls {gap:4px}
+.hapi-pane [data-composer-card] .uV2eYG_add {width:26px;height:26px}
+.hapi-pane [data-composer-card] .uV2eYG_primary {width:30px;height:30px;transform:none}
+.hapi-pane [data-composer-card] .uV2eYG_select {height:24px;font-size:12px;max-width:170px;padding:0 18px 0 6px}
+.hapi-pane [data-composer-card] .uV2eYG_notice {font-size:11px;line-height:16px;padding:3px 8px;margin-bottom:3px}
+.hapi-pane [data-composer-card]:has([data-slot="conversation.input.attachments"] > *) {padding-top:4px}
+.hapi-pane [data-composer-dock] {padding-top:2px;gap:8px;font-size:11px;line-height:16px}
+
+/* One compact overflow entry in the official input row. */
+.hapi-pane .hapi-composer-overflow {position:relative;flex:none}
+.hapi-pane .hapi-composer-overflow > summary {
+  list-style:none;display:inline-flex;align-items:center;justify-content:center;position:relative;
+  width:26px;height:26px;border-radius:999px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
+}
+.hapi-pane .hapi-composer-overflow > summary::-webkit-details-marker {display:none}
+.hapi-pane .hapi-composer-overflow > summary:hover,
+.hapi-pane .hapi-composer-overflow[open] > summary {background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.hapi-pane .hapi-composer-overflow-glyph {font-size:16px;line-height:1}
+.hapi-pane .hapi-composer-overflow-alert {position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary,#d75c5c)}
+.hapi-pane .hapi-composer-overflow-panel {
+  position:absolute;bottom:calc(100% + 8px);left:0;z-index:30;width:min(320px,calc(100cqw - 16px));max-height:min(60dvh,420px);overflow:auto;
+  display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--hapi-border);border-radius:var(--hapi-radius);
+  background:var(--hapi-bg);color:var(--hapi-fg);box-shadow:0 10px 30px #0003;font:var(--hapi-font-chrome);
+}
+.hapi-pane .hapi-composer-overflow-section {display:flex;flex-direction:column;gap:1px}
+.hapi-pane .hapi-composer-overflow-title {padding:2px 4px;color:var(--hapi-secondary);font:var(--hapi-font-small);font-weight:600}
+.hapi-pane .hapi-composer-overflow-panel > button,
+.hapi-pane .hapi-composer-overflow-section > button,
+.hapi-pane .hapi-composer-overflow-panel .hapi-composer-parking button {
+  border:0;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--hapi-fg);text-align:left;padding:6px 8px;font:var(--hapi-font-chrome);cursor:pointer;
+}
+.hapi-pane .hapi-composer-overflow-panel button:hover {background:var(--hapi-hover)}
+.hapi-pane .hapi-composer-overflow-panel .hapi-composer-parking {display:block}
+.hapi-pane .hapi-parking-panel {border-radius:var(--dsw-radius-sm,8px);border-color:var(--hapi-border);background:var(--hapi-bg);color:var(--hapi-fg)}
+
+/* R8b: no routine metadata row above the composer. Only actionable or
+   exceptional states (approvals, deliveries, errors, resume/read-only) render. */
+.hapi-pane .hapi-native {max-height:min(45dvh,360px);overflow:auto;padding:2px 2px 3px;border-top:0;background:transparent;display:flex;flex-direction:column;gap:3px}
+.hapi-pane .hapi-native:empty {display:none}
+.hapi-pane .hapi-composer-admission {margin:2px 2px 0;color:var(--dsw-alias-label-secondary,#65717b);font:var(--hapi-font-small);overflow-wrap:anywhere}
+.hapi-pane .hapi-composer-resume {align-self:flex-start;margin:2px 2px 0}
+
+/* Narrow pane: keep attach / editor / Stop+Send; secondary official controls are
+   revealed in place by the overflow entry (no reparenting, no reimplementation). */
+@container hapi-pane (max-width:560px) {
+  [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:none;--dsh-composer-model-icon-display:block}
+  [data-composer-card] .uV2eYG_add {width:24px;height:24px}
+  [data-composer-card] .uV2eYG_primary {width:28px;height:28px}
+  [data-composer-card] .uV2eYG_select {max-width:120px}
+  .hapi-composer-overflow-panel {width:min(300px,calc(100cqw - 12px))}
+  [data-composer-card]:not(:has(.hapi-composer-overflow[open])) :where(.uV2eYG_modes,.uV2eYG_standardControls,[data-slot="conversation.input.right"],[data-slot="conversation.input.activity"]) {display:none}
+  [data-composer-card]:has(.hapi-composer-overflow[open]) .uV2eYG_row {flex-wrap:wrap;row-gap:4px}
+  /* Blocked/read-only keeps model reachable: selecting a model is the official way out. */
+  [data-composer-card]:has([data-composer-input][aria-disabled="true"]) :where(.uV2eYG_modes,.uV2eYG_standardControls) {display:flex}
+}
+@container hapi-pane (max-width:420px) {
+  [data-composer-card] {border-radius:16px;padding:4px 6px 2px}
+  [data-composer-card] .uV2eYG_row {overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap;gap:3px}
+  [data-composer-card] .uV2eYG_row::-webkit-scrollbar {display:none}
+  [data-composer-card] .uV2eYG_select {max-width:96px}
+  .hapi-composer-overflow {order:-1}
+  .hapi-composer-overflow-panel {position:absolute;left:auto;right:0;width:min(calc(100cqw - 12px),100vw - 24px)}
+  .hapi-composer-overflow-title {font-size:11px}
+}
+@media (pointer:coarse) {
+  .hapi-pane [data-composer-card] .uV2eYG_add,
+  .hapi-pane [data-composer-card] .uV2eYG_primary {width:44px;height:44px}
+  .hapi-pane .hapi-composer-overflow > summary {width:38px;height:38px}
+  .hapi-pane .hapi-composer-overflow-panel button {min-height:44px}
+}
+
 `
 
 export function installWorkspaceStyles(document: Document): () => void {

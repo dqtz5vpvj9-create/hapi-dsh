@@ -36,9 +36,7 @@ export const en = {
     closeUnsavedDocument: 'This document has unsaved changes. Close its view? Its draft stays in this browser until you save or reset it.',
     previousQuestion: 'Previous question', nextQuestion: 'Next question', skipQuestion: 'Skip', otherOption: 'None of the above', requiredAnswer: 'Answer this question before continuing.',
     confirmNativeUrl: 'Choose the native confirmation option before opening this link.', popupBlocked: 'Your browser blocked the link. Allow this popup, then submit again.',
-    nativeNotices: 'Native messages', tokenUsage: 'Token usage', contextUsage: 'Context', inputTokens: 'Input', outputTokens: 'Output', cachedTokens: 'Cached input', totalUsage: 'Thread totals',
-    threadGoal: 'Thread goal', tokenBudget: 'Token budget', tokensUsed: 'Tokens used', goalTime: 'Time used',
-    windowList: 'Switch window', openConversation: 'Open conversation', newPane: 'New pane', moveToNewWindow: 'Move to a new window', backToWorkspace: 'Back to workspace',
+    tokenUsage: 'Token usage', tokenBudget: 'Token budget', windowList: 'Switch window', openConversation: 'Open conversation', newPane: 'New pane', moveToNewWindow: 'Move to a new window', backToWorkspace: 'Back to workspace',
     recent: 'Recent', folders: 'Folders', all: 'All', attention: 'Needs attention', unread: 'Unread', markRead: 'Mark as read', markUnread: 'Mark as unread', markAllRead: 'Mark all as read',
     waitingPermission: 'Waiting for approval', waitingInput: 'Waiting for input', background: 'Background tasks', activityError: 'Execution error', compacting: 'Compacting context', offline: 'Offline',
     unknownFolder: 'No directory', subagents: 'Subagents', folderUp: 'Move folder up', folderDown: 'Move folder down', newHere: 'New session here', copyDirectory: 'Copy directory',
@@ -92,6 +90,8 @@ export const en = {
     planUnknown: 'The native result is unconfirmed. Check its receipt; this request will not be sent again.', planRejected: 'Codex rejected this implementation request.',
     untitledConversation: 'Untitled conversation', paneCount: '{n} panes', statusFilter: 'Status',
     paneActions: 'Pane actions', windowActions: 'Window actions', paneDrag: 'Drag pane',
+    composerMore: 'More input controls', composerTools: 'Conversation tools',
+    nativeResumeHint: 'The source is disconnected; sending still queues a durable turn, Resume reconnects the native session.',
     errorSummary: 'The action could not be completed.', readableMachineFallback: 'Unknown machine',
 } as const
 
@@ -133,9 +133,7 @@ export const zh: Record<keyof typeof en, string> = {
     closeUnsavedDocument: '文档有未保存的改动。关闭视图吗？草稿会保留在此浏览器中，直到保存或重置。',
     previousQuestion: '上一题', nextQuestion: '下一题', skipQuestion: '跳过', otherOption: '以上均不符合', requiredAnswer: '请先回答当前问题。',
     confirmNativeUrl: '请先选择原生请求中的确认选项，再打开链接。', popupBlocked: '浏览器阻止了链接弹窗。允许此弹窗后请重新提交。',
-    nativeNotices: '原生消息', tokenUsage: 'Token 用量', contextUsage: '上下文', inputTokens: '输入', outputTokens: '输出', cachedTokens: '缓存输入', totalUsage: '线程累计',
-    threadGoal: '线程目标', tokenBudget: 'Token 预算', tokensUsed: '已用 Token', goalTime: '已用时间',
-    windowList: '切换窗口', openConversation: '打开聊天', newPane: '新窗格', moveToNewWindow: '移动到新窗口', backToWorkspace: '返回工作区',
+    tokenUsage: 'Token 用量', tokenBudget: 'Token 预算', windowList: '切换窗口', openConversation: '打开聊天', newPane: '新窗格', moveToNewWindow: '移动到新窗口', backToWorkspace: '返回工作区',
     recent: '最近', folders: '目录', all: '全部', attention: '需要处理', unread: '未读', markRead: '标记已读', markUnread: '标记未读', markAllRead: '全部标记已读',
     waitingPermission: '等待批准', waitingInput: '等待回答', background: '后台任务', activityError: '执行异常', compacting: '压缩上下文', offline: '离线',
     unknownFolder: '无目录', subagents: '子会话', folderUp: '目录上移', folderDown: '目录下移', newHere: '在此新建会话', copyDirectory: '复制目录',
@@ -189,6 +187,8 @@ export const zh: Record<keyof typeof en, string> = {
     planUnknown: '原生结果尚未确认。请核对回执；此请求不会被再次发送。', planRejected: 'Codex 拒绝了此次实施请求。',
     untitledConversation: '未命名会话', paneCount: '{n} 个窗格', statusFilter: '状态',
     paneActions: '窗格操作', windowActions: '窗口操作', paneDrag: '拖动窗格',
+    composerMore: '更多输入控件', composerTools: '会话工具',
+    nativeResumeHint: '源端已断开；发送仍会排队为可恢复的原生回合，Resume 会重连原生会话。',
     errorSummary: '操作未能完成。', readableMachineFallback: '未知机器',
 }
 
@@ -282,4 +282,18 @@ export function stableLabel(value: string | null | undefined, max = 48): string 
     const raw = value?.replace(/\s+/g, ' ').trim()
     if (!raw) return null
     return raw.length > max ? `${raw.slice(0, Math.max(1, max - 1)).trimEnd()}…` : raw
+}
+
+/** Composer admission copy. Only a genuine read-only projection locks input;
+ * a disconnected Codex source stays sendable through the durable submit/resume
+ * path and therefore gets a resume hint instead of a read-only claim. */
+export interface ComposerAdmission { readonly key: WorkspaceKey; readonly resume: boolean }
+export function composerAdmission(input: {
+    nativeConnection?: string | null | undefined
+    readOnly?: boolean | undefined
+    readOnlyReason?: string | null | undefined
+}): ComposerAdmission | null {
+    if (input.nativeConnection !== undefined && input.nativeConnection !== 'attached') return { key: 'nativeResumeHint', resume: true }
+    if (!input.readOnly) return null
+    return { key: input.readOnlyReason === 'engine-owned' ? 'sourceLocallyControlled' : 'sourceReadOnly', resume: false }
 }

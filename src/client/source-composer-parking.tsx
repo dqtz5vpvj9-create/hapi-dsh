@@ -8,8 +8,12 @@ import { ComposerParkingController, parkingSnapshotMatches } from './composer-pa
 
 type InputProps = PropsRuntime<'conversation.input.left'>;
 /** Composer extension only; the official editor, attachments and submit path remain owners. */
-export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, bridge: SourceComposerBridge): () => void {
-    const Action = ({ props, source }: { props: InputProps; source: WorkbenchSource }) => {
+export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, bridge: SourceComposerBridge): {
+    /** Controlled action rendered inside the pane's composer overflow menu. */
+    Action: (props: InputProps & { onAttention?(attention: boolean): void }) => React.ReactNode;
+    dispose(): void;
+} {
+    const Action = ({ props, source, onAttention }: { props: InputProps; source: WorkbenchSource; onAttention?: ((attention: boolean) => void) | undefined }) => {
         const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active);
         const tr = (en: string, zh: string): string => language.startsWith('zh') ? zh : en;
         const input = props.useInput(value => value);
@@ -30,6 +34,9 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
             }), [source.sourceHubId, source.sourceSessionId, source.machineId, pane?.paneId, props.sessionId, viewId]);
         const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot), journal = state.journal;
         useEffect(() => { void controller.load(); }, [controller]);
+        // Routine errors/recovery stay discoverable from the closed overflow menu.
+        useEffect(() => { onAttention?.(Boolean(state.error || captureError || (journal && journal.state !== 'saved'))) },
+            [onAttention, state.error, captureError, journal?.state]);
         const pending = !!journal && journal.state !== 'saved';
         const park = () => {
             setExpanded(true); setCaptureError(null); setDismissed(false);
@@ -67,17 +74,16 @@ export function installSourceComposerParking(ctx: Context, api: HapiRemoteApi, b
             </section>}
         </span>;
     };
-    const SourceAction = (props: InputProps) => {
+    const SourceAction = (props: InputProps & { onAttention?(attention: boolean): void }) => {
         const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed;
         const source = useMemo(() => projection ? { sourceSessionId: projection.hapiSessionId, sourceHubId: projection.hubId,
             ...(projection.machineId ? { machineId: projection.machineId } : {}) } : null, [projection?.hapiSessionId, projection?.hubId, projection?.machineId]);
         if (!source || observed?.sidechain) return null;
-        return <Action key={props.sessionId} props={props} source={source}/>;
+        return <Action key={props.sessionId} props={props} source={source} onAttention={props.onAttention}/>;
     };
     const style = document.createElement('style'); style.textContent = `
 .hapi-composer-parking{position:relative;display:inline-flex}.hapi-composer-parking button{border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,transparent);color:inherit;border-radius:6px;padding:3px 7px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}.hapi-composer-parking button:disabled{opacity:.5;cursor:default}
-.hapi-parking-panel{position:absolute;bottom:calc(100% + 9px);inset-inline-start:0;z-index:40;width:min(340px,75vw);max-height:55vh;overflow:auto;padding:12px;border:1px solid var(--border-secondary,#8886);border-radius:9px;background:var(--bg-primary,#17191d);color:var(--text-primary,inherit);box-shadow:0 6px 24px #0003;font-size:13px}.hapi-parking-panel header{display:flex;justify-content:space-between;gap:8px}.hapi-parking-panel p{white-space:pre-wrap;overflow-wrap:anywhere}.hapi-parking-panel ul{padding-inline-start:18px}.hapi-parking-panel .hapi-button-row{display:flex;flex-wrap:wrap;gap:6px}.hapi-parking-panel .hapi-error{color:var(--text-error,#d45d62)}
+.hapi-parking-panel{position:static;width:auto;max-height:40dvh;overflow:auto;margin-top:6px;padding:10px;border:1px solid var(--border-secondary,#8886);border-radius:8px;background:var(--bg-primary,#17191d);color:var(--text-primary,inherit);font-size:13px}.hapi-parking-panel header{display:flex;justify-content:space-between;gap:8px}.hapi-parking-panel p{white-space:pre-wrap;overflow-wrap:anywhere}.hapi-parking-panel ul{padding-inline-start:18px}.hapi-parking-panel .hapi-button-row{display:flex;flex-wrap:wrap;gap:6px}.hapi-parking-panel .hapi-error{color:var(--text-error,#d45d62)}
 `; document.head.append(style);
-    const dispose = ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/park-draft', order: 96 }, SourceAction));
-    return () => { dispose(); style.remove(); };
+    return { Action: SourceAction, dispose() { style.remove(); } };
 }

@@ -20,11 +20,8 @@ test.describe('original HAPI engines in the unified official Conversation', () =
         await page.locator('.hapi-session-open').filter({ hasText: title }).click();
         const pane = page.getByRole('region', { name: `Pane: ${title}`, exact: true });
         await expect(pane.getByText('Original claude answer in the official DSH Conversation.', { exact: true })).toBeVisible();
-        await pane.locator('.hapi-native-settings > summary').click();
-        await pane.getByRole('combobox', { name: 'Model', exact: true }).selectOption(JSON.stringify('opus'));
-        await expect.poll(() => environment.hapi.require(sourceId).session.model).toBe('opus');
-        await expect(pane.locator('[data-source-setting-state="applied"]')).toBeVisible();
-        expect(environment.hapi.settingChanges.at(-1)).toMatchObject({ sessionId: sourceId, route: 'model', body: { model: 'opus' } });
+        // R8b: routine source-settings metadata row removed from the pane UI.
+        await expect(pane.locator('.hapi-native-settings, .hapi-native-routine, .hapi-native-usage')).toHaveCount(0);
 
         environment.hapi.requestApproval(sourceId, 'original-claude-approval');
         const approval = pane.locator('[data-native-request="original-claude-approval"]');

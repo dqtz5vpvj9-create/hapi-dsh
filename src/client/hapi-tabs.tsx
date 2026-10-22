@@ -53,7 +53,8 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     const disposers: Array<() => void> = [];
     const composer = installSourceComposerBridge(ctx); disposers.push(() => composer.dispose());
     disposers.push(installShareReceiver(ctx, composer));
-    disposers.push(installSourceComposerParking(ctx, api, composer));
+    const parking = installSourceComposerParking(ctx, api, composer);
+    disposers.push(() => parking.dispose());
     const language = (): string => ctx.locale.getSnapshot().active;
     const title = (kind: Kind): string => { const item = definitions.find(row => row.kind === kind)!; return language().startsWith('zh') ? item.zh : item.en; };
     const style = document.createElement('style'); style.textContent = styles; document.head.append(style); disposers.push(() => style.remove());
@@ -148,13 +149,27 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
         };
         disposers.push(ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({ name: 'sidebar.right.pane.tab', key: id }, Body)));
     }
+    // One compact overflow entry replaces the old inline tool select and the
+    // separate Park-draft seat: official attach/editor/Send stay untouched.
     const Tools = (props: PropsRuntime<'conversation.input.left'>) => {
         const lang = useLanguage(); const native = props.useProjection('hapi'); const observed = props.useProjection('hapiObserved');
+        const [attention, setAttention] = useState(false);
         if (!native && !observed || observed?.sidechain) return null;
-        return <label className="hapi-source-toolbar"><select aria-label={lang.startsWith('zh') ? '会话工具' : 'Conversation tools'} value="" onChange={event => {
-            if (event.currentTarget.value) ctx.sidebarRight.openTab(event.currentTarget.value);
-        }}><option value="">{lang.startsWith('zh') ? '会话工具' : 'Conversation tools'}</option>
-            {definitions.map(row => <option key={row.kind} value={row.kind}>{title(row.kind)}</option>)}</select></label>;
+        const chinese = lang.startsWith('zh');
+        return <details className="hapi-composer-overflow" data-hapi-composer-overflow="">
+            <summary aria-label={chinese ? '更多输入控件' : 'More input controls'}
+                title={chinese ? '更多输入控件' : 'More input controls'}>
+                <span className="hapi-composer-overflow-glyph" aria-hidden="true">⋯</span>
+                {attention && <span className="hapi-composer-overflow-alert" aria-label={chinese ? '暂存草稿需要处理' : 'Parked draft needs attention'}/>}
+            </summary>
+            <div className="hapi-composer-overflow-panel" role="group" aria-label={chinese ? '更多输入控件' : 'More input controls'}>
+                <parking.Action {...props} onAttention={setAttention}/>
+                <div className="hapi-composer-overflow-section">
+                    <span className="hapi-composer-overflow-title">{chinese ? '会话工具' : 'Conversation tools'}</span>
+                    {definitions.map(row => <button type="button" key={row.kind} onClick={() => ctx.sidebarRight.openTab(row.kind)}>{title(row.kind)}</button>)}
+                </div>
+            </div>
+        </details>;
     };
     disposers.push(ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/source-tools', order: 95 }, Tools)));
     const TeamShortcut = (props: PropsRuntime<'conversation.session.header.utilities'>) => {

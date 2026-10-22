@@ -22,12 +22,22 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
         sourceView.useSourceState(sessionId, Boolean(projection || observed))
         if (!(projection || observed)) return null
         const scope = `.hapi-host-frame [data-conversation-session="${CSS.escape(sessionId)}"]`
-        return <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
+        const activeDelivery = (rows: readonly { state: string }[]): boolean => rows.some(row => !['invoked', 'cancelled'].includes(row.state))
+        // Only actionable/exceptional states produce a dock element; routine
+        // metadata rows are gone, so an empty dock must not occupy composer space.
+        const hasActions = Boolean(
+            projection && (projection.pendingRequests.length > 0 || activeDelivery(projection.delivery) || projection.error
+                || projection.readOnly || projection.nativeConnection !== 'attached')
+            || observed && !observed.dshChild && (observed.pendingRequests.length > 0 || activeDelivery(observed.delivery) || observed.error || observed.readOnly)
+            || queued.panel)
+        return <>
             <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}${native.branchLabel ? `${scope} [data-turn-tail] [data-clock="end"] button[aria-label="${CSS.escape(native.branchLabel())}"]{display:none!important}` : ''}`}</style>
-            <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t}/>
-            <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t}/>
-            {queued.panel}
-        </div>
+            {hasActions && <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
+                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t}/>
+                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t}/>
+                {queued.panel}
+            </div>}
+        </>
     }
     const stopDock = ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
         name: 'conversation.input.dock', id: 'hapi.source-controls', order: -100, locale: 'hapiWorkspace',

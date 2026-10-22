@@ -81,6 +81,8 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             await expect(observed.getByText('Original dsh answer in the official DSH Conversation.', { exact: true })).toBeVisible()
             for (const pane of [native, observed]) {
                 await expect(pane.locator('[data-slot="conversation.session.header"]')).toBeVisible()
+                // R8b: no routine metadata bars/rows above the composer.
+                await expect(pane.locator('.hapi-native-routine, .hapi-native-usage, .hapi-native-goal, .hapi-native-notices, .hapi-native-status')).toHaveCount(0)
                 // v2: no workspace title bar; pane identity comes from the bottom window list.
                 await expect(pane.locator('.hapi-pane-header')).toHaveCount(0)
                 await expect(pane.locator('.hapi-pane-body .hapi-host-tools')).toHaveCount(0)
@@ -109,7 +111,6 @@ test.describe('readable workspace chrome keeps every official pane action', () =
             expect(sessionTitleType.family).not.toMatch(/monospace|(?:^|,)\s*"?serif"?(?:,|$)/i)
             // Native status is a compact 11px caption in the current type scale;
             // the readable-title floor is asserted above on the window/session titles.
-            expect((await typography(native.locator('.hapi-native-status'))).size).toBeGreaterThanOrEqual(11)
             await offerInstall(page)
             await expect(page.locator('.hapi-notification-stack article')).toHaveCount(0)
             await page.screenshot({ path: info.outputPath('workspace-readable-2048.png'), fullPage: true })

@@ -82,11 +82,10 @@ test.describe('native source history rendering', () => {
             await expect(transcript).not.toContainText('thread_goal')
             await expect(transcript).not.toContainText('future-protocol-event')
             await expect(transcript).not.toContainText('protocolDetail')
-            // Unknown protocol progress stays a readable notice; no JSON in the source dock.
-            const notices = pane.locator('.hapi-native-notices')
-            await expect(notices).toContainText('The source context was compacted.')
-            await expect(notices).toContainText('Unsupported source event: future-protocol-event')
-            await expect(notices).not.toContainText('{')
+            // R8b: routine native-messages row removed; the transcript still never
+            // renders protocol rows or raw JSON.
+            await expect(pane.locator('.hapi-native-notices, .hapi-native-routine')).toHaveCount(0)
+            await expect(transcript).not.toContainText('{')
             expect(errors).toEqual([])
         } finally { if (errors.length) await info.attach('source-protocol-errors', { body: errors.join('\n'), contentType: 'text/plain' }) }
     })

@@ -142,15 +142,8 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex beta' }).click();
         const nativePane = page.getByRole('region', { name: 'Pane: Native Codex beta', exact: true });
-        await nativePane.locator('.hapi-native-settings > summary').click();
-        await nativePane.getByRole('combobox', { name: 'Codex reasoning effort', exact: true }).selectOption('high');
-        await expect.poll(() => environment.hapi.require('native-beta').session.modelReasoningEffort).toBe('high');
-        const tier = nativePane.getByRole('combobox', { name: 'Codex service tier', exact: true });
-        await tier.selectOption('fast');
-        await expect.poll(() => environment.hapi.require('native-beta').session.serviceTier).toBe('fast');
-        await tier.selectOption('standard');
-        await expect.poll(() => environment.hapi.require('native-beta').session.serviceTier).toBe('standard');
-        await expect(nativePane.locator('.hapi-native-settings')).toContainText('confirmed');
+        // R8b: routine native-settings metadata row removed from the pane UI.
+        await expect(nativePane.locator('.hapi-native-settings, .hapi-native-routine, .hapi-native-usage')).toHaveCount(0);
         await nativePane.locator('.hapi-native-fork-action').click();
         const fork = page.getByRole('dialog', { name: 'Fork conversation', exact: true });
         await fork.getByRole('button', { name: 'Fork conversation', exact: true }).click();
