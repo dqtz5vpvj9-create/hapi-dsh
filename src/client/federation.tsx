@@ -41,8 +41,9 @@ import { browserValue } from './browser-value.ts'
 import { createGraphModules, graphStyleQueries } from './graph-document.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
-import { observePaneOpening } from './surface/pane-opening.ts'
+import { HostOpeningTiming, observePaneOpening } from './surface/pane-opening.ts'
 import { bindInitialHistory } from './seamless/index.ts'
+import { recordDiagnostic } from './diagnostics/index.ts'
 
 const PLATFORM_MODULES = [
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -251,14 +252,20 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         set(_target, property, value) { overrides[property] = value; return true },
         has(_target, property) { return Object.hasOwn(overrides, property) || property in window },
     })
+    const fetchBundle = async (url: string): Promise<string> => {
+        const started = performance.now()
+        const result = await hostFetch(url, { cache: 'no-cache' })
+        if (!result.ok) throw new Error(`${host.label}: plugin artifact returned HTTP ${result.status}`)
+        const source = await result.text()
+        recordDiagnostic({ source: 'performance', event: 'pane.opening', method: 'host.bundle.loaded',
+            durationMs: performance.now() - started, identity: { hostId: host.id }, outcome: 'ready' })
+        return source
+    }
     const loadBundle = async (url: string): Promise<void> => {
         const key = new URL(url, baseUrl).href
         let bytes = resources.artifacts.get(key)
         if (!bytes) {
-            bytes = hostFetch(url, { cache: 'no-cache' }).then(async result => {
-                if (!result.ok) throw new Error(`${host.label}: plugin artifact returned HTTP ${result.status}`)
-                return result.text()
-            })
+            bytes = fetchBundle(url)
             resources.artifacts.set(key, bytes)
             void bytes.catch(() => { if (resources.artifacts.get(key) === bytes) resources.artifacts.delete(key) })
         }
@@ -277,15 +284,14 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     overrides.__DSH_TRANSPORT__ = { fetch: hostFetch, createWebSocket: socket, streamBaseUrl: baseUrl, loadBundle }
     if (prefetchBundles) {
         void prefetchPaneArtifacts({
-            entries: boot.entries, baseUrl, artifacts: resources.artifacts,
+            // The loader initially requests published phase batches, not row
+            // fallbacks. Shared Hosts keep their full graph and all plugins.
+            entries: boot.batches, baseUrl, artifacts: resources.artifacts,
             // Local Hosts can saturate the browser's connections; a paired Host
             // usually crosses the Hub reverse tunnel, where a smaller burst is
             // friendlier and still replaces the loader's serialized arrival chain.
             concurrency: host.id === 'local' ? 12 : 6,
-            load: url => hostFetch(url, { cache: 'no-cache' }).then(result => {
-                if (!result.ok) throw new Error(`${host.label}: plugin artifact returned HTTP ${result.status}`)
-                return result.text()
-            }),
+            load: fetchBundle,
         })
     }
     // The official Web seed's store engine closes over primary localStorage.
@@ -338,6 +344,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
 
 /** One catalog graph per Host and one independently owned UI graph per editable pane. */
 async function bootHost(root: Context, workspace: WorkspaceController, host: FederationHost, signal: AbortSignal, sharedUi: ReturnType<typeof createWorkspaceUiBridge>, shared = false): Promise<HostRuntime> {
+    const timing = new HostOpeningTiming(host.id)
     // A local shared view uses the already activated primary graph. Fetch the
     // bootstrap only when a compatibility plugin-view graph actually needs it.
     let resourcesPromise: Promise<HostResources> | undefined
@@ -393,11 +400,25 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const previous = recentlyViewed.indexOf(id)
         if (previous !== -1) recentlyViewed.splice(previous, 1)
         recentlyViewed.unshift(id); recentlyViewed.length = Math.min(recentlyViewed.length, 5)
-        warming = true; warmRecent()
+        // Deliberate hover/focus warms the requested sessions only. Do not
+        // attach five unrelated histories while a foreground pane is opening.
+        warmup.update(recentlyViewed)
     }
     const cancelWarmStart = (): void => {
         if (warmFrame !== undefined) cancelAnimationFrame(warmFrame)
         if (warmTimer !== undefined) clearTimeout(warmTimer)
+    }
+    const scheduleWarmStart = (): void => {
+        cancelWarmStart()
+        warmFrame = requestAnimationFrame(() => {
+            warmFrame = requestAnimationFrame(() => {
+                warmFrame = undefined
+                warmTimer = setTimeout(() => {
+                    warmTimer = undefined
+                    if (!signal.aborted) { warming = true; warmRecent() }
+                }, 0)
+            })
+        })
     }
     const createSessionPane = (paneId: string, sourceId: string, initial: WorkspaceRenderOptions): PaneRuntime => {
         const context = catalog?.ctx ?? root
@@ -465,7 +486,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                             const id = sourceId as SessionId, previous = recentlyViewed.indexOf(id)
                             if (previous !== -1) recentlyViewed.splice(previous, 1)
                             recentlyViewed.unshift(id); recentlyViewed.length = Math.min(recentlyViewed.length, 5)
-                            warming = true; warmRecent()
+                            // Retain the current session immediately; unrelated
+                            // history preparation waits until after its paint.
+                            warmup?.update(recentlyViewed)
+                            scheduleWarmStart()
                         },
                         onError: error => { opening?.stop('error'); if (!disposed && !activeSignal.aborted) workspace.report(error) },
                     })
@@ -780,21 +804,18 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     try {
         if (host.id !== 'local') {
             const resources = await resourcesForHost()
+            timing.mark('resources')
             if (shared) { catalogSurface.hidden = false; catalogSurface.style.display = 'contents'; catalogSurface.dataset.hapiSharedHost = host.id }
-            catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, false, shared)
+            catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, true, shared)
+            timing.mark('graph')
         }
         if (shared) {
             const context = catalog?.ctx ?? root
             sessionViews = installSessionViewHost(context)
             warmup = createSessionWarmup(context.sessions, { prepare: reference => { context.uiConversation.binding(reference.binding) } })
             unwarmup = context.sessions.list.subscribe(warmRecent)
-            // Previously warming started only after the first pane had opened.
-            // Yield a paint, then prepare the five recent tails even in an
-            // empty restored workspace. Hover/focus can prioritize any row.
-            warmFrame = requestAnimationFrame(() => { warmFrame = undefined; warmTimer = setTimeout(() => {
-                warmTimer = undefined
-                if (!signal.aborted) { warming = true; warmRecent() }
-            }, 0) })
+            // No speculative histories at Host startup. Each online Host used
+            // to open five, competing with the selected pane on cold reload.
             if (catalog) {
                 unprovideHostUi = context.reflect.provide('hapiWorkspaceUi', sharedUi.root)
                 const unchrome = installPaneChrome(context)
@@ -807,6 +828,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     return () => { for (const dispose of disposers.reverse()) dispose() }
                 })
                 await hostUiScope
+                timing.mark('ui')
                 renderHostRoot = () => {
                     if (hostRenderer) return
                     const mount = document.createElement('div'); mount.hidden = true; catalogSurface.append(mount)
@@ -839,6 +861,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         })
         unsubscribeLayout = workspace.store.subscribe(reconcilePanes)
         await catalog?.ctx.sessions.refresh()
+        timing.mark('catalog')
         let stopped = false
         return { async stop() {
             if (stopped) return
@@ -849,6 +872,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             await catalog?.stop(); catalogSurface.remove(); parking.remove()
         } }
     } catch (error) {
+        timing.mark('failed')
         unsubscribeLayout?.(); removeHost?.()
         await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
         cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()

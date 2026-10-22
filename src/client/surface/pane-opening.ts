@@ -3,6 +3,23 @@ import { recordDiagnostic, type DiagnosticIdentity, type DiagnosticInput } from 
 type OpeningStage = 'reference' | 'content' | 'composer'
 let openingSequence = 0
 
+/** Cumulative Host startup timings, including the work before a pane can mount. */
+export class HostOpeningTiming {
+    private readonly started: number
+    private readonly requestId = `host-open-${Date.now()}-${++openingSequence}`
+    private readonly seen = new Set<string>()
+    constructor(private readonly hostId: string,
+        private readonly emit: (entry: DiagnosticInput) => void = recordDiagnostic,
+        private readonly now: () => number = () => performance.now()) { this.started = now() }
+    mark(stage: 'resources' | 'graph' | 'ui' | 'catalog' | 'failed'): void {
+        if (this.seen.has(stage)) return
+        this.seen.add(stage)
+        this.emit({ source: 'performance', event: 'pane.opening', method: `host.${stage}`,
+            durationMs: this.now() - this.started, outcome: stage === 'failed' ? 'error' : 'ready',
+            identity: { hostId: this.hostId }, requestId: this.requestId })
+    }
+}
+
 /** DOM mount timings, not paint or interaction readiness. No conversation text is read. */
 export class PaneOpeningTiming {
     private readonly requestId = `pane-open-${Date.now()}-${++openingSequence}`

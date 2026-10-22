@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { PaneOpeningTiming } from '../src/client/surface/pane-opening.ts'
+import { HostOpeningTiming, PaneOpeningTiming } from '../src/client/surface/pane-opening.ts'
 import { DiagnosticsCore, type DiagnosticInput } from '../src/client/diagnostics/state.ts'
+
+test('host timing includes resources and graph startup before any session reference exists', () => {
+    let now = 20
+    const entries: DiagnosticInput[] = []
+    const timing = new HostOpeningTiming('remote-host', entry => entries.push(entry), () => now)
+    now = 70; timing.mark('resources')
+    now = 170; timing.mark('graph')
+    now = 220; timing.mark('ui'); timing.mark('ui')
+    now = 230; timing.mark('catalog')
+    assert.deepEqual(entries.map(entry => [entry.method, entry.durationMs]), [
+        ['host.resources', 50], ['host.graph', 150], ['host.ui', 200], ['host.catalog', 210],
+    ])
+    assert.ok(entries.every(entry => entry.identity?.hostId === 'remote-host' && entry.requestId === entries[0]!.requestId))
+})
 
 test('pane timings keep content and composer separate and ignore later stream updates', () => {
     let now = 100

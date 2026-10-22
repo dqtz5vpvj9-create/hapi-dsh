@@ -1,8 +1,9 @@
 /**
- * Bundle prefetch for a pane graph.
+ * Bundle prefetch for a Host or pane graph.
  *
- * A filtered pane graph boots one official single-resource artifact per retained
- * row. Those are the only URLs this module requests: it never constructs an
+ * The caller passes the official initial-load batches. A full shared Host uses
+ * its published phase combos; a filtered pane uses one single-resource batch
+ * per retained row. These are the only URLs requested: it never constructs an
  * arbitrary combo URL. Evidence from the pinned Host
  * (`@deepseek-ai/dsh-client-modules/lib/index.js`): `/plugins` serves a fixed
  * `responses` map built in `compose()` from the phase combo artifacts and one
