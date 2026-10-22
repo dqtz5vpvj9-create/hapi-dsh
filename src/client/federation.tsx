@@ -805,7 +805,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
 
 /** Reconcile paired Hosts and native display revisions in the single workspace. */
 export function installFederation(ctx: Context, workspace: WorkspaceController): () => Promise<void> {
-    const shared = new URL(location.href).searchParams.get('hapiGraph') === 'shared'
+    // Shared Host views are the default UI. `?hapiGraph=legacy` is only an
+    // emergency/debug opt-out used by transitional tests; normal URLs never
+    // need a query parameter.
+    const shared = new URL(location.href).searchParams.get('hapiGraph') !== 'legacy'
     const lifetime = new AbortController()
     const unresolveSource = workspace.installSourceResolver((source, signal) => resolveOriginalSession(ctx.remote.hapi, ctx.sessions, source, AbortSignal.any([lifetime.signal, signal])))
     let preferenceStorage: Storage | undefined

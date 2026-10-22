@@ -472,13 +472,13 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     // uses it after an explicit `session_inactive` (409) rejection, once.
     const resumeSession = (hapiSessionId: string): Promise<string> => client.resumeSession(hapiSessionId);
     const codex = new CodexService(ctx, client, {
-        stateDirectory: join(dataDirectory, 'native'), resolveAttachments: attachmentResolver(ctx.attachments, client),
+        stateDirectory: join(dataDirectory, 'native'), fastHistorySeed: true, resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client),
         onError: (error) => { ctx.logger.warn(`Native Codex synchronization: ${error.message}`); },
         resumeSession,
     });
     const observed = new HapiAgentService(ctx, client, {
-        stateDirectory: join(dataDirectory, 'observed'), resolveAttachments: attachmentResolver(ctx.attachments, client),
+        stateDirectory: join(dataDirectory, 'observed'), fastHistorySeed: true, resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client), importAttachment: sourceUploadImporter(ctx.attachments, client),
         importGeneratedMedia: sourceGeneratedMediaImporter(ctx.attachments, client),
         importInline: sourceInlineImporter(ctx.attachments),
