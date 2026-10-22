@@ -8,9 +8,10 @@ declare module '@deepseek-ai/dsh-api-session-controller/client' {
 
 interface WarmEntry {
     readonly id: SessionId
-    phase: 'queued' | 'opening' | 'ready' | 'failed'
+    phase: 'queued' | 'opening' | 'ready' | 'failed' | 'uncached'
     abort?: AbortController | undefined
     reference?: SessionReference | undefined
+    unwatch?: (() => void) | undefined
 }
 
 export interface SessionWarmupSnapshot {
@@ -19,6 +20,7 @@ export interface SessionWarmupSnapshot {
     readonly opening: number
     readonly ready: number
     readonly failed: number
+    readonly uncached: number
     readonly retained: number
 }
 
@@ -35,6 +37,8 @@ export interface SessionWarmupSnapshot {
 export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options: {
     limit?: number
     concurrency?: number
+    /** Release only the warm lease when a reader grows the shared history beyond this budget. */
+    maxEvents?: number
     onError?: (error: unknown, sessionId: SessionId) => void
     /** Materialize only public, session-bound caches; never mount editor DOM. */
     prepare?: (reference: SessionReference) => void
@@ -47,10 +51,12 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
         value === undefined || !Number.isFinite(value) ? fallback : Math.max(0, Math.min(maximum, Math.floor(value)))
     const limit = bound(options.limit, 5, 5)
     const concurrency = Math.max(1, bound(options.concurrency, 2, 2))
+    const maxEvents = bound(options.maxEvents, 1500, 1500)
     const entries = new Map<SessionId, WarmEntry>()
     let disposed = false
     let pumping = false
     const release = (entry: WarmEntry): void => {
+        entry.unwatch?.(); entry.unwatch = undefined
         entry.abort?.abort(); entry.abort = undefined
         const reference = entry.reference; entry.reference = undefined
         reference?.release()
@@ -73,9 +79,20 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
                     entry.reference = reference
                     void reference.ready.then(() => {
                         if (disposed || entries.get(entry.id) !== entry) return
+                        const events = reference.binding.eventSource
+                        const trim = (): void => {
+                            if (disposed || entries.get(entry.id) !== entry || entry.reference !== reference
+                                || events.getSnapshot().entries.length <= maxEvents) return
+                            // The visible pane keeps its independent reference.
+                            // Never mutate the official contiguous history window.
+                            entry.phase = 'uncached'; release(entry); pump()
+                        }
+                        entry.unwatch = events.subscribe(trim)
+                        trim()
+                        if (!entry.reference) return
                         try { options.prepare?.(reference) }
                         catch (error) { options.onError?.(error, entry.id) }
-                        if (disposed || entries.get(entry.id) !== entry) return
+                        if (disposed || entries.get(entry.id) !== entry || entry.reference !== reference) return
                         entry.phase = 'ready'; pump()
                     }, error => {
                         if (disposed || entries.get(entry.id) !== entry) return
@@ -108,7 +125,8 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
             const values = [...entries.values()]
             return { ids: values.map(entry => entry.id), queued: values.filter(entry => entry.phase === 'queued').length,
                 opening: values.filter(entry => entry.phase === 'opening').length, ready: values.filter(entry => entry.phase === 'ready').length,
-                failed: values.filter(entry => entry.phase === 'failed').length, retained: values.filter(entry => entry.reference !== undefined).length }
+                failed: values.filter(entry => entry.phase === 'failed').length, uncached: values.filter(entry => entry.phase === 'uncached').length,
+                retained: values.filter(entry => entry.reference !== undefined).length }
         },
         dispose() {
             if (disposed) return

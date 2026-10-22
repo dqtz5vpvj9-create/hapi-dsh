@@ -24,7 +24,8 @@
 
 `initial.ts` 的 `bindInitialHistory(target, reference, visibility)` 绑定一个明确的官方 Session reference。它等待 reference ready、会话状态为 `open`、窗格可见后，在下一次动画帧后的任务中检查公开 `eventSource`，给初始正文和 composer 留出先绘制的机会。隐藏窗格不会启动预取，也不会为了预取扫描事件窗口。
 
-- 完成条件是窗口已有两个不同的 `turn/start`，或官方 `hasMore` 已为 false。没有更早历史的短会话不增加请求。
+- 完成条件是最近两轮均已有 `turn/start` 和原始输入，或官方 `hasMore` 已为 false。没有更早历史的短会话不增加请求。
+- 2026-10-22 性能修正：初始补页恢复为最多两页；窗口已有 1500 个协议事件时也停止预取，避免工具密集的长 Turn 持续占用渲染。达到预算标为 `limited`，向上阅读、手动翻页和精确定位仍可继续加载。
 - 每个 Session generation 最多发起 **2 页**初始预取。pinned `0.2.1-rc.2` 的官方 `loadOlder()` 每页最多读取 **500 条 append-origin user/assistant message**；`turn/start`、步骤、工具等协议事件不按此消息上限逐条计数。官方页还尝试满足至少 50 条消息、跨越两个 Turn starts，500 条上限或历史耗尽优先结束该页。
 - 两个 pane 绑定同一个 Session face 时共用初始预取计划。官方 `loadingOlder` 继续承担同一 Session 的单飞；预取与手势路径还共用 `shared.ts` 中的跨 pane gate 和 host+session ledger。全页聚合上限仍为并发 2、每秒启动 4 次；成功向前扩展的自动页都计入默认 20 页上限。聚合并发不足时，初始预取可在槽位释放后继续；手势请求仍等待读者的下一次手势。
 - 每页完成后检查事件窗口头部是否向更早的 seq 前进。只有 live 追加、没有更早内容时不能算成功补页；失败或无进展停止初始自动尝试，不形成后台重试循环。手动按钮和既有手势分页仍然可用。

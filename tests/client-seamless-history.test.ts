@@ -346,7 +346,7 @@ test('the per-session page ledger is shared by identity and caps automatic pages
 // ---------------------------------------------------------------------------
 
 const initial = (patch: Partial<Parameters<InitialHistoryPlan['evaluate']>[0]> = {}) => ({
-    visible: true, open: true, loading: false, hasMore: true, previousTurnIncluded: false, ...patch,
+    visible: true, open: true, loading: false, hasMore: true, previousTurnIncluded: false, events: 0, ...patch,
 })
 
 test('initial history waits for visible open state and leaves an already complete window alone', () => {
@@ -375,16 +375,23 @@ test('initial history shares one flight and stops after observing the previous T
     assert.equal(subject.evaluate(initial()), false)
 })
 
-test('oversized initial Turns stop at the shared twenty-page limit', () => {
+test('oversized initial Turns stop after two pages without claiming the previous input is loaded', () => {
     const subject = new InitialHistoryPlan()
-    for (let i=0;i<20;i++) {
+    for (let i=0;i<2;i++) {
         assert.equal(subject.evaluate(initial()), true)
         subject.requested()
         subject.settled({ firstSeq: 5000-i*200, turns: 1, previousTurnIncluded: false }, { firstSeq: 4800-i*200, turns: 1, previousTurnIncluded: false }, true)
     }
     assert.equal(subject.state, 'limited')
     assert.equal(subject.evaluate(initial()), false)
-    assert.equal(subject.pages, 20)
+    assert.equal(subject.pages, 2)
+})
+
+test('a tool-heavy initial page stops prefetch at its event budget even before two pages', () => {
+    const subject = new InitialHistoryPlan()
+    assert.equal(subject.evaluate(initial({ events: 1500 })), false)
+    assert.equal(subject.pages, 0)
+    assert.equal(subject.state, 'limited')
 })
 
 test('initial failure or live-only append never counts as prepend and never starts a retry loop', () => {

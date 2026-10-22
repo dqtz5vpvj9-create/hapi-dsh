@@ -66,16 +66,19 @@ function ChatViews({ renderSlot }: ConversationViewsProps): ReactNode {
 
 /** Same public binding and phase inputs as the official embedded child chat. */
 function SessionContent({ sessionId, useSession, useConversation, useSessions, renderFactorySlot }: ContentProps): ReactNode {
-    const session = useSession(value => value)
-    const conversation = useConversation(value => value)
+    const activeTargets = useConversation(value => value.activeTargets.size > 0)
     const summaryBlank = useSessions(state => state.byId[sessionId]?.blank)
-    const active = conversation.activeTargets.size > 0 || (!session.blank && !session.awaitingFirstTurn) || session.running
-    const blank = !active && !session.promptAttempted
-    const parentPending = session.subagent?.address.mode === 'continuable' && session.subagent.parentAvailable === undefined
-    const settling = (blank && session.openState === 'loading' && summaryBlank !== true) || parentPending
-    const hero = blank && (session.openState === 'open' || summaryBlank === true)
+    // Subscribe only to shell phase. Streaming text, queue receipts and draft
+    // edits have their own subscriptions below this factory occurrence.
+    const phase = useSession(session => {
+        const active = activeTargets || (!session.blank && !session.awaitingFirstTurn) || session.running
+        const blank = !active && !session.promptAttempted
+        const parentPending = session.subagent?.address.mode === 'continuable' && session.subagent.parentAvailable === undefined
+        if ((blank && session.openState === 'loading' && summaryBlank !== true) || parentPending) return 'settling'
+        return blank && (session.openState === 'open' || summaryBlank === true) ? 'hero' : 'active'
+    })
     return renderFactorySlot('conversation.content', {
-        variant: 'embedded', phase: settling ? 'settling' : hero ? 'hero' : 'active', hero,
+        variant: 'embedded', phase, hero: phase === 'hero',
     }, { slots: { views: ChatViews } })
 }
 

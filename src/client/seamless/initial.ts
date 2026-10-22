@@ -3,8 +3,9 @@ import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import { keyIntent } from './intent.ts'
 import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
-/** Share the existing automatic-history ceiling; do not stop after two pages. */
-export const MAX_INITIAL_HISTORY_PAGES = 20
+/** Opening must not eagerly materialize an entire long Turn; reader paging continues independently. */
+export const MAX_INITIAL_HISTORY_PAGES = 2
+export const MAX_INITIAL_HISTORY_EVENTS = 1500
 export const INITIAL_HISTORY_ATTRIBUTE = 'data-hapi-initial-history'
 
 export interface InitialWindowProbe {
@@ -50,12 +51,12 @@ export class InitialHistoryPlan {
     private reader = false
 
     evaluate(input: {
-        visible: boolean; open: boolean; loading: boolean; hasMore: boolean; previousTurnIncluded: boolean
+        visible: boolean; open: boolean; loading: boolean; hasMore: boolean; previousTurnIncluded: boolean; events: number
     }): boolean {
         if (this.state !== 'waiting' || !input.visible || !input.open || input.loading) return false
         if (input.previousTurnIncluded) { this.state = 'ready'; return false }
         if (!input.hasMore) { this.state = 'exhausted'; return false }
-        if (this.pages >= MAX_INITIAL_HISTORY_PAGES) { this.state = 'limited'; return false }
+        if (this.pages >= MAX_INITIAL_HISTORY_PAGES || input.events >= MAX_INITIAL_HISTORY_EVENTS) { this.state = 'limited'; return false }
         return true
     }
 
@@ -94,9 +95,9 @@ const plans = new WeakMap<SessionBinding['session'], SharedInitialPlan>()
  * tail following. It also leaves editor focus, drafts and scroll ownership to
  * the official view. A reader gesture cancels any further automatic prefetch.
  *
- * The target is two input-bearing Turns, not a fixed number of pages. The
- * shared 20-page ceiling still applies; exhausted means the Host has no more
- * rows, without claiming that a partial source seed contains a previous Turn.
+ * Aim for two input-bearing Turns within two additional pages. Longer Turns
+ * remain available through reader paging and explicit navigation. Reaching
+ * this opening budget never claims that the previous Turn is already loaded.
  */
 export function bindInitialHistory(
     target: HTMLElement,
@@ -137,11 +138,12 @@ export function bindInitialHistory(
         timer = undefined
         if (disposed || !ready || !target.isConnected || !visibility.getSnapshot().visible || target.hidden) return
         const snapshot = session.getSnapshot()
-        const before = probeInitialWindow(binding.eventSource.getSnapshot())
+        const window = binding.eventSource.getSnapshot()
+        const before = probeInitialWindow(window)
         const allowed = plan.evaluate({
             visible: true,
             open: snapshot.openState === 'open', loading: snapshot.loadingOlder,
-            hasMore: snapshot.hasMore, previousTurnIncluded: before.previousTurnIncluded,
+            hasMore: snapshot.hasMore, previousTurnIncluded: before.previousTurnIncluded, events: window.entries.length,
         })
         mark()
         if (!allowed) return

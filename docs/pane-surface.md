@@ -435,3 +435,10 @@ deliverables related.
 - `tests/pane-surface.test.ts`: row-projection/HMR tests + SSE projection tests
   (chunk splitting incl. mid-UTF-8, per-stream decode isolation, cancellation)
 - new `e2e/pane-surface.spec.ts`
+# 2026-10-22 当前性能修正
+
+初始历史预取最多两页，已保留窗口达到 1500 个协议事件后不再自动补页。共享 Conversation 外层只订阅实际呈现阶段，正文流和草稿更新由各自的官方组件订阅处理。
+
+预热缓存仍最多保留五个会话、并发打开两个；单个窗口超过 1500 个协议事件时释放该缓存的 reference。现有可见或隐藏 Pane 自己持有的 reference 不受影响；最后一个实际视图关闭后，官方 Session 生命周期才能回收这份大历史。这里没有修改官方事件窗口，也没有实现活跃视图中的窗口 trim。
+
+当前阶段只做类型、逻辑和发布连通性检查，实际首开耗时与长会话交互由用户手测。
