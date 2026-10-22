@@ -23,6 +23,7 @@ class SourceAgent implements NativeControlAgent {
     this.id = this.logicalSessionId = nativeSessionId('fixture-hub', sourceSession.id)
   }
   async refresh(): Promise<void> { this.refreshes++; if (this.refreshError) throw this.refreshError }
+  async refreshSettings(): Promise<void> { if (this.refreshError) throw this.refreshError }
   resolveForkBoundary(id: string): NativeForkBoundary | undefined { return this.boundaries.get(id) }
 }
 
@@ -82,6 +83,59 @@ async function fixture(run: (fixture: NativeFixture, directory: string, control:
   const control = new NativeControl(source, source, directory)
   try { await run(source, directory, control) } finally { await control.settled(); await rm(directory, { recursive: true, force: true }) }
 }
+
+test('settings bypass history refresh and start the model read alongside the source snapshot', async () => {
+  await fixture(async (source, _directory, control) => {
+    let finishSnapshot!: () => void
+    source.source.refresh = async () => { throw new Error('Settings must not wait for transcript synchronization') }
+    source.source.refreshSettings = () => new Promise<void>(resolve => { finishSnapshot = resolve })
+    const read = control.settings(source.source.id)
+    assert.equal(source.calls.filter(call => call.path.endsWith('/codex-models')).length, 1)
+    source.source.sourceSession.modelReasoningEffort = 'high'
+    finishSnapshot()
+    const value = await read
+    assert.equal(value.values.reasoningEffort, 'high')
+    assert.equal(value.models[0]?.id, 'native-model-a')
+    assert.equal(source.source.refreshes, 0)
+  })
+})
+
+test('model catalog reads are coalesced and cached by native account, while session values stay independent', async () => {
+  await fixture(async (source, _directory, control) => {
+    const peerSource = sourceSession('peer-session'); peerSource.modelReasoningEffort = 'low'
+    const peer = new SourceAgent(peerSource); source.agents.set(peer.id, peer)
+    await Promise.all([control.settings(source.source.id), control.settings(peer.id)])
+    assert.equal(source.calls.length, 1)
+    const state = await control.settings(peer.id)
+    assert.equal(state.values.reasoningEffort, 'low')
+    assert.equal(source.calls.length, 1)
+    const otherSource = sourceSession('other-account')
+    otherSource.metadata = { ...otherSource.metadata!, codexHome: '/other/home', codexHomeId: 'other-home' }
+    const other = new SourceAgent(otherSource); source.agents.set(other.id, other)
+    await control.settings(other.id)
+    assert.equal(source.calls.length, 2, 'different engine homes never share a model catalog')
+  })
+})
+
+test('failed model reads can retry and cached catalogs expire without affecting confirmed settings', async () => {
+  await fixture(async (source, _directory, control) => {
+    const originalNow = Date.now
+    let now = 1000, reads = 0
+    Date.now = () => now
+    source.handler = async () => { if (++reads === 1) throw new Error('Catalog unavailable'); return models() }
+    try {
+      const failed = await control.settings(source.source.id)
+      assert.equal(failed.models.length, 0)
+      assert.deepEqual(failed.warnings, ['Catalog unavailable'])
+      await control.settings(source.source.id)
+      await control.settings(source.source.id)
+      assert.equal(reads, 2)
+      now += 60_001
+      await control.settings(source.source.id)
+      assert.equal(reads, 3)
+    } finally { Date.now = originalNow }
+  })
+})
 
 test('native settings use authentic owner routes, observed values and exactly one durable submission', async () => {
   await fixture(async (source, directory, control) => {

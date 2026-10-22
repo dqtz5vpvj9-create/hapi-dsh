@@ -394,6 +394,15 @@ export class HapiObservedAgent implements Agent {
     else if (event.type === 'session-removed') { this.connected = false; this.publish() }
     else this.historySync.request(false)
   }
+  /** Refresh only source settings; history and child discovery keep their own lifecycle. */
+  async refreshSettings(): Promise<void> {
+    if (this.disposed) return
+    const snapshot = await this.transport.getSession(this.bound.hapiSessionId)
+    if (this.disposed) return
+    this.observe(snapshot)
+    this.publish()
+  }
+
   async refresh(history = false): Promise<void> {
     if (this.pendingRefresh) { await this.pendingRefresh; if (history && !this.disposed) return this.refresh(true); return }
     const work = (async () => {

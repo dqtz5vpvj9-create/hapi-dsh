@@ -84,7 +84,7 @@ export class HapiObservedControl {
   }
   async settings(request: { sessionId: string }): Promise<ObservedSettings> {
     const agent = this.agent(request.sessionId)
-    await agent.refresh(); this.reconcile(agent)
+    await agent.refreshSettings(); this.reconcile(agent)
     const source = agent.sourceSession, flavor = agent.binding.flavor, value = values(source)
     const connected = agent.projection.connection === 'connected', remote = value.control === 'remote'
     const capable = agent.projection.capabilities

@@ -57,7 +57,7 @@ class CreationFixture implements NativeCreationTransport, NativeControlSessions 
     const logicalSessionId = nativeSessionId(this.hubId, sourceId)
     return { id: this.generation ? `${logicalSessionId}-r${this.generation}` : logicalSessionId,
       logicalSessionId, binding: bindingFor(this.hubId, this.source), sourceSession: this.source, projection: { readOnly: false },
-      async refresh() {}, resolveForkBoundary: () => undefined }
+      async refresh() {}, async refreshSettings() {}, resolveForkBoundary: () => undefined }
   }
 }
 

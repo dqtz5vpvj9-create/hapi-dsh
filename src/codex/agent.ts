@@ -534,6 +534,15 @@ export class NativeCodexAgent implements Agent {
     }
   }
 
+  /** Settings reads must not queue behind transcript loading or delivery reconciliation. */
+  async refreshSettings(): Promise<void> {
+    if (this.disposed) return
+    const snapshot = await this.transport.getSession(this.binding.hapiSessionId)
+    if (this.disposed) return
+    this.observe(snapshot)
+    this.publishProjection()
+  }
+
   async refresh(history = false): Promise<void> {
     if (this.pendingRefresh) { await this.pendingRefresh; if (history && !this.disposed) return this.refresh(true); return }
     const work = (async () => {

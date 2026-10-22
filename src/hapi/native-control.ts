@@ -24,6 +24,7 @@ export interface NativeControlAgent {
   readonly sourceSession: HapiSession
   readonly projection: { readOnly: boolean }
   refresh(history?: boolean): Promise<void>
+  refreshSettings(): Promise<void>
   resolveForkBoundary(messageId: string): NativeForkBoundary | undefined
 }
 export interface NativeControlSessions {
@@ -96,6 +97,8 @@ export class NativeControl {
   private readonly forks = new Map<string, ForkEntry>()
   private readonly settingFlights = new Map<string, Promise<NativeSettingReceipt>>()
   private readonly forkFlights = new Map<string, Promise<NativeForkView>>()
+  private readonly modelCatalogs = new Map<string, { models: NativeSettings['models']; expires: number }>()
+  private readonly modelFlights = new Map<string, Promise<NativeSettings['models']>>()
 
   constructor(private readonly transport: NativeControlTransport, private readonly sessions: NativeControlSessions, directory: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
@@ -126,17 +129,36 @@ export class NativeControl {
 
   async settings(sessionId: string): Promise<NativeSettings> {
     const agent = this.agent(sessionId)
-    await agent.refresh()
+    const warnings: string[] = []
+    // A model catalog read and a small settings snapshot are independent of
+    // each other and of the much larger transcript synchronization.
+    const [, models] = await Promise.all([agent.refreshSettings(), this.models(agent).catch(error => {
+      warnings.push(errorText(error)); return [] as NativeSettings['models']
+    })])
     const values = valuesOf(agent.sourceSession)
     this.reconcileSettings(agent, values)
-    const warnings: string[] = []
-    let models: NativeSettings['models'] = []
-    try { models = await this.models(agent) } catch (error) { warnings.push(errorText(error)) }
     return { values, models, readOnly: agent.projection.readOnly, warnings,
       operations: [...this.settingsJournal.values()].filter(entry => matchingBinding(entry.binding, agent.binding)).map(entry => entry.receipt).sort((a, b) => b.createdAt - a.createdAt).slice(0, 50) }
   }
 
-  private async models(agent: NativeControlAgent): Promise<NativeSettings['models']> {
+  private models(agent: NativeControlAgent, fresh = false): Promise<NativeSettings['models']> {
+    const { hubId, machineId, homeId, home, hapiSessionId } = agent.binding
+    // Models belong to an engine account/home, not a pane or display generation.
+    // An unknown home remains source-specific; never borrow another account.
+    const key = JSON.stringify([hubId, machineId, homeId, home, machineId && (homeId || home) ? null : hapiSessionId])
+    const cached = this.modelCatalogs.get(key)
+    if (!fresh && cached && cached.expires > Date.now()) return Promise.resolve(cached.models)
+    const pending = this.modelFlights.get(key)
+    if (pending) return pending
+    const work = this.readModels(agent).then(models => {
+      this.modelCatalogs.set(key, { models, expires: Date.now() + 60_000 })
+      return models
+    }).finally(() => { this.modelFlights.delete(key) })
+    this.modelFlights.set(key, work)
+    return work
+  }
+
+  private async readModels(agent: NativeControlAgent): Promise<NativeSettings['models']> {
     const result = modelsSchema.parse(await this.transport.request(`${pathFor(agent)}/codex-models`))
     if (!result.success) throw new HapiRequestError(result.error ?? 'The native model catalog is unavailable', 'rejected')
     return (result.models ?? []).map(model => ({ id: model.id, name: model.displayName, isDefault: model.isDefault,
@@ -178,7 +200,7 @@ export class NativeControl {
       // concurrent default-effort requests cannot both cross the send boundary.
       try {
         const current = valuesOf(agent.sourceSession).model
-        entry.expected = (await this.models(agent)).find(model => model.id === current)?.defaultReasoningEffort ?? null
+        entry.expected = (await this.models(agent, true)).find(model => model.id === current)?.defaultReasoningEffort ?? null
         if (!entry.expected) throw new Error('Codex did not advertise a default reasoning effort; choose an explicit effort')
         this.persist()
       } catch (error) {

@@ -29,6 +29,7 @@ class SourceAgent implements NativeControlAgent {
   readonly projection = { readOnly: false }
   refreshHook: (() => Promise<void>) | undefined
   async refresh(): Promise<void> { await this.refreshHook?.() }
+  async refreshSettings(): Promise<void> { await this.refreshHook?.() }
   resolveForkBoundary() { return undefined }
 }
 

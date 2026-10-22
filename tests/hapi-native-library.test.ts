@@ -19,7 +19,7 @@ function source(id = 'source-session', threadId = 'thread-one'): HapiSession {
 function agent(session = source(), revision = 0): NativeLibraryAgent {
     const logicalSessionId = nativeSessionId('fixture-hub', session.id);
     return { sourceSession: session, logicalSessionId, id: revision ? `${logicalSessionId}-${revision}` : logicalSessionId,
-        binding: bindingFor('fixture-hub', session), projection: { readOnly: false }, refresh: async () => {},
+        binding: bindingFor('fixture-hub', session), projection: { readOnly: false }, refresh: async () => {}, refreshSettings: async () => {},
         resolveForkBoundary: () => undefined, resolveRewindLocalId: id => id === 'display-user' ? 'original-local-user' : undefined,
         resolveRewindLocalIdAtSeq: seq => seq === 12 ? 'original-local-user' : undefined };
 }

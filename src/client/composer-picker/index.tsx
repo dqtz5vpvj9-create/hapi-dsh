@@ -64,6 +64,9 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
     const panelElement = (): HTMLDivElement | null => visible === 'actions' ? actionsPopup.current : settingsPopup.current
 
     useEffect(() => { if (!paneState.visible || open === 'permission' && !permissionAvailable) setOpen(null) }, [paneState.visible, open, permissionAvailable])
+    // Warm settings while the pane is visible, before the first click. A
+    // mounted hidden pane must not start another source/model request.
+    useEffect(() => { if (paneState.visible && !data) void refresh() }, [paneState.visible, refresh])
     useEffect(() => { if (visible && visible !== 'actions') void refresh() }, [visible, refresh])
     // One reconciliation timer per occurrence, including a closed pending
     // picker. The durable ledger never resubmits an uncertain operation.
