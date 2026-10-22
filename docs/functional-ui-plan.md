@@ -154,3 +154,5 @@ workspace-navigation 浏览器专项 **2/2** 已通过：显式 deep link 在 li
 - 修复原生会话空草稿 Ctrl/Cmd+Enter 的批量插话：官方 session/updateQueue 的 steer 转到原源队列，按 journal 消息 ID 或外部消息映射查找 localId；只允许已确认 queued 的条目，失败结果保持失败，子会话不路由到父源。普通 DSH 保留官方实现。Host/Client 类型检查、10 项控制器与队列映射测试通过；没有实际投递用户消息进行验证。
 
 - 设置面板移除历史 projection.readOnly 对独立设置快照的额外锁定，仍按最新设置 readOnly/能力检查提交。输入提交中的暂时禁用不再显示为源权限拒绝；只读快照提供刷新入口。当前源实际 settings/projection 均 readOnly=false、连接 attached。6 项 picker 逻辑测试通过；界面由用户手测。
+
+- 排队区改为默认折叠的单行入口，展开后限宽 960px、列表限高 176px，替换字符按钮为统一 SVG 图标，减轻背景与分隔线；触屏仍保留 44px 点击区域，投递和编辑逻辑不变。Client 类型检查与构建后发布，界面由用户手测。
