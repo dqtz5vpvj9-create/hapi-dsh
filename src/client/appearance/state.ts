@@ -2,6 +2,7 @@ import type { ThemeRuntime, ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-the
 import type { WorkspacePreferenceKey, WorkspaceUiPreferences } from '../ui-preferences.ts'
 import { readAppearance, type AppearancePreferences } from './preferences.ts'
 import { appearanceTokens } from './tokens.ts'
+import { migrateMessageAppearance } from './migration.ts'
 
 export type AppearanceSnapshot = AppearancePreferences & { saveError: string | null }
 export class AppearanceState {
@@ -9,7 +10,9 @@ export class AppearanceState {
     private readonly listeners = new Set<() => void>()
     private readonly stop: () => void
     constructor(readonly preferences: WorkspaceUiPreferences) {
-        this.snapshot = { ...readAppearance(preferences), saveError: null }
+        let saveError: string | null = null
+        try { migrateMessageAppearance(preferences) } catch (error) { saveError = error instanceof Error ? error.message : String(error) }
+        this.snapshot = { ...readAppearance(preferences), saveError }
         this.stop = preferences.subscribe(() => {
             const next = { ...readAppearance(preferences), saveError: this.snapshot.saveError }
             if (JSON.stringify(next) === JSON.stringify(this.snapshot)) return

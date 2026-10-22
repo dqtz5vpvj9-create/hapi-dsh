@@ -129,12 +129,14 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     const sourceQuery = new URL(location.href).searchParams
     const controller = new WorkspaceController({
         sessions: ctx.sessions, navigation: ctx.uiWorkspace, workspaceState: ctx.workspaces.list, workspaces: ctx.workspaces,
-        deferHiddenSessions: sourceQuery.get('hapiGraph') !== 'legacy',
+        deferHiddenSessions: true,
         storageKey: `hapi-dsh:workspace:v1:${location.origin}${location.pathname}`,
         ...(storage ? { storage } : {}),
         persistence: createWorkspacePersistence(api), reveal: () => ctx.layout.selectPanel(null),
         legacy: async signal => { signal.throwIfAborted(); const result = remoteValue(await api.workspaceLegacy()); signal.throwIfAborted(); return result },
         ...(sourceQuery.get('hapiSession') ? { sourceSessionQuery: sourceQuery.get('hapiSession')!,
+            ...(sourceQuery.has('hapiMessage') ? { sourceMessageQuery: sourceQuery.get('hapiMessage')! } : {}),
+            ...(sourceQuery.has('hapiRequest') ? { sourceRequestQuery: sourceQuery.get('hapiRequest')! } : {}),
             ...(sourceQuery.has('hapiHub') ? { sourceHubQuery: sourceQuery.get('hapiHub')! } : {}) } : {}),
         beforeRemove: resources => !resources.some(hasDirtyNativeDocument) || window.confirm(ctx.locale.bind('hapiWorkspace')('closeUnsavedDocument')),
     })

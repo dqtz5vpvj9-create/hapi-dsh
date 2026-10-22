@@ -3,6 +3,7 @@ import type { DshPaneTarget, NavigationValue } from '../workspace/dsh-view.ts'
 import type { SplitAxis } from './model.ts'
 import type { WorkspaceUiScope } from './workspace-ui.ts'
 import type { WorkspaceCatalogRow } from './controller.ts'
+import type { PaneReadingIntent, PaneReadingTarget } from './reading-intent.ts'
 
 /**
  * Optional embedding capability available to ordinary DSH plugins. Rendering
@@ -15,6 +16,8 @@ export interface WorkspacePaneNavigation extends WorkspaceUiScope {
     readonly state: ObservableSnapshot<{ focused: boolean; visible: boolean }>
     /** Read-only source metadata from the unified catalog, never a foreign SessionReference. */
     readonly catalog: ObservableSnapshot<WorkspaceCatalogRow | undefined>
+    readonly reading: ObservableSnapshot<PaneReadingIntent | undefined>
+    locate(target: PaneReadingTarget): void
     /** Veto removal/replacement of this pane's view; hiding or moving does not close it. */
     registerCloseGuard(guard: () => boolean): () => void
     /** Retain this own input graph until a source-successor draft CAS settles.
@@ -23,7 +26,7 @@ export interface WorkspacePaneNavigation extends WorkspaceUiScope {
     /** Only call after a confirmed source operation returns a ready successor. */
     openSuccessor(displaySessionId: string): Promise<void>
     /** Navigate this pane without changing another pane's session binding. */
-    openSession(displaySessionId: string, options?: { beside?: SplitAxis }): void
+    openSession(displaySessionId: string, options?: { beside?: SplitAxis; target?: PaneReadingTarget }): void
     /** Reveal this graph's own unchanged Conversation, retaining every tab. */
     revealConversation(): void
     openResource(address: string, options?: { kind?: string; params?: NavigationValue; beside?: SplitAxis }): void

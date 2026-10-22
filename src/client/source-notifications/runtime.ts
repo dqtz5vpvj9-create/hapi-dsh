@@ -1,12 +1,12 @@
 /** Original browser Push/installation APIs with explicit user permission and truthful Hub admission. */
 import { remoteValue } from '../../client-api.ts';
-import { NOTIFICATION_HEARTBEAT_MS, notificationFrameSchema, type NotificationSettings, type SourceNotification, type SourceNotificationsApi } from '../../notification-types.ts';
+import { NOTIFICATION_HEARTBEAT_MS, notificationFrameSchema, type NotificationSettings, type SourceNotification, type SourceNotificationTarget, type SourceNotificationsApi } from '../../notification-types.ts';
 
 export interface SourceNotificationsUiOptions {
     /** null means the sidebar snapshot is loading or failed: retain the last OS badge. */
     getUnreadCount(): number | null;
     subscribeUnread(listener: () => void): () => void;
-    openSource(source: { hubId: string; sessionId: string }): void | Promise<void>;
+    openSource(source: SourceNotificationTarget): void | Promise<void>;
     /** Finish every registered editor's durable writes before replacing this document. */
     prepareUpdate?(): Promise<void>;
 }
@@ -81,7 +81,11 @@ export class SourceNotificationsRuntime {
             const value: unknown = event.data;
             if (!value || typeof value !== 'object' || !('type' in value) || value.type !== 'hapi-dsh/notification-open' || !('hubId' in value) || !('sessionId' in value)) return;
             if (typeof value.hubId !== 'string' || typeof value.sessionId !== 'string' || value.hubId !== this.settings?.hubId || value.sessionId.length > 256) { event.ports[0]?.postMessage({ opened: false }); return; }
-            void this.open({ hubId: value.hubId, sessionId: value.sessionId }).then(() => event.ports[0]?.postMessage({ opened: true }), () => event.ports[0]?.postMessage({ opened: false }));
+            const messageId = Reflect.get(value, 'messageId'), requestId = Reflect.get(value, 'requestId');
+            void this.open({ hubId: value.hubId, sessionId: value.sessionId,
+                ...(typeof messageId === 'string' && messageId.length <= 256 ? { messageId } : {}),
+                ...(typeof requestId === 'string' && requestId.length <= 256 ? { requestId } : {})
+            }).then(() => event.ports[0]?.postMessage({ opened: true }), () => event.ports[0]?.postMessage({ opened: false }));
         };
         window.addEventListener('beforeinstallprompt', beforeInstall); window.addEventListener('appinstalled', appInstalled);
         window.addEventListener('pagehide', pageHide); window.addEventListener('storage', storage); document.addEventListener('visibilitychange', visibility);
@@ -296,7 +300,7 @@ export class SourceNotificationsRuntime {
     }
     dismissInstall(): void { this.patch({ installDismissed: true }); try { localStorage.setItem(INSTALL_DISMISSED, 'true'); } catch (error) { this.patch({ error: message(error) }); } }
     dismiss(id: string): void { this.notices.delete(id); this.patch({ notices: [...this.notices.values()] }); }
-    async open(source: { hubId: string; sessionId: string }): Promise<void> {
+    async open(source: SourceNotificationTarget): Promise<void> {
         if (source.hubId !== this.settings?.hubId) throw new Error('This notification belongs to a different source Hub');
         try { await this.options.openSource(source); }
         catch (error) { this.patch({ error: message(error) }); throw error; }

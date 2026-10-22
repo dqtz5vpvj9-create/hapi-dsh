@@ -199,7 +199,7 @@ test('a closed loading occurrence cannot poison a surviving reference to the sam
         current.resolve()
         await tick(); await new Promise(resolve => setTimeout(resolve, 1))
         assert.equal(f.surfaces[0]!.attributes.has('data-hapi-initial-history'), false)
-        assert.equal(f.surfaces[1]!.attributes.get('data-hapi-initial-history'), 'ready')
+        assert.equal(f.surfaces[1]!.attributes.get('data-hapi-initial-history'), 'exhausted')
         assert.equal(source.state.subscriptions(), 1)
         assert.equal(source.events.subscriptions(), 1)
         assert.equal(f.host.size(), 1)

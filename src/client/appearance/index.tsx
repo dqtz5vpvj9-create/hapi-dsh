@@ -10,9 +10,9 @@ import { HEADER_LABELS, sourceHeader } from './header.tsx'
 
 const labels: Record<ColorKey, [string, string]> = {
     background: ['Background', '背景'], surface: ['Surface', '表面'], text: ['Text', '文字'], hint: ['Secondary text', '次要文字'],
-    accent: ['Accent', '强调色'], border: ['Border', '边框'], userBubble: ['User message', '用户消息'],
+    accent: ['Accent', '强调色'], border: ['Border', '边框'],
 }
-const paletteNames: Record<string, string> = { 'default': 'HAPI', 'codex': 'Codex', 'notion': 'Notion', 'one': 'One', 'proof': 'Proof',
+const paletteNames: Record<string, string> = { glass: 'Glass', 'default': 'HAPI', 'codex': 'Codex', 'notion': 'Notion', 'one': 'One', 'proof': 'Proof',
     'raycast': 'Raycast', 'rose-pine': 'Rosé Pine', 'solarized': 'Solarized', 'vercel': 'Vercel', 'vs-code-plus': 'VS Code Plus',
     'xcode': 'Xcode', 'linear': 'Linear', 'lobster': 'Lobster', 'material': 'Material', 'matrix': 'Matrix', 'monokai': 'Monokai', 'night-owl': 'Night Owl', 'nord': 'Nord' }
 
@@ -65,12 +65,6 @@ export function installSourceAppearance(ctx: Context): () => void {
                         <button type="button" disabled={!value.colors[scheme]?.[key]} aria-label={`${tr('Reset', '重置')} ${labels[key][chinese ? 1 : 0]}`} onClick={() => setColor(key, null)}>{tr('Reset', '重置')}</button>
                     </div>)}</div>
                     <button type="button" onClick={() => { const colors = { ...value.colors }; delete colors[scheme]; state.write('hapi-theme-colors', JSON.stringify(colors)) }}>{tr('Reset colors for this scheme', '重置此模式的自定义颜色')}</button>
-                    <h3>{tr('User message bubble', '用户消息气泡')}</h3>
-                    <label>{tr('Bubble color', '气泡色')}<select value={value.bubble.startsWith('custom:') ? 'custom' : value.bubble} onChange={event => state.write('hapi-user-message-bg', event.currentTarget.value === 'custom' ? 'custom:#7db7ff' : event.currentTarget.value)}>
-                        <option value="default">{tr('Palette default', '使用色板')}</option><option value="preset:soft-blue">{tr('Soft blue', '柔和蓝')}</option>
-                        <option value="preset:soft-green">{tr('Soft green', '柔和绿')}</option><option value="preset:soft-yellow">{tr('Soft yellow', '柔和黄')}</option><option value="custom">{tr('Custom', '自定义')}</option>
-                    </select></label>
-                    {value.bubble.startsWith('custom:') && <label>{tr('Bubble tint', '气泡色调')}<input type="color" value={value.bubble.slice(7)} onChange={event => state.write('hapi-user-message-bg', `custom:${event.currentTarget.value}`)}/></label>}
                 </fieldset>
                 <fieldset><legend>{tr('Source session header', '源会话页头')}</legend>
                     <p>{tr('Choose which original source facts appear beside the official header. Fields the source has not reported stay absent.', '选择官方页头旁显示的源会话信息。源端未报告的字段保持为空。')}</p>
@@ -91,6 +85,18 @@ export function installSourceAppearance(ctx: Context): () => void {
 }
 
 const styles = `
+/* Pinned official Chat factory markup. Keep message roles neutral in every theme. */
+.hapi-pane .Sixlwa_bubble {background:var(--hapi-user-message-surface,var(--dsw-specific-bubble));border:0;border-radius:10px;box-shadow:none;background-image:none;padding:10px 14px;max-width:88%;font-size:max(15px,var(--dsh-content-font-size,15px));line-height:1.6}
+.hapi-pane .Sixlwa_bubble::before,.hapi-pane .Sixlwa_bubble::after {content:none}
+.hapi-pane [data-chat-flow-kind="user-message"] {margin-top:22px}
+.hapi-workspace-toolbar,.hapi-session-sidebar {background:var(--hapi-chrome-solid-surface,var(--hapi-panel));}
+@supports (backdrop-filter:blur(1px)) {
+ .hapi-workspace-toolbar,.hapi-session-sidebar {background:var(--hapi-chrome-translucent-surface,var(--hapi-panel));backdrop-filter:var(--hapi-chrome-backdrop,none)}
+}
+@media (prefers-reduced-transparency:reduce),(forced-colors:active) {
+ .hapi-workspace-toolbar,.hapi-session-sidebar {background:var(--hapi-chrome-solid-surface,var(--hapi-panel));backdrop-filter:none}
+}
+@media(max-width:640px) {.hapi-pane .Sixlwa_bubble {max-width:96%}}
 .hapi-appearance-settings{max-width:760px;color:var(--dsw-alias-label-primary);font:var(--dsw-font-s-14)}
 .hapi-appearance-settings h2{font:var(--dsw-font-l-20);margin:0 0 10px}.hapi-appearance-settings h3{font:var(--dsw-font-s-strong-14);margin:20px 0 10px}
 .hapi-appearance-settings p{color:var(--dsw-alias-label-secondary)}.hapi-appearance-settings fieldset{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:16px;margin:20px 0;min-width:0}.hapi-appearance-settings legend{padding:0 6px}

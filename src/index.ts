@@ -22,6 +22,8 @@ import {
 import { readConfig, resolveHapiToken, type RuntimeConfig } from './cli/config.ts';
 import { HapiClient } from './hapi/client.ts';
 import { catalogDisplayMetadata, catalogListFacts, catalogRowState } from './hapi/catalog-metadata.ts';
+import { discoverSourceSession } from './hapi/source-discovery.ts';
+import type { DeliveryRecoveryRequest } from './codex/delivery-recovery-types.ts';
 import { startSourceCatalogs } from './hapi/catalog-startup.ts';
 import { SourceSessionResolver, type OriginalSessionRequest } from './hapi/source-session-resolver.ts';
 import { HapiRequestError, type HapiCancelResult, type HapiSteerResult, type HapiRetryResult } from './codex/contracts.ts';
@@ -123,6 +125,8 @@ export class HapiController extends TypertRemoteService {
     private sourceSummaries = new Map<string, Awaited<ReturnType<HapiClient['listSessions']>>[number]>();
     private summaryCacheAt = 0;
     private summaryRead: Promise<void> | undefined;
+    private summaryObservedAt: number | null = null;
+    private summaryError: string | null = null;
     private readonly sourceResolver: SourceSessionResolver;
 
     /** Source capabilities for ordinary DSH Host provider composition; not a browser Remote method. */
@@ -176,6 +180,16 @@ export class HapiController extends TypertRemoteService {
         const client = this.options.client;
         return {
             hubId: client.hubId, connected: client.isConnected,
+            sourceDiscovery: {
+                phase: this.summaryError || !client.isConnected ? this.summaryObservedAt === null ? 'unavailable' : 'stale' : this.summaryObservedAt === null ? 'pending' : 'ready',
+                observedAt: this.summaryObservedAt, error: this.summaryError,
+                sessions: [...this.sourceSummaries.values()].map(source => {
+                    const row = discoverSourceSession(client.hubId, source,
+                        [...this.options.codex.list(), ...this.options.observed.list()].some(agent => agent.binding.hapiSessionId === source.id));
+                    const error = this.options.codex.failures().get(source.id) ?? this.options.observed.failures().get(source.id);
+                    return !error || row.binding === 'attached' ? row : { ...row, binding: 'failed' as const, error };
+                }),
+            },
             machines: this.machineCache.map(machine => catalogSourceMachine(machine, client.isConnected)),
             sessions: [...this.options.codex.list(), ...this.options.observed.list()].map(agent => ({
                 id: agent.id, logicalSessionId: agent.logicalSessionId, displayRevision: agent.displayRevision,
@@ -204,8 +218,11 @@ export class HapiController extends TypertRemoteService {
         if (Date.now() - this.summaryCacheAt < 3000) return;
         if (this.summaryRead) return this.summaryRead;
         const work = (async () => {
-            try { this.sourceSummaries = new Map((await this.options.client.listSessions()).map(session => [session.id, session])); }
-            catch { /* Keep the last observed source facts while reconnecting. */ }
+            try {
+                this.sourceSummaries = new Map((await this.options.client.listSessions()).map(session => [session.id, session]));
+                this.summaryObservedAt = Date.now(); this.summaryError = null;
+            }
+            catch (error) { this.summaryError = error instanceof Error ? error.message : 'The source catalog could not be read'; }
             finally { this.summaryCacheAt = Date.now(); }
         })();
         this.summaryRead = work;
@@ -323,6 +340,12 @@ export class HapiController extends TypertRemoteService {
     }
     nativeRetry(request: NativeQueueRequest): Promise<HapiRetryResult> {
         return this.sourceCall(() => this.sourceAgent(request.sessionId).retryIndeterminate(request.localId));
+    }
+    nativeDeliveryRecover(request: DeliveryRecoveryRequest): Promise<DeliveryView> {
+        return this.sourceCall(async () => this.sourceAgent(request.sessionId).recoverDelivery(request.localId, request.action, request.operationId));
+    }
+    nativeDeliveryCheck(request: NativeQueueRequest): Promise<DeliveryView | null> {
+        return this.sourceCall(() => this.sourceAgent(request.sessionId).checkDelivery(request.localId));
     }
     async nativeAnswer(request: NativeAnswerRequest): Promise<{ submitted: true }> {
         return this.sourceCall(async () => {

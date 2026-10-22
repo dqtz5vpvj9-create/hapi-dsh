@@ -7,7 +7,7 @@ import type { HapiRemoteApi, WorkbenchSource } from '../client-api.ts'
 import type { DeliveryView } from '../codex/projection-types.ts'
 import { queuedEditRestoreSchedule, queuedEditRestoreText } from '../codex/queued-edit-types.ts'
 import { captureScheduleDraft, restoreCancelledSchedule, scheduleRestoredEvent, type ScheduleStorage } from './schedule-draft.ts'
-import { queuedEditComposerMatches, SourceQueuedEditController, type QueuedEditComposer } from './source-queued-edit-state.ts'
+import { queuedEditComposerMatches, queuedEditInsertDraft, SourceQueuedEditController, type QueuedEditComposer } from './source-queued-edit-state.ts'
 import type { NativeActionsApi } from './native-actions.tsx'
 import type {} from './pane-navigation.ts'
 
@@ -37,7 +37,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
       if (!binding) throw new Error('The original conversation is no longer open; its edit receipt is retained')
       const facade = ctx.conversation.input.for(binding.ctx), current = facade.state.getSnapshot()
       const composer: QueuedEditComposer = { viewId, draft: current.draft, draftRev: current.draftRev, attachmentIds: [...current.attachmentIds], phase: current.phase }
-      return { binding, facade, composer }
+      return { binding, facade, composer, current }
     }
     return new SourceQueuedEditController(api, props.sessionId, store,
       `hapi-dsh:queue-edits:v1:${JSON.stringify([source.sourceHubId, source.sourceSessionId, props.sessionId, pane?.paneId ?? 'root'])}`, {
@@ -46,7 +46,7 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
           if (composer.phase !== 'plain') throw new Error('Finish the current submission or remove its command chip before editing a queued message')
           return { composer, schedule: captureScheduleDraft(scheduleStore, source, props.sessionId, messageId) }
         },
-        restore(receipt, before) {
+        restore(receipt, before, mode = 'empty') {
           if (receipt.status !== 'cancelled' || receipt.proof === null) return { ok: false, reason: 'The original source has not confirmed cancellation' }
           if (receipt.hubId !== source.sourceHubId || receipt.sourceSessionId !== source.sourceSessionId || receipt.sessionId !== props.sessionId) return { ok: false, reason: 'The original edit belongs to a different source owner' }
           const current = input()
@@ -59,11 +59,9 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
             if (pane) pane.openTab('hapi-schedule')
             else ctx.sidebarRight.openTabIn(props.sessionId, 'hapi-schedule')
           } else {
-            // Compare and write are in one synchronous JS turn. This public
-            // operation replaces semantic chips intentionally after the user
-            // selected Edit, without touching attachments or sending a prompt.
-            latest.current.inputActions.setDraft(queuedEditRestoreText(receipt.candidate))
-            latest.current.inputActions.persistDraft(); current.facade.focus()
+            const restored = queuedEditInsertDraft(current.current, queuedEditRestoreText(receipt.candidate), latest.current.inputActions, mode)
+            if (!restored.ok) return restored
+            current.facade.focus()
           }
           return { ok: true }
         },
@@ -107,7 +105,8 @@ export function useSourceQueuedEditing(ctx: Context, api: HapiRemoteApi, props: 
       {receipt.error && <p>{receipt.error}</p>}
       {receipt.sessionId !== props.sessionId && <p>{tr('Previous display generation: retained read-only. This receipt cannot replace the current composer.', '此回执属于上一显示代次，仅供读取，不会替换当前输入框。')}</p>}
       {receipt.sessionId === props.sessionId && receipt.status === 'cancelled' && receipt.proof !== null && !state.restored.includes(receipt.operationId)
-        && <button type="button" disabled={state.busy} onClick={() => { void value.restoreNow(receipt.operationId) }}>{tr('Restore cancelled draft', '恢复已取消的草稿')}</button>}
+        && <><button type="button" disabled={state.busy} onClick={() => { void value.restoreNow(receipt.operationId) }}>{tr('Restore cancelled draft', '恢复已取消的草稿')}</button>
+          <button type="button" disabled={state.busy} onClick={() => { void value.restoreNow(receipt.operationId, 'append') }}>{tr('Append to current draft', '追加到当前草稿')}</button></>}
       {['unknown', 'submitting'].includes(receipt.status) && <button type="button" disabled={state.busy} onClick={() => { void value.read(receipt.operationId) }}>{tr('Read this edit', '查询本次编辑')}</button>}
       {['busy', 'invoked'].includes(receipt.status) && <p>{tr('The original message is being consumed or already invoked; it cannot be restored as an unsent edit.', '原消息正在消费或已执行，不能恢复为未发送草稿。')}</p>}
       <small>{receipt.operationId}</small>

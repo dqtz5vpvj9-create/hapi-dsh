@@ -9,11 +9,6 @@ async function admitShared(page: Page, environment: OfficialEnvironment): Promis
   await page.goto(environment.launchUrl)
   await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
   await acknowledgePreviewNotice(page, environment)
-  // The launch-token redirect establishes admission and strips its query; the
-  // admitted navigation must select the actual shared production path.
-  await page.goto(`${environment.origin}/?hapiGraph=shared`)
-  await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
-  await acknowledgePreviewNotice(page, environment, { initialView: 'existing-session' })
 }
 
 async function open(page: Page, key: 'alpha' | 'beta', split = false): Promise<Locator> {
@@ -102,12 +97,12 @@ test.describe('shared graph composer ownership', () => {
       await expect(recovery.locator('[data-queue-edit-status="cancelled"]')).toBeVisible()
       await expect(alpha.locator('[data-hapi-queued-edits]')).toHaveCount(0)
 
-      // Explicit recovery intentionally replaces beta's draft, even though
-      // alpha was the focused pane; it cannot target alpha or resend beta.
+      // Explicit append preserves beta's existing draft, even though alpha
+      // was focused; it cannot target alpha or resend beta.
       await alphaInput.focus()
       await expect(alpha).toHaveClass(/hapi-pane-focused/)
-      await recovery.getByRole('button', { name: 'Restore cancelled draft', exact: true }).click()
-      await expect(betaInput).toHaveText(originalBeta)
+      await recovery.getByRole('button', { name: 'Append cancelled message', exact: true }).click()
+      await expect(betaInput).toHaveText(`${newerBeta}\n\n${originalBeta}`)
       await expect(alphaInput).toHaveText(newerAlpha)
       await expect(betaInput).toBeFocused()
       await expect(recovery.getByRole('status')).toContainText('Draft restored; not sent')

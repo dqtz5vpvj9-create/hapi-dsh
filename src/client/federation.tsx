@@ -414,19 +414,26 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let reference: SessionReference | undefined
         let view: SessionViewHandle | undefined
         let starting = false, disposed = false, retired = false
+        const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
+            .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
         const navigation: WorkspacePaneNavigation = {
             ...ui, paneId, hostId: host.id,
             state: { getSnapshot: () => presentation, subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } } },
             catalog: { getSnapshot: () => workspace.getSnapshot().catalog.byId[resourceId], subscribe: workspace.subscribe },
+            reading: { getSnapshot: () => {
+                const intent = workspace.readingIntent(paneId)
+                return intent?.sessionId === resourceId ? intent : undefined
+            }, subscribe: workspace.subscribe },
+            locate: target => { if (navigationAllowed()) workspace.locateInPane(paneId, resourceId, target) },
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
-            openSuccessor: id => workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, id), paneId),
-            openSession: (id, options) => { workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside) },
-            revealConversation: () => { workspace.store.focus(paneId); workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation') },
-            openResource: (address, options = {}) => workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openTab: (kind, options = {}) => workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openPanel: (panelId, options = {}) => workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openView: (target, options = {}) => workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openSuccessor: async id => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); await workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, id), paneId) },
+            openSession: (id, options) => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside, options?.target) },
+            revealConversation: () => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation') },
+            openResource: (address, options = {}) => { if (navigationAllowed()) workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openTab: (kind, options = {}) => { if (navigationAllowed()) workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openPanel: (panelId, options = {}) => { if (navigationAllowed()) workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openView: (target, options = {}) => { if (navigationAllowed()) workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
         }
         // Primary graph shortcuts already receive DOM events once. Only a
         // remote Host needs its facade's captured listeners dispatched here.
@@ -532,26 +539,34 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }
         const resourceId = sessionResourceId(host.id, sourceId)
         const ui = sharedUi.createScope()
+        const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
+            .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
         const navigation: WorkspacePaneNavigation = {
             paneId, hostId: host.id, preferences: ui.preferences, voice: ui.voice, sourceSummaries: ui.sourceSummaries,
             shareInbox: ui.shareInbox, handoffs: ui.handoffs, sourceScheduleDrafts: ui.sourceScheduleDrafts, sourceFileMutations: ui.sourceFileMutations, updates: ui.updates,
             readLegacyScratchlist: ui.readLegacyScratchlist,
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
-            openSession: (id, options) => { workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside) },
-            openSuccessor: displaySessionId => workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, displaySessionId), paneId),
+            openSession: (id, options) => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside, options?.target) },
+            openSuccessor: async displaySessionId => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); await workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, displaySessionId), paneId) },
             state: { getSnapshot: () => presentation, subscribe(listener) { presentationListeners.add(listener); return () => { presentationListeners.delete(listener) } } },
             catalog: { getSnapshot: () => workspace.getSnapshot().catalog.byId[resourceId], subscribe: workspace.subscribe },
+            reading: { getSnapshot: () => {
+                const intent = workspace.readingIntent(paneId)
+                return intent?.sessionId === resourceId ? intent : undefined
+            }, subscribe: workspace.subscribe },
+            locate: target => { if (navigationAllowed()) workspace.locateInPane(paneId, resourceId, target) },
             revealConversation: () => {
+                if (!navigationAllowed()) return
                 workspace.store.focus(paneId)
                 workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation')
                 runtime?.ctx.layout.selectPanel(null)
                 if (runtime?.ctx.sidebarRight.isExpanded()) runtime.ctx.sidebarRight.toggleExpanded()
             },
-            openResource: (address, options = {}) => workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openTab: (kind, options = {}) => workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openPanel: (panelId, options = {}) => workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
-            openView: (target, options = {}) => workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }),
+            openResource: (address, options = {}) => { if (navigationAllowed()) workspace.openResource(address, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openTab: (kind, options = {}) => { if (navigationAllowed()) workspace.openTab(kind, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openPanel: (panelId, options = {}) => { if (navigationAllowed()) workspace.openPanel(panelId, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
+            openView: (target, options = {}) => { if (navigationAllowed()) workspace.openView(target, { ...options, sessionId: resourceId, beside: options.beside ?? 'horizontal' }) },
         }
         const draw = (): void => {
             if (!pane || !reference || disposed) return
@@ -834,10 +849,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
 
 /** Reconcile paired Hosts and native display revisions in the single workspace. */
 export function installFederation(ctx: Context, workspace: WorkspaceController): () => Promise<void> {
-    // Shared Host views are the default UI. `?hapiGraph=legacy` is only an
-    // emergency/debug opt-out used by transitional tests; normal URLs never
-    // need a query parameter.
-    const shared = new URL(location.href).searchParams.get('hapiGraph') !== 'legacy'
+    // Every chat occurrence shares its Host graph. Resource panes retain their official view graph.
+    const shared = true
     const lifetime = new AbortController()
     const unresolveSource = workspace.installSourceResolver((source, signal) => resolveOriginalSession(ctx.remote.hapi, ctx.sessions, source, AbortSignal.any([lifetime.signal, signal])))
     let preferenceStorage: Storage | undefined
@@ -871,7 +884,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
         try {
             const catalog = remoteValue(await ctx.remote.hapi.catalog())
             workspace.setMachines(catalog.machines)
-            workspace.setSourceCatalog(catalog.sessions, catalog.hubId, { hosts: catalog.hosts, connected: catalog.connected })
+            workspace.setSourceCatalog(catalog.sessions, catalog.hubId, catalog)
             for (const session of catalog.sessions) {
                 const previous = logical.get(session.logicalSessionId)
                 if (previous && previous !== session.id) workspace.replaceSession(previous, session.id)

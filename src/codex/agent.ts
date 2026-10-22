@@ -383,6 +383,7 @@ export class NativeCodexAgent implements Agent {
         ? 'unavailable' : this.source.metadata?.migrationInProgress !== undefined ? 'migration' : this.fault !== null ? 'fault' : null,
       model: this.source.model ?? this.source.metadata?.codexModel ?? null,
       reasoningEffort: this.source.modelReasoningEffort ?? null,
+      permissionMode: this.source.permissionMode ?? null, serviceTier: this.source.serviceTier ?? null, collaborationMode: this.source.collaborationMode ?? null,
       planId: typeof this.source.agentState?.codexPlanProposalId === 'string' ? this.source.agentState.codexPlanProposalId : null,
       threadGoal: goal.success && goal.data.threadId === this.binding.threadId ? goal.data : null,
       notices: this.observations.notices, usage: this.observations.usage,
@@ -421,6 +422,15 @@ export class NativeCodexAgent implements Agent {
     this.assertWritable()
     const { message: _message, ...view } = this.journal.retryRejected(localId)
     return view
+  }
+  recoverDelivery(localId: string, action: 'retry' | 'discard', operationId: string): DeliveryView {
+    if (action === 'retry') this.assertWritable()
+    const { message: _message, recoveries: _recoveries, ...view } = this.journal.recoverRejected(localId, action, operationId)
+    return view
+  }
+  async checkDelivery(localId: string): Promise<DeliveryView | null> {
+    await this.journal.reconcileSource()
+    return this.deliveries().find(entry => entry.localId === localId) ?? null
   }
   steer(message: UserMessage): void { this.send(message, 'next-step', true) }
   inject(_message: UserMessage): void { throw new Error('Native Codex does not expose silent model-context injection through HAPI') }
@@ -664,7 +674,7 @@ export class NativeCodexAgent implements Agent {
       scheduledAt: raw.scheduledAt ?? null,
       state: raw.deliveryState ?? 'queued', error: null,
     })
-    return [...entries.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined }))
+    return [...entries.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined, cancelable: entry.state === 'queued' }))
       .sort((a, b) => a.createdAt - b.createdAt)
   }
 

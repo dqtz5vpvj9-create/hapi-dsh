@@ -21,6 +21,7 @@ import { SourceCollaborationPanel } from './source-collaboration.tsx';
 import { SourceDshChildPanel } from './source-dsh-child.tsx';
 import { installShareReceiver } from './share-receiver.tsx';
 import { useSharedWorkspacePane, useWorkspacePane } from './surface/pane-context.tsx';
+import type { SourceComposerActionsProps } from './composer-picker/slots.ts';
 
 const definitions = [
     { kind: 'hapi-notes', en: 'Scratchlist', zh: '备忘录' },
@@ -117,8 +118,8 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
             if (definition.kind === 'hapi-schedule') return <SourceSchedulePanel key={props.sessionId} {...shared} readOnly={projection.readOnly} delivery={projection.delivery} draftStorage={ctx.get('hapiWorkspaceUi')?.sourceScheduleDrafts}/>;
             if (definition.kind === 'hapi-history') return <SourceHistoryPanel key={props.sessionId} {...shared} exportPreferences={ctx.get('hapiWorkspaceUi')?.preferences} onJump={async messageId => {
                 const navigation = ctx.get('hapiMessageNavigation'); if (!navigation) throw new Error('Conversation navigation is not ready.');
-                pane?.revealConversation();
-                await navigation.reveal(props.sessionId, messageId, tab.signal);
+                if (pane) { pane.revealConversation(); pane.locate({ kind: 'message', messageId, origin: 'search' }); }
+                else await navigation.reveal(props.sessionId, messageId, tab.signal);
             }}/>;
             const useNote = async (note: SourceNote, urls: Record<string, string>) => {
                 const insertion = props.inputActions.captureInsertion();
@@ -152,31 +153,24 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
     }
     // One compact overflow entry replaces the old inline tool select and the
     // separate Park-draft seat: official attach/editor/Send stay untouched.
-    const Tools = (props: PropsRuntime<'conversation.input.left'>) => {
+    const Tools = ({ source: props, onAttention, onClose }: SourceComposerActionsProps) => {
         const lang = useLanguage(); const native = props.useProjection('hapi'); const observed = props.useProjection('hapiObserved');
         const pane = useSharedWorkspacePane();
-        const [attention, setAttention] = useState(false);
         if (!native && !observed || observed?.sidechain) return null;
         const chinese = lang.startsWith('zh');
-        return <details className="hapi-composer-overflow" data-hapi-composer-overflow="">
-            <summary aria-label={chinese ? '更多输入控件' : 'More input controls'}
-                title={chinese ? '更多输入控件' : 'More input controls'}>
-                <span className="hapi-composer-overflow-glyph" aria-hidden="true">⋯</span>
-                {attention && <span className="hapi-composer-overflow-alert" aria-label={chinese ? '暂存草稿需要处理' : 'Parked draft needs attention'}/>}
-            </summary>
-            <div className="hapi-composer-overflow-panel" role="group" aria-label={chinese ? '更多输入控件' : 'More input controls'}>
-                <parking.Action {...props} onAttention={setAttention}/>
+        return <>
+                <parking.Action {...props} onAttention={onAttention}/>
                 <div className="hapi-composer-overflow-section">
                     <span className="hapi-composer-overflow-title">{chinese ? '会话工具' : 'Conversation tools'}</span>
                     {definitions.map(row => <button type="button" key={row.kind} onClick={() => {
                         if (pane) pane.openTab(row.kind);
                         else ctx.sidebarRight.openTabIn(props.sessionId, row.kind);
+                        onClose();
                     }}>{title(row.kind)}</button>)}
                 </div>
-            </div>
-        </details>;
+        </>;
     };
-    disposers.push(ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi-dsh/source-tools', order: 95 }, Tools)));
+    disposers.push(ctx.slots.inject('hapi.source.composer-actions', () => ctx.slots.register({ name: 'hapi.source.composer-actions' }, Tools)));
     const TeamShortcut = (props: PropsRuntime<'conversation.session.header.utilities'>) => {
         const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), team = (native ?? observed)?.team; const lang = useLanguage();
         const pane = useSharedWorkspacePane();

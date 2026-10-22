@@ -25,6 +25,7 @@ import { installTurnSharing } from './turn-share.tsx'
 import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
 import { installDiagnostics, setDiagnosticIdentity } from './diagnostics/index.ts'
+import { randomId } from './random-id.ts'
 
 export interface NativePaneIntegration { api: HapiRemoteApi; native: NativeActionsApi; controls: NativeControlLedger }
 
@@ -40,6 +41,15 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
         cancel: async (sessionId, localId) => remoteValue(await api.nativeCancel({ sessionId, localId })),
         steer: async (sessionId, localId) => remoteValue(await api.nativeSteer({ sessionId, localId })),
         retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
+        check: async (sessionId, localId) => remoteValue(await api.nativeDeliveryCheck({ sessionId, localId })),
+        recover: async (sessionId, localId, action) => {
+            const key = 'hapi-dsh:delivery-recovery:' + JSON.stringify([sessionId, localId, action]);
+            const operationId = localStorage.getItem(key) ?? randomId();
+            localStorage.setItem(key, operationId);
+            const receipt = remoteValue(await api.nativeDeliveryRecover({ sessionId, localId, action, operationId }));
+            localStorage.removeItem(key);
+            return receipt;
+        },
         answer: async (sessionId, requestId, answer, deny) => remoteValue(await api.nativeAnswer({ sessionId, requestId, answer, ...(deny === undefined ? {} : { deny }) })),
         resume: async sessionId => remoteValue(await api.resumeSession({ sessionId })),
         // One Host API can serve several panes; diagnostics retain each

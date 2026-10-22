@@ -11,7 +11,13 @@ import { SourceSessionForm } from './source-session.tsx'
 import { NativeForkContent } from './native-controls.tsx'
 import { DshSessionForm } from './dsh-session.tsx'
 import { nativeProjection, observedProjection, paneTitle, sessionActivity, sessionDestinations, sessionFolder, windowActivity, windowAlias, windowTitle, type ActivityKind } from '../workspace/presentation.ts'
-import { useNarrowViewport } from '../workspace/viewport.ts'
+import { useNarrowViewport, useWorkspaceViewport } from '../workspace/viewport.ts'
+import { useDebouncedSidebarQuery } from './sidebar-search-query.ts'
+import { pendingTarget } from '../workspace/pending-target.ts'
+import { sourceDiscoveryRows } from '../workspace/source-discovery.ts'
+import { SourceDiscoveryList } from './source-discovery.tsx'
+import { SourceResumeMenu } from './source-resume-menu.tsx'
+import { sourceResumeIdentity } from './source-resume-command.ts'
 import type { WorkspaceCatalogRow } from './controller.ts'
 import type { SourceResolutionStatus } from './source-session-state.ts'
 import type { SidebarFilter } from '../workspace/sidebar-state.ts'
@@ -240,6 +246,7 @@ function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: Wor
 }
 
 export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile, preferences, prepareNavigation, runnerSkew }: WorkspaceRootProps) {
+    const workspaceRoot = useRef<HTMLDivElement>(null)
     const links = useWorkspaceLinks(preferences, prepareNavigation)
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const { layout } = snapshot
@@ -258,6 +265,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         if (target) setWindowMenu({ ...target, point })
     }), [])
     const mobile = useNarrowViewport()
+    const visibleHeight = useWorkspaceViewport(workspaceRoot, mobile)
     const windowTabs = useRef<HTMLDivElement>(null)
     const paneTabs = useRef<HTMLDivElement>(null)
     const active = controller.store.active()
@@ -403,9 +411,12 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         ['%', 'splitHorizontal'], ['"', 'splitVertical'], ['c', 'newWindow'], ['n / p', 'nextWindow'],
         ['o', 'nextPane'], ['← ↑ → ↓ / h j k l', 'focusDirection'], ['w', 'windowList'], ['z', 'zoom'], ['x', 'closePane'], ['u', 'restoreWindow'], ['1…9', 'windowNumber'],
     ]
-    return <div className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="" onClickCapture={links.capture}>
+    return <div ref={workspaceRoot} style={visibleHeight === undefined ? undefined : { maxHeight: visibleHeight }} className={`hapi-workspace${mobile ? ' hapi-workspace-mobile' : ''}`} data-hapi-workspace="" onClickCapture={links.capture}>
         <header className="hapi-workspace-toolbar">
             <div className="hapi-workspace-brand"><WorkspaceIcon kind="grid"/><strong>HAPI</strong>{layout.windows.length > 1 && <span>{windowAlias(active, layout.windows.indexOf(active) + 1)}</span>}</div>
+            <div className="hapi-workspace-current" aria-label={t('pane')} title={paneTitle(activePane, snapshot.catalog.byId, t('newPane'))}>
+                {readableTitle(paneTitle(activePane, snapshot.catalog.byId, t('newPane')), t, 100)}
+            </div>
             <div className="hapi-workspace-tools">
                 <details className="hapi-menu"><summary aria-label={t('newSession')} title={t('newSession')}><WorkspaceIcon kind="add"/></summary><div className="hapi-menu-content">
                     <button type="button" onClick={() => controller.requestNewSession('dsh')}>DSH · {t('newSession')}</button>
@@ -552,7 +563,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         return () => {
             const next = controller.getSnapshot()
             if (next.catalog !== previous.catalog || next.layout !== previous.layout
-                || next.pickingSession !== previous.pickingSession || next.machines !== previous.machines) previous = next
+                || next.pickingSession !== previous.pickingSession || next.machines !== previous.machines
+                || next.sourceDiscovery !== previous.sourceDiscovery) previous = next
             return previous
         }
     }, [controller])
@@ -561,7 +573,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const { engine, machine, mode, filter, collapsed, expanded, folderOrder, pinInProgressSessions, showActiveSessionsOnly, sessionPreviewLimit, statusMode } = sidebar.preferences
     const workspaces = useWorkspaces(state => state)
     const mobile = useNarrowViewport()
-    const [query, setQuery] = useState('')
+    const [searchInput, setSearchInput] = useState('')
+    const query = useDebouncedSidebarQuery(searchInput)
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [archived, setArchived] = useState(false)
     const [dateFrom, setDateFrom] = useState(''), [dateThrough, setDateThrough] = useState('')
@@ -579,14 +592,14 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const rows = useMemo(() => snapshot.catalog.ids.map(id => snapshot.catalog.byId[id]).filter(row => row !== undefined), [snapshot.catalog])
     const orderedIds = recency.reconcile(rows)
     const searchIndex = useMemo(() => buildSidebarSearchIndex(rows, query, sessionLocation), [rows, query])
-    const activityDates = useMemo(() => new Set(rows.map(row => localDayKey(row.updatedAt))), [rows])
+    const activityDates = useMemo(() => new Set([...rows, ...snapshot.sourceDiscovery?.sessions ?? []].map(row => localDayKey(row.updatedAt))), [rows, snapshot.sourceDiscovery])
     const hasQuery = Boolean(query.trim())
     const timeRange = sidebarTimeRange(dateFrom, dateThrough)
     const bookmarkScope = JSON.stringify([query.trim().toLocaleLowerCase(), engine, machine, filter, archived, dateFrom, dateThrough, showActiveSessionsOnly])
     const revealSidebar = useRef(expandSidebar)
     revealSidebar.current = expandSidebar
-    const locations = rows.map(sessionLocation)
-    const engines = [...new Set(locations.map(location => location.engine))].sort()
+    const locations = [...rows.map(sessionLocation), ...snapshot.sourceDiscovery?.sessions ?? []]
+    const engines = [...new Set(locations.flatMap(location => location.engine ? [location.engine] : []))].sort()
     const machines = [...new Map(locations.flatMap(location => {
         const id = location.machineId ?? location.machineName
         return id ? [[id, location.machineName ?? id] as const] : []
@@ -609,6 +622,12 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         attention: scopedTree.filter(({ row }) => ['error', 'permission', 'input'].includes(sessionActivity(row).kind) || branchFacts.get(row.id)?.pending).length,
         unread: scopedTree.filter(({ row }) => controller.sidebar.isUnread(row.id, row.updatedAt)).length,
     }
+    const sourceFilters = { query, engine, machine, archived, activeOnly: showActiveSessionsOnly, timeRange }
+    const discovered = sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, sourceFilters)
+    const discoveredMatching = sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, { ...sourceFilters, filter })
+    counts.all += discovered.length
+    counts.running += discovered.filter(({ source }) => source.thinking && !source.waitingOn.length && !(source.pendingRequestsCount ?? 0)).length
+    counts.attention += discovered.filter(({ source }) => source.binding === 'failed' || source.waitingOn.length || (source.pendingRequestsCount ?? 0) > 0).length
     const tree = scopedTree.filter(({ row }) => {
         const activity = sessionActivity(row)
         return filter === 'all' || (filter === 'running' && activity.running)
@@ -679,6 +698,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     <button role="menuitem" type="button" onClick={() => controller.openSession(row.id, 'horizontal')}>{t('openBeside')}</button>
                     <button role="menuitem" type="button" onClick={() => controller.openSession(row.id, 'vertical')}>{t('openBelow')}</button>
                     <hr role="separator"/>
+                    {facts.source && <SourceResumeMenu identity={sourceResumeIdentity(row)} chinese={language.startsWith('zh')}/>}
                     {!child && <button role="menuitem" type="button" onClick={() => facts.localSource ? openSourceDialog('rename', row) : setRename({ id: row.id, title: row.displayTitle })}>{t('rename')}</button>}
                     {facts.localSource && <button role="menuitem" type="button" onClick={() => controller.openNativeTools(row.id)}>{t('sessionTools')}</button>}
                     {facts.localSource && <button role="menuitem" type="button" onClick={() => controller.openNativeTools(row.id, 'pin')}>{t('editSummary')}</button>}
@@ -702,7 +722,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     {facts.sourceId && <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.sourceId!).catch(controller.report) }}>{t('copySourceId')}</button>}
                     {facts.source && <button role="menuitem" type="button" disabled={!facts.nativeId} title={facts.nativeId ?? t('nativeIdUnavailable')} onClick={() => { if (facts.nativeId) void navigator.clipboard.writeText(facts.nativeId).catch(controller.report) }}>{t('copyNativeId')}</button>}
                     <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.displayId).catch(controller.report) }}>{t(facts.source ? 'copyDisplayId' : 'copyId')}</button>
-                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
+                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined, filter === 'attention' ? pendingTarget(row) : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
                     onPointerEnter={() => controller.preloadSession(row.id)} onFocus={() => controller.preloadSession(row.id)}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
                     <div className="hapi-session-title"><ActivityDot {...activity} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
@@ -761,7 +781,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
             {snapshot.pickingSession && <button type="button" className="hapi-picker-back" onClick={controller.closeSessionPicker}>{t('backToWorkspace')}</button>}
             <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
         </header>
-        <SidebarSearchControls query={query} onQueryChange={setQuery} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
+        <SidebarSearchControls query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
         <div className="hapi-sidebar-toolbar">
             <div className="hapi-list-modes" role="group" aria-label={t('allChats')}>
@@ -817,6 +837,15 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     </>}
                 </section>
             })}</>}
+            <SourceDiscoveryList discovery={snapshot.sourceDiscovery} catalogRows={rows} machines={snapshot.machines}
+                {...sourceFilters} filter={filter} previewLimit={sessionPreviewLimit} language={language}
+                onOpen={source => controller.openSourceSession(source)} onRefresh={async () => {
+                    try {
+                        const catalog = (await import('../client-api.ts')).remoteValue(await api.catalog())
+                        controller.setMachines(catalog.machines)
+                        controller.setSourceCatalog(catalog.sessions, catalog.hubId, catalog)
+                    } catch (error) { controller.sourceCatalogFailed(error); throw error }
+                }}/>
             </SidebarScrollAnchor>
         </div>
         <label className="hapi-archived-toggle"><input type="checkbox" checked={archived} onChange={event => setArchived(event.currentTarget.checked)}/>{t('showArchived')}</label>

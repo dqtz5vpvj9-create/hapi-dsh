@@ -30,7 +30,7 @@ test('edge docking moves the same plugin occurrence and never invokes a close gu
     assert.deepEqual(parseWorkspaceState(JSON.parse(JSON.stringify(store.getSnapshot()))), store.getSnapshot())
 })
 
-test('docking a new source session preserves surrounding geometry, deduplicates, and does not replace occupied centers', () => {
+test('docking a source session creates independent occurrences and does not replace occupied centers', () => {
     const store = workspace()
     store.openSession('first'); const first = store.focusedPane().id
     store.split('horizontal', { kind: 'chat', sessionId: 'second' }); const second = store.focusedPane().id
@@ -40,7 +40,8 @@ test('docking a new source session preserves surrounding geometry, deduplicates,
         [added, 0, 0, 50, 50], [first, 0, 50, 50, 50], [second, 50, 0, 50, 100],
     ])
     store.dockResource({ kind: 'chat', sessionId: 'native-display' }, second, 'left')
-    assert.equal(panes(store.active().root).length, 3); assert.equal(store.focusedPane().id, added)
+    assert.equal(panes(store.active().root).length, 4); assert.notEqual(store.focusedPane().id, added)
+    assert.equal(panes(store.active().root).find(pane => pane.id === added)?.resource.kind, 'chat')
     const previous = store.getSnapshot()
     store.dockResource({ kind: 'chat', sessionId: 'must-not-replace' }, first, 'center')
     store.dockPane(added, first, 'center'); store.dockPane(first, first, 'left')

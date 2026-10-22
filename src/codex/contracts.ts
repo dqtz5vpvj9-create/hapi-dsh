@@ -266,7 +266,7 @@ export type HapiEvent =
   | { type: 'messages-indeterminate' | 'messages-dispatching' | 'messages-requeued'; sessionId: string; localIds: string[] }
   | { type: 'message-cancelled'; sessionId: string; messageId: string; localId?: string }
   | { type: 'connection-changed'; data?: { status: string; subscriptionId?: string; resume?: 'ok' | 'gap' } }
-  | { type: 'toast'; data: { title: string; body: string; sessionId: string; url: string } }
+  | { type: 'toast'; data: { title: string; body: string; sessionId: string; url: string; messageId?: string; requestId?: string } }
 
 export interface HapiTransport {
   /** Stable configured Hub identity, independent of a changing URL or token. */

@@ -205,33 +205,6 @@ export const workspaceStyles = String.raw`
 .hapi-pane [data-composer-card]:has([data-slot="conversation.input.attachments"] > *) {padding-top:4px}
 .hapi-pane [data-composer-dock] {padding-top:2px;gap:8px;font-size:11px;line-height:16px}
 
-/* One compact overflow entry in the official input row. */
-.hapi-pane .hapi-composer-overflow {position:relative;flex:none}
-.hapi-pane .hapi-composer-overflow > summary {
-  list-style:none;display:inline-flex;align-items:center;justify-content:center;position:relative;
-  width:26px;height:26px;border-radius:999px;border:0;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;
-}
-.hapi-pane .hapi-composer-overflow > summary::-webkit-details-marker {display:none}
-.hapi-pane .hapi-composer-overflow > summary:hover,
-.hapi-pane .hapi-composer-overflow[open] > summary {background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
-.hapi-pane .hapi-composer-overflow-glyph {font-size:16px;line-height:1}
-.hapi-pane .hapi-composer-overflow-alert {position:absolute;top:3px;right:3px;width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-error-primary,#d75c5c)}
-.hapi-pane .hapi-composer-overflow-panel {
-  position:absolute;bottom:calc(100% + 8px);left:0;z-index:30;width:min(320px,calc(100cqw - 16px));max-height:min(60dvh,420px);overflow:auto;
-  display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--hapi-border);border-radius:var(--hapi-radius);
-  background:var(--hapi-bg);color:var(--hapi-fg);box-shadow:0 10px 30px #0003;font:var(--hapi-font-chrome);
-}
-.hapi-pane .hapi-composer-overflow-section {display:flex;flex-direction:column;gap:1px}
-.hapi-pane .hapi-composer-overflow-title {padding:2px 4px;color:var(--hapi-secondary);font:var(--hapi-font-small);font-weight:600}
-.hapi-pane .hapi-composer-overflow-panel > button,
-.hapi-pane .hapi-composer-overflow-section > button,
-.hapi-pane .hapi-composer-overflow-panel .hapi-composer-parking button {
-  border:0;border-radius:var(--dsw-radius-xs,4px);background:transparent;color:var(--hapi-fg);text-align:left;padding:6px 8px;font:var(--hapi-font-chrome);cursor:pointer;
-}
-.hapi-pane .hapi-composer-overflow-panel button:hover {background:var(--hapi-hover)}
-.hapi-pane .hapi-composer-overflow-panel .hapi-composer-parking {display:block}
-.hapi-pane .hapi-parking-panel {border-radius:var(--dsw-radius-sm,8px);border-color:var(--hapi-border);background:var(--hapi-bg);color:var(--hapi-fg)}
-
 /* R8b: no routine metadata row above the composer. Only actionable or
    exceptional states (approvals, deliveries, errors, resume/read-only) render. */
 .hapi-pane .hapi-native {max-height:min(45dvh,360px);overflow:auto;padding:2px 2px 3px;border-top:0;background:transparent;display:flex;flex-direction:column;gap:3px}
@@ -246,9 +219,6 @@ export const workspaceStyles = String.raw`
   [data-composer-card] .uV2eYG_add {width:24px;height:24px}
   [data-composer-card] .uV2eYG_primary {width:28px;height:28px}
   [data-composer-card] .uV2eYG_select {max-width:120px}
-  .hapi-composer-overflow-panel {width:min(300px,calc(100cqw - 12px))}
-  [data-composer-card]:not(:has(.hapi-composer-overflow[open])) :where(.uV2eYG_modes,.uV2eYG_standardControls,[data-slot="conversation.input.right"],[data-slot="conversation.input.activity"]) {display:none}
-  [data-composer-card]:has(.hapi-composer-overflow[open]) .uV2eYG_row {flex-wrap:wrap;row-gap:4px}
   /* Blocked/read-only keeps model reachable: selecting a model is the official way out. */
   [data-composer-card]:has([data-composer-input][aria-disabled="true"]) :where(.uV2eYG_modes,.uV2eYG_standardControls) {display:flex}
 }
@@ -257,18 +227,12 @@ export const workspaceStyles = String.raw`
   [data-composer-card] .uV2eYG_row {overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap;gap:3px}
   /* Horizontal scrolling also clips vertically. Let the open menu escape its
      row; the closed row keeps its compact horizontal scroll behavior. */
-  [data-composer-card]:has(.hapi-composer-overflow[open]) .uV2eYG_row {overflow:visible}
   [data-composer-card] .uV2eYG_row::-webkit-scrollbar {display:none}
   [data-composer-card] .uV2eYG_select {max-width:96px}
-  .hapi-composer-overflow {order:-1}
-  .hapi-composer-overflow-panel {position:absolute;left:0;right:auto;width:min(calc(100cqw - 12px),100vw - 24px)}
-  .hapi-composer-overflow-title {font-size:11px}
 }
 @media (pointer:coarse) {
   .hapi-pane [data-composer-card] .uV2eYG_add,
   .hapi-pane [data-composer-card] .uV2eYG_primary {width:44px;height:44px}
-  .hapi-pane .hapi-composer-overflow > summary {width:38px;height:38px}
-  .hapi-pane .hapi-composer-overflow-panel button {min-height:44px}
 }
 
 `

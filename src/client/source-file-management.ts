@@ -49,6 +49,7 @@ export class SourceFileMutation {
   private entry: SourceFileMutationEntry | null = null
   private unsubscribe: (() => void) | undefined
   private loading: Promise<void> | undefined
+  private admitting = false
   private localBusy = false
   private remoteBusy = false
   private actionError: string | null = null
@@ -70,7 +71,7 @@ export class SourceFileMutation {
   getSnapshot = (): SourceFileMutationState => this.state
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   get blocked(): boolean { return this.disposed || !this.state.loaded || this.busy || this.state.uncertain || this.state.storageError !== null }
-  private get busy(): boolean { return this.localBusy || this.remoteBusy || Boolean(this.owner && this.journal.active(this.owner)) }
+  private get busy(): boolean { return this.admitting || this.localBusy || this.remoteBusy || Boolean(this.owner && this.journal.active(this.owner)) }
 
   load = (preserveError = false): Promise<void> => {
     if (this.disposed || !this.owner) return Promise.resolve()
@@ -100,8 +101,12 @@ export class SourceFileMutation {
   }
   private async submit(request: Request, send: () => ReturnType<Api['nativeFileManage']>): Promise<boolean> {
     if (this.disposed || this.busy) return false
-    await this.load()
-    if (this.blocked || !this.owner) return false
+    // Loading the durable admission record is asynchronous. Publish the new
+    // action as busy before that first await so the prior receipt cannot look
+    // like its result, and a second click cannot enter the same read window.
+    this.admitting = true; this.publish({ error: null })
+    try { await this.load() } finally { this.admitting = false }
+    if (this.blocked || !this.owner) { this.publish(); return false }
     const owner = this.owner, expectedRevision = this.entry?.revision ?? null
     let receipt: SourceFileMutationReceipt
     try {

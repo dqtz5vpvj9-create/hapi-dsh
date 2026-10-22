@@ -298,9 +298,11 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
   return <div className="hapi-source-body">
     {!writable && <p>{t('readOnly')}</p>}
     {!state.loaded && <p role="status">{t('loading')}</p>}
-    {state.request && <section aria-label={t('receipt')} data-source-file-operation={state.operationId ?? undefined}>
+    {state.request && <section aria-label={t('receipt')} data-source-file-operation={state.operationId ?? undefined}
+      data-source-file-action={state.request.action} data-source-file-path={state.request.path}>
       <strong>{t('receipt')}: {state.request.action}</strong><p className="hapi-source-revision">{t('receiptId')}: {state.operationId}</p>
       <p className="hapi-source-path">{state.request.path}{'destination' in state.request ? ` → ${state.request.destination}` : ''}</p>
+      {!state.busy && !uploading && state.phase === 'confirmed' && state.result?.success && <p role="status" className="hapi-source-status">{t('completed')}</p>}
       {state.phase === 'reviewed' && !state.result?.success && <p className="hapi-source-help">{t('reviewed')}</p>}
     </section>}
     <form className="hapi-source-form" onSubmit={event => { event.preventDefault(); void submit() }}>
@@ -319,7 +321,6 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
     {(state.busy || uploading) && <p role="status">{t('working')}</p>}
     {(error || state.error) && <p className="hapi-source-error" role="alert">{error || state.error}</p>}
     {state.storageError && <button type="button" disabled={state.busy} onClick={() => { void mutation.load() }}>{t('readReceipt')}</button>}
-    {state.result?.success && <p role="status" className="hapi-source-status">{t('completed')}</p>}
     {(state.result?.commit || state.result?.deletedPaths?.length) && !state.result.success && <div className="hapi-source-warning"><p>{t('partial')}</p><pre>{JSON.stringify(state.result.commit ?? state.result.deletedPaths, null, 2)}</pre></div>}
     {state.omittedPaths > 0 && <p>{t('omittedPaths')}: {state.omittedPaths}</p>}
     {state.uncertain && <div className="hapi-source-warning"><p>{t('uncertain')}</p><button type="button" disabled={state.busy} onClick={() => { void mutation.inspect() }}>{t('inspect')}</button>

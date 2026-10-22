@@ -26,6 +26,7 @@ export const sourceNotificationSchema = z.object({
     id: z.string().min(1).max(256), hubId: z.string().min(1).max(256),
     title: z.string().max(2048), body: z.string().max(32_768),
     sessionId: z.string().min(1).max(256), createdAt: z.number().int().nonnegative(),
+    messageId: z.string().min(1).max(256).optional(), requestId: z.string().min(1).max(256).optional(),
 });
 export const notificationPresenceSchema = z.object({ type: z.literal('presence'), visibility: z.enum(['visible', 'hidden']) }).strict();
 export const notificationFrameSchema = z.discriminatedUnion('type', [
@@ -35,6 +36,7 @@ export const notificationFrameSchema = z.discriminatedUnion('type', [
 ]);
 export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
 export type SourceNotification = z.infer<typeof sourceNotificationSchema>;
+export type SourceNotificationTarget = Pick<SourceNotification, 'hubId' | 'sessionId' | 'messageId' | 'requestId'>;
 export type NotificationFrame = z.infer<typeof notificationFrameSchema>;
 export type SourcePushSubscription = z.infer<typeof subscriptionSchema>;
 

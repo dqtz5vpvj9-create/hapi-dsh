@@ -1,5 +1,7 @@
 /** Shared, browser-safe API contract. Every method is carried by the official DSH Typert gateway. */
 import { z } from 'zod';
+import { sourceDiscoverySchema, type SourceDiscovery } from './source-discovery-types.ts';
+import { deliveryRecoveryRequestSchema, type DeliveryRecoveryRequest } from './codex/delivery-recovery-types.ts';
 import type { InvocationDescriptor, RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { HapiApprovalAnswer, HapiCancelResult, HapiSteerResult, HapiRetryResult } from './codex/contracts.ts';
 import { deliveryViewSchema, type DeliveryView } from './codex/projection-types.ts';
@@ -89,7 +91,7 @@ export interface CatalogSession {
     };
 }
 export interface FederationHost { id: string; label: string; online: boolean; basePath: string }
-export interface HapiCatalog { hubId: string; connected: boolean; machines: CatalogMachine[]; sessions: CatalogSession[]; hosts: FederationHost[] }
+export interface HapiCatalog { hubId: string; connected: boolean; machines: CatalogMachine[]; sessions: CatalogSession[]; hosts: FederationHost[]; sourceDiscovery?: SourceDiscovery }
 export interface MachineOptions {
     homes: Array<{ id: string; name: string; path: string; official?: boolean }>;
     models: Array<{ id: string; name: string; reasoningEfforts: string[] }>;
@@ -130,6 +132,8 @@ export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, Ses
     nativeCancel(request: NativeQueueRequest): Promise<RemoteResult<HapiCancelResult>>;
     nativeSteer(request: NativeQueueRequest): Promise<RemoteResult<HapiSteerResult>>;
     nativeRetry(request: NativeQueueRequest): Promise<RemoteResult<HapiRetryResult>>;
+    nativeDeliveryRecover(request: DeliveryRecoveryRequest): Promise<RemoteResult<DeliveryView>>;
+    nativeDeliveryCheck(request: NativeQueueRequest): Promise<RemoteResult<DeliveryView | null>>;
     nativeAnswer(request: NativeAnswerRequest): Promise<RemoteResult<{ submitted: true }>>;
     nativeSchedule(request: { sessionId: string; operationId: string; text: string; scheduledAt: number }): Promise<RemoteResult<DeliveryView>>;
     nativeScheduleRead(request: { sessionId: string; operationId: string }): Promise<RemoteResult<DeliveryView | null>>;
@@ -212,6 +216,8 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/nativeCancel': HapiRemoteApi['nativeCancel'];
         'hapi/nativeSteer': HapiRemoteApi['nativeSteer'];
         'hapi/nativeRetry': HapiRemoteApi['nativeRetry'];
+        'hapi/nativeDeliveryRecover': HapiRemoteApi['nativeDeliveryRecover'];
+        'hapi/nativeDeliveryCheck': HapiRemoteApi['nativeDeliveryCheck'];
         'hapi/nativeAnswer': HapiRemoteApi['nativeAnswer'];
         'hapi/nativeSchedule': HapiRemoteApi['nativeSchedule'];
         'hapi/nativeScheduleRead': HapiRemoteApi['nativeScheduleRead'];
@@ -290,6 +296,7 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     nativePlan: sessionRequest, nativeImplementPlan: nativeImplementPlanSchema,
     resumeSession: sessionRequest,
     nativeCancel: queueRequest, nativeSteer: queueRequest, nativeRetry: queueRequest,
+    nativeDeliveryRecover: deliveryRecoveryRequestSchema, nativeDeliveryCheck: queueRequest,
     nativeSchedule: z.strictObject({ sessionId: id, operationId: z.string().uuid(), text: z.string().trim().min(1).max(1_000_000), scheduledAt: z.number().int().positive() }),
     nativeScheduleRead: z.strictObject({ sessionId: id, operationId: z.string().uuid() }),
     sourceLocateMessage: z.strictObject({ sessionId: id, sourceMessageId: id }),
@@ -311,6 +318,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     ...nativeLibraryOutputs, ...workbenchOutputs, ...sessionExtrasOutputs, ...sourceInitialTaskOutputs, ...sourceHistoryOutputs, ...sourceAdminOutputs, ...sourceCompanionOutputs, ...legacyTerminalOutputs, ...legacyTerminalTextOutputs, ...voiceOutputs, ...notificationOutputs,
     catalog: z.object({
         hubId: id, connected: z.boolean(),
+        sourceDiscovery: sourceDiscoverySchema.optional(),
         machines: z.array(z.object({ id, label: z.string(), online: z.boolean(), homeDir: z.string().optional(), workspaceRoots: z.array(z.string()).optional(),
             host: z.string().optional(), platform: z.string().optional(), version: z.string().optional(), lastSeenAt: z.number().finite().optional(), health: sourceMachineHealthSchema.nullable().optional() })),
         sessions: z.array(z.object({ id, logicalSessionId: id, displayRevision: z.number().int().nonnegative(), hapiSessionId: id, machineId: id.nullable(), engine: z.string(), title: z.string(), cwd: z.string(), updatedAt: z.number().finite().optional(), active: z.boolean().optional(), lifecycleState: z.string().nullable().optional(), pinMode: z.enum(['none', 'project', 'global']).default('none'),
@@ -338,6 +346,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     createSourceSession: sourceCreationStateSchema, sourceCreations: z.array(sourceCreationStateSchema), sourceCreationOperation: sourceCreationStateSchema,
     nativePlan: nativePlanStateSchema, nativeImplementPlan: nativePlanReceiptSchema,
     nativeCancel: looseJson, nativeSteer: looseJson, nativeRetry: looseJson,
+    nativeDeliveryRecover: deliveryViewSchema, nativeDeliveryCheck: deliveryViewSchema.nullable(),
     nativeAnswer: z.object({ submitted: z.literal(true) }),
     nativeSchedule: deliveryViewSchema,
     nativeScheduleRead: deliveryViewSchema.nullable(),

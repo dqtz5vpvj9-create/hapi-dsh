@@ -4,6 +4,7 @@ import type { ApprovalView, DeliveryView, HapiProjection } from '../codex/projec
 import { composerAdmission, type WorkspaceTranslate } from './locales.ts'
 import { formatNativeAnswers, nativeUrlConfirmed, openNativeInputUrl, parseNativeQuestions, questionAnswered, questionOptions, selectQuestionOption, type NativeQuestionAnswer } from './native-input.ts'
 import { NativeActionLedger } from './native-state.ts'
+import { deliveryActions, deliveryStatusText, deliveryRecoveryDisabled, nativeExecutionStatus, observedExecutionStatus, executionStatusText } from './native-status.ts'
 import { errorMessage } from './controller.ts'
 import type { NativeControlLedger } from './native-control-state.ts'
 import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
@@ -21,6 +22,8 @@ export interface NativeActionsApi {
     cancel(sessionId: string, localId: string): Promise<unknown>
     steer(sessionId: string, localId: string): Promise<unknown>
     retry(sessionId: string, localId: string): Promise<unknown>
+    check?(sessionId: string, localId: string): Promise<unknown>
+    recover?(sessionId: string, localId: string, action: 'retry' | 'discard'): Promise<unknown>
     answer(sessionId: string, requestId: string, answer: HapiApprovalAnswer, deny?: boolean): Promise<unknown>
     resume(sessionId: string): Promise<unknown>
 }
@@ -102,8 +105,8 @@ function NativeRequest({ sessionId, request, api, disabled, t }: {
         draft.update({ error: null })
         answer({ answers: formatNativeAnswers(parsed.questions, answers) })
     }
-    return <section className="hapi-native-request" data-native-request={request.requestId} aria-busy={state.busy}>
-        <header><strong>{request.tool}</strong><span className="hapi-state">{submitted ? t('acknowledged') : request.stage === 'indeterminate' ? t('awaitingConfirmation') : t('nativeRequests')}</span></header>
+    return <section className="hapi-native-request" data-native-request={request.requestId} data-hapi-request-id={request.requestId} aria-busy={state.busy}>
+        <header><strong>{request.tool}</strong><span className="hapi-state">{submitted ? translate(t, 'Submitted · awaiting source resolution', '已提交 · 等待源端确认') : request.stage === 'indeterminate' ? t('awaitingConfirmation') : t('nativeRequests')}</span></header>
         {parsed.questions.length > 0 || request.tool === 'request_user_input' ? <form onSubmit={event => { event.preventDefault(); submit() }}>
             {parsed.questions.length > 1 && <p className="hapi-native-question-progress">{step + 1} / {parsed.questions.length}</p>}
             {parsed.questions.slice(step, step + 1).map(question => {
@@ -129,12 +132,12 @@ function NativeRequest({ sessionId, request, api, disabled, t }: {
                     else draft.update({ step: step + 1, error: null })
                 }}>{t('nextQuestion')}</button> : <button type="submit" disabled={blocked}>{t('submit')}</button>}
                 <button type="button" disabled={blocked} onClick={() => answer({ decision: 'abort' }, true)}>{t('abort')}</button>
-                {parsed.canSkip && <button type="button" disabled={blocked} onClick={() => answer({}, true)}>{t('skipQuestion')}</button>}
+                {parsed.canSkip && <button type="button" disabled={blocked} onClick={() => answer({ answers: {} })}>{t('skipQuestion')}</button>}
             </div>
         </form> : <>
             <details><summary>{t('more')}</summary><pre>{printable(request.arguments)}</pre></details>
             <div className="hapi-button-row">
-                <button type="button" disabled={blocked} onClick={() => answer({ decision: 'approved' })}>{t('approve')}</button>
+                <button type="button" disabled={blocked} onClick={() => answer({ decision: 'approved' })}>{translate(t, 'Approve once', '批准一次')}</button>
                 <button type="button" disabled={blocked} onClick={() => answer({ decision: 'approved_for_session' })}>{t('approveSession')}</button>
                 <button type="button" disabled={blocked} onClick={() => answer({ decision: 'denied' }, true)}>{t('deny')}</button>
                 <button type="button" disabled={blocked} onClick={() => answer({ decision: 'abort' }, true)}>{t('abort')}</button>
@@ -144,27 +147,34 @@ function NativeRequest({ sessionId, request, api, disabled, t }: {
     </section>
 }
 
-function NativeDelivery({ sessionId, delivery, api, disabled, steer = true, t }: {
-    sessionId: string; delivery: DeliveryView; api: NativeActionsApi; disabled: boolean; steer?: boolean; t: WorkspaceTranslate
+function NativeDelivery({ sessionId, delivery, api, disabled, recoveryDisabled, steer = true, t }: {
+    sessionId: string; delivery: DeliveryView; api: NativeActionsApi; disabled: boolean; recoveryDisabled: boolean; steer?: boolean; t: WorkspaceTranslate
 }) {
     const action = api.ledger.action(sessionId, 'delivery', delivery.localId)
     const state = useSyncExternalStore(action.subscribe, action.getSnapshot)
     const blocked = disabled || state.busy
+    const available = deliveryActions(delivery, steer)
+    const recover = (kind: 'retry' | 'discard'): void => {
+        if (!api.recover || state.busy || kind === 'retry' && recoveryDisabled) return
+        void action.run(() => api.recover!(sessionId, delivery.localId, kind), false)
+    }
     const send = (kind: 'cancel' | 'steer' | 'retry'): void => {
         if (blocked) return
         void action.run(() => api[kind](sessionId, delivery.localId), false)
     }
     const resultStatus: unknown = state.result && typeof state.result === 'object' ? Reflect.get(state.result, 'status') : undefined
-    return <section className="hapi-native-delivery" data-delivery-state={delivery.state} aria-busy={state.busy}>
-        <div className="hapi-delivery-heading"><span className="hapi-ellipsis">{delivery.text}</span><span className="hapi-state">{delivery.state}</span></div>
+    return <section className="hapi-native-delivery" data-delivery-state={delivery.state} data-hapi-delivery-id={delivery.localId} aria-busy={state.busy}>
+        <div className="hapi-delivery-heading"><span className="hapi-ellipsis">{delivery.text}</span><span className="hapi-state">{deliveryStatusText(delivery.state, t)}</span></div>
         <div className="hapi-button-row">
-            {delivery.editable && api.queuedEditing && <button type="button" disabled={state.busy || api.queuedEditing.busy}
+            {available.edit && api.queuedEditing && <button type="button" disabled={state.busy || api.queuedEditing.busy}
                 onClick={() => api.queuedEditing?.edit(sessionId, delivery)}>{api.queuedEditing.label}</button>}
-            {['queued', 'accepted'].includes(delivery.state) && <>
-                {steer && <button type="button" disabled={blocked} onClick={() => send('steer')}>{t('steer')}</button>}
+            {available.cancel && <>
+                {available.steer && <button type="button" disabled={blocked} onClick={() => send('steer')}>{t('steer')}</button>}
                 <button type="button" disabled={blocked} onClick={() => send('cancel')}>{t('cancelQueued')}</button>
             </>}
-            {delivery.state === 'indeterminate' && <button type="button" disabled={blocked} onClick={() => send('retry')}>{t('retryDelivery')}</button>}
+            {available.retryUnknown && api.check && <button type="button" disabled={state.busy} onClick={() => { void action.run(() => api.check!(sessionId, delivery.localId), false) }}>{translate(t, 'Check source result', '检查源端结果')}</button>}
+            {available.recover && api.recover && <><button type="button" disabled={state.busy || recoveryDisabled} onClick={() => recover('retry')}>{translate(t, 'Retry', '重试')}</button>
+                <button type="button" disabled={state.busy} onClick={() => recover('discard')}>{translate(t, 'Discard', '丢弃')}</button></>}
             {delivery.state === 'dispatching' && <span>{t('awaitingConfirmation')}</span>}
             {typeof resultStatus === 'string' && <output>{resultStatus}</output>}
         </div>
@@ -191,10 +201,11 @@ export function ObservedActions({ sessionId, projection, api, t }: { sessionId: 
         previousConnection.current = connection
     }, [sessionId, connection, hubId, hapiSessionId])
     if (!projection || projection.dshChild) return null
-    const deliveries = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
+    const deliveries = projection.delivery.filter(row => !['invoked', 'cancelled', 'discarded'].includes(row.state))
     // Routine metadata rows (source settings / context / native messages / turn
     // stats) are intentionally absent: only actionable or exceptional states render.
     const hasDelivery = deliveries.length > 0
+    const execution = observedExecutionStatus(projection)
     const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error) || projection.readOnly
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
@@ -204,8 +215,9 @@ export function ObservedActions({ sessionId, projection, api, t }: { sessionId: 
         })()}
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
-        {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
-            {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} steer={projection.capabilities.steer} t={t}/>)}
+        {deliveries.length > 0 && <details open={deliveries.some(row => row.state === 'indeterminate' || row.state === 'rejected')}><summary>{t('nativeDelivery')} · {deliveries.length}</summary>
+            <p data-hapi-execution-status={execution}>{translate(t, 'Source execution', '源端执行')} · {executionStatusText(execution, t)}</p>
+            {deliveries.map(delivery => <NativeDelivery key={delivery.localId} sessionId={sessionId} delivery={delivery} api={api} disabled={projection.readOnly} recoveryDisabled={deliveryRecoveryDisabled(projection)} steer={projection.capabilities.steer} t={t}/>)}
         </details>}
     </aside>
 }
@@ -235,11 +247,12 @@ export function NativeActions({ sessionId, projection, api, t }: {
         previousConnection.current = connection
     }, [sessionId, connection, hubId, hapiSessionId])
     if (!projection) return null
-    const delivery = projection.delivery.filter(row => !['invoked', 'cancelled'].includes(row.state))
+    const delivery = projection.delivery.filter(row => !['invoked', 'cancelled', 'discarded'].includes(row.state))
     const disabled = projection.readOnly || projection.nativeConnection !== 'attached'
     // Routine metadata rows are intentionally absent; only actionable or
     // exceptional states (approvals, deliveries, errors, resume/read-only) render.
     const hasDelivery = delivery.length > 0
+    const execution = nativeExecutionStatus(projection)
     const hasActionable = projection.pendingRequests.length > 0 || hasDelivery || Boolean(projection.error)
         || projection.readOnly || projection.nativeConnection !== 'attached'
     if (!hasActionable) return null
@@ -258,9 +271,10 @@ export function NativeActions({ sessionId, projection, api, t }: {
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={resumeError} t={t}/>
         <SourceErrorLine sessionId={sessionId} identity={identity} failure={projection.error} t={t}/>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} request={request} api={api} disabled={disabled} t={t}/>)}
-        {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate')}>
+        {delivery.length > 0 && <details open={delivery.some(row => row.state === 'indeterminate' || row.state === 'rejected')}>
             <summary>{t('nativeDelivery')} · {delivery.length}</summary>
-            {delivery.map(row => <NativeDelivery key={row.localId} sessionId={sessionId} delivery={row} api={api} disabled={disabled} t={t}/>) }
+            <p data-hapi-execution-status={execution}>{translate(t, 'Source execution', '源端执行')} · {executionStatusText(execution, t)}</p>
+            {delivery.map(row => <NativeDelivery key={row.localId} sessionId={sessionId} delivery={row} api={api} disabled={disabled} recoveryDisabled={deliveryRecoveryDisabled(projection)} t={t}/>) }
         </details>}
     </aside>
 }

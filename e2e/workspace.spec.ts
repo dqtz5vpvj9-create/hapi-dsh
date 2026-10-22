@@ -1,6 +1,14 @@
 import { acknowledgePreviewNotice } from './preview-notice.ts'
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
+
+/** Use the focused pane's visible menu; never call a hidden graph's controls. */
+async function paneActions(page: Page, pane: Locator): Promise<Locator> {
+    await pane.click({ position: { x: 4, y: 4 } });
+    const menu = page.locator('.hapi-statusbar .hapi-pane-actions');
+    if (await menu.getAttribute('open') === null) await menu.locator(':scope > summary').click();
+    return menu;
+}
 
 test.describe('unchanged official DSH Web + HAPI plugins', () => {
     let environment: OfficialEnvironment;
@@ -62,18 +70,21 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         const previous = await divider.getAttribute('aria-valuenow');
         await divider.focus(); await divider.press('ArrowRight');
         await expect(divider).not.toHaveAttribute('aria-valuenow', previous!);
+        const resized = await divider.getAttribute('aria-valuenow');
         await expect(page.locator('.hapi-persistence-saved')).toBeVisible();
         await page.reload();
         await expect(page.locator('.hapi-pane')).toHaveCount(2);
+        await expect(divider).toHaveAttribute('aria-valuenow', resized!);
         await expect(page.getByText('Native history alpha in the official DSH Conversation.', { exact: true })).toBeVisible();
         await expect(page.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
+        await expect(page.locator('[data-hapi-graph="shared"]')).toHaveCount(2);
         environment.hapi.requestApproval('native-alpha');
         const approval = page.locator('[data-native-request="approval-e2e"]');
         await expect(approval).toBeVisible();
-        await approval.getByRole('button', { name: 'Approve', exact: true }).click();
+        await approval.getByRole('button', { name: 'Approve once', exact: true }).click();
         await expect(approval).toContainText('Answer sent; waiting for source confirmation');
         expect(environment.hapi.approvals).toHaveLength(1);
-        await expect(approval.getByRole('button', { name: 'Approve', exact: true })).toBeDisabled();
+        await expect(approval.getByRole('button', { name: 'Approve once', exact: true })).toBeDisabled();
         environment.hapi.settleApproval('native-alpha');
         await expect(approval).toHaveCount(0);
         const connectionsBefore = environment.hapi.eventConnections;
@@ -90,9 +101,12 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await nativePane.getByRole('button', { name: 'Send message', exact: true }).click();
         await expect.poll(() => environment.hapi.sent.length).toBe(sentBefore + 1);
         const cancelledId = environment.hapi.sent.at(-1)!.message.localId;
-        const deliveries = nativePane.locator('details').filter({ has: page.locator('summary').filter({ hasText: 'Native delivery' }) });
-        await deliveries.locator('summary').click();
-        await deliveries.getByRole('button', { name: 'Cancel queued message', exact: true }).click();
+        // Current operations remain inline beside the composer. Historical
+        // diagnostic disclosures must not hide this message's recovery action.
+        const delivery = nativePane.locator(`[data-hapi-current-deliveries] [data-hapi-delivery-id="${cancelledId}"]`);
+        await expect(delivery).toBeVisible();
+        await expect(delivery).toHaveAttribute('data-hapi-delivery-status', 'queued');
+        await delivery.getByRole('button', { name: 'Cancel queued message', exact: true }).click();
         await expect.poll(() => environment.hapi.cancelled).toContain(cancelledId);
         await expect(nativePane.locator('.hapi-native-delivery')).toHaveCount(0);
         await composer.fill('Native execution from the official composer');
@@ -105,7 +119,7 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         expect(errors).toEqual([]);
     });
 
-    test('remote official plugin graph provides a working conversation and its own settings', async ({ page }) => {
+    test('remote shared conversation keeps its source while focused plugin tools open the remote Host settings', async ({ page }) => {
         const errors: string[] = [];
         page.on('pageerror', error => errors.push(error.message));
         await page.goto(environment.launchUrl);
@@ -113,8 +127,8 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await acknowledgePreviewNotice(page, environment)
         await page.locator('.hapi-session-open').filter({ hasText: 'DSH remote conversation' }).click();
         const remotePane = page.getByRole('region', { name: 'Pane: DSH remote conversation', exact: true });
-        await expect(remotePane.locator('.hapi-remote-shell')).toBeVisible();
-        await acknowledgePreviewNotice(page, environment)
+        await expect(remotePane.locator('[data-hapi-graph="shared"]')).toHaveAttribute('data-hapi-host', 'runner-one');
+        await expect(remotePane.locator('[data-hapi-session-view]')).toHaveAttribute('data-hapi-session-view', environment.remoteSessionId!);
         await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toBeVisible();
         const composer = remotePane.getByRole('textbox', { name: 'Message or run a task, / commands, @ files or sessions' });
         await expect(composer).toBeVisible();
@@ -122,15 +136,31 @@ test.describe('unchanged official DSH Web + HAPI plugins', () => {
         await remotePane.getByRole('button', { name: 'Send message', exact: true }).click();
         await expect(remotePane.getByText('A real remote DSH composer turn', { exact: true })).toBeVisible();
         await expect(remotePane.getByText('DSH fixture response through the official AgentLoop.', { exact: true })).toHaveCount(2);
-        await remotePane.getByRole('button', { name: 'Host settings', exact: true }).click();
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await composer.fill('Remote draft remains in its original shared conversation');
+
+        // Official Host chrome belongs to the focused compatibility plugin view.
+        // It is reached from a public menu; the shared chat keeps its one graph.
+        const paneIds = await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')));
+        await (await paneActions(page, remotePane)).getByRole('button', { name: 'Plugin views in a new pane', exact: true }).click();
+        await expect.poll(async () => (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).filter(id => !paneIds.includes(id)).length).toBe(1);
+        const toolsId = (await page.locator('.hapi-pane').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-pane-id')))).find(id => !paneIds.includes(id))!;
+        const toolsPane = page.locator(`[data-pane-id="${toolsId}"]`);
+        await expect(toolsPane.locator('.hapi-remote-shell')).toBeVisible();
+        await expect(toolsPane.locator('[data-hapi-host]')).toHaveAttribute('data-hapi-host', 'runner-one');
+        const tools = await paneActions(page, toolsPane);
+        await tools.getByRole('button', { name: 'Host settings', exact: true }).click();
+        // Scope to this remote graph: a primary-Host dialog would fail here.
+        await expect(toolsPane.getByRole('dialog')).toBeVisible();
         await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
-        await remotePane.getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Plugins' });
-        await expect(remotePane.getByRole('heading', { name: 'Plugins', exact: true })).toBeVisible();
-        // The official panel replaces the Conversation header containing Host
-        // tools. A fixed return control is an existing documented UX gap, so
-        // panel navigation is the final step (as in workspace-chrome.spec.ts).
+        await expect(toolsPane.getByRole('dialog')).toHaveCount(0);
+        await (await paneActions(page, toolsPane)).getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Plugins' });
+        await expect(toolsPane.getByRole('heading', { name: 'Plugins', exact: true })).toBeVisible();
+        await expect(remotePane.locator('[data-hapi-session-view]')).toHaveAttribute('data-hapi-session-view', environment.remoteSessionId!);
+        await expect(composer).toHaveText('Remote draft remains in its original shared conversation');
+        await (await paneActions(page, toolsPane)).getByRole('combobox', { name: 'Host tools', exact: true }).selectOption({ label: 'Conversation' });
+        await expect(toolsPane.locator('[data-hapi-session-view]')).toHaveAttribute('data-hapi-session-view', environment.remoteSessionId!);
+        await expect(toolsPane.getByText('A real remote DSH composer turn', { exact: true })).toBeVisible();
+        await expect(page.locator('.hapi-session-sidebar')).toHaveCount(1);
         await page.screenshot({ path: 'test-results/official-remote.png', fullPage: true });
         expect(errors).toEqual([]);
     });

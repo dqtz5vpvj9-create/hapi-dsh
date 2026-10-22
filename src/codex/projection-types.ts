@@ -5,7 +5,7 @@ import { observedSidechainSummarySchema } from '../hapi-agent/sidechain-types.js
 import { sourceTeamSchema } from '../source-collaboration-types.js'
 
 export const deliveryStateSchema = z.enum([
-  'dispatching', 'accepted', 'queued', 'invoked', 'indeterminate', 'rejected', 'cancelled',
+  'dispatching', 'accepted', 'queued', 'invoked', 'indeterminate', 'rejected', 'cancelled', 'discarded',
 ])
 
 export const deliveryViewSchema = z.object({
@@ -18,6 +18,7 @@ export const deliveryViewSchema = z.object({
   scheduledAt: z.number().finite().nullable().optional(),
   /** True only for a real source queue row whose original payload can be retained before cancellation. */
   editable: z.boolean().optional(),
+  cancelable: z.boolean().optional(),
   error: z.string().nullable(),
 })
 export type DeliveryState = z.infer<typeof deliveryStateSchema>
@@ -57,6 +58,9 @@ export const hapiProjectionSchema = z.object({
   readOnlyReason: z.enum(['engine-owned', 'unavailable', 'migration', 'fault']).nullable().optional(),
   model: z.string().nullable(),
   reasoningEffort: z.string().nullable(),
+  permissionMode: z.string().nullable().optional(),
+  serviceTier: z.string().nullable().optional(),
+  collaborationMode: z.string().nullable().optional(),
   /** The source's currently actionable native plan, independent of tool approvals. */
   planId: z.string().nullable().default(null),
   threadGoal: nativeThreadGoalSchema.nullable().default(null),

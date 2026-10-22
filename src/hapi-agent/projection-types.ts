@@ -30,6 +30,7 @@ export const hapiObservedProjectionSchema = z.object({
   /** Why `readOnly` is set; only `engine-owned` also locks message input. */
   readOnlyReason: z.enum(['engine-owned', 'unavailable', 'fault']).nullable().optional(),
   model: z.string().nullable(), effort: z.string().nullable(), permissionMode: z.string().nullable(),
+  serviceTier: z.string().nullable().optional(), collaborationMode: z.string().nullable().optional(),
   capabilities: z.object({
     steer: z.boolean(), switchToRemote: z.boolean(), images: z.boolean(),
     forkCurrent: z.boolean(), forkAtMessage: z.boolean(), rewindToMessage: z.boolean(),

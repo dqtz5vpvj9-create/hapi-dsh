@@ -87,7 +87,7 @@ export class WarmOfficialSession {
   async admit(page: Page): Promise<void> {
     const admission = await page.request.get(this.environment.launchUrl, { maxRedirects: 0 })
     if (admission.status() !== 303) throw new Error(`Warm browser admission failed: ${admission.status()}`)
-    await page.goto(`${this.environment.origin}/?hapiGraph=shared`)
+    await page.goto(`${this.environment.origin}/`)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible({ timeout: 45_000 })
     await acknowledgePreviewNotice(page, this.environment)
   }

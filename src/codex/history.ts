@@ -1,5 +1,5 @@
 import type { HapiMessage, HapiMessagesQuery, HapiTransport } from './contracts.js'
-import { compareNativeMessages } from './native.js'
+import { compareNativeMessages, envelopeFor, nativeExecutionFor, record } from './native.js'
 
 const PAGE_SIZE = 200
 const MAX_ATTEMPTS = 4
@@ -19,10 +19,55 @@ function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
 
 interface Pass { rows: HapiMessage[]; complete: boolean }
 
-/** One atomic latest page gives a cold display a bounded first response. */
-export async function readNativeHistoryTail(transport: HapiTransport, sessionId: string): Promise<Pass> {
-  const result = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
-  return { rows: uniqueNewestFirst(result.messages), complete: !result.page.hasMore && !result.page.reset }
+export interface NativeHistoryTail extends Pass { context: 'previous-turn' | 'history-start' | 'limited' }
+
+/** Native turn identities distinguish steering inputs from a previous turn.
+ * Other source engines use their invoked human inputs as turn boundaries. */
+export function includesPreviousTurn(rows: readonly HapiMessage[]): boolean {
+  const turns = new Set<string>(), inputs = new Set<string>()
+  for (const row of uniqueNewestFirst(rows)) {
+    const envelope = envelopeFor(row.content), content = record(envelope?.content), data = record(content?.data)
+    const meta = record(envelope?.meta), execution = nativeExecutionFor(meta?.nativeExecution ?? data?.nativeExecution)
+    if (execution) turns.add(execution.turnId)
+    if (envelope?.role === 'user' && (execution || row.invokedAt != null) && meta?.deliveryMode !== 'steer') {
+      const turn = execution?.turnId ?? row.localId ?? row.id
+      turns.add(turn); inputs.add(turn)
+    }
+  }
+  const last = [...turns].slice(-2)
+  return last.length === 2 && last.every(turn => inputs.has(turn))
+}
+
+/** Bounded initial context, independent of the later full-history backfill.
+ * All retry passes share a 4,000-row budget and validate the original epoch. */
+export async function readNativeHistoryTail(transport: HapiTransport, sessionId: string): Promise<NativeHistoryTail> {
+  let remaining = 20
+  for (let attempt = 0; attempt < MAX_ATTEMPTS && remaining > 0; attempt++) {
+    remaining--
+    const first = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
+    if (first.page.reset) continue
+    let page = first, rows = [...first.messages], invalidated = false
+    const epoch = first.page.epoch
+    while (page.page.hasMore && !includesPreviousTurn(rows) && remaining > 0) {
+      const at = page.page.nextBeforeAt, seq = page.page.nextBeforeSeq
+      if (at === null || seq === null) break
+      remaining--
+      const next = await transport.readMessages(sessionId, { limit: PAGE_SIZE, beforeAt: at, beforeSeq: seq, epoch, bounded: true })
+      if (next.page.reset || next.page.epoch !== epoch) { invalidated = true; break }
+      if (next.page.hasMore && (next.page.nextBeforeAt === null || next.page.nextBeforeSeq === null
+        || !isBefore({ at: next.page.nextBeforeAt, seq: next.page.nextBeforeSeq }, { at, seq }))) break
+      rows.push(...next.messages); page = next
+    }
+    if (invalidated) continue
+    const at = first.page.snapshotHeadAt, seq = first.page.snapshotHeadSeq
+    if (at !== null && seq !== null) {
+      const check = await transport.readMessages(sessionId, { limit: 1, beforeAt: at, beforeSeq: seq, epoch, bounded: true })
+      if (check.page.reset || check.page.epoch !== epoch) continue
+    }
+    rows = uniqueNewestFirst(rows)
+    return { rows, complete: !page.page.hasMore, context: includesPreviousTurn(rows) ? 'previous-turn' : !page.page.hasMore ? 'history-start' : 'limited' }
+  }
+  throw new Error('Native history changed repeatedly while reading the initial Turn context; refresh when the source snapshot is available')
 }
 
 /**

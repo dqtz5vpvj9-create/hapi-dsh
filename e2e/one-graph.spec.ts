@@ -21,7 +21,7 @@ async function admitShared(page: Page, environment: OfficialEnvironment): Promis
     await page.goto(environment.launchUrl)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
     await acknowledgePreviewNotice(page, environment)
-    await page.goto(`${environment.origin}/?hapiGraph=shared`)
+    await page.goto(`${environment.origin}/`)
     await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
     await acknowledgePreviewNotice(page, environment, { initialView: 'existing-session' })
 }

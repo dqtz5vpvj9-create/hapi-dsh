@@ -43,13 +43,13 @@ function officialTheme() {
         dispose() { for (const cleanup of cleanups.reverse()) cleanup() } }
 }
 
-test('legacy palette/OLED/font/bubble keys migrate by reading original values and only validated colors become tokens', () => {
+test('legacy palette/OLED/font values remain supported while bubble colors use a neutral tone', () => {
     const original = storage([['hapi-appearance', 'oled'], ['hapi-font-scale', '1.2'], ['hapi-color-theme', 'codex'],
         ['hapi-theme-colors', JSON.stringify({ oled: { userBubble: '#AABBCC', background: 'url(https://invalid)', text: '#abcdef', arbitrary: '#ffffff' }, light: { border: '#123456' } })]])
     const before = [...original.values], value = readAppearance(original.preferences), tokens = appearanceTokens(value, { fontSizes: { text: 14, code: 11, terminal: 13 } })
     assert.equal(value.enabled, true)
     assert.equal(tokens['--dsw-alias-bg-base']?.dark, '#000000')
-    assert.equal(tokens['--dsw-specific-bubble']?.dark, '#aabbcc')
+    assert.equal(tokens['--dsw-specific-bubble']?.dark, '#262728')
     assert.equal(tokens['--dsw-alias-label-primary']?.dark, '#abcdef')
     assert.equal(tokens['--dsw-alias-border-l2']?.light, '#123456')
     assert.equal(tokens['--dsh-content-font-size']?.dark, '16.8px')

@@ -1,15 +1,14 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page, type Request } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
+import { acknowledgePreviewNotice } from './preview-notice.ts';
 import { PANE_GRAPH_EXCLUDE } from '../src/client/surface/pane-graph.ts';
 
 /**
- * Structural pane surface: a pane boots the filtered official chat graph, keeps
- * exactly one window-level chrome, and renders the official Conversation for its
- * explicit SessionReference. Also records the per-pane heap/DOM curve (1/2/4
- * panes) used for the memory report.
- *
- * This spec is deliberately self-contained: the fixture, the official Client
- * graph, and the Hub are real; only the HAPI source sessions are wire fixtures.
+ * Default shared-graph contract: each Host activates one official Client graph;
+ * chat panes bind explicit SessionReferences inside it. Record the real 1/2/4
+ * pane heap curve and every graph request, including repeated requests for the
+ * same URL. The Host, Client and remote Runner are pinned official runtimes;
+ * native source sessions are explicit synthetic HAPI wire fixtures.
  */
 test.setTimeout(360_000);
 
@@ -24,17 +23,16 @@ interface HeapRow {
     resourceBytes: number;
 }
 
-async function measure(page: import('@playwright/test').Page, label: string): Promise<HeapRow> {
+async function measure(page: Page, label: string): Promise<HeapRow> {
     const cdp = await page.context().newCDPSession(page);
     await cdp.send('HeapProfiler.enable');
     for (let index = 0; index < 3; index++) await cdp.send('HeapProfiler.collectGarbage');
-    const heap = (await cdp.send('Runtime.getHeapUsage')) as { usedSize: number };
-    const dom = (await cdp.send('Memory.getDOMCounters')) as { documents: number; nodes: number; jsEventListeners: number };
+    const heap = await cdp.send('Runtime.getHeapUsage') as { usedSize: number };
+    const dom = await cdp.send('Memory.getDOMCounters') as { documents: number; nodes: number; jsEventListeners: number };
     await cdp.detach();
-    const resources = await page.evaluate(() => [...performance.getEntriesByType('resource')].map(entry => ({
+    const resources = await page.evaluate(() => performance.getEntriesByType('resource').map(entry => ({
         initiator: (entry as PerformanceResourceTiming).initiatorType,
         bytes: (entry as PerformanceResourceTiming).decodedBodySize,
-        url: entry.name,
     })));
     const row: HeapRow = {
         label,
@@ -47,8 +45,6 @@ async function measure(page: import('@playwright/test').Page, label: string): Pr
         resourceBytes: resources.filter(entry => entry.initiator === 'script' || entry.initiator === 'fetch').reduce((sum, entry) => sum + entry.bytes, 0),
     };
     console.log(`MEASURE ${JSON.stringify(row)}`);
-    const big = resources.filter(entry => entry.bytes > 100_000).sort((left, right) => right.bytes - left.bytes).slice(0, 8)
-    console.log(`BIG_RESOURCES ${JSON.stringify(big.map(entry => ({ bytes: entry.bytes, url: entry.url.replace(/[?&]token=[^&]+/g, '') })))}`);
     return row;
 }
 

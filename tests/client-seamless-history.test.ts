@@ -346,7 +346,7 @@ test('the per-session page ledger is shared by identity and caps automatic pages
 // ---------------------------------------------------------------------------
 
 const initial = (patch: Partial<Parameters<InitialHistoryPlan['evaluate']>[0]> = {}) => ({
-    visible: true, open: true, loading: false, hasMore: true, turns: 1, ...patch,
+    visible: true, open: true, loading: false, hasMore: true, previousTurnIncluded: false, ...patch,
 })
 
 test('initial history waits for visible open state and leaves an already complete window alone', () => {
@@ -356,12 +356,12 @@ test('initial history waits for visible open state and leaves an already complet
     assert.equal(subject.evaluate(initial({ loading: true })), false)
     assert.equal(subject.pages, 0)
     assert.equal(subject.evaluate(initial()), true)
-    assert.equal(subject.evaluate(initial({ turns: 2 })), false)
+    assert.equal(subject.evaluate(initial({ previousTurnIncluded: true })), false)
     assert.equal(subject.state, 'ready')
     assert.equal(subject.evaluate(initial()), false)
     const exhausted = new InitialHistoryPlan()
     assert.equal(exhausted.evaluate(initial({ hasMore: false })), false)
-    assert.equal(exhausted.state, 'ready')
+    assert.equal(exhausted.state, 'exhausted')
 })
 
 test('initial history shares one flight and stops after observing the previous Turn', () => {
@@ -369,28 +369,28 @@ test('initial history shares one flight and stops after observing the previous T
     assert.equal(subject.evaluate(initial()), true)
     subject.requested()
     assert.equal(subject.evaluate(initial()), false)
-    subject.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 50, turns: 2 }, true)
+    subject.settled({ firstSeq: 100, turns: 1, previousTurnIncluded: false }, { firstSeq: 50, turns: 2, previousTurnIncluded: true }, true)
     assert.equal(subject.state, 'ready')
     assert.equal(subject.pages, 1)
     assert.equal(subject.evaluate(initial()), false)
 })
 
-test('oversized initial Turns have a two-page limit rather than an unbounded open-time backfill', () => {
+test('oversized initial Turns stop at the shared twenty-page limit', () => {
     const subject = new InitialHistoryPlan()
-    subject.requested()
-    subject.settled({ firstSeq: 1_500, turns: 1 }, { firstSeq: 1_000, turns: 1 }, true)
-    assert.equal(subject.evaluate(initial()), true)
-    subject.requested()
-    subject.settled({ firstSeq: 1_000, turns: 1 }, { firstSeq: 500, turns: 1 }, true)
+    for (let i=0;i<20;i++) {
+        assert.equal(subject.evaluate(initial()), true)
+        subject.requested()
+        subject.settled({ firstSeq: 5000-i*200, turns: 1, previousTurnIncluded: false }, { firstSeq: 4800-i*200, turns: 1, previousTurnIncluded: false }, true)
+    }
     assert.equal(subject.state, 'limited')
     assert.equal(subject.evaluate(initial()), false)
-    assert.equal(subject.pages, 2)
+    assert.equal(subject.pages, 20)
 })
 
 test('initial failure or live-only append never counts as prepend and never starts a retry loop', () => {
     const subject = new InitialHistoryPlan()
     subject.requested()
-    subject.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 100, turns: 1 }, true)
+    subject.settled({ firstSeq: 100, turns: 1, previousTurnIncluded: false }, { firstSeq: 100, turns: 1, previousTurnIncluded: false }, true)
     assert.equal(subject.state, 'error')
     assert.equal(subject.evaluate(initial()), false)
     const rejected = new InitialHistoryPlan()
@@ -406,7 +406,7 @@ test('reader input suppresses initial prefetch and does not abort a shared in-fl
     const running = new InitialHistoryPlan()
     running.requested(); running.interrupt()
     assert.equal(running.state, 'loading')
-    running.settled({ firstSeq: 100, turns: 1 }, { firstSeq: 50, turns: 1 }, true)
+    running.settled({ firstSeq: 100, turns: 1, previousTurnIncluded: false }, { firstSeq: 50, turns: 1, previousTurnIncluded: false }, true)
     assert.equal(running.state, 'reader')
     assert.equal(running.evaluate(initial()), false)
 })
@@ -419,8 +419,8 @@ test('initial history counts distinct durable Turn starts, excluding tools and t
         { type: 'transient', event: { type: 'assistant/live-chunk', seq: 12.5, data: { turn: 2 } } },
         { type: 'event', event: { type: 'turn/start', seq: 13, data: { turn: 2 } } },
     ] as unknown as SessionEventWindow['entries']
-    assert.deepEqual(probeInitialWindow({ entries }), { firstSeq: 10, turns: 2 })
-    assert.deepEqual(probeInitialWindow({ entries: [] }), { firstSeq: null, turns: 0 })
+    assert.deepEqual(probeInitialWindow({ entries }), { firstSeq: 10, turns: 2, previousTurnIncluded: false })
+    assert.deepEqual(probeInitialWindow({ entries: [] }), { firstSeq: null, turns: 0, previousTurnIncluded: false })
 })
 
 test('aggregate slot release wakes deferred initial views exactly once, and unsubscribe ends it', () => {

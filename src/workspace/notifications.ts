@@ -25,7 +25,8 @@ export function createWorkspaceNotifications(controller: WorkspaceController): W
             return sidebarTree(rows).filter(({ row }) => controller.sidebar.isUnread(row.id, row.updatedAt)).length
         },
         subscribeUnread(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
-        openSource(source) { return controller.openSourceSession(source) },
+        openSource(source) { return controller.openSourceSession({ hubId: source.hubId, sessionId: source.sessionId,
+            ...(source.messageId ? { messageId: source.messageId } : {}), ...(source.requestId ? { requestId: source.requestId } : {}) }) },
         readStatus(value) { if (readState !== value) { readState = value; publish() } },
         dispose() { for (const stop of stops) stop(); listeners.clear() },
     }

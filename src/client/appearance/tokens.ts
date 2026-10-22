@@ -1,32 +1,34 @@
-/** Public DSH token mapping; the original Conversation and plugin views remain owners. */
 import type { ThemeSnapshot, ThemeTokenOverrides } from '@deepseek-ai/dsh-client-ui-theme/client'
 import { compositeOnBackground, getPalette, mix, type ColorScheme } from './palettes.ts'
-import type { AppearancePreferences, BubbleColor, ColorKey } from './preferences.ts'
+import type { AppearancePreferences, ColorKey } from './preferences.ts'
 
 const BASE: Record<ColorScheme, Record<ColorKey, string>> = {
-    light: { background: '#ffffff', surface: '#f2f4f6', text: '#111827', hint: '#6b7280', accent: '#111827', border: '#e2e8f0', userBubble: '#f2f4f6' },
-    dark: { background: '#1c1c1e', surface: '#2b2f34', text: '#ffffff', hint: '#8e8e93', accent: '#ffffff', border: '#2a2a2c', userBubble: '#2b2f34' },
-    oled: { background: '#000000', surface: '#0e0e10', text: '#f5f5f7', hint: '#8e8e93', accent: '#4ea1ff', border: '#1f1f22', userBubble: '#141414' },
+    light: { background: '#ffffff', surface: '#f2f4f6', text: '#111827', hint: '#6b7280', accent: '#111827', border: '#e2e8f0' },
+    dark: { background: '#1c1c1e', surface: '#2b2f34', text: '#ffffff', hint: '#8e8e93', accent: '#ffffff', border: '#2a2a2c' },
+    oled: { background: '#000000', surface: '#0e0e10', text: '#f5f5f7', hint: '#8e8e93', accent: '#4ea1ff', border: '#1f1f22' },
 }
-const accents = { 'preset:soft-blue': '#7db7ff', 'preset:soft-green': '#8fd19e', 'preset:soft-yellow': '#f0d77a' }
-export function bubbleColor(preference: BubbleColor, scheme: ColorScheme): string | null {
-    if (preference === 'default') return null
-    const custom = preference.startsWith('custom:')
-    const accent = custom ? preference.slice(7) : accents[preference as keyof typeof accents]
-    return mix(BASE[scheme].userBubble, accent, custom ? scheme === 'light' ? 0.34 : 0.22 : scheme === 'light' ? 0.3 : 0.2)
+export const NEUTRAL_MESSAGE_SURFACES = Object.freeze({ light: '#f3f3f1', dark: '#252627', oled: '#252627' })
+/** Keep role surfaces neutral while adapting their luminance to a chosen theme.
+ * An accent or old blue tint never becomes a message-role signal again. */
+export function neutralMessageSurface(scheme: ColorScheme, surface?: string): string {
+    const base = NEUTRAL_MESSAGE_SURFACES[scheme]
+    if (!surface || !/^#[0-9a-f]{6}$/i.test(surface)) return base
+    const values = [1, 3, 5].map(offset => Number.parseInt(surface.slice(offset, offset + 2), 16))
+    const gray = Math.round(values[0]! * 0.2126 + values[1]! * 0.7152 + values[2]! * 0.0722).toString(16).padStart(2, '0')
+    return mix(base, `#${gray}${gray}${gray}`, 0.18)
 }
-/** The source's OLED special case, named palettes, and seven per-scheme overrides. */
+/** The source's OLED special case, named palettes, and per-scheme overrides. */
 export function keyColors(preferences: AppearancePreferences, scheme: ColorScheme): Record<ColorKey, string> {
     const palette = preferences.palette === 'default' ? undefined : getPalette(preferences.palette, scheme)
     const values = palette ? { background: palette.background, surface: palette.secondary, text: palette.foreground,
-        hint: palette.hint, accent: palette.accent, border: compositeOnBackground(palette.border, palette.background), userBubble: palette.surface } : { ...BASE[scheme] }
+        hint: palette.hint, accent: palette.accent, border: compositeOnBackground(palette.border, palette.background) } : { ...BASE[scheme] }
     return { ...values, ...preferences.colors[scheme] }
 }
 
 function colors(preferences: AppearancePreferences, scheme: ColorScheme): Record<string, string> {
     const color = keyColors(preferences, scheme), palette = preferences.palette === 'default' ? undefined : getPalette(preferences.palette, scheme)
     const surface = preferences.colors[scheme]?.surface, contrast = scheme === 'light' ? '#000000' : '#ffffff'
-    const userBubble = bubbleColor(preferences.bubble, scheme) ?? color.userBubble
+    const userBubble = neutralMessageSurface(scheme, surface ?? palette?.surface)
     const hover = surface ? mix(surface, contrast, 0.08) : palette?.surfaceHover ?? mix(color.surface, contrast, 0.08)
     return {
         '--dsw-alias-bg-base': color.background, '--dsw-alias-bg-layer-1': surface ?? palette?.dialog ?? color.surface,
@@ -42,17 +44,25 @@ function colors(preferences: AppearancePreferences, scheme: ColorScheme): Record
         '--dsw-alias-interactive-bg-hover-solid': hover, '--dsw-alias-interactive-bg-active': hover,
         '--dsw-alias-button-elevated-fill': color.surface, '--dsw-alias-button-floating-fill': color.surface,
         '--dsw-alias-button-floating-hover': hover, '--dsw-specific-bubble': userBubble,
-        '--dsw-specific-bubble-highlight': mix(userBubble, color.accent, 0.15),
+        '--dsw-specific-bubble-highlight': mix(userBubble, contrast, 0.08), '--hapi-user-message-surface': userBubble,
         // Our layout follows the same palette without selecting undocumented
         // classes inside another plugin's body.
         '--hapi-bg': color.background, '--hapi-panel': color.surface, '--hapi-fg': color.text,
         '--hapi-muted': color.surface, '--hapi-secondary': color.hint, '--hapi-border': color.border,
         '--hapi-palette-accent': color.accent, '--hapi-hover': hover,
+        ...(preferences.palette === 'glass' ? {
+            '--hapi-chrome-solid-surface': color.surface,
+            '--hapi-chrome-translucent-surface': `rgba(${[1, 3, 5].map(offset => Number.parseInt(color.surface.slice(offset, offset + 2), 16)).join(', ')}, 0.9)`,
+            '--hapi-chrome-backdrop': 'blur(14px)',
+        } : {}),
     }
 }
 
 export function appearanceTokens(preferences: AppearancePreferences, theme: Pick<ThemeSnapshot, 'fontSizes'>): ThemeTokenOverrides {
-    if (!preferences.enabled) return {}
+    // Neutral user messages are the workspace baseline, independent of whether
+    // the optional HAPI palette layer is enabled.
+    if (!preferences.enabled) return Object.fromEntries(['--dsw-specific-bubble', '--dsw-specific-bubble-highlight', '--hapi-user-message-surface']
+        .map(key => [key, { light: NEUTRAL_MESSAGE_SURFACES.light, dark: NEUTRAL_MESSAGE_SURFACES.dark }]))
     const light = colors(preferences, 'light'), dark = colors(preferences, preferences.mode === 'oled' ? 'oled' : 'dark')
     const result: ThemeTokenOverrides = Object.fromEntries(Object.keys(light).map(key => [key, { light: light[key]!, dark: dark[key]! }]))
     if (preferences.fontScale !== 1) {

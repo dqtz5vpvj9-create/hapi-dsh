@@ -985,14 +985,18 @@ test('native cached display returns before a blocked history read and live outpu
   } finally { release?.(page(fake.rows)); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native cold attach seeds one latest page while full history remains blocked', async () => {
+test('native cold attach seeds bounded initial context while full history remains blocked', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-cold-tail-')), fake = new FakeHapi()
   const tail = agentBody('message', { message: 'Latest bounded answer' }, 'tail')
   tail.createdAt = 1300; tail.seq = 3
   const older = user()
   let release!: (value: HapiMessagesPage) => void, reads = 0
   const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
-  fake.readHook = () => ++reads === 1 ? page([tail], { hasMore: true, nextBeforeAt: 1300, nextBeforeSeq: 3 }) : blocked
+  fake.readHook = query => {
+    if (query?.limit === 1) return page([tail])
+    if (query?.beforeSeq !== undefined) return page([older, tail])
+    return ++reads === 1 ? page([tail], { hasMore: true, nextBeforeAt: 1300, nextBeforeSeq: 3 }) : blocked
+  }
   const app = await mount(fake, directory, { fastHistorySeed: true })
   try {
     const initial = app.service.list()[0]!

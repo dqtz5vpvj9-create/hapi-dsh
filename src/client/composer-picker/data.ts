@@ -9,6 +9,8 @@ export interface PickerData {
     efforts: readonly PickerChoice<string | null>[]
     permission: string | null
     permissions: readonly string[]
+    readOnly: boolean
+    serviceTier: string | null
     fast: boolean
     fastAvailable: boolean
     editable: { model: boolean; effort: boolean; permission: boolean; fast: boolean }
@@ -16,6 +18,29 @@ export interface PickerData {
 }
 export type PickerAction = { kind: 'model'; value: ObservedModelValue }
     | { kind: 'effort'; value: string | null } | { kind: 'permission'; value: string } | { kind: 'fast'; value: boolean }
+export interface PickerPending { operationId: string; change: ObservedSettingChange }
+
+/** An explicitly reported Medium is still explicit even when the model's
+ * catalog default is Medium. Only an actual default/empty value is folded. */
+export function explicitEffort(value: string | null): string | null {
+    return value && value !== 'default' ? value : null
+}
+export function visibleServiceTier(value: string | null): string | null {
+    return value && value !== 'standard' ? value : null
+}
+/** Capability belongs to the source; connection/read-only is a separate lock.
+ * A locked but supported permission picker can still show the current value. */
+export function permissionPickerAvailable(capable: boolean, data: PickerData | null): boolean {
+    return capable && (data === null || data.permissions.length > 0)
+}
+export function nativePickerPending(pending: { operationId: string; change: NativeSettingChange } | null): PickerPending | null {
+    if (!pending) return null
+    const { change, operationId } = pending
+    if (change.kind === 'reasoningEffort') return { operationId, change: { kind: 'effort', value: change.value } }
+    if (change.kind === 'permissionMode') return { operationId, change: { kind: 'permission', value: change.value } }
+    if (change.kind === 'collaborationMode') return { operationId, change: { kind: 'collaboration', value: change.value } }
+    return { operationId, change }
+}
 
 /** Pi model values are compound source identities, never display labels. */
 export function modelKey(value: ObservedModelValue): string {
@@ -33,7 +58,8 @@ export function nativePickerData(data: NativeSettings): PickerData {
         model: data.values.model, models: data.models.map(row => ({ value: row.id, label: row.name })),
         effort: data.values.reasoningEffort,
         efforts: model?.reasoningEfforts.length ? [{ value: null, label: 'Default' }, ...model.reasoningEfforts.map(value => ({ value, label: value }))] : [],
-        permission: data.values.permissionMode, permissions: ['default', 'read-only', 'yolo'],
+        permission: data.values.permissionMode, permissions: ['default', 'read-only', 'yolo'], readOnly: data.readOnly,
+        serviceTier: data.values.serviceTier,
         fast: data.values.serviceTier === 'fast', fastAvailable: model?.serviceTiers.includes('fast') ?? false,
         editable: { model: writable && data.models.length > 0, effort: writable && Boolean(model?.reasoningEfforts.length),
             permission: writable, fast: writable && Boolean(model?.serviceTiers.includes('fast')) },
@@ -47,6 +73,7 @@ export function observedPickerData(data: ObservedSettings): PickerData {
         model: data.values.model,
         models: data.models.map(row => ({ value: row.value, label: row.label, ...(row.provider ? { detail: row.provider } : {}) })),
         effort: data.values.effort, efforts: data.efforts, permission: data.values.permission, permissions: data.permissions,
+        readOnly: data.readOnly, serviceTier: data.values.serviceTier,
         fast: data.values.serviceTier === 'fast', fastAvailable: data.serviceTiers.includes('fast'),
         editable: { model: writable && data.editable.model && data.models.length > 0,
             effort: writable && data.editable.effort && data.efforts.length > 0,

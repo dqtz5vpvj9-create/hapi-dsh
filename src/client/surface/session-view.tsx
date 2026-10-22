@@ -18,6 +18,7 @@ import type { WorkspacePaneNavigation } from '../pane-navigation.ts'
 import { WorkspacePaneProvider } from './pane-context.tsx'
 import { installSharedRightbar } from './shared-rightbar.tsx'
 import { bindInitialHistory } from '../seamless/index.ts'
+import { bindPaneReading } from '../reading-view.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
@@ -167,7 +168,9 @@ export function installSessionViewHost(ctx: Context): {
             if (entries.has(identity)) throw new Error(`Pane ${options.paneId} already has a session view on this Host`)
             let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading' }
             entries.set(identity, entry); publish()
-            const uninitialHistory = bindInitialHistory(options.target, options.reference, options.navigation.state)
+            const stopHistory = bindInitialHistory(options.target, options.reference, options.navigation.state)
+            const stopReading = bindPaneReading(ctx, options.target, options.reference, options.navigation)
+            const uninitialHistory = (): void => { stopHistory(); stopReading() }
             initialHistory.set(identity, uninitialHistory)
             let live = true
             let removed: Promise<void> | undefined

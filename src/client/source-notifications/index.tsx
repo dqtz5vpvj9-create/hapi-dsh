@@ -68,7 +68,7 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
                 <p role="status">{tr('Saving open editors and original attachment bytes before updating…', '正在保存已打开的编辑器和附件原始内容，随后更新…')}</p>
             </dialog>
             {notices.map(notice => <article key={notice.id} role="status"><div><strong>{notice.title}</strong><p>{notice.body}</p>
-                <button type="button" onClick={() => { void runtime.open({ hubId: notice.hubId, sessionId: notice.sessionId }).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{tr('Open conversation', '打开会话')}</button></div>
+                <button type="button" onClick={() => { void runtime.open(notice).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{tr('Open conversation', '打开会话')}</button></div>
                 <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss notification', '关闭通知')} onClick={() => runtime.dismiss(notice.id)}>×</button></article>)}
         </div>;
     }

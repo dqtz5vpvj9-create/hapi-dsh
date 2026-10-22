@@ -40,7 +40,7 @@ test('shared Host restores 13 pane identities, binds visible windows lazily and 
             if (path === '/hapi-dsh/bootstrap' || path.startsWith('/plugins/')) requests++
         })
         const started = Date.now()
-        await page.goto(`${environment.origin}/?hapiGraph=shared`)
+        await page.goto(`${environment.origin}/`)
         await expect(page.locator('[data-hapi-workspace]')).toBeVisible()
         const workspaceVisibleMs = Date.now() - started
         await expect(page.locator('.hapi-pane')).toHaveCount(13)

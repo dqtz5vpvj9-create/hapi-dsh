@@ -108,8 +108,8 @@ export function parseWorkspaceState(value: unknown): WorkspaceState {
             if (input.resource.kind === 'empty') return emptyPane(id)
             const resource = parsePaneResource(input.resource)
             const key = resourceKey(resource)
-            if (key && resources.has(key)) throw new Error('Duplicate or invalid session binding')
-            if (key) resources.add(key)
+            if (resource.kind !== 'chat' && key && resources.has(key)) throw new Error('Duplicate or invalid session binding')
+            if (resource.kind !== 'chat' && key) resources.add(key)
             return { type: 'pane', id, resource }
         }
         if (input.type !== 'split' || !['horizontal', 'vertical'].includes(String(input.axis))
@@ -204,11 +204,11 @@ export class WorkspaceStore {
 
     private canReplace(next: WorkspaceState): boolean {
         if (!this.beforeRemove) return true
-        const remaining = new Set(next.windows.flatMap(window => panes(window.root)).map(pane => resourceKey(pane.resource)))
-        const removed = this.state.windows.flatMap(window => panes(window.root)).map(pane => pane.resource).filter(resource => {
-            const key = resourceKey(resource)
-            return key !== null && !remaining.has(key)
-        })
+        const remaining = new Map(next.windows.flatMap(window => panes(window.root)).map(pane => [pane.id, resourceKey(pane.resource)]))
+        const removed = this.state.windows.flatMap(window => panes(window.root)).filter(pane => {
+            const key = resourceKey(pane.resource)
+            return key !== null && remaining.get(pane.id) !== key
+        }).map(pane => pane.resource)
         return removed.length === 0 || this.beforeRemove(removed)
     }
 
@@ -304,7 +304,7 @@ export class WorkspaceStore {
         let root = window.root
         for (const pane of panes(root)) {
             const key = resourceKey(pane.resource)
-            if (key && openResources.has(key)) {
+            if (pane.resource.kind !== 'chat' && key && openResources.has(key)) {
                 root = updateNode(root, pane.id, () => emptyPane(pane.id))
             }
         }
@@ -313,7 +313,7 @@ export class WorkspaceStore {
         this.commit({ ...this.state, windows, activeWindowId: window.id })
     }
 
-    /** Match HAPI: a sidebar selection focuses an existing pane or binds the focused pane. */
+    /** A sidebar selection binds this occurrence; beside explicitly creates another. */
     openSession(sessionId: string, beside?: SplitAxis): void {
         this.openResource({ kind: 'chat', sessionId }, beside)
     }
@@ -323,7 +323,7 @@ export class WorkspaceStore {
         const key = resourceKey(resource)
         const existing = this.state.windows.flatMap(window => panes(window.root))
             .find(pane => key !== null && resourceKey(pane.resource) === key)
-        if (existing) { this.focus(existing.id); return }
+        if (resource.kind !== 'chat' && existing) { this.focus(existing.id); return }
         if (beside) { this.split(beside, resource); return }
         const active = this.active()
         const focused = this.focusedPane()
@@ -344,12 +344,11 @@ export class WorkspaceStore {
         if (previousId === nextId) return
         if (!validId(nextId)) throw new Error('Invalid replacement session identity')
         const all = this.state.windows.flatMap(window => panes(window.root))
-        const previous = all.find(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === previousId)
-        if (!previous) return
-        const alreadyOpen = all.some(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === nextId)
-        const windows = this.state.windows.map(window => ({ ...window, root: updateNode(window.root, previous.id, () => ({
-            ...previous, resource: alreadyOpen ? { kind: 'empty' } : { ...previous.resource, kind: 'chat', sessionId: nextId },
-        })) }))
+        const previous = all.filter(pane => pane.resource.kind === 'chat' && pane.resource.sessionId === previousId)
+        if (!previous.length) return
+        const windows = this.state.windows.map(window => ({ ...window, root: previous.reduce((root, pane) => updateNode(root, pane.id, () => ({
+            ...pane, resource: { ...pane.resource, kind: 'chat', sessionId: nextId },
+        })), window.root) }))
         this.commit({ ...this.state, windows })
     }
 
@@ -357,7 +356,7 @@ export class WorkspaceStore {
         if (this.state.windows.flatMap(window => panes(window.root)).length >= 1024) throw new Error('The workspace has reached its pane limit')
         resource = parsePaneResource(resource)
         const key = resourceKey(resource)
-        if (key) {
+        if (resource.kind !== 'chat' && key) {
             const existing = this.state.windows.flatMap(window => panes(window.root))
                 .find(pane => resourceKey(pane.resource) === key)
             if (existing) { this.focus(existing.id); return }
@@ -379,7 +378,7 @@ export class WorkspaceStore {
         const resource = parsePaneResource(input)
         const available = this.state.windows.flatMap(window => panes(window.root)), key = resourceKey(resource)
         const existing = key && available.find(pane => resourceKey(pane.resource) === key)
-        if (existing) { this.focus(existing.id); return }
+        if (resource.kind !== 'chat' && existing) { this.focus(existing.id); return }
         const target = this.state.windows.find(window => panes(window.root).some(pane => pane.id === targetPaneId))
         const selected = target && panes(target.root).find(pane => pane.id === targetPaneId)
         if (!target || !selected || position === 'center' && selected.resource.kind !== 'empty') return

@@ -1,29 +1,47 @@
 import type { SessionBinding, SessionEventWindow, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+import { keyIntent } from './intent.ts'
 import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
-/** Each official page is capped at 500 user/assistant messages by the pin. */
-export const MAX_INITIAL_HISTORY_PAGES = 2
+/** Share the existing automatic-history ceiling; do not stop after two pages. */
+export const MAX_INITIAL_HISTORY_PAGES = 20
 export const INITIAL_HISTORY_ATTRIBUTE = 'data-hapi-initial-history'
 
 export interface InitialWindowProbe {
     readonly firstSeq: number | null
     readonly turns: number
+    readonly previousTurnIncluded: boolean
 }
 
-/** Count real Turn starts, rather than tools, live chunks, or DOM row count. */
+/** A start without its original input may be a partial source seed, not context. */
 export function probeInitialWindow(window: Pick<SessionEventWindow, 'entries'>): InitialWindowProbe {
     let firstSeq: number | null = null
     const turns = new Set<number>()
+    const groups = new Map<number, { start: boolean; input: boolean }>()
+    let current: number | null = null
+    const group = (turn: number) => {
+        let value = groups.get(turn)
+        if (value === undefined) { value = { start: false, input: false }; groups.set(turn, value) }
+        return value
+    }
     for (const entry of window.entries) {
         if (entry.type !== 'event') continue
         firstSeq = firstSeq === null ? entry.event.seq : Math.min(firstSeq, entry.event.seq)
-        if (entry.event.type === 'turn/start') turns.add(entry.event.data.turn)
+        const event = entry.event
+        if (event.type === 'turn/start') {
+            current = event.data.turn; turns.add(current); group(current).start = true
+        } else if (event.type === 'assistant/message' || event.type === 'assistant/attempt' || event.type === 'tool/call') {
+            current = event.data.turn; group(current)
+        } else if (event.type === 'user/message' && event.surfaceOp === 'append' && current !== null) {
+            group(current).input = true
+        }
     }
-    return { firstSeq, turns: turns.size }
+    const latest = [...groups.entries()].sort(([a], [b]) => a - b).slice(-2)
+    return { firstSeq, turns: turns.size,
+        previousTurnIncluded: latest.length === 2 && latest.every(([, value]) => value.start && value.input) }
 }
 
-export type InitialHistoryState = 'waiting' | 'loading' | 'ready' | 'limited' | 'error' | 'reader'
+export type InitialHistoryState = 'waiting' | 'loading' | 'ready' | 'exhausted' | 'limited' | 'error' | 'reader'
 
 /** Pure, generation-owned limit shared by simultaneous views of one Session. */
 export class InitialHistoryPlan {
@@ -32,10 +50,11 @@ export class InitialHistoryPlan {
     private reader = false
 
     evaluate(input: {
-        visible: boolean; open: boolean; loading: boolean; hasMore: boolean; turns: number
+        visible: boolean; open: boolean; loading: boolean; hasMore: boolean; previousTurnIncluded: boolean
     }): boolean {
         if (this.state !== 'waiting' || !input.visible || !input.open || input.loading) return false
-        if (input.turns >= 2 || !input.hasMore) { this.state = 'ready'; return false }
+        if (input.previousTurnIncluded) { this.state = 'ready'; return false }
+        if (!input.hasMore) { this.state = 'exhausted'; return false }
         if (this.pages >= MAX_INITIAL_HISTORY_PAGES) { this.state = 'limited'; return false }
         return true
     }
@@ -45,7 +64,8 @@ export class InitialHistoryPlan {
     settled(before: InitialWindowProbe, after: InitialWindowProbe, hasMore: boolean): void {
         if (this.state !== 'loading') return
         if (this.reader) { this.state = 'reader'; return }
-        if (after.turns >= 2 || !hasMore) { this.state = 'ready'; return }
+        if (after.previousTurnIncluded) { this.state = 'ready'; return }
+        if (!hasMore) { this.state = 'exhausted'; return }
         if (before.firstSeq === null || after.firstSeq === null || after.firstSeq >= before.firstSeq) {
             this.state = 'error'; return
         }
@@ -74,8 +94,9 @@ const plans = new WeakMap<SessionBinding['session'], SharedInitialPlan>()
  * tail following. It also leaves editor focus, drafts and scroll ownership to
  * the official view. A reader gesture cancels any further automatic prefetch.
  *
- * Two pages is a strict bound, not a claim that an arbitrarily large Turn fits:
- * oversized Turns keep the ordinary manual/seamless older-history control.
+ * The target is two input-bearing Turns, not a fixed number of pages. The
+ * shared 20-page ceiling still applies; exhausted means the Host has no more
+ * rows, without claiming that a partial source seed contains a previous Turn.
  */
 export function bindInitialHistory(
     target: HTMLElement,
@@ -120,7 +141,7 @@ export function bindInitialHistory(
         const allowed = plan.evaluate({
             visible: true,
             open: snapshot.openState === 'open', loading: snapshot.loadingOlder,
-            hasMore: snapshot.hasMore, turns: before.turns,
+            hasMore: snapshot.hasMore, previousTurnIncluded: before.previousTurnIncluded,
         })
         mark()
         if (!allowed) return
@@ -144,7 +165,16 @@ export function bindInitialHistory(
         })()
     }
     const changed = (): void => { schedule() }
-    const reader = (): void => { plan.interrupt(); publish() }
+    const reader = (event: Event): void => {
+        const element = event.target as Element | null
+        // Composer focus, typing, permission controls and attachments must not
+        // cancel the opening context. Only a gesture inside this transcript
+        // transfers scroll ownership to its reader.
+        if (!element || typeof element.closest !== 'function' || !element.closest('[data-conversation-scroll]')
+            || element.closest('input,textarea,[contenteditable="true"],[data-composer-card]')) return
+        if (event.type === 'keydown' && keyIntent((event as KeyboardEvent).key, event as KeyboardEvent) === 'none') return
+        plan.interrupt(); publish()
+    }
     listeners.add(changed)
     const unsubscribe = [session.subscribe(changed), binding.eventSource.subscribe(changed), visibility.subscribe(changed), gate.subscribe(changed)]
     const inputs = ['pointerdown', 'touchstart', 'wheel', 'keydown'] as const

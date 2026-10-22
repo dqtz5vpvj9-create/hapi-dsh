@@ -96,7 +96,8 @@ export class SourceNotificationsService {
         if (event.type === 'connection-changed') { this.status(); return; }
         if (event.type !== 'toast') return;
         const frame: NotificationFrame = { type: 'toast', notification: { id: randomUUID(), hubId: this.client.hubId,
-            title: event.data.title, body: event.data.body, sessionId: event.data.sessionId, createdAt: Date.now() } };
+            title: event.data.title, body: event.data.body, sessionId: event.data.sessionId, createdAt: Date.now(),
+            ...(event.data.messageId ? { messageId: event.data.messageId } : {}), ...(event.data.requestId ? { requestId: event.data.requestId } : {}) } };
         for (const browser of this.browsers) if (browser.visibleUntil > Date.now()) this.send(browser, frame);
     }
     private attach(socket: WebSocket): void {

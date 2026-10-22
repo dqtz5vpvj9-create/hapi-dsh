@@ -28,6 +28,7 @@ export const deliveryMessageSchema = z.custom<UserMessage>(isUserMessage, 'An id
 const entrySchema = deliveryViewSchema.extend({
   scheduledAt: z.number().finite().nullable().default(null),
   message: deliveryMessageSchema,
+  recoveries: z.array(z.object({ operationId: z.string(), action: z.enum(['retry', 'discard']) })).default([]),
 })
 const journalSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema) })
 export type DeliveryEntry = z.infer<typeof entrySchema>
@@ -68,7 +69,7 @@ export class DeliveryJournal {
   get(localId: string): DeliveryEntry | undefined { return this.entries.get(localId) }
 
   view(): DeliveryView[] {
-    return this.values().filter(entry => !['invoked', 'cancelled'].includes(entry.state))
+    return this.values().filter(entry => !['invoked', 'cancelled', 'discarded'].includes(entry.state))
       .map(({ message: _message, ...view }) => view)
   }
 
@@ -105,7 +106,7 @@ export class DeliveryJournal {
     }
     const entry: DeliveryEntry = {
       localId, messageId: message.id, text, mode, state: 'dispatching',
-      createdAt: Date.now(), scheduledAt, error: null, message: freezeMessage(message),
+      createdAt: Date.now(), scheduledAt, error: null, message: freezeMessage(message), recoveries: [],
     }
     this.entries.set(localId, entry)
     // A failed fsync rejects the DSH synchronous acceptance, before network I/O.
@@ -143,14 +144,25 @@ export class DeliveryJournal {
   }
 
   /** Explicit recovery only after this journal recorded a confirmed rejection. */
-  retryRejected(localId: string): DeliveryEntry {
+  retryRejected(localId: string, operationId?: string): DeliveryEntry {
+    return this.recoverRejected(localId, 'retry', operationId)
+  }
+
+  recoverRejected(localId: string, action: 'retry' | 'discard', operationId?: string): DeliveryEntry {
     const previous = this.entries.get(localId)
+    const known = previous?.recoveries.find(value => value.operationId === operationId)
+    if (known) {
+      if (known.action !== action) throw new Error('The recovery identity belongs to another action')
+      return previous!
+    }
     if (!previous || previous.state !== 'rejected') throw new Error('Only a confirmed rejected delivery can be retried with the same message identity')
     if (this.inFlight.has(localId)) throw new Error('The original delivery is still settling')
-    const entry: DeliveryEntry = { ...previous, state: 'dispatching', error: null }
+    const entry: DeliveryEntry = { ...previous, state: action === 'retry' ? 'dispatching' : 'discarded', error: null,
+      recoveries: [...previous.recoveries, ...(operationId ? [{ operationId, action }] : [])] }
     this.entries.set(localId, entry)
     try { this.persist() } catch (error) { this.entries.set(localId, previous); throw error }
     this.changed()
+    if (action === 'discard') return entry
     const dispatch = this.dispatch(entry)
     this.inFlight.set(localId, dispatch)
     void dispatch.then(() => { this.inFlight.delete(localId) }, () => { this.inFlight.delete(localId) })
@@ -161,7 +173,7 @@ export class DeliveryJournal {
     const previous = this.entries.get(localId)
     if (!previous || (previous.state === state && previous.error === error)) return
     // Consumed native input is irreversible; older queue/HTTP facts cannot undo it.
-    if (previous.state === 'invoked' && state !== 'invoked') return
+    if ((previous.state === 'invoked' || previous.state === 'discarded') && state !== 'invoked') return
     this.entries.set(localId, { ...previous, state, error })
     this.persist()
     this.changed()
@@ -182,7 +194,7 @@ export class DeliveryJournal {
   }
 
   async reconcileSource(): Promise<void> {
-    const unresolved = this.values().filter(entry => !['invoked', 'cancelled', 'rejected'].includes(entry.state))
+    const unresolved = this.values().filter(entry => !['invoked', 'cancelled', 'rejected', 'discarded'].includes(entry.state))
     for (let index = 0; index < unresolved.length; index += 1000) {
       this.reconcile(await this.transport.getQueuedState(this.sourceSessionId,
         unresolved.slice(index, index + 1000).map(entry => entry.localId)))

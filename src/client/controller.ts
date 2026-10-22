@@ -15,6 +15,8 @@ import type { DockPosition } from '../workspace/drag.ts'
 import { buildSidebarSearchIndex, compareSidebarSearch, type SidebarSearchIndex } from '../workspace/sidebar-search.ts'
 import { CatalogDiscovery, type WorkspaceCatalogDiscovery } from '../workspace/catalog-discovery.ts'
 import { sourceResolutionFailure, type SourceResolutionFailure, type SourceResolutionStatus } from './source-session-state.ts'
+import { PaneReadingIntents, type PaneReadingIntent, type PaneReadingTarget } from './reading-intent.ts'
+import type { SourceDiscovery } from '../source-discovery-types.ts'
 
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
     interface SessionReferenceSourceMap { hapiWorkspace: unknown }
@@ -42,6 +44,8 @@ export interface WorkspaceOptions {
     sourceSessionQuery?: string
     /** Notification and shared links preserve the original Hub identity too. */
     sourceHubQuery?: string
+    sourceMessageQuery?: string
+    sourceRequestQuery?: string
     beforeRemove?: (resources: readonly PaneResource[]) => boolean
     /**
      * How long a restored pane waits for a calm catalog before an unresolved
@@ -158,6 +162,7 @@ export interface WorkspaceSnapshot {
     readonly catalog: WorkspaceCatalog
     /** Actual first source/Host discovery, independent of a temporarily empty catalog. */
     readonly catalogDiscovery: WorkspaceCatalogDiscovery
+    readonly sourceDiscovery?: SourceDiscovery
     readonly leases: ReadonlyMap<string, PaneLease>
     readonly notice: string | null
     readonly persistence: 'local' | 'saving' | 'saved' | 'failed'
@@ -293,6 +298,7 @@ export class WorkspaceController {
     private discoveryCatalog: WorkspaceCatalog | undefined
     private sourceBindingsPending = 0
     private readonly paneCloseGuards = new Map<string, Set<() => boolean>>()
+    private readonly reading = new PaneReadingIntents()
     private readonly lifetime = new AbortController()
     private snapshot: WorkspaceSnapshot
     private readonly unsubscribers: Array<() => void> = []
@@ -300,12 +306,13 @@ export class WorkspaceController {
     private reconciling = false
     private navigationGuard = false
     private pendingNavigationResource: string | null = null
+    private navigationRevision = 0
     private saving = false
     private remoteLoaded = false
     private queuedSave: WorkspaceState | undefined
     private readonly restoredLocal: boolean
     private sharedSignature: string
-    private pendingSourceSession: { sessionId: string; hubId?: string } | null
+    private pendingSourceSession: { sessionId: string; hubId?: string; target: PaneReadingTarget } | null
     private primarySourceHubId: string | null = null
     private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<void>) | undefined
     private readonly sourceResolutions = new Map<string, SourceResolution>()
@@ -345,6 +352,8 @@ export class WorkspaceController {
         })
         this.sharedSignature = sharedWorkspaceSignature(this.store.getSnapshot())
         this.pendingSourceSession = options.sourceSessionQuery ? { sessionId: options.sourceSessionQuery,
+            target: options.sourceMessageQuery ? { kind: 'message', messageId: options.sourceMessageQuery, origin: 'link' }
+                : options.sourceRequestQuery ? { kind: 'approval', requestId: options.sourceRequestQuery } : { kind: 'latest' },
             ...(options.sourceHubQuery === undefined ? {} : { hubId: options.sourceHubQuery }) } : null
         this.sidebar = new SidebarState(options.storage, `${options.storageKey}:sidebar`)
         this.hosts.set('local', { id: 'local', label: 'DSH', sessions: options.sessions, navigation: options.navigation,
@@ -373,6 +382,18 @@ export class WorkspaceController {
     }
 
     getSnapshot = (): WorkspaceSnapshot => this.snapshot
+
+    readingIntent = (paneId: string): PaneReadingIntent | undefined => this.reading.read(paneId)
+
+    /** Explicit destinations belong to this view occurrence, never global focus. */
+    locateInPane(paneId: string, sessionId: string, target: PaneReadingTarget): void {
+        const pane = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)
+        if (!pane || pane.resource.kind === 'empty' || pane.resource.sessionId !== sessionId) return
+        this.navigationRevision++
+        this.pendingSourceSession = null
+        this.reading.request(paneId, sessionId, target)
+        this.publish()
+    }
 
     /** Each plugin owns its own guard and disposer, never another graph's state. */
     registerPaneCloseGuard(paneId: string, guard: () => boolean): () => void {
@@ -419,7 +440,7 @@ export class WorkspaceController {
         this.publish({ catalog: this.aggregateCatalog() })
     }
     setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {
-        hosts: readonly { id: string; label: string; online: boolean }[]; connected: boolean
+        hosts: readonly { id: string; label: string; online: boolean }[]; connected: boolean; sourceDiscovery?: SourceDiscovery
     }): void {
         if (hubId) this.primarySourceHubId = hubId
         // Only real catalog movement resets the settle window; the 3s poll is
@@ -435,6 +456,7 @@ export class WorkspaceController {
         this.sourceCatalog.clear()
         for (const session of sessions) this.sourceCatalog.set(session.id, session)
         this.discovery.observe(discovery?.hosts ?? [], connected)
+        if (discovery?.sourceDiscovery) this.snapshot = { ...this.snapshot, sourceDiscovery: discovery.sourceDiscovery }
         if (changed) this.catalogChangedAt = Date.now()
         this.publish({ catalog: this.aggregateCatalog() })
         const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
@@ -444,6 +466,9 @@ export class WorkspaceController {
     }
     sourceCatalogFailed(error: unknown): void {
         this.discovery.sourceFailed(errorMessage(error))
+        if (this.snapshot.sourceDiscovery) this.snapshot = { ...this.snapshot, sourceDiscovery: {
+            ...this.snapshot.sourceDiscovery, phase: this.snapshot.sourceDiscovery.observedAt === null ? 'unavailable' : 'stale', error: errorMessage(error),
+        } }
         this.catalogChangedAt = Date.now()
         this.publish()
         if (this.hasWaitingLeases()) this.reconcileLeases()
@@ -573,6 +598,15 @@ export class WorkspaceController {
         if (this.openPendingSource()) return
         this.reconcileLeases()
         const focused = this.store.focusedPane().resource
+        // Catalog hydration on another Host is not an explicit pane selection.
+        if (focused.kind !== 'empty') {
+            try {
+                if (parseSessionResourceId(focused.sessionId).hostId !== hostId) {
+                    this.hostMainIds.set(hostId, this.selectedMain(hostId))
+                    return
+                }
+            } catch { return /* The failed lease already explains the invalid saved address. */ }
+        }
         if (focused.kind !== 'empty' && focused.sessionId === this.pendingNavigationResource) {
             try {
                 if (parseSessionResourceId(focused.sessionId).hostId === hostId) {
@@ -714,9 +748,22 @@ export class WorkspaceController {
     }
 
     private onLayout = (): void => {
+        const state = this.store.getSnapshot()
+        const previous = new Map(this.snapshot.layout.windows.flatMap(window => panes(window.root).map(pane => [pane.id, pane.resource] as const)))
+        // A reconciled display generation still represents the same original
+        // source. Keep an explicit destination when bindSourceResources moves
+        // that pane, before its replacement SessionReference is published.
+        for (const pane of state.windows.flatMap(window => panes(window.root))) {
+            const before = previous.get(pane.id), after = pane.resource, intent = this.reading.read(pane.id)
+            if (!before || before.kind === 'empty' || after.kind === 'empty' || !intent || intent.target.kind === 'latest'
+                || intent.sessionId !== before.sessionId || before.sessionId === after.sessionId) continue
+            if (before.sourceSessionId && before.sourceSessionId === after.sourceSessionId && before.sourceHubId === after.sourceHubId) {
+                this.reading.request(pane.id, after.sessionId, intent.target)
+            }
+        }
         this.reconcileLeases()
         this.syncNavigation()
-        const state = this.store.getSnapshot()
+        this.reading.retain(new Set(state.windows.flatMap(window => panes(window.root).map(pane => pane.id))))
         try { this.options.storage?.setItem(this.options.storageKey, JSON.stringify(state)) }
         catch (error) { this.publish({ notice: `Workspace save failed: ${errorMessage(error)}`, persistence: 'failed' }) }
         const signature = sharedWorkspaceSignature(state)
@@ -944,16 +991,16 @@ export class WorkspaceController {
         }
     }
 
-    openSession(sessionId: string, beside?: SplitAxis): void {
-        const source = sourceIdentity(this.snapshot.catalog.byId[sessionId])
-        const existing = source && this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.resource.kind === 'chat'
-            && pane.resource.sourceSessionId === source.sessionId && (pane.resource.sourceHubId ?? this.primarySourceHubId) === source.hubId)
-        if (existing) {
-            const state = this.store.getSnapshot()
-            const rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
-            if (rebound !== state) this.store.replace(rebound)
-            this.store.focus(existing.id)
-        } else this.store.openResource({ kind: 'chat', sessionId, ...(sourceReference(this.snapshot.catalog.byId[sessionId]) ?? {}) }, beside)
+    openSession(sessionId: string, beside?: SplitAxis, target: PaneReadingTarget = { kind: 'latest' }): void {
+        this.navigationRevision++
+        this.pendingSourceSession = null
+        this.store.openResource({ kind: 'chat', sessionId, ...(sourceReference(this.snapshot.catalog.byId[sessionId]) ?? {}) }, beside)
+        const pane = this.store.focusedPane()
+        // A dirty document may veto replacement. A denied navigation must not
+        // move its scroll position or leave work scheduled for another view.
+        if (pane.resource.kind !== 'chat' || pane.resource.sessionId !== sessionId) return
+        this.reading.request(pane.id, sessionId, target)
+        this.publish()
         this.closeSessionPicker()
         this.options.reveal?.()
     }
@@ -989,8 +1036,11 @@ export class WorkspaceController {
 
     /** A source notification never treats its original id as a DSH display id
      * or silently opens another Hub's same-named session. */
-    async openSourceSession(source: { hubId: string; sessionId: string }): Promise<void> {
+    async openSourceSession(source: { hubId: string; sessionId: string; messageId?: string; requestId?: string }): Promise<void> {
         if (!source.hubId.trim() || !source.sessionId.trim()) throw new Error('A source conversation requires both its Hub and session identity')
+        const revision = ++this.navigationRevision
+        const target: PaneReadingTarget = source.messageId ? { kind: 'message', messageId: source.messageId, origin: 'notification' }
+            : source.requestId ? { kind: 'approval', requestId: source.requestId } : { kind: 'latest' }
         let matches = this.sourceMatches(source)
         if (matches.length === 0 && this.sourceResolver) {
             const original = { hubId: source.hubId, sourceSessionId: source.sessionId }, key = originalSourceKey(original)
@@ -1011,7 +1061,7 @@ export class WorkspaceController {
         if (matches.length !== 1) throw new Error(matches.length > 1
             ? 'This source conversation has multiple display bindings. Choose its Host in the unified sidebar.'
             : 'This conversation is not available from the requested source Hub. Reconnect that Hub and try again.')
-        this.openSession(matches[0]!.id)
+        if (revision === this.navigationRevision) this.openSession(matches[0]!.id, undefined, target)
     }
 
     private sourceMatches(source: { sessionId: string; hubId?: string }): WorkspaceCatalogRow[] {
@@ -1026,9 +1076,6 @@ export class WorkspaceController {
         const row = this.snapshot.catalog.byId[sessionId]
         if (!row) return
         const source = sourceIdentity(row)
-        const existing = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.resource.kind === 'chat'
-            && (pane.resource.sessionId === sessionId || source && pane.resource.sourceSessionId === source.sessionId && (pane.resource.sourceHubId ?? this.primarySourceHubId) === source.hubId))
-        if (existing) { this.openSession(sessionId); return }
         this.store.dockResource({ kind: 'chat', sessionId, ...(source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : {}) }, targetPaneId, position)
         this.closeSessionPicker(); this.options.reveal?.()
     }
@@ -1088,8 +1135,9 @@ export class WorkspaceController {
             return false
         }
         const row = matches[0]!
+        const target = this.pendingSourceSession.target
         this.pendingSourceSession = null
-        this.openSession(row.id)
+        this.openSession(row.id, undefined, target)
         return true
     }
 

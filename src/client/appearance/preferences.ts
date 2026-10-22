@@ -6,7 +6,7 @@ import { COLOR_THEME_OPTIONS, type ColorScheme, type ColorThemePreset } from './
 export type AppearanceMode = 'system' | ColorScheme
 export const FONT_SCALES = [0.8, 0.9, 1, 1.1, 1.2] as const
 export const TERMINAL_FONT_SIZES = [9, 11, 13, 15, 17] as const
-export const COLOR_KEYS = ['background', 'surface', 'text', 'hint', 'accent', 'border', 'userBubble'] as const
+export const COLOR_KEYS = ['background', 'surface', 'text', 'hint', 'accent', 'border'] as const
 export type ColorKey = typeof COLOR_KEYS[number]
 export type ThemeColors = Partial<Record<ColorScheme, Partial<Record<ColorKey, string>>>>
 export type BubbleColor = 'default' | 'preset:soft-blue' | 'preset:soft-green' | 'preset:soft-yellow' | `custom:#${string}`

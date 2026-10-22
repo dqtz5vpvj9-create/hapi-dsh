@@ -9,7 +9,7 @@ function workspace() {
     return new WorkspaceStore(initialWorkspace(nextId), nextId)
 }
 
-test('one editable occurrence of a Session across all windows', () => {
+test('explicit split opens an independent occurrence without switching windows', () => {
     const store = workspace()
     store.openSession('codex-native-1')
     const firstPane = store.focusedPane().id
@@ -17,9 +17,10 @@ test('one editable occurrence of a Session across all windows', () => {
     store.createWindow('Build')
     store.openSession('dsh-2')
     store.openSession('codex-native-1', 'horizontal')
-    assert.equal(store.focusedPane().id, firstPane)
-    assert.equal(store.active().id, firstWindow)
-    assert.equal(store.getSnapshot().windows.flatMap(window => panes(window.root)).filter(pane => pane.resource.kind === 'chat').length, 2)
+    assert.notEqual(store.focusedPane().id, firstPane)
+    assert.notEqual(store.active().id, firstWindow)
+    assert.equal(store.getSnapshot().windows.flatMap(window => panes(window.root)).filter(pane => pane.resource.kind === 'chat').length, 3)
+    assert.equal(panes(store.getSnapshot().windows.find(window => window.id === firstWindow)!.root)[0]!.id, firstPane)
 })
 
 test('mixed nested splits preserve geometry, focus and weights after pane closure', () => {
@@ -43,7 +44,7 @@ test('mixed nested splits preserve geometry, focus and weights after pane closur
     assert.deepEqual(paneRectangles(store.active().root).map(({ width, height }) => [width, height]), [[100, 100]])
 })
 
-test('close and undo a window restores pane identities, but deduplicates sessions opened elsewhere', () => {
+test('close and undo restores original chat occurrences even when the session is open elsewhere', () => {
     const store = workspace()
     store.openSession('native-thread')
     const original = store.active()
@@ -55,8 +56,8 @@ test('close and undo a window restores pane identities, but deduplicates session
     store.restoreWindow()
     assert.equal(store.active().id, original.id)
     assert.equal(store.focusedPane().id, paneId)
-    assert.deepEqual(store.focusedPane().resource, { kind: 'empty' })
-    assert.equal(store.getSnapshot().windows.flatMap(window => panes(window.root)).filter(pane => pane.resource.kind === 'chat').length, 1)
+    assert.deepEqual(store.focusedPane().resource, { kind: 'chat', sessionId: 'native-thread' })
+    assert.equal(store.getSnapshot().windows.flatMap(window => panes(window.root)).filter(pane => pane.resource.kind === 'chat').length, 2)
 })
 
 test('moving a pane changes layout ownership without cloning a session or pane', () => {
@@ -84,7 +85,7 @@ test('native display generation replacement preserves geometry and active window
     assert.deepEqual(paneRectangles(store.active().root), geometry)
 })
 
-test('restored documents reject duplicate identities, sessions, invalid weights and unbounded nesting', () => {
+test('restored documents allow independent chat occurrences but reject duplicate pane identities and invalid weights', () => {
     const store = workspace()
     store.openSession('a'); store.split('horizontal', { kind: 'chat', sessionId: 'b' })
     const valid = store.getSnapshot()
@@ -104,7 +105,7 @@ test('restored documents reject duplicate identities, sessions, invalid weights 
         const child = duplicateSession.windows[0]!.root.children[1]!
         if (child.type === 'pane') child.resource = { kind: 'chat', sessionId: 'a' }
     }
-    assert.throws(() => parseWorkspaceState(duplicateSession), /Duplicate/)
+    assert.deepEqual(parseWorkspaceState(duplicateSession), duplicateSession)
     assert.deepEqual(parseWorkspaceState(JSON.parse(JSON.stringify(valid))), valid)
 })
 

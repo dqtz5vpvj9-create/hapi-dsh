@@ -260,6 +260,7 @@ export class HapiObservedAgent implements Agent {
         : !this.connected || !this.source.active ? 'unavailable' : this.fault !== null ? 'fault' : null,
       model: this.source.model ?? null, effort: this.source.effort ?? this.source.modelReasoningEffort ?? null,
       permissionMode: this.source.permissionMode ?? null, capabilities,
+      serviceTier: this.source.serviceTier ?? null, collaborationMode: this.source.collaborationMode ?? null,
       pendingRequests: this.approvals.pending(), resolvedRequests: this.approvals.resolved(), delivery: this.deliveries(),
       notices: [...this.notices.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-200), usage: this.usage,
       sidechains: [...this.children.summaries, ...this.dshChildren.summaries], error: this.fault, ...sourceTeamProjection(this.source) }
@@ -300,6 +301,20 @@ export class HapiObservedAgent implements Agent {
     if (entry?.message.content.some(block => block.type === 'image') && !capabilities.images) throw new Error('The source runtime does not advertise image input')
     const { message: _message, ...view } = this.journal.retryRejected(localId)
     return view
+  }
+  recoverDelivery(localId: string, action: 'retry' | 'discard', operationId: string): DeliveryView {
+    if (action === 'retry') {
+      this.assertWritable()
+      const entry = this.journal.get(localId), capabilities = this.projection.capabilities
+      if (entry?.mode === 'steer' && !capabilities.steer) throw new Error('The source no longer accepts live steering')
+      if (entry?.message.content.some(block => block.type === 'image') && !capabilities.images) throw new Error('The source runtime does not advertise image input')
+    }
+    const { message: _message, recoveries: _recoveries, ...view } = this.journal.recoverRejected(localId, action, operationId)
+    return view
+  }
+  async checkDelivery(localId: string): Promise<DeliveryView | null> {
+    await this.journal.reconcileSource()
+    return this.deliveries().find(entry => entry.localId === localId) ?? null
   }
   cancel(cause: AgentCancelCause, options?: { keepInbox?: boolean }): void {
     if (cause.kind === 'disposed') return
@@ -494,7 +509,7 @@ export class HapiObservedAgent implements Agent {
       localId, messageId: row.id, text: item.text, mode: item.mode, createdAt: row.createdAt,
       state: row.deliveryState ?? 'queued', scheduledAt: row.scheduledAt ?? null, error: null,
     })
-    return [...values.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined }))
+    return [...values.values()].map(entry => ({ ...entry, editable: this.queuedEditCandidate(entry.localId) !== undefined, cancelable: entry.state === 'queued' }))
       .sort((a, b) => a.createdAt - b.createdAt)
   }
   private syncInbox(): void {

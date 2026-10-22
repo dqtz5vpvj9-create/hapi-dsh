@@ -1,238 +1,237 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { Context } from '@deepseek-ai/cordis'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { NativeControlLedger } from '../native-control-state.ts'
 import type { ObservedControlLedger } from '../observed-controls.tsx'
 import { useWorkspacePane } from '../surface/pane-context.tsx'
-import { modelKey, modelLabel, nativePickerChange, nativePickerData, observedPickerChange, observedPickerData,
-    type PickerAction, type PickerChoice, type PickerData } from './data.ts'
+import { modelKey, modelLabel, nativePickerChange, nativePickerData, nativePickerPending, observedPickerChange, observedPickerData,
+    permissionPickerAvailable, type PickerAction, type PickerData, type PickerPending } from './data.ts'
+import { EffortChoices, Glyph, PendingNote, SourceControlRow, permissionLabel, type PickerMode, type SourceControlSummary, type Translate } from './presentation.tsx'
+import { positionPicker, type PickerPosition } from './position.ts'
+import type { SourceInputProps } from './slots.ts'
 import { composerPickerStyles } from './styles.ts'
 
-type Mode = 'model' | 'permission'
-type InputProps = PropsRuntime<'conversation.input.left'>
-type Translate = (english: string, chinese: string) => string
+type InputProps = SourceInputProps & PropsRenderSlots<'hapi.source.composer-actions'>
 const fallbackPane = { focused: true, visible: true }
 const emptySubscribe = (): (() => void) => () => {}
 const fallbackPaneSnapshot = () => fallbackPane
 
-function Glyph({ kind }: { kind: 'model' | 'permission' | 'check' | 'down' | 'back' | 'close' }) {
-    const path = {
-        model: 'M4 3h8v8H4z M1 6h3 M12 6h3 M1 9h3 M12 9h3 M6 0v3 M9 0v3 M6 11v3 M9 11v3',
-        permission: 'M7.5 1 13 3v4c0 3-3 5-5.5 7C5 12 2 10 2 7V3z M5 7l2 2 3-4',
-        check: 'm3 7 3 3 6-6', down: 'm4 6 3.5 3.5L11 6', back: 'm9 3-5 4.5L9 12', close: 'm4 4 7 7 M11 4l-7 7',
-    }[kind]
-    return <svg viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={path}/></svg>
-}
-function effortLabel(choice: PickerChoice<string | null>, tr: Translate): string {
-    if (choice.value === null) return tr('Default', '默认')
-    const known: Record<string, [string, string]> = { minimal: ['Minimal', '最低'], low: ['Low', '低'], medium: ['Medium', '中'], high: ['High', '高'], xhigh: ['XHigh', '超高'], max: ['Max', '最高'] }
-    const label = known[choice.value]
-    return label ? tr(...label) : choice.label
-}
-function permissionLabel(value: string | null, tr: Translate): string {
-    if (value === 'default') return tr('Request approval', '请求批准')
-    if (value === 'read-only') return tr('Read only', '只读')
-    if (value === 'yolo' || value === 'bypassPermissions') return tr('Full access', '完全访问')
-    return value ?? tr('Permissions', '权限')
-}
-
-function EffortSlider({ data, disabled, select, tr }: { data: PickerData; disabled: boolean; select: (action: PickerAction) => void; tr: Translate }) {
-    const selected = data.efforts.findIndex(row => row.value === data.effort)
-    const [draft, setDraft] = useState(Math.max(0, selected))
-    const dirty = useRef(false)
-    useEffect(() => { setDraft(Math.max(0, selected)); dirty.current = false }, [selected, data.efforts.length, disabled])
-    const commit = (index: number, explicit = false): void => {
-        if (!explicit && !dirty.current) return
-        dirty.current = false
-        const choice = data.efforts[index]
-        if (!disabled && choice && choice.value !== data.effort) select({ kind: 'effort', value: choice.value })
-    }
-    const label = selected < 0 ? data.effort ?? tr('Not reported', '未报告') : effortLabel(data.efforts[draft] ?? data.efforts[selected]!, tr)
-    return <section className="hapi-picker-effort">
-        <div><strong>{tr('Reasoning effort', '推理强度')}</strong><output>{label}</output></div>
-        <input type="range" aria-label={tr('Reasoning effort', '推理强度')} min={0} max={data.efforts.length - 1} step={1}
-            value={draft} aria-valuetext={label} disabled={disabled || data.efforts.length < 2}
-            onChange={event => { dirty.current = true; setDraft(Number(event.currentTarget.value)) }}
-            onPointerUp={event => commit(Number(event.currentTarget.value))}
-            onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) commit(Number(event.currentTarget.value)) }}
-            onBlur={event => commit(Number(event.currentTarget.value))}/>
-        <div className="hapi-picker-stops">{data.efforts.map((choice, index) => <button type="button" key={choice.value ?? 'default'}
-            disabled={disabled} aria-pressed={selected === index} onClick={() => { setDraft(index); commit(index, true) }}>{effortLabel(choice, tr)}</button>)}</div>
-    </section>
-}
-
-interface PickerProps {
+interface ControlsProps {
     ctx: Context
-    mode: Mode
-    sessionId: string
-    initialModel: string | null
-    initialEffort: string | null
-    initialPermission: string | null
+    props: InputProps
+    initial: Omit<SourceControlSummary, 'permissionAvailable'>
+    permissionCapable: boolean
     data: PickerData | null
     loading: boolean
     busy: boolean
-    pending: boolean
+    pending: PickerPending | null
     error: string | null
     sourceLocked: boolean
     refresh(): Promise<void>
     apply(action: PickerAction): Promise<boolean>
 }
 
-/** The popup is our own portal, so a narrow official toolbar's overflow cannot
- * clip it. Session ids and controllers are captured by the originating view. */
-function Picker({ ctx, mode, sessionId, initialModel, initialEffort, initialPermission, data, loading, busy, pending, error, sourceLocked, refresh, apply }: PickerProps) {
+/** A single session occurrence owns the three controls and their callbacks.
+ * Portals preserve its React/session context; global focused-session state is
+ * never used to route a setting or an action. */
+function SourceControls({ ctx, props, initial, permissionCapable, data, loading, busy, pending, error, sourceLocked, refresh, apply }: ControlsProps) {
     const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
     const tr: Translate = (en, zh) => locale.startsWith('zh') ? zh : en
     const pane = useWorkspacePane(ctx)
     const paneState = useSyncExternalStore(pane?.state.subscribe ?? emptySubscribe, pane?.state.getSnapshot ?? fallbackPaneSnapshot)
-    const [open, setOpen] = useState(false), [page, setPage] = useState<'options' | 'models'>('options')
-    const anchor = useRef<HTMLButtonElement>(null), popup = useRef<HTMLDivElement>(null)
-    const id = useId(), [position, setPosition] = useState({ left: 8, top: 8 })
-    const visible = open && paneState.visible && paneState.focused
-    const disabled = busy || pending || loading || sourceLocked
-    const currentModel = data ? modelLabel(data.model, data.models) : initialModel
-    const currentEffort = data ? data.effort : initialEffort
-    const currentPermission = data ? data.permission : initialPermission
-    const caption = mode === 'model' ? currentModel ?? tr('Model', '模型') : permissionLabel(currentPermission, tr)
-    const close = (restoreFocus = false): void => { setOpen(false); if (restoreFocus && paneState.visible) anchor.current?.focus({ preventScroll: true }) }
+    const [open, setOpen] = useState<PickerMode | null>(null), [page, setPage] = useState<'options' | 'models'>('options')
+    const [attention, setAttention] = useState(false)
+    const triggers = useRef<Partial<Record<PickerMode, HTMLButtonElement | null>>>({})
+    const settingsPopup = useRef<HTMLDivElement>(null), actionsPopup = useRef<HTMLDivElement>(null)
+    const id = useId(), [position, setPosition] = useState<PickerPosition>({ left: 8, top: 8, width: 320, maxHeight: 520, layout: 'popover' })
+    const permissionAvailable = permissionPickerAvailable(permissionCapable, data)
+    const visible = paneState.visible ? open : null
+    const disabled = busy || Boolean(pending) || sourceLocked || !data
+    const summary: SourceControlSummary = {
+        model: data ? modelLabel(data.model, data.models) : initial.model,
+        effort: data ? data.effort : initial.effort,
+        permission: data ? data.permission : initial.permission,
+        serviceTier: data ? data.serviceTier : initial.serviceTier,
+        readOnly: initial.readOnly || Boolean(data?.readOnly), permissionAvailable, collaboration: initial.collaboration ?? null,
+    }
+    const close = useCallback((restoreFocus = false): void => {
+        setOpen(null)
+        if (restoreFocus && paneState.visible && open) triggers.current[open]?.focus({ preventScroll: true })
+    }, [open, paneState.visible])
+    const closeActions = useCallback(() => setOpen(current => current === 'actions' ? null : current), [])
+    const toggle = (mode: PickerMode): void => { setPage('options'); setOpen(current => current === mode ? null : mode) }
+    const panelElement = (): HTMLDivElement | null => visible === 'actions' ? actionsPopup.current : settingsPopup.current
 
-    useEffect(() => { if (!paneState.visible || !paneState.focused) setOpen(false) }, [paneState.visible, paneState.focused])
-    useEffect(() => { if (visible) void refresh() }, [visible, refresh])
-    // Both capsules share one ledger. The model occurrence owns pending read
-    // reconciliation even while its popover is closed; writes are never replayed.
+    useEffect(() => { if (!paneState.visible || open === 'permission' && !permissionAvailable) setOpen(null) }, [paneState.visible, open, permissionAvailable])
+    useEffect(() => { if (visible && visible !== 'actions') void refresh() }, [visible, refresh])
+    // One reconciliation timer per occurrence, including a closed pending
+    // picker. The durable ledger never resubmits an uncertain operation.
     useEffect(() => {
-        if (!paneState.visible || !(visible || mode === 'model' && pending)) return
+        if (!paneState.visible || !(visible && visible !== 'actions' || pending)) return
         const timer = setInterval(() => { void refresh() }, 3000)
         return () => { clearInterval(timer) }
-    }, [visible, paneState.visible, mode, pending, refresh])
+    }, [visible, paneState.visible, pending?.operationId, refresh])
     useLayoutEffect(() => {
         if (!visible) return
+        const button = triggers.current[visible], panel = panelElement()
+        if (!button || !panel) return
         const positionPopup = (): void => {
-            const button = anchor.current, panel = popup.current
-            if (!button || !panel) return
-            const box = button.getBoundingClientRect(), view = window.visualViewport
-            const left = view?.offsetLeft ?? 0, top = view?.offsetTop ?? 0
-            const width = view?.width ?? window.innerWidth, height = view?.height ?? window.innerHeight
-            const x = Math.max(left + 8, Math.min(box.right - panel.offsetWidth, left + width - panel.offsetWidth - 8))
-            const above = box.top - panel.offsetHeight - 7
-            const y = above >= top + 8 ? above : Math.min(box.bottom + 7, top + height - panel.offsetHeight - 8)
-            setPosition(current => current.left === x && current.top === Math.max(top + 8, y) ? current : { left: x, top: Math.max(top + 8, y) })
+            const view = window.visualViewport
+            const next = positionPicker(button.getBoundingClientRect(), {
+                left: view?.offsetLeft ?? 0, top: view?.offsetTop ?? 0,
+                width: view?.width ?? window.innerWidth, height: view?.height ?? window.innerHeight,
+            }, Math.max(panel.offsetHeight, panel.scrollHeight + 2), button.closest('.hapi-pane')?.getBoundingClientRect())
+            setPosition(current => Object.keys(next).every(key => current[key as keyof PickerPosition] === next[key as keyof PickerPosition]) ? current : next)
         }
         positionPopup()
+        const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(positionPopup)
+        observer?.observe(panel); observer?.observe(button)
         window.addEventListener('resize', positionPopup)
         window.addEventListener('scroll', positionPopup, true)
         window.visualViewport?.addEventListener('resize', positionPopup)
-        return () => { window.removeEventListener('resize', positionPopup); window.removeEventListener('scroll', positionPopup, true); window.visualViewport?.removeEventListener('resize', positionPopup) }
-    }, [visible, page, data, loading, error, pending])
+        window.visualViewport?.addEventListener('scroll', positionPopup)
+        return () => {
+            observer?.disconnect(); window.removeEventListener('resize', positionPopup); window.removeEventListener('scroll', positionPopup, true)
+            window.visualViewport?.removeEventListener('resize', positionPopup); window.visualViewport?.removeEventListener('scroll', positionPopup)
+        }
+    }, [visible, page, data, loading, error, pending, locale])
     useEffect(() => {
         if (!visible) return
-        const outside = (event: PointerEvent): void => {
+        const outside = (event: Event): void => {
             const target = event.target
-            if (target instanceof Node && !anchor.current?.contains(target) && !popup.current?.contains(target)) close()
+            if (target instanceof Node && !Object.values(triggers.current).some(button => button?.contains(target)) && !panelElement()?.contains(target)) close()
         }
         const escape = (event: KeyboardEvent): void => {
             if (event.key === 'Escape') { event.stopPropagation(); event.preventDefault(); close(true) }
         }
         document.addEventListener('pointerdown', outside, true)
+        document.addEventListener('focusin', outside, true)
         document.addEventListener('keydown', escape, true)
-        popup.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true })
-        return () => { document.removeEventListener('pointerdown', outside, true); document.removeEventListener('keydown', escape, true) }
-    }, [visible])
+        panelElement()?.querySelector<HTMLElement>('input:checked:not(:disabled),button:not(:disabled),input:not(:disabled)')?.focus({ preventScroll: true })
+        return () => {
+            document.removeEventListener('pointerdown', outside, true); document.removeEventListener('focusin', outside, true)
+            document.removeEventListener('keydown', escape, true)
+        }
+    }, [visible, close])
 
     const select = (action: PickerAction): void => {
-        if (disabled) return
+        if (disabled || action.kind === 'permission' && !permissionAvailable) return
         void apply(action).then(confirmed => { if (confirmed && action.kind === 'model') setPage('options') })
     }
-    const panel = visible && <div ref={popup} id={id} className="hapi-picker-popover" role="dialog" aria-modal="false"
-        aria-label={mode === 'model' ? tr('Model settings', '模型设置') : tr('Permissions', '权限')}
-        data-hapi-picker-popup={mode} data-picker-session={sessionId} style={position}>
-        <header>{mode === 'model' && page === 'models' && <button type="button" aria-label={tr('Back to model settings', '返回模型设置')} onClick={() => setPage('options')}><Glyph kind="back"/></button>}
-            <strong>{mode === 'permission' ? tr('Permissions', '权限') : page === 'models' ? tr('Choose model', '选择模型') : tr('Model settings', '模型设置')}</strong>
-            <button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
-        {mode === 'model' && page === 'options' && <>
+    const heading = visible === 'permission' ? tr('Permissions', '权限') : page === 'models' ? tr('Choose model', '选择模型') : tr('Model settings', '模型设置')
+    const panelStyle = { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }
+    const settings = visible && visible !== 'actions' && <div ref={settingsPopup} id={`${id}-settings`} className="hapi-picker-popover" role="dialog" aria-modal="false"
+        aria-label={visible === 'model' ? tr('Model settings', '模型设置') : tr('Permissions', '权限')}
+        data-hapi-picker-popup={visible} data-picker-layout={position.layout} data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
+        <header>{visible === 'model' && page === 'models' && <button type="button" aria-label={tr('Back to model settings', '返回模型设置')} onClick={() => setPage('options')}><Glyph kind="back"/></button>}
+            <strong>{heading}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
+        {visible === 'model' && page === 'options' && <>
             <div className="hapi-picker-model-page"><button type="button" disabled={!data?.models.length} onClick={() => setPage('models')} aria-label={tr('Choose model', '选择模型')}>
-                <Glyph kind="model"/><span>{caption}<small>{tr('Choose a model', '选择模型')}</small></span><Glyph kind="down"/></button></div>
-            {data && data.efforts.length > 0 && <EffortSlider data={data} disabled={disabled || !data.editable.effort} select={select} tr={tr}/>}
+                <Glyph kind="model"/><span>{summary.model ?? tr('Model', '模型')}<small>{tr('Choose a model', '选择模型')}</small></span><Glyph kind="down"/></button></div>
+            {data && data.efforts.length > 0 && <EffortChoices data={data} disabled={disabled || !data.editable.effort} select={select} tr={tr} name={`${id}-effort`}/>}
             {data && (data.fastAvailable || data.fast) && <div className="hapi-picker-fast"><span>Fast</span>
                 <button className="hapi-picker-switch" type="button" role="switch" aria-label={tr('Fast mode', '快速模式')} aria-checked={data.fast}
                     disabled={disabled || !data.editable.fast} onClick={() => select({ kind: 'fast', value: !data.fast })}><span/></button></div>}
         </>}
-        {mode === 'model' && page === 'models' && <div className="hapi-picker-options" role="group" aria-label={tr('Models', '模型')}>
-            {data?.models.map(choice => <button type="button" role="radio" key={modelKey(choice.value)} aria-checked={modelKey(data.model) === modelKey(choice.value)}
-                disabled={disabled || !data.editable.model} onClick={() => select({ kind: 'model', value: choice.value })}>
-                <span>{choice.label}{choice.detail && <small>{choice.detail}</small>}</span>{modelKey(data.model) === modelKey(choice.value) && <Glyph kind="check"/>}</button>)}
+        {visible === 'model' && page === 'models' && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Models', '模型')}>
+            {data?.models.map(choice => <label key={modelKey(choice.value)}>
+                <input type="radio" name={`${id}-model`} value={modelKey(choice.value)} checked={modelKey(data.model) === modelKey(choice.value)}
+                    disabled={disabled || !data.editable.model} onChange={() => select({ kind: 'model', value: choice.value })}/>
+                <span>{choice.label}{choice.detail && <small>{choice.detail}</small>}</span>{modelKey(data.model) === modelKey(choice.value) && <Glyph kind="check"/>}
+            </label>)}
         </div>}
-        {mode === 'permission' && <div className="hapi-picker-options" role="group" aria-label={tr('Permission modes', '权限模式')}>
-            {data?.permissions.map(value => <button type="button" role="radio" key={value} aria-checked={data.permission === value}
-                disabled={disabled || !data.editable.permission} onClick={() => select({ kind: 'permission', value })}>
-                <span>{permissionLabel(value, tr)}</span>{data.permission === value && <Glyph kind="check"/>}</button>)}
+        {visible === 'permission' && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Permission modes', '权限模式')}>
+            {data?.permissions.map(value => <label key={value}>
+                <input type="radio" name={`${id}-permission`} value={value} checked={data.permission === value}
+                    disabled={disabled || !data.editable.permission} onChange={() => select({ kind: 'permission', value })}/>
+                <span>{permissionLabel(value, tr)}</span>{data.permission === value && <Glyph kind="check"/>}
+            </label>)}
         </div>}
         {!data && loading && <p className="hapi-picker-note" role="status">{tr('Loading settings…', '正在读取设置…')}</p>}
-        {data && (mode === 'permission' ? !data.editable.permission : !data.editable.model && !data.editable.effort && !data.editable.fast) && <p className="hapi-picker-note">{tr('Settings are controlled by the source session.', '设置由源会话控制。')}</p>}
-        {pending && <p className="hapi-picker-note" role="status">{tr('Waiting for the source to confirm…', '等待源会话确认…')}</p>}
+        {data && (sourceLocked || (visible === 'permission' ? !data.editable.permission : !data.editable.model && !data.editable.effort && !data.editable.fast))
+            && <p className="hapi-picker-note">{tr('The source currently does not allow these changes.', '源会话当前不允许修改这些设置。')}</p>}
+        {pending && <PendingNote pending={pending} data={data} tr={tr}/>}
         {data?.warnings.map((message, index) => <p key={index} className="hapi-picker-note">{message}</p>)}
         {error && <p className="hapi-picker-note" role="alert">{error}</p>}
         {(error || pending) && <button className="hapi-picker-refresh" type="button" disabled={loading || busy} onClick={() => { void refresh() }}>{tr('Check source result', '检查源会话结果')}</button>}
     </div>
-    return <span className="hapi-picker-anchor" data-hapi-composer-picker={mode}>
-        <button ref={anchor} type="button" className="hapi-picker-capsule" aria-haspopup="dialog" aria-expanded={visible} aria-controls={visible ? id : undefined}
-            data-pending={pending ? '' : undefined} title={mode === 'model' ? tr('Model and reasoning effort', '模型与推理强度') : tr('Session permissions', '会话权限')}
-            onClick={() => { setPage('options'); setOpen(current => !current) }}>
-            <Glyph kind={mode}/><span data-picker-label>{caption}</span>{mode === 'model' && currentEffort && <small>{currentEffort}</small>}<Glyph kind="down"/>
-        </button>{panel && createPortal(panel, document.body)}
-    </span>
+    // Keep our own action subtree mounted while closed: parking may hold an
+    // unresolved save and original attachment bytes. Hidden panes hide this
+    // portal too, without replacing its controller with a new occurrence.
+    const actions = <div ref={actionsPopup} id={`${id}-actions`} className="hapi-picker-popover hapi-picker-actions" hidden={visible !== 'actions'} role="dialog" aria-modal="false"
+        aria-label={tr('More input controls', '更多输入控件')} data-hapi-picker-popup="actions" data-picker-layout={position.layout}
+        data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
+        <header><strong>{tr('More input controls', '更多输入控件')}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
+        <div role="group" aria-label={tr('More input controls', '更多输入控件')}>
+            {props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
+        </div>
+    </div>
+    return <><SourceControlRow summary={summary} sessionId={props.sessionId} open={visible} panelId={id} pending={Boolean(pending)} attention={attention} tr={tr} onToggle={toggle}
+        refs={{ model: node => { triggers.current.model = node }, permission: node => { triggers.current.permission = node }, actions: node => { triggers.current.actions = node } }}/>
+        {createPortal(<>{settings}{actions}</>, document.body)}</>
+}
+
+function NativeControls({ ctx, native, props }: { ctx: Context; native: NativeControlLedger; props: InputProps }) {
+    const source = props.useProjection('hapi')
+    const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
+    const controller = useMemo(() => native.settings(props.sessionId), [native, props.sessionId])
+    const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
+    const data = useMemo(() => state.data ? nativePickerData(state.data) : null, [state.data])
+    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.reasoningEffort, source?.permissionMode, source?.serviceTier, source?.collaborationMode])
+    if (!source) return null
+    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.reasoningEffort, permission: source.permissionMode ?? null, readOnly: source.readOnly, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
+        permissionCapable data={data} loading={state.loading} busy={state.busy} pending={nativePickerPending(state.pending)}
+        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
+        refresh={controller.refresh} apply={async action => {
+            if (locked || source.readOnly) return false
+            const latest = controller.getSnapshot().data
+            const change = latest ? nativePickerChange(nativePickerData(latest), action) : undefined
+            return change ? controller.apply(change) : false
+        }}/>
+}
+
+function ObservedControls({ ctx, observed, props }: { ctx: Context; observed: ObservedControlLedger; props: InputProps }) {
+    const source = props.useProjection('hapiObserved')
+    const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
+    const controller = useMemo(() => observed.settings(props.sessionId), [observed, props.sessionId])
+    const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
+    const data = useMemo(() => {
+        if (!state.data) return null
+        const result = observedPickerData(state.data)
+        return { ...result, editable: { ...result.editable,
+            model: result.editable.model && Boolean(source?.capabilities.model), effort: result.editable.effort && Boolean(source?.capabilities.effort),
+            permission: result.editable.permission && Boolean(source?.capabilities.permissions) } }
+    }, [state.data, source?.capabilities.model, source?.capabilities.effort, source?.capabilities.permissions])
+    useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.effort, source?.permissionMode, source?.serviceTier, source?.collaborationMode])
+    if (!source) return null
+    return <SourceControls ctx={ctx} props={props} initial={{ model: source.model, effort: source.effort, permission: source.permissionMode, readOnly: source.readOnly, serviceTier: source.serviceTier ?? null, collaboration: source.collaborationMode ?? null }}
+        permissionCapable={source.capabilities.permissions} data={data} loading={state.loading} busy={state.busy} pending={state.pending}
+        error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)} sourceLocked={locked || source.readOnly}
+        refresh={controller.refresh} apply={async action => {
+            if (locked || source.readOnly || action.kind === 'permission' && !source.capabilities.permissions
+                || action.kind === 'model' && !source.capabilities.model || action.kind === 'effort' && !source.capabilities.effort) return false
+            const latest = controller.getSnapshot().data
+            const change = latest ? observedPickerChange(observedPickerData(latest), action) : undefined
+            return change ? controller.apply(change) : false
+        }}/>
+}
+
+/** Ordinary DSH and source child-history trees have no replacement controls. */
+export function SourceComposerControls({ ctx, native, observed, props }: { ctx: Context; native: NativeControlLedger; observed: ObservedControlLedger; props: InputProps }) {
+    const nativeSource = props.useProjection('hapi'), observedSource = props.useProjection('hapiObserved')
+    if (observedSource?.sidechain || observedSource?.dshChild) return null
+    if (nativeSource) return <NativeControls key={props.sessionId} ctx={ctx} native={native} props={props}/>
+    if (observedSource) return <ObservedControls key={props.sessionId} ctx={ctx} observed={observed} props={props}/>
+    return null
 }
 
 export function installComposerPicker(ctx: Context, native: NativeControlLedger, observed: ObservedControlLedger): () => void {
-    const Native = ({ props, mode }: { props: InputProps; mode: Mode }) => {
-        const source = props.useProjection('hapi')
-        const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
-        const controller = useMemo(() => native.settings(props.sessionId), [props.sessionId])
-        const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
-        const data = useMemo(() => state.data ? nativePickerData(state.data) : null, [state.data])
-        // No cold-open settings fetch. Once inspected, follow source-owned
-        // model changes so a closed capsule does not retain a stale label.
-        useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.reasoningEffort])
-        if (!source) return null
-        return <Picker ctx={ctx} mode={mode} sessionId={props.sessionId} initialModel={source.model} initialEffort={source.reasoningEffort} initialPermission={null}
-            data={data} loading={state.loading} busy={state.busy} pending={Boolean(state.pending)} error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)}
-            sourceLocked={locked || source.readOnly} refresh={controller.refresh} apply={async action => {
-                const latest = controller.getSnapshot().data
-                const change = latest ? nativePickerChange(nativePickerData(latest), action) : undefined
-                return change ? controller.apply(change) : false
-            }}/>
-    }
-    const Observed = ({ props, mode }: { props: InputProps; mode: Mode }) => {
-        const source = props.useProjection('hapiObserved')
-        const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
-        const controller = useMemo(() => observed.settings(props.sessionId), [props.sessionId])
-        const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
-        const data = useMemo(() => state.data ? observedPickerData(state.data) : null, [state.data])
-        useEffect(() => { if (controller.getSnapshot().data) void controller.refresh() }, [controller, source?.model, source?.effort, source?.permissionMode])
-        if (!source) return null
-        return <Picker ctx={ctx} mode={mode} sessionId={props.sessionId} initialModel={source.model} initialEffort={source.effort} initialPermission={source.permissionMode}
-            data={data} loading={state.loading} busy={state.busy} pending={Boolean(state.pending)} error={state.error ?? (state.receipt?.status === 'rejected' ? state.receipt.message : null)}
-            sourceLocked={locked || source.readOnly} refresh={controller.refresh} apply={async action => {
-                const latest = controller.getSnapshot().data
-                const change = latest ? observedPickerChange(observedPickerData(latest), action) : undefined
-                return change ? controller.apply(change) : false
-            }}/>
-    }
-    const Source = ({ props, mode }: { props: InputProps; mode: Mode }) => {
-        const nativeSource = props.useProjection('hapi'), observedSource = props.useProjection('hapiObserved')
-        if (observedSource?.sidechain || observedSource?.dshChild) return null
-        if (nativeSource) return <Native key={props.sessionId} props={props} mode={mode}/>
-        if (observedSource) return <Observed key={props.sessionId} props={props} mode={mode}/>
-        return null
-    }
-    const stops = [
-        ctx.slots.inject('conversation.input.left', () => ctx.slots.register({ name: 'conversation.input.left', id: 'hapi.permission-picker', order: -90 },
-            (props: InputProps) => <Source props={props} mode="permission"/>)),
-        ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hapi.model-picker', order: 90 },
-            (props: InputProps) => <Source props={props} mode="model"/>)),
-    ]
+    // One public list contribution declares one private-to-our-plugin child
+    // slot. Neither official single model/permission slot is registered over.
+    const stop = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hapi.source-controls', order: 90,
+        children: { 'hapi.source.composer-actions': { kind: 'single', scope: 'session' } },
+    }, (props: InputProps) => <SourceComposerControls ctx={ctx} native={native} observed={observed} props={props}/>))
     const style = document.createElement('style'); style.textContent = composerPickerStyles; document.head.append(style)
-    return () => { for (const stop of stops.reverse()) stop(); style.remove() }
+    return () => { stop(); style.remove() }
 }
