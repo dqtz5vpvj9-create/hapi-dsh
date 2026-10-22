@@ -395,8 +395,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         // Keep the warm lease while a pane is visible. Otherwise closing its
         // final view retires the official binding before the catalog can notify
         // warmup, turning a return visit into another cold session open.
-        warmup.update([...recentlyViewed.filter(id => ids.has(id)), ...eligible
-            .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id)).map(row => row.id)])
+        // Catalog notifications maintain deliberate visits only. Adding the
+        // five newest rows here fights hover eviction and opens unrelated logs.
+        warmup.update(recentlyViewed.filter(id => ids.has(id)))
     }
     const warmSession = (id: SessionId): void => {
         if (!warmup || signal.aborted) return

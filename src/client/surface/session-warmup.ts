@@ -111,14 +111,16 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
             if (disposed) return
             const selected = [...new Set(recent)].slice(0, limit)
             const desired = new Set(selected)
-            for (const [id, entry] of entries) if (!desired.has(id)) { entries.delete(id); release(entry) }
-            // Refresh only queue order, retaining every still-selected entry's
-            // existing reference. A hovered candidate takes the next free slot
-            // instead of waiting behind older background candidates.
-            for (const id of selected) {
-                const entry = entries.get(id) ?? { id, phase: 'queued' as const }
-                entries.delete(id); entries.set(id, entry)
-            }
+            const previous = new Map(entries)
+            // Commit the complete next selection before releasing references.
+            // release() synchronously publishes the official catalog, which can
+            // reenter update(). Iterating the live Map while that callback adds
+            // candidates back makes eviction loop forever on a sidebar hover.
+            entries.clear()
+            for (const id of selected) entries.set(id, previous.get(id) ?? { id, phase: 'queued' })
+            for (const [id, entry] of previous) if (!desired.has(id)) release(entry)
+            // A reentrant selection is newer and already owns entries. Do not
+            // overwrite it with the outer call's candidates after release.
             pump()
         },
         getSnapshot() {

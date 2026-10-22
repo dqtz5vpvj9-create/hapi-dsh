@@ -8,7 +8,7 @@ import { createSessionWarmup } from '../src/client/surface/session-warmup.ts'
 const ids = (...values: string[]): SessionId[] => values as SessionId[]
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
-function fixture(onRetain?: (id: SessionId) => void) {
+function fixture(onRetain?: (id: SessionId) => void, onRelease?: (id: SessionId) => void) {
     const refs: Array<{ id: SessionId; source: string; signal?: AbortSignal | undefined; releases: number; resolve(): void; reject(error: Error): void; grow(count: number): void; watchers(): number }> = []
     const sessions: Pick<ISessions, 'retain'> = { retain(target, options) {
         const id = typeof target === 'string' ? target : target.childSessionId
@@ -24,7 +24,7 @@ function fixture(onRetain?: (id: SessionId) => void) {
         const record = { id, source: options.source, signal: options.signal, releases: 0, resolve: () => resolve(binding), reject,
             grow(count: number) { eventCount = count; for (const listener of listeners) listener() }, watchers: () => listeners.size }
         const reference: SessionReference = { sessionId: id, binding, ready,
-            release() { record.releases++ }, [Symbol.dispose]() { this.release() } }
+            release() { record.releases++; onRelease?.(id) }, [Symbol.dispose]() { this.release() } }
         refs.push(record); onRetain?.(id)
         return reference
     } }
@@ -165,4 +165,29 @@ test('an oversized ready window skips presentation warming and frees the next ac
     f.refs[1]!.resolve(); await tick()
     assert.deepEqual(prepared, ['short'])
     warmup.dispose(); assert.equal(f.refs[1]!.watchers(), 0)
+})
+
+// Protocol reproduction of the uploaded trace: release -> catalog -> warmRecent
+// reenters update while a hover is evicting the background candidate.
+test('synchronous catalog reentry during eviction cannot repeatedly release a re-added candidate', async () => {
+    let warmup!: ReturnType<typeof createSessionWarmup>
+    let releases = 0
+    const f = fixture(undefined, () => {
+        if (++releases > 10) throw new Error('eviction/reacquisition loop')
+        warmup.update(ids('a', 'b'))
+    })
+    warmup = createSessionWarmup(f.sessions)
+    try {
+        warmup.update(ids('a', 'b'))
+        f.refs[0]!.resolve(); f.refs[1]!.resolve(); await tick()
+        warmup.update(ids('a'))
+        assert.equal(releases, 1)
+        assert.equal(f.refs.length, 3)
+        assert.equal(f.refs[1]!.releases, 1)
+        assert.equal(f.refs[2]!.releases, 0)
+        assert.deepEqual(warmup.getSnapshot().ids, ids('a', 'b'))
+        f.refs[2]!.resolve(); await tick()
+        assert.equal(warmup.getSnapshot().ready, 2)
+    } finally { warmup.dispose() }
+    assert.ok(f.refs.every(ref => ref.releases === 1))
 })
