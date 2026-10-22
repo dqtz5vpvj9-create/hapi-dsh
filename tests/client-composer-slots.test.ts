@@ -21,7 +21,7 @@ test('only source-owned queues suppress the incompatible official queue; ordinar
     const original = () => null
     const declaration = ctx.plugin({ name: 'source-queue-fixture', apply(owner: Context) {
         owner.slots.register({ name: 'root', children: { 'conversation.input.dock': { kind: 'list', scope: 'session' } } },
-            ({ renderSlot }: PropsRenderSlots<'conversation.input.dock'>) => renderSlot('conversation.input.dock', {}))
+            ({ renderSlot }: PropsRenderSlots<'conversation.input.dock'>) => { void renderSlot; return null })
         owner.slots.register({ name: 'conversation.input.dock', id: 'queue', order: 20, inject: () => ({ marker: 'official queue' }) }, original)
     } })
     await declaration
