@@ -152,6 +152,24 @@ Runner 只监听本机回环地址，Hub 不需要向 Runner 打开入站端口�
 
 连接恢复会重新建立传输并同步目录。未完成请求返回连接失败；如果远端可能已执行，不会盲目自动重试。会话本身仍属于远端官方 DSH，Runner 不复制或回放引擎执行。
 
+### 接入已经运行的 DSH Web
+
+统一列表只包含主 Host 和已配对的 Host；同机另一个 DSH Web 的会话不会自动进入列表。要保留原 Web 的执行归属和插件配置，在它的现有 profile 中挂载 Runner 插件，不要新开一个指向相同数据目录的 DSH 进程。
+
+先用 `hapi-dsh pair` 为现有 Web 生成独立邀请，再执行 `hapi-dsh runner init --pairing-file PRIVATE_FILE --config /absolute/existing-web-runner.json --dsh-home EXISTING_HOME --config-only`。这一步只生成私有配对配置；不要执行 `runner start`。在原 Web profile 的 `cordis.patch.yml` 追加以下配置，将两个路径替换为实际安装位置：
+
+```yaml
+- insert:
+    - id: hapi-dsh-existing-web-runner
+      name: /absolute/hapi-dsh/dist/runner/index.js
+      config:
+        configFile: /absolute/existing-web-runner.json
+```
+
+插件直接使用该 Web 的官方连接、客户端模块和监听服务；配置中的 `dsh.profile`、`server` 仅供独立 Runner 启动器使用，在这种挂载方式下不启动新实例。原 Web 必须使用固定 DSH 版本并监听 `127.0.0.1`。认证仍由原 Web 与配对凭据共同控制，原始 Web 登录令牌不传给浏览器。
+
+配置通常通过官方 HMR 生效。如果插件管理接口报告 `restart-required`，先确认原 Web 没有正在执行的会话，再正常重启原进程。接入后，通过主 Host 的机器目录及该机器路由下的 `hapi-dsh/bootstrap`、`api/session/list` 检查连通性和原会话 ID；界面由用户手测。
+
 ## Profile 与插件管理
 
 `init` 对新 profile 执行官方的 `--from-default-profile web`，随后执行 `dsh plugin ... add link:...`。`install` 对既有 Web profile 只安装 bundle，并通过 `--dump-config` 验证结果。现有目录缺少 manifest 或 profile 类型不兼容时会停止，保留原始内容供人工修复。
