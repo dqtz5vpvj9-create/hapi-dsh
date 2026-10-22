@@ -35,7 +35,7 @@
 
 `hapi.source.composer-actions` 是由该 contribution 的公开 `children` 声明建立的 session-scoped 自有 child slot。它保留原 parking 控制器及附件的生命周期。没有 takeover `conversation.composer`，没有抢占官方 model/permission single slot；普通 DSH 不渲染本源 controls，保留官方控制。重复官方 model、permission、plan cell 只在包含本源组的 composer 内隐藏。第三方 contribution、Stop、Send 和官方编辑器 DOM 不被移入本插件菜单。
 
-effort 使用源支持选项的离散 radio/分段控件，不把枚举伪装成连续数值。Standard 只省略服务档位标签，不隐藏权限与只读。模型/权限勾选和触发器始终取源确认值；待确认目标以“正在确认”单独列出，RPC 请求发出、按钮点击成功或网络返回不直接改为已确认。失败保留旧确认值及操作旁的错误。
+effort 按用户 2026-10-22 的最终选择使用滑杆，刻度只包含源模型支持的档位；拖动预览，松手或键盘调整后提交，也可点击刻度文字。Standard 只省略服务档位标签，不隐藏权限与只读。模型/权限勾选和触发器始终取源确认值；待确认目标以“正在确认”单独列出，RPC 请求发出、按钮点击成功或网络返回不直接改为已确认。失败保留旧确认值及操作旁的错误。
 
 执行中仍可查看设置；选项可提交性取决于源广告能力、只读/锁、当前控制操作与 ledger pending。缺少延迟生效契约就不显示“下轮生效”。Native Fast 和 observed Fast 分别按其真实服务档位协议判定，不能用一个装饰开关伪装通用能力。
 
@@ -131,6 +131,9 @@ workspace-navigation 浏览器专项 **2/2** 已通过：显式 deep link 在 li
 ## 2026-10-22 后续快速发布
 
 以上表格保留原验收快照，不代表当前部署状态。当前阶段按 [AGENTS.md](../AGENTS.md) 由用户手测界面，Agent 只做相关逻辑、类型、构建与 HTTP 检查。
+
+- 用户最终确认：保留每个 Pane 的独立标题栏；effort 改为滑杆；Codex glass 立即设为默认。新的默认覆盖上文旧计划中的 radio 与非默认 Glass 选择。
+- 没有已存外观偏好时，首屏启用 Codex glass；已有明确主题选择或关闭外观的设置继续生效。OLED 黑色背景、降低透明度和 forced-colors 的降级路径保留。外观与 picker 定向逻辑测试 13/13、Client 类型检查通过，界面交由用户手测。
 
 - `118c33c` 已构建发布：初始补历史最多两页，窗口达到 1500 个事件后停止继续预取；预热缓存超过同一预算时只释放缓存自己的 reference；Conversation 外层不再因正文流和每次草稿更新而重新渲染。50 项相关逻辑测试、Client 类型检查通过。
 - 待回答表单按 Hub 和原始源会话、request ID 保存身份，display generation 改变时继续复用答案与本页的提交回执。未提交的选项、文本及当前问题写入浏览器存储，刷新后恢复；源端确认请求已结束才清理，不自动提交或重发。相关 9 项逻辑测试和 Client 类型检查通过。

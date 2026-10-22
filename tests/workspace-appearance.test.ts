@@ -20,6 +20,18 @@ function storage(entries: Array<[string, string]> = []) {
         setItem: (key, value) => { values.set(key, value) }, removeItem: key => { values.delete(key) } })
     return { values, preferences }
 }
+
+test('Codex glass is active by default while explicit palette and opt-out choices remain authoritative', () => {
+    const fresh = storage(), disabled = storage([['hapi-dsh-appearance-enabled', 'false']]), chosen = storage([['hapi-color-theme', 'codex']])
+    const defaults = readAppearance(fresh.preferences)
+    assert.equal(defaults.enabled, true)
+    assert.equal(defaults.palette, 'glass')
+    const tokens = appearanceTokens(defaults, { fontSizes: { text: 14, code: 11, terminal: 13 } } as ThemeSnapshot)
+    assert.deepEqual(tokens['--hapi-chrome-backdrop'], { light: 'blur(14px)', dark: 'blur(14px)' })
+    assert.equal(readAppearance(disabled.preferences).enabled, false)
+    assert.equal(readAppearance(chosen.preferences).palette, 'codex')
+    for (const item of [fresh, disabled, chosen]) item.preferences.dispose()
+})
 function officialTheme() {
     const require = createRequire(import.meta.url)
     let registration: { factory(resolve: (id: string) => unknown): Record<string, unknown> } | undefined

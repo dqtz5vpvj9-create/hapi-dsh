@@ -46,6 +46,13 @@ export const composerPickerStyles = String.raw`
 .hapi-picker-options>label:has(input:focus-visible),.hapi-picker-segments>label:has(input:focus-visible) {outline:2px solid var(--hapi-palette-accent,#359b6c);outline-offset:2px}
 .hapi-picker-effort {margin:12px 4px 8px;padding:0;min-width:0;border:0}
 .hapi-picker-effort legend {margin-bottom:8px;font-weight:600}
+.hapi-picker-effort-value {display:flex;align-items:center;justify-content:center;gap:5px;font-size:12px;min-height:20px}
+.hapi-picker-effort-slider {display:block;width:100%;height:44px;margin:0;accent-color:var(--hapi-palette-accent,#359b6c);cursor:pointer}
+.hapi-picker-effort-slider:disabled {opacity:.5;cursor:default}
+.hapi-picker-effort-stops {display:flex;justify-content:space-between;gap:2px}
+.hapi-picker-effort-stops>button {flex:1;min-width:0;min-height:44px;padding:3px 1px;border:0;border-radius:6px;background:transparent;font-size:11px;color:var(--dsw-alias-label-secondary,#65717b)}
+.hapi-picker-effort-stops>button[aria-pressed=true] {color:var(--hapi-palette-accent,#359b6c);font-weight:600}
+.hapi-picker-effort-stops>button:hover {background:var(--dsw-alias-interactive-bg-hover,#eef2f1)}
 .hapi-picker-segments {display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:4px}
 .hapi-picker-segments>label {box-sizing:border-box;display:flex;align-items:center;justify-content:center;min-height:44px;padding:6px 5px;border:1px solid var(--dsw-alias-border-l2,#d8dedf);border-radius:8px;color:var(--dsw-alias-label-secondary,#65717b);font-size:12px;text-align:center}
 .hapi-picker-segments>label>span {display:flex;align-items:center;justify-content:center;gap:3px;min-width:0}

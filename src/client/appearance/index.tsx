@@ -12,7 +12,7 @@ const labels: Record<ColorKey, [string, string]> = {
     background: ['Background', '背景'], surface: ['Surface', '表面'], text: ['Text', '文字'], hint: ['Secondary text', '次要文字'],
     accent: ['Accent', '强调色'], border: ['Border', '边框'],
 }
-const paletteNames: Record<string, string> = { glass: 'Glass', 'default': 'HAPI', 'codex': 'Codex', 'notion': 'Notion', 'one': 'One', 'proof': 'Proof',
+const paletteNames: Record<string, string> = { glass: 'Codex glass', 'default': 'HAPI', 'codex': 'Codex', 'notion': 'Notion', 'one': 'One', 'proof': 'Proof',
     'raycast': 'Raycast', 'rose-pine': 'Rosé Pine', 'solarized': 'Solarized', 'vercel': 'Vercel', 'vs-code-plus': 'VS Code Plus',
     'xcode': 'Xcode', 'linear': 'Linear', 'lobster': 'Lobster', 'material': 'Material', 'matrix': 'Matrix', 'monokai': 'Monokai', 'night-owl': 'Night Owl', 'nord': 'Nord' }
 

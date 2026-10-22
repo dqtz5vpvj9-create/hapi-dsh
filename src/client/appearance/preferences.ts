@@ -21,7 +21,7 @@ export function parseMode(raw: string | null): AppearanceMode {
     return raw === 'light' || raw === 'dark' || raw === 'oled' ? raw : 'system'
 }
 export function parseColorTheme(raw: string | null): ColorThemePreset {
-    return COLOR_THEME_OPTIONS.some(option => option.value === raw) ? raw as ColorThemePreset : 'codex'
+    return COLOR_THEME_OPTIONS.some(option => option.value === raw) ? raw as ColorThemePreset : 'glass'
 }
 export function parseFontScale(raw: string | null): number {
     const value = Number(raw)
@@ -77,7 +77,7 @@ export interface AppearancePreferences {
 export function readAppearance(preferences: WorkspaceUiPreferences): AppearancePreferences {
     const enabled = preferences.getItem('hapi-dsh-appearance-enabled')
     return {
-        enabled: enabled === 'true' || enabled !== 'false' && APPEARANCE_KEYS.some(key => preferences.getItem(key) !== null),
+        enabled: enabled !== 'false',
         mode: parseMode(preferences.getItem('hapi-appearance')), palette: parseColorTheme(preferences.getItem('hapi-color-theme')),
         colors: parseColors(preferences.getItem('hapi-theme-colors')), fontScale: parseFontScale(preferences.getItem('hapi-font-scale')),
         terminalFont: terminalFontOverride(preferences.getItem('hapi-terminal-font-size')), bubble: parseBubble(preferences.getItem('hapi-user-message-bg')),

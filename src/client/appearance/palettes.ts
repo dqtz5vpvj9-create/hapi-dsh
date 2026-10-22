@@ -169,7 +169,7 @@ function palette(accent: string, background: string, foreground: string, hint: s
 
 export function getPalette(theme: Exclude<ColorThemePreset, 'default'>, scheme: ColorScheme): ThemePalette {
     const values = PALETTES[theme][scheme === 'light' ? 'light' : 'dark']
-    return theme === 'codex' && scheme === 'oled' ? { ...values, background: '#000000' } : values
+    return (theme === 'codex' || theme === 'glass') && scheme === 'oled' ? { ...values, background: '#000000' } : values
 }
 export function mix(a: string, b: string, weight: number): string {
     const ca = parseHex(a)

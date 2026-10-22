@@ -1,4 +1,4 @@
-import type { Ref } from 'react'
+import { useState, type Ref } from 'react'
 import { explicitEffort, modelLabel, visibleServiceTier, type PickerAction, type PickerChoice, type PickerData, type PickerPending } from './data.ts'
 
 export type PickerMode = 'model' | 'permission' | 'actions'
@@ -77,18 +77,32 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
     </div>
 }
 
-/** Native radio inputs retain their discrete keyboard and checked semantics.
- * Only the source snapshot selects a stop; an in-flight target is separate. */
+/** Drag previews a supported stop; release commits once. Source confirmation stays separate. */
 export function EffortChoices({ data, disabled, select, tr, name }: {
     data: PickerData; disabled: boolean; select(action: PickerAction): void; tr: Translate; name: string
 }) {
-    return <fieldset className="hapi-picker-effort" role="radiogroup" aria-label={tr('Reasoning effort', '推理强度')}>
-        <legend>{tr('Reasoning effort', '推理强度')}</legend>
-        <div className="hapi-picker-segments">{data.efforts.map(choice => <label key={choice.value ?? 'default'}>
-            <input type="radio" name={name} value={choice.value ?? ''} checked={data.effort === choice.value} disabled={disabled}
-                onChange={() => { if (choice.value !== data.effort) select({ kind: 'effort', value: choice.value }) }}/>
-            <span>{effortLabel(choice, tr)}{data.effort === choice.value && <Glyph kind="check"/>}</span>
-        </label>)}</div>
+    const [preview, setPreview] = useState<number | null>(null)
+    const confirmed = data.efforts.findIndex(choice => choice.value === data.effort)
+    const index = Math.min(preview ?? Math.max(confirmed, 0), Math.max(data.efforts.length - 1, 0))
+    const current = data.efforts[index]
+    const commit = (index: number): void => {
+        setPreview(null)
+        const choice = data.efforts[index]
+        if (!disabled && choice && choice.value !== data.effort) select({ kind: 'effort', value: choice.value })
+    }
+    return <fieldset className="hapi-picker-effort">
+        <legend id={`${name}-label`}>{tr('Reasoning effort', '推理强度')}</legend>
+        <div className="hapi-picker-effort-value">{current ? effortLabel(current, tr) : data.effort}
+            {index === confirmed && <Glyph kind="check"/>}</div>
+        <input className="hapi-picker-effort-slider" type="range" name={name} min={0} max={Math.max(data.efforts.length - 1, 0)} step={1}
+            value={index} disabled={disabled || data.efforts.length < 2} aria-labelledby={`${name}-label`}
+            aria-valuetext={current ? effortLabel(current, tr) : undefined}
+            onChange={event => setPreview(Number(event.currentTarget.value))}
+            onPointerUp={event => commit(Number(event.currentTarget.value))} onPointerCancel={() => setPreview(null)}
+            onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) commit(Number(event.currentTarget.value)) }}
+            onBlur={event => { if (preview !== null) commit(Number(event.currentTarget.value)) }}/>
+        <div className="hapi-picker-effort-stops">{data.efforts.map((choice, stop) => <button type="button" key={choice.value ?? 'default'}
+            disabled={disabled} aria-pressed={choice.value === data.effort} onClick={() => commit(stop)}>{effortLabel(choice, tr)}</button>)}</div>
         {!data.efforts.some(choice => choice.value === data.effort) && <p className="hapi-picker-note">{tr('Current source value', '源会话当前值')}: {data.effort ?? tr('Not reported', '未报告')}</p>}
     </fieldset>
 }
