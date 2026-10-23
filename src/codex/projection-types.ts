@@ -94,10 +94,18 @@ export const hapiProjectionSchema = z.object({
   error: z.string().nullable(),
 }).nullable()
 
-/** Client-safe whole-value snapshot carried through DSH's standard projections. */
-export type HapiProjection = z.infer<typeof hapiProjectionSchema>
+/** The Host retains the exact source watermark for ordering and replay. */
+export type HapiProjectionState = z.infer<typeof hapiProjectionSchema>
+
+/** Older Hosts include their execution watermark. Accept it at the boundary,
+ * but the new Client view does not need that Host-only sequence: official
+ * projection asOfSeq already orders client state. */
+export const hapiProjectionViewSchema = hapiProjectionSchema.unwrap().extend({
+  execution: hapiProjectionSchema.unwrap().shape.execution.unwrap().partial({ sequence: true }).nullable(),
+}).nullable()
+export type HapiProjection = z.infer<typeof hapiProjectionViewSchema>
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap { hapi: HapiProjection }
+  interface SessionProjectionStateMap { hapi: HapiProjectionState }
   interface SessionProjectionMap { hapi: HapiProjection }
 }

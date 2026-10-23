@@ -23,7 +23,7 @@ import { SourceHistorySync } from './history-sync.js'
 import { NativeContent, type NativeArtifactImporter } from './content.js'
 import { assertBinding, bindingFor, nativeSessionId, parseNativeRow, type NativeBinding, type NativeRow } from './native.js'
 import { NativeHistoryChangedError, NativeProjector } from './projector.js'
-import type { DeliveryView, HapiProjection } from './projection-types.js'
+import type { DeliveryView, HapiProjectionState } from './projection-types.js'
 import { NativeObservations } from './observations.js'
 import { nativeThreadGoalSchema } from './observation-types.js'
 import { bindNativeCommands } from './commands.js'
@@ -214,10 +214,12 @@ export class NativeCodexAgent implements Agent {
   private connected = true
   private fault: string | null = null
   private historyReadFault = false
-  private readonly projectionPublisher = new SourceStatePublisher<NonNullable<HapiProjection>>({
+  private readonly projectionPublisher = new SourceStatePublisher<NonNullable<HapiProjectionState>, 'execution'>({
     initial: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/state', value) },
-    status: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/status', value) },
+    status: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/session-state', value) },
     notices: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/notices', value) },
+  }, {
+    key: 'execution', write: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/execution', value) },
   })
   private sourceRunning = false
   private lastTitle: string | undefined
@@ -389,7 +391,7 @@ export class NativeCodexAgent implements Agent {
   resolveSourceMessageDisplaySeq(id: string): number | undefined { return this.projector.sourceMessageDisplaySeq(id) }
   sourceMessageAtDisplaySeq(seq: number): string | undefined { return this.projector.sourceMessageAtDisplaySeq(seq) }
 
-  get projection(): NonNullable<HapiProjection> {
+  get projection(): NonNullable<HapiProjectionState> {
     const goal = nativeThreadGoalSchema.safeParse(this.source.agentState?.threadGoal)
     return {
       engine: 'codex', hubId: this.binding.hubId, hapiSessionId: this.binding.hapiSessionId,

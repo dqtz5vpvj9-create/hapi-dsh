@@ -7,7 +7,7 @@ import { nativeStateDirectory } from '../src/codex/state-directory.ts'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { Session, SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, appendPluginRecord, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { type AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -25,8 +25,8 @@ import { NativeApprovals } from '../src/codex/approvals.js'
 import { readNativeHistory } from '../src/codex/history.js'
 import { CodexService, type CodexServiceOptions } from '../src/codex/service.js'
 import { HistoryReadInvalidatedError } from '../src/codex/history-journal.js'
-import { hapiProjectionDefinition } from '../src/codex/projection-state.ts'
-import type { HapiProjection } from '../src/codex/projection-types.ts'
+import { hapiProjectionDefinition, hapiProjectionView } from '../src/codex/projection-state.ts'
+import type { HapiProjectionState as HapiProjection } from '../src/codex/projection-types.ts'
 
 const THREAD = 'native-thread-1'
 const TURN = 'native-turn-1'
@@ -163,11 +163,12 @@ test('opening a current native owner does not wait for or reread its archive', a
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('status churn does not duplicate large source notices in the official log, and replay remains lossless', async () => {
+test('execution churn does not duplicate source notices, queues or approvals, and official replay remains lossless', async () => {
   const directory = await mkdtemp('/mnt/cache/data-cache/hapi-status-log-'), fake = new FakeHapi()
+  fake.source.agentState!.requests = { pending: { tool: 'Fixture command', arguments: { command: 'synthetic '.repeat(20_000) } } }
   fake.rows = [{ id: 'notice', localId: null, seq: 1, createdAt: 1000, content: {
     role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Synthetic notice', details: 'details '.repeat(30_000) } },
-  } }]
+  } }, user('large-queued-input', false, 'Queued synthetic input '.repeat(10_000))]
   const app = await mount(fake, directory)
   try {
     const agent = app.service.list()[0]!, start = agent.session.seq
@@ -177,13 +178,16 @@ test('status churn does not duplicate large source notices in the official log, 
       await agent.refreshSettings()
     }
     const additions = agent.session.snapshotEvents().filter(event => event.seq >= start)
-    assert.equal(additions.filter(event => pluginRecordOf(event)?.type === 'plugin:hapi-dsh/status').length, 100)
-    assert.ok(JSON.stringify(additions).length < 500_000, '100 small status changes must not retain 24 MB of repeated notice details')
+    assert.equal(additions.filter(event => pluginRecordOf(event)?.type === 'plugin:hapi-dsh/execution').length, 100)
+    assert.equal(additions.filter(event => ['plugin:hapi-dsh/status', 'plugin:hapi-dsh/session-state'].includes(pluginRecordOf(event)?.type ?? '')).length, 0)
+    assert.ok(JSON.stringify(additions).length < 60_000, '100 execution updates must not copy unchanged large notices, queue text and approval arguments')
     let replay: HapiProjection = null
     for (const event of agent.session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
     assert.deepEqual(replay, agent.projection)
-    assert.deepEqual(app.ctx.sessionProjections.snapshot(agent.session).values.hapi, replay)
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(agent.session).values.hapi, hapiProjectionView(replay))
     assert.equal(replay?.notices[0]?.details?.length, 240_000)
+    assert.equal(replay?.pendingRequests.length, 1)
+    assert.equal(replay?.delivery[0]?.text.length, 230_000)
     const next = { id: 'notice-2', localId: null, seq: 2, createdAt: 2000, content: {
       role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Next synthetic notice' } },
     } }
@@ -193,6 +197,37 @@ test('status churn does not duplicate large source notices in the official log, 
     for (const event of agent.session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
     assert.deepEqual(replay, agent.projection)
     assert.equal(replay?.notices.length, 2)
+    fake.source.execution = null; fake.source.executionVersion = 200
+    await agent.refreshSettings()
+    replay = null
+    for (const event of agent.session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
+    assert.equal(replay?.execution, null, 'an authoritative absence replaces the previous execution value')
+    assert.deepEqual(replay, agent.projection)
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(agent.session).values.hapi, hapiProjectionView(replay))
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('execution domain replay accepts old complete state/status records and retains queue and approval facts', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-status-compat-'), fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!, session = agent.session, initial = agent.projection
+    const { notices, ...legacyStatus } = initial
+    appendPluginRecord(session, 'plugin:hapi-dsh/status', { ...legacyStatus, model: 'legacy-model' })
+    appendPluginRecord(session, 'plugin:hapi-dsh/notices', notices)
+    appendPluginRecord(session, 'plugin:hapi-dsh/execution', null)
+    const { execution: _execution, ...sessionState } = legacyStatus
+    appendPluginRecord(session, 'plugin:hapi-dsh/session-state', { ...sessionState, model: 'new-model' })
+    let replay: HapiProjection = null
+    for (const event of session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
+    assert.deepEqual(replay, { ...initial, model: 'new-model', execution: null })
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(session).values.hapi, hapiProjectionView(replay))
+    // A legacy full value remains authoritative if an older writer resumes.
+    appendPluginRecord(session, 'plugin:hapi-dsh/status', legacyStatus)
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(session).values.hapi, hapiProjectionView(initial))
+    appendPluginRecord(session, 'plugin:hapi-dsh/execution', null)
+    appendPluginRecord(session, 'plugin:hapi-dsh/state', initial)
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(session).values.hapi, hapiProjectionView(initial))
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
