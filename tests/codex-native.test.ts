@@ -148,7 +148,7 @@ async function mount(fake: FakeHapi, directory: string, options: Partial<CodexSe
 }
 
 test('opening a current native owner does not wait for or reread its archive', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-open-owner-'), fake = new FakeHapi()
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-open-owner-')), fake = new FakeHapi()
   const app = await mount(fake, directory)
   try {
     const original = app.service.list()[0]!, reads = fake.reads.length
@@ -164,7 +164,7 @@ test('opening a current native owner does not wait for or reread its archive', a
 })
 
 test('execution churn does not duplicate source notices, queues or approvals, and official replay remains lossless', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-status-log-'), fake = new FakeHapi()
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-status-log-')), fake = new FakeHapi()
   fake.source.agentState!.requests = { pending: { tool: 'Fixture command', arguments: { command: 'synthetic '.repeat(20_000) } } }
   fake.rows = [{ id: 'notice', localId: null, seq: 1, createdAt: 1000, content: {
     role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Synthetic notice', details: 'details '.repeat(30_000) } },
@@ -208,7 +208,7 @@ test('execution churn does not duplicate source notices, queues or approvals, an
 })
 
 test('execution domain replay accepts old complete state/status records and retains queue and approval facts', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-status-compat-'), fake = new FakeHapi()
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-status-compat-')), fake = new FakeHapi()
   const app = await mount(fake, directory)
   try {
     const agent = app.service.list()[0]!, session = agent.session, initial = agent.projection

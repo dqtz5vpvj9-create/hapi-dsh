@@ -107,7 +107,7 @@ async function mount(fixture: Fixture, directory: string, options: Partial<HapiA
 }
 
 test('observed view admission skips archive reads and independent status records retain source notices', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-open-'), fixture = new Fixture()
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-open-')), fixture = new Fixture()
   const source = fixture.add('claude')
   const app = await mount(fixture, directory)
   try {

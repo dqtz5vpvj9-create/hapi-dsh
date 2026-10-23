@@ -3,12 +3,13 @@ import { once } from 'node:events';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver';
 import { mountVersionedAssets } from '../src/shared/versioned-assets.ts';
 
 test('only versioned public assets receive immutable caching; index, mutable files and RPC remain untouched', async t => {
-    const directory = await mkdtemp('/mnt/cache/data-cache/hapi-assets-'), routes = new Map<string, WebRoute>();
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-assets-')), routes = new Map<string, WebRoute>();
     const file = 'index-CN7NIWNw.js', body = '/* original upstream bytes */ window.fixture = "会话";';
     await writeFile(join(directory, file), body);
     await writeFile(join(directory, 'config.js'), 'mutable');
