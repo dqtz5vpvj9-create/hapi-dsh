@@ -294,6 +294,8 @@ export class WorkspaceController {
     private readonly hostUnsubscribers = new Map<string, Array<() => void>>()
     private readonly hostMainIds = new Map<string, string | undefined>()
     private readonly sourceCatalog = new Map<string, CatalogSession>()
+    private sourceCatalogRevision = 0
+    private readonly aggregatedHosts = new Map<string, { inputs: readonly unknown[]; ids: SessionId[]; rows: WorkspaceCatalog['byId'] }>()
     private readonly discovery = new CatalogDiscovery()
     private discoveryCatalog: WorkspaceCatalog | undefined
     private sourceBindingsPending = 0
@@ -473,6 +475,8 @@ export class WorkspaceController {
                 return previous === undefined || previous.displayRevision !== session.displayRevision
                     || previous.lifecycleState !== session.lifecycleState || previous.active !== session.active
             })
+        this.sourceCatalogRevision++
+        this.discoveryCatalog = undefined
         this.sourceCatalog.clear()
         for (const session of sessions) this.sourceCatalog.set(session.id, session)
         this.discovery.observe(discovery?.hosts ?? [], connected)
@@ -670,6 +674,15 @@ export class WorkspaceController {
             // a pane graph can outlive the machine's catalog connection briefly.
             const hostOnline = host !== undefined && (hostId === 'local' || this.discovery.host(hostId)?.phase !== 'unavailable')
             const workspace = host?.workspaceState?.getSnapshot()
+            const inputs = [cached.catalog, cached.label, hostOnline, workspace,
+                hostId === 'local' ? this.sourceCatalogRevision : 0,
+                hostId === 'local' ? this.snapshot?.machines : undefined,
+                hostId === 'local' ? this.discovery.sourcePhase : undefined]
+            const previous = this.aggregatedHosts.get(hostId)
+            if (previous && inputs.every((value, index) => value === previous.inputs[index])) {
+                Object.assign(byId, previous.rows); ids.push(...previous.ids); continue
+            }
+            const hostRows: WorkspaceCatalog['byId'] = {}
             const archived = new Set(workspace?.archivedSessionIds ?? [])
             const pinned = new Set(workspace?.pinnedSessionIds ?? [])
             for (const [sourceSessionId, row] of Object.entries(cached.catalog.byId)) {
@@ -678,7 +691,7 @@ export class WorkspaceController {
                 const sourceOwned = hostId === 'local' && (sourceIdentity(row) !== null || isSourceChild(row))
                 const sourceLocation = sourceOwned ? sessionLocation(row) : undefined
                 const sourceMachine = sourceLocation?.machineId ? (this.snapshot?.machines ?? []).find(machine => machine.id === sourceLocation.machineId) : undefined
-                byId[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
+                hostRows[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
                     ...(sourceOwned ? { sourceHubOnline: this.discovery.sourcePhase !== 'unavailable',
                         ...(sourceMachine ? { sourceMachineOnline: sourceMachine.online } : {}) } : {}),
                     ...(sourceOwned && Number.isFinite(source?.updatedAt) ? { updatedAt: source!.updatedAt! } : {}),
@@ -695,8 +708,16 @@ export class WorkspaceController {
                     ...(sourceOwned ? { sourcePinMode: source?.pinMode ?? 'none' } : {}),
                 }
             }
-            for (const id of cached.catalog.ids) ids.push(sessionResourceId(hostId, id) as SessionId)
+            const hostIds = cached.catalog.ids.map(id => sessionResourceId(hostId, id) as SessionId)
+            this.aggregatedHosts.set(hostId, { inputs, ids: hostIds, rows: hostRows })
+            Object.assign(byId, hostRows); ids.push(...hostIds)
         }
+        for (const id of this.aggregatedHosts.keys()) if (!this.hostCatalogs.has(id)) this.aggregatedHosts.delete(id)
+        const previous = this.snapshot?.catalog
+        if (previous && phase === previous.phase && ids.length === previous.ids.length
+            && ids.every((id, index) => id === previous.ids[index])
+            && Object.keys(byId).length === Object.keys(previous.byId).length
+            && Object.entries(byId).every(([id, row]) => row === previous.byId[id])) return previous
         return { ids, byId, phase, projectionsBySession: {} }
     }
 

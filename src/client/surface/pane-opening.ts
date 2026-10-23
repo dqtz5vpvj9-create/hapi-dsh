@@ -53,9 +53,14 @@ export function observePaneOpening(target: HTMLElement, identity: DiagnosticIden
 } {
     const timing = new PaneOpeningTiming(identity, warm)
     let stopped = false, contentMounted = false, composerMounted = false
+    target.dataset.hapiPaneOpening = 'loading'
     const stop = (outcome?: 'closed' | 'hidden' | 'error' | 'timeout'): void => {
         if (stopped) return
         stopped = true; observer.disconnect(); clearTimeout(timeout); timing.stop(outcome)
+        target.dataset.hapiPaneOpening = timing.complete ? 'painting' : outcome ?? 'closed'
+        if (timing.complete) requestAnimationFrame(() => requestAnimationFrame(() => {
+            target.dataset.hapiPaneOpening = 'ready'
+        }))
     }
     const sample = (): void => {
         if (stopped) return

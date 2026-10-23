@@ -54,10 +54,9 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
                 source={{ sourceHubId: (projection ?? observed)!.hubId, sourceSessionId: (projection ?? observed)!.hapiSessionId }}
                 api={actions} disabled={(projection ?? observed)!.readOnly} steer={Boolean(projection) || Boolean(observed?.capabilities.steer)}
                 zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
-            {queued.panel}
             {hasActions && <div className="hapi-native-dock" data-hapi-source-controls={sessionId}>
-                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t} statusTarget={statusTarget}/>
-                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t} statusTarget={statusTarget}/>
+                <NativeActions sessionId={sessionId} projection={projection} api={actions} t={t} statusTarget={statusTarget} recovery={projection ? queued.panel : undefined}/>
+                <ObservedActions sessionId={sessionId} projection={observed} api={actions} t={t} statusTarget={statusTarget} recovery={observed ? queued.panel : undefined}/>
             </div>}
         </>
     }

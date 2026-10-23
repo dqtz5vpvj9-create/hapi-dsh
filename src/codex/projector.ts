@@ -219,7 +219,7 @@ export class NativeProjector {
           this.appendRecord('plugin:hapi-dsh/codex-review', record)
         }
         if (current) {
-          this.options.stream({ type: 'end', attemptId: current.attemptId, revision: current.revision,
+          this.options.stream({ type: 'end', attemptId: current.attemptId, revision: ++this.revision,
             index: current.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
           this.activeStream = undefined
         }
@@ -340,7 +340,7 @@ export class NativeProjector {
   private emitChunk(stream: Stream, chunk: StreamChunk): void {
     const time = Date.now()
     stream.records.push({ type: 'chunk', time, chunk })
-    this.options.stream({ type: 'chunk', attemptId: stream.attemptId, revision: stream.revision,
+    this.options.stream({ type: 'chunk', attemptId: stream.attemptId, revision: ++this.revision,
       index: stream.index++, time, chunk })
   }
 
@@ -367,7 +367,7 @@ export class NativeProjector {
         this.recordSummary(stream.sourceRowId, event, projectNotifySummaries([
           { type: stream.reasoning ? 'reasoning' : 'text', text: stream.rawText },
         ]))
-        this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: stream.revision,
+        this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: ++this.revision,
           index: stream.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
         this.activeStream = undefined
       } else this.abandonStream()
@@ -384,7 +384,7 @@ export class NativeProjector {
   abandonStream(): void {
     const stream = this.activeStream
     if (!stream) return
-    this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: stream.revision,
+    this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: ++this.revision,
       index: stream.index, outcome: { kind: 'abandoned' } })
     this.activeStream = undefined
   }

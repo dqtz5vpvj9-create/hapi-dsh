@@ -280,7 +280,7 @@ export class ObservedProjector {
   private chunk(live: Live, chunk: StreamChunk): void {
     const time = this.sourceTime
     live.records.push({ type: 'chunk', time, chunk })
-    this.options.stream({ type: 'chunk', attemptId: live.attemptId, revision: live.revision, index: live.index++, time, chunk })
+    this.options.stream({ type: 'chunk', attemptId: live.attemptId, revision: ++this.revision, index: live.index++, time, chunk })
   }
   private flushLive(interrupted = false): void {
     const live = this.live
@@ -292,14 +292,14 @@ export class ObservedProjector {
     this.recordSummary(live.item, event, display)
     this.recordReview(live.item, event)
     this.record(live.item, event.seq)
-    this.options.stream({ type: 'end', attemptId: live.attemptId, revision: live.revision, index: live.index,
+    this.options.stream({ type: 'end', attemptId: live.attemptId, revision: ++this.revision, index: live.index,
       outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
     this.closeStep(live.step); this.live = undefined
   }
   abandonStream(): void {
     const live = this.live
     if (!live) return
-    this.options.stream({ type: 'end', attemptId: live.attemptId, revision: live.revision, index: live.index, outcome: { kind: 'abandoned' } })
+    this.options.stream({ type: 'end', attemptId: live.attemptId, revision: ++this.revision, index: live.index, outcome: { kind: 'abandoned' } })
     this.live = undefined
   }
 }

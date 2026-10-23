@@ -21,7 +21,8 @@ export class SourceHistorySync {
   private history = false
   private stopped = false
   private retryDelay = 1_000
-  constructor(private readonly refresh: (history: boolean) => Promise<void>, private readonly failed: (error: unknown) => void) {}
+  constructor(private readonly refresh: (history: boolean) => Promise<void>, private readonly failed: (error: unknown) => void,
+    private readonly sharedHistorySlot = true) {}
   request(history: boolean): void {
     if (this.stopped) return
     this.requested = true; this.history ||= history
@@ -31,7 +32,11 @@ export class SourceHistorySync {
       while (this.requested && !this.stopped) {
         const history = this.history
         this.requested = false; this.history = false
-        try { await withRefreshSlot(async () => { if (!this.stopped) await this.refresh(history) }); this.retryDelay = 1_000 }
+        try {
+          const run = async () => { if (!this.stopped) await this.refresh(history) }
+          if (this.sharedHistorySlot) await withRefreshSlot(run); else await run()
+          this.retryDelay = 1_000
+        }
         catch (error) {
           if (this.stopped) return
           this.failed(error)

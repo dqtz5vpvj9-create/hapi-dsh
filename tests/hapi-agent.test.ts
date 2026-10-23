@@ -179,6 +179,25 @@ test('Pi cumulative snapshots converge on one official answer and do not invent 
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('observed cumulative streams use the official dense revision contract before completion', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-stream-')), source = new Fixture(); source.add('pi')
+  source.rows.set('pi', [input()])
+  const app = await mount(source, directory), revisions: number[] = []
+  const stop = app.ctx.on('agent/assistant-stream', ({ frame }) => { revisions.push(frame.revision) }, { global: true })
+  try {
+    for (const [index, message] of ['Part', 'Partial source answer'].entries()) {
+      const value = codex(`live-${index}`, index + 2, { type: 'message', id: 'observed-live', streamSnapshot: true, message })
+      source.rows.get('pi')!.push(value)
+      source.emit({ type: 'message-received', sessionId: 'pi', message: value }); await app.service.settled()
+    }
+    assert.ok(revisions.length >= 4)
+    assert.deepEqual(revisions, revisions.map((_revision, index) => index + 1))
+    const done = ready(); source.rows.get('pi')!.push(done)
+    source.emit({ type: 'message-received', sessionId: 'pi', message: done }); await app.service.settled()
+    assert.deepEqual(revisions, revisions.map((_revision, index) => index + 1))
+  } finally { stop(); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('source delivery remains unknown after disconnect and restart, without automatic replay', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-')), source = new Fixture(); source.add('claude')
   source.sendFailure = new HapiRequestError('Fixture lost reply', 'indeterminate')

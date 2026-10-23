@@ -15,12 +15,13 @@ Build a distributable DSH plugin composition with one cross-machine session side
 - A claimed integration must execute against the pinned upstream version; tests using fakes must be identified as such.
 - The user explicitly authorizes implementation, a new public GitHub repository, and publication of the result. No changes to upstream repositories are authorized.
 
-## Current-stage validation rule (2026-10-22)
+## Current-stage validation rule (2026-10-23)
 
-- 当前阶段由用户直接验收上线后的界面。Agent 不运行浏览器界面测试、截图或视觉检查，也不把这些检查作为上线门禁。
-- Agent 完成类型检查、必要的逻辑测试和构建后，按现有部署流程上线；只核对服务启动与 HTTP 可达性。交付时明确说明界面尚未由 Agent 验收。
-- 优先快速开发、快速上线，让用户立即手测。检查限定在本次改动范围；仅改前端时使用客户端构建与现有热更新流程。
-- 此阶段规则优先于历史交接文档中关于定向 E2E、截图和界面验收的要求；保留已有认证、数据安全和发布约束。
+- 用户已将 UI 和性能验收交给 Agent；由 Agent 运行浏览器交互、过程采样及必要的视觉检查，修复失败项，不再把测试留给用户。
+- UI 改动使用常驻官方 DSH Host 和 Chromium 的快速验收流程，覆盖打开正文与输入框、上下翻历史、锚点、实时更新、多 Pane、草稿及手机布局。指标与运行方法见 docs/ui-acceptance.md。
+- 类型检查、逻辑测试、构建、合成浏览器、生产及真机结果分别报告。测试超时、未覆盖或未测均不算通过；报告原始采样、失败项和测试环境。
+- 仅改前端时使用客户端发布流程，保留 Host 和原生执行。性能测试串行运行；复用测试环境，避免每个用例重新安装依赖、启动 Host。
+- 使用合成会话进行发送、审批、弱网等破坏性测试；生产探针保持只读。保留已有认证、数据安全和发布约束。
 
 ## Collaboration responsibilities
 

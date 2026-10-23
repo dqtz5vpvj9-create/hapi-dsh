@@ -38,7 +38,7 @@ import { firstAnchor } from './anchor.ts'
 import type { AggregateLoadGate, SessionPageLedger, AggregateLoadLimits } from './concurrency.ts'
 import type { EarlierLoadBudgetLimits } from './budget.ts'
 import { keyIntent, scrollIntent, touchIntent, wheelIntent, type ReaderIntent } from './intent.ts'
-import { EarlierLoadPolicy, type EarlierViewState } from './policy.ts'
+import { EarlierLoadPolicy, nearTopPixels, type EarlierViewState } from './policy.ts'
 import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
 /** Diagnostics event emitted by one pane controller. */
@@ -340,8 +340,8 @@ class ConversationHistoryController {
     /**
      * Measure the pane's chat surface, or null when it does not render one.
      *
-     * Deliberately cheaper than {@link probeOf}: wheel/key/touch handlers call
-     * this on every sample, so it must not walk the transcript.
+     * Read paging controls only when the reader approaches the history edge
+     * or a pending page needs inspection. Ordinary motion skips this work.
      */
     private measure(): Measured | null {
         const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
@@ -513,11 +513,9 @@ class ConversationHistoryController {
     private readonly onScroll = (event: Event): void => {
         if (!this.usable()) return
         this.ensureSession()
-        const measured = this.measure()
-        if (measured === null) return
         const target = event.target
-        if (!(target instanceof Element) || target !== measured.scroller) return
-        const current = measured.scroller.scrollTop
+        if (!(target instanceof HTMLElement) || !target.matches(SCROLLER_SELECTOR)) return
+        const current = target.scrollTop
         const previous = this.lastScrollTop
         this.lastScrollTop = current
         if (previous === null) return
@@ -527,9 +525,9 @@ class ConversationHistoryController {
         // Only a sample attributable to a reader gesture may page history: a
         // fresh wheel/touch/key sample, or a scrollbar drag whose press target
         // is the scrollport itself.
-        const draggingScrollbar = this.shared.pointerTarget === measured.scroller
+        const draggingScrollbar = this.shared.pointerTarget === target
         if (now - this.lastUserInputAt > FRESH_INPUT_MS && !draggingScrollbar) {
-            if (Math.abs(current - previous) > Math.max(64, measured.scroller.clientHeight)) {
+            if (Math.abs(current - previous) > Math.max(64, target.clientHeight)) {
                 this.quietUntil = now + QUIET_AFTER_JUMP_MS
             }
             return
@@ -543,11 +541,11 @@ class ConversationHistoryController {
         this.ensureSession()
         const intent = wheelIntent(event.deltaY, event.deltaMode)
         if (intent === 'none') return
-        const measured = this.measure()
-        if (measured === null) return
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller === null) return
         const target = event.target
-        if (!(target instanceof Element) || !measured.scroller.contains(target)) return
-        if (this.innerScrollConsumes(target, measured.scroller, intent)) return
+        if (!(target instanceof Element) || !scroller.contains(target)) return
+        if (this.innerScrollConsumes(target, scroller, intent)) return
         this.input(intent, this.now())
     }
 
@@ -567,11 +565,11 @@ class ConversationHistoryController {
         const intent = touchIntent(this.touchY, current)
         this.touchY = current
         if (intent === 'none') return
-        const measured = this.measure()
-        if (measured === null) return
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller === null) return
         const target = event.target
         if (!(target instanceof Element)) return
-        if (this.innerScrollConsumes(target, measured.scroller, intent)) return
+        if (this.innerScrollConsumes(target, scroller, intent)) return
         this.input(intent, this.now())
     }
 
@@ -589,15 +587,20 @@ class ConversationHistoryController {
         if (isEditable(target)) return
         const active = this.root.activeElement
         if (active === null || !this.content.contains(active) || isEditable(active)) return
-        const measured = this.measure()
-        if (measured === null) return
-        if (this.innerScrollConsumes(target, measured.scroller, intent)) return
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller === null) return
+        if (this.innerScrollConsumes(target, scroller, intent)) return
         this.input(intent, this.now())
     }
 
     /** Evaluate policy and, when approved, click the official control once. */
     private requestEarlier(now: number): void {
         if (now < this.quietUntil) return
+        // Ordinary motion inside the retained window needs no control search,
+        // tail-marker scan or selection measurement. Inspect paging only near
+        // the same lead boundary used by the policy below.
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller === null || scroller.scrollTop > (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)) return
         const measured = this.measure()
         if (measured === null) return
         const identity = this.identityOf(measured.content)

@@ -1,3 +1,4 @@
+import { RecentViews } from './surface/recent-views.ts'
 /** Official DSH Client graphs, isolated by Host and editable pane. */
 import { Context } from '@deepseek-ai/cordis'
 import { useLayoutEffect, useRef } from 'react'
@@ -375,9 +376,14 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     // its editor, dialogs, Client Context, and SessionReference. The layout owns
     // these roots; component unmount only parks their DOM.
     type Resource = Exclude<PaneResource, { kind: 'empty' }>
-    interface PaneRuntime { sourceId: string; shared?: boolean; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; stop(force?: boolean): Promise<void> }
+    interface PaneRuntime { sourceId: string; shared?: boolean; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; park?(): boolean; stop(force?: boolean): Promise<void> }
     const activePanes = new Map<string, PaneRuntime>()
     const allPanes = new Set<PaneRuntime>()
+    const recentViews = new RecentViews<PaneRuntime>(2, entry => { void entry.stop().catch(workspace.report) })
+    const parkPane = (paneId: string, entry: PaneRuntime): void => {
+        if (entry.park?.()) recentViews.park(paneId, entry.sourceId, entry)
+        else void entry.stop().catch(workspace.report)
+    }
     const parking = document.createElement('div')
     parking.hidden = true; parking.dataset.hapiParkedHost = host.id
     document.body.append(parking)
@@ -536,6 +542,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
                 presentation = next; for (const listener of listeners) listener()
             }
+            surface.hidden = !next.visible
             if (next.visible) activate()
             else if (!view) surface.dataset.hapiPaneDeferred = 'true'
             if (!next.visible) scheduleHistoryRelease()
@@ -558,7 +565,16 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 await ui.dispose()
             } finally { listeners.clear(); surface.remove(); allPanes.delete(result) }
         })
-        const result: PaneRuntime = { sourceId, shared: true, surface, activate, update, stop: retention.stop }
+        const result: PaneRuntime = { sourceId, shared: true, surface, activate, update, stop: retention.stop,
+            park: () => {
+                // Bound retained histories as well as view count. No hidden
+                // cold open or source execution is initiated by this cache.
+                if (!view || !reference || disposed || retired || reference.binding.eventSource.getSnapshot().entries.length > 1500) return false
+                update({ kind: 'chat', sessionId: resourceId }, { ...initial, focused: false, visible: false })
+                parking.append(surface)
+                void ui.stopOwnedVoice().catch(workspace.report)
+                return true
+            } }
         allPanes.add(result)
         update({ kind: 'chat', sessionId: resourceId }, initial)
         return result
@@ -814,8 +830,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     const getPane = (paneId: string, sourceId: string, resource: Resource, options: WorkspaceRenderOptions): PaneRuntime => {
         const current = activePanes.get(paneId)
         if (current?.sourceId === sourceId && Boolean(current.shared) === sharedConversation(resource)) { current.update(resource, options); return current }
-        if (current) void current.stop()
-        const next = sharedConversation(resource) ? createSessionPane(paneId, sourceId, options) : createPane(paneId, sourceId, resource, options)
+        if (current) parkPane(paneId, current)
+        const cached = sharedConversation(resource) ? recentViews.take(paneId, sourceId) : undefined
+        const next = cached ?? (sharedConversation(resource) ? createSessionPane(paneId, sourceId, options) : createPane(paneId, sourceId, resource, options))
+        if (cached) cached.update(resource, options)
         activePanes.set(paneId, next)
         return next
     }
@@ -828,8 +846,11 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 if (source.hostId === host.id) desired.set(pane.id, source.sessionId)
             } catch { /* The controller presents malformed saved addresses. */ }
         }
+        recentViews.prune(new Set(desired.keys()))
         for (const [paneId, entry] of activePanes) if (desired.get(paneId) !== entry.sourceId) {
-            activePanes.delete(paneId); void entry.stop()
+            activePanes.delete(paneId)
+            if (desired.has(paneId)) parkPane(paneId, entry)
+            else void entry.stop()
         }
     }
     try {
@@ -929,6 +950,16 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     const boots = new HostBootQueue(() => {
         const resource = workspace.store.focusedPane().resource
         return resource.kind === 'empty' ? undefined : parseSessionResourceId(resource.sessionId).hostId
+    }, () => {
+        const pane = workspace.store.focusedPane()
+        if (pane.resource.kind === 'empty') return false
+        const lease = workspace.getSnapshot().leases.get(pane.id)
+        if (lease?.status === 'failed') return false
+        // Do not evaluate an unrelated Host's complete plugin graph while the
+        // selected conversation is binding and painting its initial history.
+        const surface = document.querySelector(`[data-hapi-pane-instance="${CSS.escape(pane.id)}"]`)
+        const opening = surface?.getAttribute('data-hapi-pane-opening')
+        return opening ? opening === 'loading' || opening === 'painting' : !surface?.hasAttribute('data-hapi-pane-booted')
     })
     const unprioritize = workspace.store.subscribe(boots.prioritize)
     const containShortcuts = (event: KeyboardEvent): void => {

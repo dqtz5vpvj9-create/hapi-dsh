@@ -1,18 +1,17 @@
 /** Local IPC only. No admission URL or credentials are written to a descriptor file. */
 import { createHash } from 'node:crypto'
 import { request } from 'node:http'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const warmRepository = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-export const warmDirectory = join(tmpdir(), `hapi-dsh-warm-${createHash('sha256').update(warmRepository).digest('hex').slice(0, 12)}`)
+export const warmDirectory = join(process.env.HAPI_DSH_TEST_ROOT ?? '/mnt/cache/data-cache', `hapi-dsh-warm-${createHash('sha256').update(warmRepository).digest('hex').slice(0, 12)}`)
 export const warmSocket = join(warmDirectory, 'control.sock')
-export type WarmCommand = 'status' | 'check' | 'rebuild-client' | 'restart' | 'reload' | 'stop' | 'connection'
+export type WarmCommand = 'status' | 'check' | 'accept' | 'perf' | 'rebuild-client' | 'restart' | 'reload' | 'stop' | 'connection'
 
 export async function requestWarm<T = unknown>(command: WarmCommand): Promise<T> {
   return await new Promise<T>((resolveRequest, reject) => {
-    const req = request({ socketPath: warmSocket, path: `/${command}`, method: 'POST', timeout: 240_000 }, response => {
+    const req = request({ socketPath: warmSocket, path: `/${command}`, method: 'POST', timeout: command === 'perf' ? 900_000 : 240_000 }, response => {
       let text = ''
       response.setEncoding('utf8')
       response.on('data', chunk => { text += chunk })

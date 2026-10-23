@@ -24,6 +24,18 @@ test('disposing a queued Host never starts its graph', async () => {
     await tick(); assert.equal(starts, 0)
 })
 
+test('local conversation paint precedes background graph work; selecting another Host bypasses the wait', async () => {
+    let selected = 'local', pending = true
+    const order: string[] = []
+    const queue = new HostBootQueue(() => selected, () => pending)
+    queue.add('remote', async () => { order.push('remote') })
+    await tick(); assert.deepEqual(order, [])
+    selected = 'remote'; queue.prioritize()
+    await new Promise(resolve => setTimeout(resolve, 70))
+    assert.deepEqual(order, ['remote'])
+    pending = false; queue.dispose()
+})
+
 
 test('a newly focused Host bypasses an already loading background Host', async () => {
     const order: string[] = []

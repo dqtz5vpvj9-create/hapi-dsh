@@ -86,7 +86,7 @@ export class SourceHistoryJournal {
   }
   checkpoint(): HistoryCheckpoint { return { generation: this.generation, sequence: this.sequence } }
   capture(event: HapiEvent): void {
-    if (event.type === 'messages-invalidated' || event.type === 'session-removed'
+    if (event.type === 'messages-invalidated' && event.reason !== 'native-history' || event.type === 'session-removed'
       || event.type === 'connection-changed' && event.data?.resume === 'gap') {
       this.generation++; this.entries.length = 0; this.retainedBytes = 0; this.evicted.clear(); this.coverageLost = false; this.droppedThrough = ++this.sequence
       return
@@ -163,6 +163,7 @@ export class SourceHistoryJournal {
 export class SourceHistoryOrder {
   private readonly keys = new Set<string>()
   private latest: HapiMessage | undefined
+  overlapsLatest(row: HapiMessage): boolean { return !!this.latest && sourceHistoryKey(row) === sourceHistoryKey(this.latest) }
   needsReseed(rows: readonly HapiMessage[]): boolean {
     const latest = this.latest
     if (!latest) return false

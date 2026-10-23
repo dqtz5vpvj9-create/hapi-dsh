@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { watch, type FSWatcher } from 'node:fs'
-import { chmod, lstat, mkdir, rm } from 'node:fs/promises'
+import { chmod, lstat, mkdir, rm, writeFile, stat } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -13,7 +13,7 @@ import { requestWarm, warmDirectory, warmRepository, warmSocket, type WarmComman
 const safe = (value: unknown) => String(value).replace(/([?&]token=)[^\s&]+/g, '$1[redacted]')
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value, null, 2) + '\n')
 const command = process.argv[2] ?? 'status'
-const publicCommands = ['status', 'check', 'rebuild-client', 'restart', 'reload', 'stop'] as const
+const publicCommands = ['status', 'check', 'accept', 'perf', 'rebuild-client', 'restart', 'reload', 'stop'] as const
 
 async function compile(clientOnly: boolean): Promise<number> {
   const started = performance.now()
@@ -80,6 +80,15 @@ async function serve(): Promise<void> {
     if (closing) throw new Error('Warm fixture is stopping')
     if (action === 'status') return { ...fixture.status(), restartRequired, watching: !!watcher }
     if (action === 'connection') return fixture.connection()
+    if (action === 'accept' || action === 'perf') {
+      if (restartRequired) throw new Error('Host/shared source changed; restart the fixture first')
+      const revision = (await stat(join(warmRepository, 'e2e/ui-acceptance.ts'))).mtimeMs
+      const { runUiAcceptance } = await import(`./ui-acceptance.ts?revision=${revision}`) as typeof import('./ui-acceptance.ts')
+      const report = await runUiAcceptance(fixture, action === 'perf' ? 5 : 1)
+      const reportPath = join(warmDirectory, `${action}-${Date.now()}.json`)
+      await writeFile(reportPath, JSON.stringify(report, null, 2), { mode: 0o600 })
+      return { ...report, reportPath }
+    }
     if (action === 'rebuild-client') return await rebuildClient()
     if (action === 'reload') { await reload(); return fixture.status() }
     if (action === 'restart') {
@@ -151,6 +160,6 @@ try {
   else if ((publicCommands as readonly string[]).includes(command)) {
     const result = await requestWarm(command as WarmCommand)
     print(result)
-    if (command === 'check' && !(result as WarmReport).passed) process.exitCode = 1
+    if (['check', 'accept', 'perf'].includes(command) && !(result as WarmReport).passed) process.exitCode = 1
   } else throw new Error('Usage: npm run e2e:warm -- serve [--watch] [--headed] | status | check | rebuild-client | restart | reload | stop')
 } catch (error) { process.stderr.write(safe(error) + '\n'); process.exitCode = 1 }

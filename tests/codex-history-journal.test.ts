@@ -8,6 +8,31 @@ import { SourceHistorySync } from '../src/codex/history-sync.js'
 function row(id: string, seq: number, text = id, extra: Partial<HapiMessage> = {}): HapiMessage {
   return { id, seq, localId: id, createdAt: seq * 10, content: { role: 'user', content: { type: 'text', text } }, ...extra }
 }
+
+test('native append hints preserve the receive journal while an explicit rewind invalidates it', () => {
+  const journal = new SourceHistoryJournal(), message = row('live', 1)
+  journal.capture({ type: 'message-received', sessionId: 'source', message })
+  const checkpoint = journal.checkpoint()
+  for (let i = 0; i < 50; i++) journal.capture({ type: 'messages-invalidated', sessionId: 'source', reason: 'native-history' })
+  assert.deepEqual(journal.merge([], checkpoint), [message])
+  journal.capture({ type: 'messages-invalidated', sessionId: 'source', reason: 'rewind' })
+  assert.throws(() => journal.merge([], checkpoint), HistoryReadInvalidatedError)
+})
+
+test('live status refresh bypasses four occupied archival history slots', async () => {
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let started = 0, refreshed = false
+  const archives = Array.from({ length: 4 }, () => new SourceHistorySync(async () => { started++; await blocked }, error => { throw error }))
+  const live = new SourceHistorySync(async () => { refreshed = true }, error => { throw error }, false)
+  try {
+    for (const sync of archives) sync.request(true)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(started, 4)
+    live.request(false); await live.settled()
+    assert.equal(refreshed, true)
+  } finally { release(); for (const sync of archives) { await sync.settled(); sync.dispose() }; live.dispose() }
+})
 function stream(id: string, text: string, final: boolean): HapiMessage {
   return row(id, 3, text, { localId: final ? 'stable-stream' : null,
     content: { role: 'agent', content: { type: 'codex', data: { type: 'message', id: 'stable-stream', message: text, streamSnapshot: true } } } })

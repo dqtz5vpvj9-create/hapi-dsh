@@ -17,9 +17,10 @@ function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
   return [...unique.values()].sort(compareNativeMessages)
 }
 
-interface Pass { rows: HapiMessage[]; complete: boolean }
+interface Pass { rows: HapiMessage[]; complete: boolean; epoch?: number }
 
 export interface NativeHistoryTail extends Pass { context: 'previous-turn' | 'history-start' | 'limited' }
+export class NativeHistoryEpochChangedError extends Error {}
 
 /** Native turn identities distinguish steering inputs from a previous turn.
  * Other source engines use their invoked human inputs as turn boundaries. */
@@ -65,7 +66,7 @@ export async function readNativeHistoryTail(transport: HapiTransport, sessionId:
       if (check.page.reset || check.page.epoch !== epoch) continue
     }
     rows = uniqueNewestFirst(rows)
-    return { rows, complete: !page.page.hasMore, context: includesPreviousTurn(rows) ? 'previous-turn' : !page.page.hasMore ? 'history-start' : 'limited' }
+    return { rows, epoch, complete: !page.page.hasMore, context: includesPreviousTurn(rows) ? 'previous-turn' : !page.page.hasMore ? 'history-start' : 'limited' }
   }
   throw new Error('Native history changed repeatedly while reading the initial Turn context; refresh when the source snapshot is available')
 }
@@ -112,7 +113,7 @@ async function readPass(transport: HapiTransport, sessionId: string): Promise<Pa
     })
     if (check.page.reset || check.page.epoch !== epoch) return { rows: [], complete: false }
   }
-  return { rows, complete: true }
+  return { rows, complete: true, epoch }
 }
 
 /**
@@ -129,9 +130,40 @@ async function readPass(transport: HapiTransport, sessionId: string): Promise<Pa
  * authoritative history; callers keep their own cache and unknown-state rules.
  */
 export async function readNativeHistory(transport: HapiTransport, sessionId: string): Promise<HapiMessage[]> {
+  return (await readNativeHistorySnapshot(transport, sessionId)).rows
+}
+
+export async function readNativeHistorySnapshot(transport: HapiTransport, sessionId: string): Promise<{ rows: HapiMessage[]; epoch: number }> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const pass = await readPass(transport, sessionId)
-    if (pass.complete) return uniqueNewestFirst(pass.rows)
+    if (pass.complete) return { rows: uniqueNewestFirst(pass.rows), epoch: pass.epoch! }
   }
   throw new Error('Native history changed repeatedly during pagination; refresh when the source snapshot is available')
+}
+
+/** An append notification is not a rewind. Read only back to the last observed
+ * source row, under the seed's structural epoch. A reset or an uncovered gap
+ * requests the existing full reconciliation path; no prefix is guessed. */
+export async function readNativeHistoryUpdate(transport: HapiTransport, sessionId: string, epoch: number,
+  overlaps: (row: HapiMessage) => boolean): Promise<HapiMessage[] | null> {
+  // Most hints update the current stream or append one item. Keep the hot
+  // request small; a larger burst still pages backward until it overlaps.
+  let page = await transport.readMessages(sessionId, { limit: 32, bounded: true })
+  const head = page.page, rows: HapiMessage[] = []
+  for (let count = 0; count < 20; count++) {
+    if (page.page.reset || page.page.epoch !== epoch) throw new NativeHistoryEpochChangedError('Native source history changed structurally')
+    rows.push(...page.messages)
+    if (page.messages.some(overlaps)) {
+      if (head.snapshotHeadAt !== null && head.snapshotHeadSeq !== null) {
+        const check = await transport.readMessages(sessionId, { limit: 1, bounded: true, epoch,
+          beforeAt: head.snapshotHeadAt, beforeSeq: head.snapshotHeadSeq })
+        if (check.page.reset || check.page.epoch !== epoch) throw new NativeHistoryEpochChangedError('Native source history changed structurally')
+      }
+      return uniqueNewestFirst(rows)
+    }
+    const at = page.page.nextBeforeAt, seq = page.page.nextBeforeSeq
+    if (!page.page.hasMore || at === null || seq === null) return null
+    page = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true, epoch, beforeAt: at, beforeSeq: seq })
+  }
+  return null
 }

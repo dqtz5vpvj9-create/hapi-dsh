@@ -25,6 +25,7 @@ export class WarmOfficialSession {
   private checks = 0
   private coldHostMs = 0
   private startedAt = new Date().toISOString()
+  historyRequests: readonly string[] = []
   constructor(private readonly headed = false) {}
 
   get environment(): OfficialEnvironment {
@@ -44,6 +45,14 @@ export class WarmOfficialSession {
     history.rows = nativeIndexedHistory(history.session.metadata!.codexSessionId!, 70, 1)
     useBoundedSourceHistory(history)
     environment.hapi.emit({ type: 'session-added', sessionId: history.session.id })
+    const long = environment.hapi.add('accept-history', 'Synthetic acceptance fixture', 'machine-alpha')
+    long.rows = nativeIndexedHistory(long.session.metadata!.codexSessionId!, 180, 25)
+    for (const row of long.rows) {
+      const content = row.content as { content?: { data?: { type?: string; message?: string } } }
+      if (content.content?.data?.type === 'message') content.content.data.message += '\n\n' + Array(6).fill('Synthetic reading paragraph: continuous history must preserve reader position while new pages arrive. Cached regions remain readable in both directions.').join('\n\n')
+    }
+    this.historyRequests = useBoundedSourceHistory(long).requests
+    environment.hapi.emit({ type: 'session-added', sessionId: long.session.id })
     await expect.poll(async () => {
       const catalog = await environment.rpc<{ sessions: Array<{ hapiSessionId: string }> }>('hapi/catalog')
       return ['native-alpha', 'native-beta', 'native-warm-history'].every(id => catalog.sessions.some(row => row.hapiSessionId === id))
@@ -61,7 +70,7 @@ export class WarmOfficialSession {
     return { launchUrl: this.environment.launchUrl, origin: this.environment.origin }
   }
 
-  async page(): Promise<Page> {
+  async page(viewport = { width: 1440, height: 900 }, mobile = false): Promise<Page> {
     if (!this.browser) {
       this.browser = await chromium.launch({ headless: !this.headed,
         ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) })
@@ -78,7 +87,7 @@ export class WarmOfficialSession {
       expectedRevision: document.revision, operationId: `warm-reset-${crypto.randomUUID()}`, state,
     })
     if (result.status !== 'applied') throw new Error('Warm fixture layout reset conflicted')
-    this.context = await this.browser.newContext({ viewport: { width: 1536, height: 1000 }, locale: 'en-US' })
+    this.context = await this.browser.newContext({ viewport, locale: 'en-US', isMobile: mobile, hasTouch: mobile })
     const page = await this.context.newPage()
     page.setDefaultTimeout(20_000)
     return page

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { HapiMessage, HapiMessagesPage, HapiMessagesQuery, HapiTransport } from '../src/codex/contracts.ts'
 import { compareNativeMessages } from '../src/codex/native.ts'
-import { readNativeHistory } from '../src/codex/history.ts'
+import { NativeHistoryEpochChangedError, readNativeHistory, readNativeHistoryUpdate } from '../src/codex/history.ts'
 
 interface Position { at: number; seq: number }
 const position = (row: HapiMessage): Position => ({ at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 })
@@ -56,6 +56,31 @@ class FakeHistory {
   }
 }
 const transport = (fake: FakeHistory): HapiTransport => fake as unknown as HapiTransport
+
+test('live append reads a bounded overlap rather than all 10000 historical messages', async () => {
+  const fake = new FakeHistory(); fake.rows = rows(10_000)
+  const delta = await readNativeHistoryUpdate(transport(fake), 'native-session', 1, row => row.id === 'row-9980')
+  assert.ok(delta && delta.length <= 64, 'a small live update must not reread a full 200-row history page')
+  assert.equal(delta?.at(-1)?.id, 'row-9999')
+  assert.equal(fake.requests.length, 2)
+})
+
+test('a live burst pages back to the known boundary and cannot skip intermediate messages', async () => {
+  const fake = new FakeHistory(); fake.rows = rows(1000)
+  const delta = await readNativeHistoryUpdate(transport(fake), 'native-session', 1, row => row.id === 'row-550')
+  assert.deepEqual(delta?.filter(row => row.seq! > 550).map(row => row.id), fake.rows.filter(row => row.seq! > 550).map(row => row.id))
+  assert.ok(fake.requests.length <= 5)
+})
+
+test('native structural epoch changes and missing overlap require full reconciliation', async () => {
+  const fake = new FakeHistory(); fake.rows = rows(400); fake.epoch = 2
+  await assert.rejects(readNativeHistoryUpdate(transport(fake), 'native-session', 1, () => true), NativeHistoryEpochChangedError)
+  fake.requests.length = 0
+  assert.equal(await readNativeHistoryUpdate(transport(fake), 'native-session', 2, row => row.id === 'deleted-row'), null)
+  fake.requests.length = 0
+  fake.onRequest = index => { if (index === 1) fake.epoch++ }
+  await assert.rejects(readNativeHistoryUpdate(transport(fake), 'native-session', 2, () => true), NativeHistoryEpochChangedError)
+})
 
 test('a busy appending source keeps one epoch-stable pass and never sends the snapshot anchor', async () => {
   const fake = new FakeHistory(); fake.rows = rows(5_000)

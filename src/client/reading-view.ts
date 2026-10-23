@@ -1,3 +1,4 @@
+import { readingCandidates } from './reading-candidates.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
@@ -162,7 +163,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         readerOwned = true
         pending?.abort(); pending = undefined
         if (request) request.phase = 'reader'
-        root.dataset.hapiReading = 'reader'
+        if (root.dataset.hapiReading !== 'reader') root.dataset.hapiReading = 'reader'
         scheduleSample()
     }
     const readAnchor = (): ReloadReadingAnchor | undefined => {
@@ -171,7 +172,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         if (!port || port.scrollHeight - port.clientHeight - port.scrollTop < 4) return undefined
         const viewport = port.getBoundingClientRect(), top = viewport.top
         const snapshot = ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot()
-        for (const element of port.querySelectorAll<HTMLElement>('[data-chat-node-key]')) {
+        for (const element of readingCandidates(port)) {
             const box = element.getBoundingClientRect(), nodeKey = element.dataset.chatNodeKey
             if (!nodeKey || box.bottom <= top || box.top >= viewport.bottom || box.height === 0
                 || element.closest('[hidden], [data-hapi-visible="false"]')) continue

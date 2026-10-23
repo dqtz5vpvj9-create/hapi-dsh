@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { AssistantActionOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
-import html2canvas from 'html2canvas-pro';
+import { loadCapture } from './client-chunks.ts';
 import { captureShareTurn, type TurnShareSnapshot } from './turn-share-dom.ts';
 import { loadShareTurn, shareImageScale, shareTurnOf } from './turn-share-model.ts';
 
@@ -52,6 +52,8 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
         if (!node || !snapshot || !active()) throw new Error(tr('This share preview is no longer active.', '这份分享预览已经关闭。'));
         await document.fonts.ready; await frame();
         const size = node.getBoundingClientRect(), scale = shareImageScale(Math.ceil(size.width), Math.ceil(size.height));
+        const { default: html2canvas } = await loadCapture();
+        if (!active()) throw new Error(tr('This share preview is no longer active.', '这份分享预览已经关闭。'));
         const canvas = await html2canvas(node, { scale, backgroundColor: null, allowTaint: false, useCORS: true,
             logging: false, width: Math.ceil(size.width), height: Math.ceil(size.height), imageTimeout: 15_000 });
         if (!active() || revision.current !== currentRevision) throw new Error(tr('The preview changed during export. Try again with the current preview.', '导出期间预览发生了变化，请按当前预览重试。'));

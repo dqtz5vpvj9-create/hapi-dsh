@@ -8,7 +8,7 @@ import type { HapiEvent, HapiMessage, HapiSession, HapiTransport } from './contr
 import { NativeCodexAgent, type NativeCodexOptions } from './agent.js'
 import { NativeHistoryChangedError } from './projector.js'
 import { bindingFor, canonicalJson, nativeSessionId, record } from './native.js'
-import { readNativeHistory } from './history.js'
+import { readNativeHistorySnapshot } from './history.js'
 import { hapiProjectionDefinition } from './projection-state.js'
 import { HistoryReadInvalidatedError, SourceHistoryJournal, type HistoryCheckpoint } from './history-journal.js'
 import { SourceHistoryLifetimes } from './history-lifecycle.js'
@@ -92,8 +92,8 @@ export class CodexService {
         const journal = this.historyFor(sourceId)
         journal.capture({ type: 'messages-invalidated', sessionId: sourceId })
         const checkpoint = journal.checkpoint()
-        const rows = await readNativeHistory(this.transport, sourceId)
-        await this.replaceDisplay(existing, rows, source, checkpoint)
+        const snapshot = await readNativeHistorySnapshot(this.transport, sourceId)
+        await this.replaceDisplay(existing, snapshot.rows, source, checkpoint, snapshot.epoch)
       } else await existing.refresh(true)
       this.errors.delete(sourceId)
       return this.agents.get(sourceId)
@@ -168,21 +168,22 @@ export class CodexService {
     return journal
   }
 
-  private createAgent(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id)): Promise<NativeCodexAgent> {
+  private createAgent(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id), epoch?: number): Promise<NativeCodexAgent> {
     const base = nativeSessionId(this.transport.hubId, source.id)
     return NativeCodexAgent.create(this.ctx, this.transport, source, {
       stateDirectory: this.options.stateDirectory, displayRevision: this.revisions.get(base) ?? 0,
       historyJournal: this.historyFor(source.id), ...(checkpoint ? { historyCheckpoint: checkpoint } : {}),
+      ...(epoch === undefined ? {} : { historyEpoch: epoch }),
       assertSourceCurrent: () => { if (this.disposed) throw new HistoryReadInvalidatedError(); this.lifetimes.assertCurrent(source.id, version) },
       ...(this.options.fastHistorySeed === undefined ? {} : { fastHistorySeed: this.options.fastHistorySeed }),
       ...(this.options.resolveAttachments ? { resolveAttachments: this.options.resolveAttachments } : {}),
       ...(this.options.importArtifact ? { importArtifact: this.options.importArtifact } : {}),
       ...(this.options.resumeSession ? { resumeSession: this.options.resumeSession } : {}),
-      onHistoryChanged: (agent, snapshot, checkpoint) => this.replaceDisplay(agent, snapshot, undefined, checkpoint),
+      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.replaceDisplay(agent, snapshot, undefined, checkpoint, epoch),
     }, rows)
   }
 
-  private async replaceDisplay(previous: NativeCodexAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint()): Promise<void> {
+  private async replaceDisplay(previous: NativeCodexAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint(), epoch?: number): Promise<void> {
     const sourceId = previous.binding.hapiSessionId
     const pending = this.attaching.get(sourceId)
     if (pending) {
@@ -190,7 +191,7 @@ export class CodexService {
       if (source && current && source.metadataVersion > current.sourceSession.metadataVersion
         && canonicalJson(bindingFor(this.transport.hubId, source)) !== canonicalJson(current.binding)) {
         if (this.attaching.get(sourceId) === pending) this.attaching.delete(sourceId)
-        await this.replaceDisplay(current, rows, source, checkpoint)
+        await this.replaceDisplay(current, rows, source, checkpoint, epoch)
       }
       return
     }
@@ -206,7 +207,7 @@ export class CodexService {
         // service retry below survives disposal of its history sync worker.
         this.pendingResets.set(sourceId, this.pendingResets.get(sourceId) ?? previous.id)
         await previous.dispose(); this.agents.delete(sourceId)
-        current = await this.createAgent(source ?? await this.transport.getSession(sourceId), rows, checkpoint, version)
+        current = await this.createAgent(source ?? await this.transport.getSession(sourceId), rows, checkpoint, version, epoch)
         journal.assertCurrent(checkpoint); this.lifetimes.assertCurrent(sourceId, version)
         if (this.disposed) { await current.dispose(); return undefined }
         this.agents.set(sourceId, current)

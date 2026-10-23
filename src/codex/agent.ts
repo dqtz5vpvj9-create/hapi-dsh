@@ -15,7 +15,7 @@ import {
 } from './contracts.js'
 import { NativeApprovals } from './approvals.js'
 import { DeliveryJournal } from './delivery.js'
-import { readNativeHistory, readNativeHistoryTail } from './history.js'
+import { NativeHistoryEpochChangedError, readNativeHistorySnapshot, readNativeHistoryTail, readNativeHistoryUpdate } from './history.js'
 import { NativeHistoryCache } from './history-cache.js'
 import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, type HistoryCheckpoint } from './history-journal.js'
 import { SourceHistorySync } from './history-sync.js'
@@ -40,7 +40,8 @@ export interface NativeCodexOptions {
   resolveAttachments?: (hapiSessionId: string, message: UserMessage) => Promise<HapiAttachment[]>
   importArtifact?: NativeArtifactImporter
   /** Allows the service to replace a display generation after authoritative native rewind. */
-  onHistoryChanged?: (agent: NativeCodexAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint) => Promise<void>
+  onHistoryChanged?: (agent: NativeCodexAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number) => Promise<void>
+  historyEpoch?: number
   /**
    * HAPI resume for an inactive original session. Only an explicit
    * `session_inactive` (HTTP 409) delivery rejection may use it, once.
@@ -220,6 +221,8 @@ export class NativeCodexAgent implements Agent {
   private readonly historyJournal: SourceHistoryJournal
   private readonly historyOrder = new SourceHistoryOrder()
   private readonly historySync: SourceHistorySync
+  private readonly liveSync: SourceHistorySync
+  private historyEpoch: number | undefined
   private historyStale = false
   private rowWork: Promise<void> = Promise.resolve()
 
@@ -230,8 +233,12 @@ export class NativeCodexAgent implements Agent {
     private readonly config: NativeCodexOptions,
   ) {
     this.source = source
+    this.historyEpoch = config.historyEpoch
     this.historyJournal = config.historyJournal ?? new SourceHistoryJournal()
     this.historySync = new SourceHistorySync(history => this.refresh(history), error => this.reportError(error))
+    // Running state and the newest native items must not wait behind archival
+    // pagination from this or another source. Each live source still coalesces.
+    this.liveSync = new SourceHistorySync(history => this.refreshLive(history), error => this.reportError(error), false)
     this.binding = bindingFor(transport.hubId, source)
     this.logicalSessionId = nativeSessionId(transport.hubId, source.id)
     this.displayRevision = config.displayRevision ?? 0
@@ -296,7 +303,10 @@ export class NativeCodexAgent implements Agent {
       let checkpoint = options.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
         const cached = options.fastHistorySeed ? agent.cache.snapshot() : undefined
-        if (cached) {
+        // Legacy caches predate structural epochs. Seed their bounded live
+        // tail first so index notifications need not wait for a full archive.
+        if (cached?.epoch !== undefined) {
+          agent.historyEpoch = cached.epoch
           rows = agent.historyJournal.overlayCache(cached.rows)
           agent.historyStale = true
           agent.fault = 'Cached source history is stale; reconciling with the live source'
@@ -304,7 +314,8 @@ export class NativeCodexAgent implements Agent {
         } else try {
           checkpoint = agent.historyJournal.checkpoint()
           const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
-            : { rows: await readNativeHistory(transport, source.id), complete: true }
+            : { ...await readNativeHistorySnapshot(transport, source.id), complete: true }
+          agent.historyEpoch = tail.epoch
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
           agent.historyStale = !tail.complete
           if (!tail.complete) {
@@ -336,7 +347,7 @@ export class NativeCodexAgent implements Agent {
       agent.publishProjection()
       options.assertSourceCurrent?.()
       agent.historyJournal.assertCurrent(checkpoint)
-      agent.cache.write(rows, !agent.historyStale)
+      agent.cache.write(rows, !agent.historyStale, agent.historyEpoch)
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindNativeCommands(agent)
@@ -350,7 +361,7 @@ export class NativeCodexAgent implements Agent {
   /** Start only after the service has published this Agent in its registry. */
   startHistorySync(): void { if (this.historyStale) this.historySync.request(true) }
   requestHistorySync(): void { this.historyStale = true; this.historySync.request(true) }
-  async settled(): Promise<void> { await this.historySync.settled(); await this.rowWork }
+  async settled(): Promise<void> { await this.liveSync.settled(); await this.historySync.settled(); await this.rowWork }
 
   get options(): AgentOptions {
     return {
@@ -514,7 +525,7 @@ export class NativeCodexAgent implements Agent {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       this.connected = event.data?.status === 'connected'
-      if (this.connected) { this.historyStale = true; this.historySync.request(true) }
+      if (this.connected) { this.historyStale = true; this.liveSync.request(true); this.historySync.request(true) }
       else {
         this.rejectIdleWaiters('Native Codex activity is unknown until its owner reconnects')
         this.publishProjection()
@@ -539,11 +550,47 @@ export class NativeCodexAgent implements Agent {
         if (event.localId) { this.journal.update(event.localId, 'cancelled'); this.queued.delete(event.localId) }
         this.syncInbox(); this.publishProjection()
         break
-      case 'messages-invalidated': case 'message-updated': case 'scheduled-matured':
+      case 'messages-invalidated':
+        if (event.reason === 'native-history') { this.liveSync.request(true); break }
+        this.historyEpoch = undefined
         this.historyStale = true; this.historySync.request(true); break
-      case 'session-updated': case 'session-added': case 'session-ended': this.historySync.request(false); break
+      case 'message-updated': case 'scheduled-matured':
+        this.historyStale = true; this.historySync.request(true); break
+      case 'session-updated': case 'session-added': case 'session-ended': this.liveSync.request(false); break
       case 'session-removed': this.connected = false; this.publishProjection(); break
     }
+  }
+
+  private async refreshLive(history: boolean): Promise<void> {
+    await this.refreshSettings()
+    if (!history || this.disposed) return
+    const epoch = this.historyEpoch
+    if (epoch === undefined) { this.historySync.request(true); return }
+    const checkpoint = this.historyJournal.checkpoint()
+    let rows: HapiMessage[] | null
+    try { rows = await readNativeHistoryUpdate(this.transport, this.binding.hapiSessionId, epoch,
+      row => this.historyOrder.overlapsLatest(row)) }
+    catch (error) {
+      if (error instanceof NativeHistoryEpochChangedError) { this.invalidateHistoryEpoch(); return }
+      throw error
+    }
+    if (this.disposed) return
+    this.historyJournal.assertCurrent(checkpoint)
+    if (!rows || this.historyOrder.needsReseed(rows)) { this.historySync.request(true); return }
+    // Indexed-native notifications carry no row payload. Retain the validated
+    // delta just like SSE rows so an older in-flight archive cannot erase it.
+    for (const message of rows) this.historyJournal.capture({ type: 'message-received', sessionId: this.binding.hapiSessionId, message })
+    try { await this.applyRows(rows, false, this.historyJournal.checkpoint()) }
+    catch (error) {
+      if (error instanceof NativeHistoryChangedError) { this.historySync.request(true); return }
+      throw error
+    }
+    this.syncInbox(); this.publishProjection()
+  }
+
+  private invalidateHistoryEpoch(): void {
+    this.historyJournal.capture({ type: 'messages-invalidated', sessionId: this.binding.hapiSessionId, reason: 'rewind' })
+    this.historyEpoch = undefined; this.historyStale = true; this.historySync.request(true)
   }
 
   /** Settings reads must not queue behind transcript loading or delivery reconciliation. */
@@ -569,19 +616,25 @@ export class NativeCodexAgent implements Agent {
       this.observe(snapshot)
       if (history || this.historyStale) {
         const checkpoint = this.historyJournal.checkpoint()
-        const rows = await readNativeHistory(this.transport, this.binding.hapiSessionId)
+        const snapshot = await readNativeHistorySnapshot(this.transport, this.binding.hapiSessionId)
+        const rows = snapshot.rows
         if (this.disposed) return
+        // Forget live rows from the removed epoch before taking a new read;
+        // otherwise the receive journal could resurrect a deleted message.
+        if (this.historyEpoch !== undefined && this.historyEpoch !== snapshot.epoch) { this.invalidateHistoryEpoch(); return }
         let merged = this.historyJournal.merge(rows, checkpoint)
         try { await this.applyRows(merged, true, checkpoint) } catch (error) {
           if (error instanceof NativeHistoryChangedError && this.config.onHistoryChanged) {
             // Capture arrivals during content preparation as well. A changed
             // generation aborts this seed instead of resurrecting old rows.
             merged = this.historyJournal.merge(rows, checkpoint)
-            await this.config.onHistoryChanged(this, merged, checkpoint)
+            await this.config.onHistoryChanged(this, merged, checkpoint, snapshot.epoch)
             return
           }
           throw error
         }
+        this.historyEpoch = snapshot.epoch
+        this.cache.write(merged, true, this.historyEpoch)
       }
       await this.journal.reconcileSource()
       if (this.disposed) return
@@ -651,7 +704,7 @@ export class NativeCodexAgent implements Agent {
       this.historyJournal.assertCurrent(checkpoint)
       this.historyOrder.accept(rows, authoritative)
       if (authoritative && !this.initializing) {
-        this.cache.write(rows); this.historyStale = false
+        this.historyStale = false
       }
     })
     this.rowWork = work.catch(() => {})
@@ -758,6 +811,7 @@ export class NativeCodexAgent implements Agent {
     if (this.disposed) return
     this.disposed = true
     this.historySync.dispose()
+    this.liveSync.dispose()
     this.rejectIdleWaiters('The native Codex observation was detached')
     this.projector?.abandonStream()
     await this.children?.dispose()

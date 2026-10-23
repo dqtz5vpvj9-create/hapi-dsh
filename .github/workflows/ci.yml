@@ -33,7 +33,13 @@ jobs:
         run: node --import tsx --test --test-isolation=none tests/federation-official.test.ts
       - name: Install Chromium
         run: npm exec -- playwright install --with-deps chromium
-      - name: Browser end to end
+      - name: Check UI measurement negative controls
+        run: npm run test:ui:probe
+      - name: Official UI acceptance with one shared Host and browser
+        env:
+          HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-ui
+        run: npm run test:ui:ci
+      - name: Full browser regression suite
         run: npm run test:e2e
       - name: Check and pack distribution
         run: node scripts/distribution-pack.mjs
@@ -56,5 +62,6 @@ jobs:
           path: |
             playwright-report/
             test-results/
+            ${{ runner.temp }}/hapi-dsh-ui/hapi-ui-acceptance-*.json
           if-no-files-found: ignore
           retention-days: 7

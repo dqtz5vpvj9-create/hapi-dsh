@@ -42,4 +42,4 @@ for (let attempt = 0; attempt < 45; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2_000))
 }
 if (!ready) throw new Error('Build finished, but the HTTP endpoint did not become ready; inspect the service log')
-process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. HTTP ready; UI acceptance belongs to the user.\n`)
+process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. HTTP ready; the Agent must report UI/performance acceptance separately.\n`)

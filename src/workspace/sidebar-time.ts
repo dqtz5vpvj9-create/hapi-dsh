@@ -22,13 +22,17 @@ export function localDayKey(time: number): string {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
+let dayFormatter: { locale: string | undefined; format: Intl.DateTimeFormat } | undefined
 export function sidebarDayLabel(time: number, previousTime: number | undefined, labels: { today: string; yesterday: string }, locale?: string, now = Date.now()): string | null {
     const date = new Date(time)
     if (!Number.isFinite(date.getTime()) || previousTime !== undefined && localDayKey(previousTime) === localDayKey(time)) return null
     const today = new Date(now), yesterday = new Date(now); yesterday.setDate(today.getDate() - 1)
     if (localDayKey(time) === localDayKey(today.getTime())) return labels.today
     if (localDayKey(time) === localDayKey(yesterday.getTime())) return labels.yesterday
-    return date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
+    // Reuse ICU setup across day headings and catalog updates. The large
+    // production catalog otherwise creates hundreds of formatters at boot.
+    if (!dayFormatter || dayFormatter.locale !== locale) dayFormatter = { locale, format: new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric' }) }
+    return dayFormatter.format.format(date)
 }
 
 export function parseLocalDate(value: string): Date | null {

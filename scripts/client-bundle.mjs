@@ -12,9 +12,10 @@ export async function buildClientBundle(buildIdentity) {
         platform: 'browser', target: 'es2022', write: false, legalComments: 'inline',
         define: { 'process.env.NODE_ENV': '"production"' },
     });
-    const result = await build({
-        entryPoints: ['src/client/index.ts'], bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
-        write: false, jsx: 'automatic', legalComments: 'inline',
+    const options = {
+        bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
+        write: false, jsx: 'automatic', legalComments: 'inline', minifyWhitespace: true, minifySyntax: true,
+        metafile: Boolean(process.env.HAPI_DSH_BUNDLE_REPORT),
         logOverride: { 'import-is-undefined': 'error' },
         define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text),
             __HAPI_DSH_OFFICIAL_MODULES_SOURCE__: JSON.stringify(modulesSource), __HAPI_DSH_BUILD_ID__: buildIdentity },
@@ -31,9 +32,22 @@ export async function buildClientBundle(buildIdentity) {
             '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit',
             '@deepseek-ai/dsh-api-terminal-controller/client',
         ],
-    });
+    };
+    const chunks = [['client.voice.js', 'src/client/source-voice/composer.tsx'], ['client.capture.js', 'html2canvas-pro']];
+    const [result, ...extras] = await Promise.all([
+        build({ ...options, entryPoints: ['src/client/index.ts'] }),
+        ...chunks.map(([, entry]) => build({ ...options, entryPoints: [entry] })),
+    ]);
     const body = result.outputFiles[0].text;
+    if (result.metafile) await writeFile(process.env.HAPI_DSH_BUNDLE_REPORT, JSON.stringify(result.metafile));
     await mkdir('dist', { recursive: true });
+    // Publish each supported package-local chunk before announcing the new main
+    // bundle. Ordinary conversations do not load voice SDKs or PNG capture.
+    for (let i = 0; i < chunks.length; i++) {
+        const fileName = chunks[i][0], pendingChunk = `dist/${fileName}.${process.pid}.pending`;
+        await writeFile(pendingChunk, `window.__ModuleLoader__.load({id:"hapi-dsh",chunk:${JSON.stringify(fileName)},factory:function(require){var module={exports:{}};var exports=module.exports;\n${extras[i].outputFiles[0].text}\nreturn module.exports;}});\n`);
+        await rename(pendingChunk, `dist/${fileName}`);
+    }
     // The official 500 ms HMR poll must only see a completed bundle generation.
     const pending = `dist/client.js.${process.pid}.pending`;
     await writeFile(pending, `window.__ModuleLoader__.load({id:"hapi-dsh",factory:function(require){var module={exports:{}};var exports=module.exports;\n${body}\nreturn module.exports;}});\n`);

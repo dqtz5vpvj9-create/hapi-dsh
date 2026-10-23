@@ -579,6 +579,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const { engine, machine, mode, filter, collapsed, expanded, folderOrder, pinInProgressSessions, showActiveSessionsOnly, sessionPreviewLimit, statusMode } = sidebar.preferences
     const workspaces = useWorkspaces(state => state)
     const mobile = useNarrowViewport()
+    const showRows = wide || mobile && snapshot.pickingSession
     const [searchInput, setSearchInput] = useState('')
     const query = useDebouncedSidebarQuery(searchInput)
     const [searchExpanded, setSearchExpanded] = useState(false)
@@ -596,12 +597,12 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const [sourceDialog, setSourceDialog] = useState<{ kind: 'rename' | 'export' | 'migration'; row: WorkspaceCatalogRow; source: WorkbenchSource } | null>(null)
     const language = document.documentElement.lang || 'en'
     const input = useRef<HTMLInputElement>(null)
-    const rows = useMemo(() => snapshot.catalog.ids.map(id => snapshot.catalog.byId[id]).filter(row => row !== undefined), [snapshot.catalog])
+    const rows = useMemo(() => showRows ? snapshot.catalog.ids.map(id => snapshot.catalog.byId[id]).filter(row => row !== undefined) : [], [snapshot.catalog, showRows])
     const latestCompleted = useMemo(() => rows.filter(row => sessionActivity(row).kind === 'completed')
         .reduce<WorkspaceCatalogRow | undefined>((latest, row) => (sessionCompletedAt(row) ?? 0) > (sessionCompletedAt(latest) ?? 0) ? row : latest, undefined)?.id, [rows])
-    const orderedIds = recency.reconcile(rows)
+    const orderedIds = showRows ? recency.reconcile(rows) : []
     const searchIndex = useMemo(() => buildSidebarSearchIndex(rows, query, sessionLocation), [rows, query])
-    const activityDates = useMemo(() => new Set([...rows, ...snapshot.sourceDiscovery?.sessions ?? []].map(row => localDayKey(row.updatedAt))), [rows, snapshot.sourceDiscovery])
+    const activityDates = useMemo(() => new Set(showRows ? [...rows, ...snapshot.sourceDiscovery?.sessions ?? []].map(row => localDayKey(row.updatedAt)) : []), [rows, snapshot.sourceDiscovery, showRows])
     const hasQuery = Boolean(query.trim())
     const timeRange = sidebarTimeRange(dateFrom, dateThrough)
     const bookmarkScope = JSON.stringify([query.trim().toLocaleLowerCase(), engine, machine, filter, archived, dateFrom, dateThrough, showActiveSessionsOnly])
@@ -632,8 +633,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         unread: scopedTree.filter(({ row }) => controller.sidebar.isUnread(row.id, row.updatedAt)).length,
     }
     const sourceFilters = { query, engine, machine, archived, activeOnly: showActiveSessionsOnly, timeRange }
-    const discovered = sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, sourceFilters)
-    const discoveredMatching = sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, { ...sourceFilters, filter })
+    const discovered = showRows ? sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, sourceFilters) : []
+    const discoveredMatching = showRows ? sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, { ...sourceFilters, filter }) : []
     counts.all += discovered.length
     counts.running += discovered.filter(({ source }) => source.thinking && !source.waitingOn.length && !(source.pendingRequestsCount ?? 0)).length
     counts.attention += discovered.filter(({ source }) => source.binding === 'failed' || source.waitingOn.length || (source.pendingRequestsCount ?? 0) > 0).length
@@ -687,7 +688,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         window.addEventListener('keydown', close)
         return () => { window.removeEventListener('keydown', close) }
     }, [mobile, snapshot.pickingSession, controller])
-    if (!wide && !(mobile && snapshot.pickingSession)) return <div className="hapi-session-rail"><IconButton label={t('showSidebar')} icon="sidebar" onClick={expandSidebar}/><span>{rows.length}</span></div>
+    if (!showRows) return <div className="hapi-session-rail"><IconButton label={t('showSidebar')} icon="sidebar" onClick={expandSidebar}/><span>{snapshot.catalog.ids.length}</span></div>
     const renderRow = ({ branch, depth, expanded: childrenVisible }: SidebarTreeRow): ReactNode => {
         const { row, children } = branch
         const facts = sidebarActionFacts(row), child = facts.child

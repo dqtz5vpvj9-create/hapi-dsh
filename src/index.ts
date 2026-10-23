@@ -178,20 +178,22 @@ export class HapiController extends TypertRemoteService {
     async catalog(): Promise<HapiCatalog> {
         await Promise.all([this.refreshMachines(), this.refreshSourceSummaries()]);
         const client = this.options.client;
+        const agents = [...this.options.codex.list(), ...this.options.observed.list()];
+        const attached = new Set(agents.map(agent => agent.binding.hapiSessionId));
+        const codexErrors = this.options.codex.failures(), observedErrors = this.options.observed.failures();
         return {
             hubId: client.hubId, connected: client.isConnected,
             sourceDiscovery: {
                 phase: this.summaryError || !client.isConnected ? this.summaryObservedAt === null ? 'unavailable' : 'stale' : this.summaryObservedAt === null ? 'pending' : 'ready',
                 observedAt: this.summaryObservedAt, error: this.summaryError,
                 sessions: [...this.sourceSummaries.values()].map(source => {
-                    const row = discoverSourceSession(client.hubId, source,
-                        [...this.options.codex.list(), ...this.options.observed.list()].some(agent => agent.binding.hapiSessionId === source.id));
-                    const error = this.options.codex.failures().get(source.id) ?? this.options.observed.failures().get(source.id);
+                    const row = discoverSourceSession(client.hubId, source, attached.has(source.id));
+                    const error = codexErrors.get(source.id) ?? observedErrors.get(source.id);
                     return !error || row.binding === 'attached' ? row : { ...row, binding: 'failed' as const, error };
                 }),
             },
             machines: this.machineCache.map(machine => catalogSourceMachine(machine, client.isConnected)),
-            sessions: [...this.options.codex.list(), ...this.options.observed.list()].map(agent => ({
+            sessions: agents.map(agent => ({
                 id: agent.id, logicalSessionId: agent.logicalSessionId, displayRevision: agent.displayRevision,
                 hapiSessionId: agent.binding.hapiSessionId, machineId: agent.binding.machineId,
                 engine: agent.sourceSession.metadata?.flavor ?? 'claude', title: agent.sourceSession.metadata?.name ?? agent.sourceSession.metadata?.summary?.text ?? agent.binding.hapiSessionId,

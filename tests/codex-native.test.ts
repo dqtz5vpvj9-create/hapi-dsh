@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { NativeHistoryCache } from '../src/codex/history-cache.ts'
+import { nativeStateDirectory } from '../src/codex/state-directory.ts'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
@@ -418,6 +420,8 @@ test('provisional snapshots stream, completion settles once, and live/history ra
   apply(agentBody('message', { message: 'Hel', streamSnapshot: true }, 'answer', false))
   assert.equal(session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
   assert.equal(frames.filter(frame => frame.type === 'end' && frame.outcome.kind === 'committed').length, 1)
+  assert.deepEqual(frames.map(frame => frame.revision), frames.map((_frame, index) => index + 1),
+    'official DSH followers require a dense revision on every start/chunk/end frame')
 })
 
 test('pending input uses one native dispatch and survives loss of the acknowledgement without replay', async () => {
@@ -989,6 +993,32 @@ async function eventuallyNative(predicate: () => boolean): Promise<void> {
   assert.ok(predicate(), 'the live projection should advance without waiting for history')
 }
 
+test('indexed native output and running state advance during blocked archival reads without a display reset', { timeout: 10_000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-indexed-live-')), fake = new FakeHapi()
+  fake.rows = [user(), agentBody('message', { message: 'Existing answer' }, 'existing')]
+  const app = await mount(fake, directory), initial = app.service.list()[0]!
+  const oldRows = [...fake.rows]
+  let release!: (value: HapiMessagesPage) => void, reads = 0
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+  fake.readHook = () => ++reads === 1 ? blocked : page(fake.rows)
+  const archive = initial.refresh(true)
+  try {
+    await eventuallyNative(() => reads === 1)
+    const live = agentBody('message', { message: 'Indexed output while archive waits' }, 'indexed-live')
+    live.createdAt = 1400; live.seq = 4; fake.rows.push(live)
+    fake.source.execution = { ...fake.source.execution!, sequence: 2, status: 'active', turnId: TURN }
+    fake.source.executionVersion = 2
+    fake.emit({ type: 'session-updated', sessionId: fake.source.id })
+    for (let index = 0; index < 20; index++) fake.emit({ type: 'messages-invalidated', sessionId: fake.source.id, reason: 'native-history' })
+    await eventuallyNative(() => initial.status === 'running' && initial.resolveSourceMessageDisplaySeq(live.id) !== undefined)
+    assert.equal(app.service.list()[0]!.id, initial.id)
+    release(page(oldRows)); await archive; await app.service.settled()
+    assert.equal(app.service.list()[0]!.id, initial.id)
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(live.id), undefined)
+    assert.equal(fake.sent.length, 0)
+  } finally { release(page(fake.rows)); await archive.catch(() => {}); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('native cached display returns before a blocked history read and live output survives older backfill', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-live-first-')), fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Cached answer' }, 'cached')]
@@ -1020,11 +1050,16 @@ test('native cached display returns before a blocked history read and live outpu
   } finally { release?.(page(fake.rows)); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native cold attach seeds bounded initial context while full history remains blocked', async () => {
+for (const legacyCache of [false, true]) test(`native ${legacyCache ? 'legacy cache' : 'cold attach'} seeds bounded initial context while full history remains blocked`, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-cold-tail-')), fake = new FakeHapi()
   const tail = agentBody('message', { message: 'Latest bounded answer' }, 'tail')
   tail.createdAt = 1300; tail.seq = 3
   const older = user()
+  if (legacyCache) {
+    const logicalId = nativeSessionId(fake.hubId, fake.source.id)
+    new NativeHistoryCache(nativeStateDirectory(directory, logicalId, bindingFor(fake.hubId, fake.source)), logicalId)
+      .write([agentBody('message', { message: 'Old legacy cache' }, 'legacy')])
+  }
   let release!: (value: HapiMessagesPage) => void, reads = 0
   const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
   fake.readHook = query => {
