@@ -1,6 +1,6 @@
 {
   "name": "hapi-dsh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A distributed tmux-style DSH workspace with native HAPI Codex sessions",
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -59,6 +59,7 @@
     "config",
     "locale",
     "README.md",
+    "QUICKSTART.md",
     "LICENSE",
     "NOTICE",
     "docs",
@@ -95,6 +96,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:client": "node scripts/build-client.mjs",
+    "dist:pack": "npm run build && node scripts/distribution-pack.mjs",
+    "test:install": "node scripts/distribution-smoke.mjs",
     "deploy": "node scripts/deploy.mjs",
     "deploy:host": "node scripts/deploy.mjs --host",
     "e2e:warm": "node --import tsx scripts/warm-e2e.ts",

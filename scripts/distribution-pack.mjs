@@ -23,7 +23,7 @@ if (!pack || typeof pack.filename !== 'string' || basename(pack.filename) !== pa
 }
 const paths = new Set(pack.files.map(file => file.path));
 const required = [
-    'package.json', 'README.md', 'LICENSE', 'NOTICE', 'dist/index.js', 'dist/client.js', 'dist/client.voice.js', 'dist/client.capture.js', 'dist/cli.js', 'dist/session-controller.js',
+    'package.json', 'README.md', 'QUICKSTART.md', 'LICENSE', 'NOTICE', 'dist/index.js', 'dist/client.js', 'dist/client.voice.js', 'dist/client.capture.js', 'dist/cli.js', 'dist/session-controller.js',
     'dist/runner/index.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml',
     'dist/types/index.d.ts', 'dist/types/client/index.d.ts', 'dist/types/cli/index.d.ts',
     'config/cordis.patch.yml', 'config/runner.patch.yml', 'docs/install.md', 'docs/architecture.md',
@@ -45,4 +45,5 @@ if (!cli.startsWith('#!/usr/bin/env node\n')) throw new Error('The distribution 
 const file = resolve('artifacts', pack.filename);
 const hash = createHash('sha256').update(await readFile(file)).digest('hex');
 await writeFile('artifacts/SHA256SUMS', `${hash}  ${pack.filename}\n`);
-process.stdout.write(`Verified ${paths.size} package files. Created ${file} and artifacts/SHA256SUMS.\n`);
+await writeFile('artifacts/INSTALL.md', await readFile('QUICKSTART.md', 'utf8'));
+process.stdout.write(`Verified ${paths.size} package files. Created ${file}, artifacts/SHA256SUMS, and artifacts/INSTALL.md.\n`);

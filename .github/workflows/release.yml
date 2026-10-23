@@ -37,4 +37,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/*.tgz artifacts/SHA256SUMS --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" artifacts/*.tgz artifacts/SHA256SUMS artifacts/INSTALL.md --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

@@ -8,6 +8,20 @@
 
 完整替代的对照基准是原 HAPI 的实际功能和使用体验。已实现能力、尚有差距的行为及对应证据逐项记录在[功能与 UX 对照表](docs/feature-parity.md)；当前源码不能据此宣称已完成全部替代。
 
+## 快速安装（Windows / macOS / Linux）
+
+同学使用预构建包即可，无需克隆或编译源码。安装 Node.js 24+，取得 `hapi-dsh-0.1.1.tgz` 后执行：
+
+```text
+npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.1.tgz
+hapi-dsh init --hapi-url http://127.0.0.1:3006
+hapi-dsh login
+hapi-dsh doctor
+hapi-dsh start
+```
+
+把示例地址换成自己的兼容 HAPI Hub。`login` 隐藏令牌输入并保存到私有配置，后续直接 `hapi-dsh start`。Windows PowerShell 若拦截 `.ps1`，使用 `npm.cmd` / `hapi-dsh.cmd`。无管理员权限的安装、升级和排障见[给使用者的快速指南](QUICKSTART.md)。只访问已有部署的同学无需安装，直接打开工作区网址即可。
+
 ## 工作区与官方插件
 
 文件、文档和终端属于插件视图。工作区保存它们真实的会话身份、资源地址、标签实例和导航参数；官方 Files、DocumentPreview、Terminal 负责显示。文件读取、写入和终端输入通过公开 provider 转发到这个窗格所属的原 HAPI Runner。普通 DSH 会话继续使用原 provider。
@@ -49,11 +63,10 @@ npm run build
 node dist/cli.js init --hapi-url http://127.0.0.1:3006
 ```
 
-在 Bash 中交互输入该 HAPI Hub 的访问令牌，避免把令牌写进命令历史：
+输入该 HAPI Hub 的访问令牌并启动（三个平台相同）：
 
-```bash
-read -r -s -p 'HAPI access token: ' HAPI_DSH_TOKEN
-export HAPI_DSH_TOKEN
+```text
+node dist/cli.js login
 node dist/cli.js doctor
 node dist/cli.js start
 ```
@@ -71,12 +84,12 @@ npm run check
 node scripts/distribution-pack.mjs
 ```
 
-将生成的 `artifacts/hapi-dsh-0.1.0.tgz` 和 `artifacts/SHA256SUMS` 一起分发。接收方在同一目录校验并安装：
+将生成的 `artifacts/hapi-dsh-0.1.1.tgz` 、`artifacts/INSTALL.md` 和 `artifacts/SHA256SUMS` 一起分发。接收方在同一目录校验并安装：
 
 ```bash
 sha256sum -c SHA256SUMS
 npm install --global pnpm@11.28.5
-npm install --global ./hapi-dsh-0.1.0.tgz
+npm install --global ./hapi-dsh-0.1.1.tgz
 hapi-dsh --help
 ```
 

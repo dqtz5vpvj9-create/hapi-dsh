@@ -43,7 +43,9 @@ node scripts/distribution-smoke.mjs
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` 对主分支、PR 和可复用调用执行：固定 Node 与 pnpm 版本、`npm ci`、类型/单元/构建检查、真实官方 federation 集成、Chromium Playwright E2E、打包及包内容校验，最后从 `.tgz` 在干净目录安装运行依赖，实际创建主/Runner profile、离线 doctor、脱敏与撤销。官方 DSH 的插件安装需要 `PATH` 中的 pnpm；干净安装测试继承这一系统前提。报告与包通过 artifact 保存，GitHub Actions 自身也固定到提交 SHA。
+`.github/workflows/ci.yml` 保留类型、逻辑、官方 federation 与完整浏览器回归。打包 job 与回归并行，生成同一份 `.tgz` 和 `INSTALL.md`；Linux、Windows、macOS 三个 job 下载这份包，在带空格的干净目录安装运行依赖，调用真实 npm 命令 shim，验证版本、登录脱敏、主/Runner profile、离线 doctor、HTTP 启动与撤销。测试目录的 pnpm 随安装提供，不依赖预装的全局 pnpm。发布仍等待整个工作流成功，快速生成安装包不绕过正式发布门槛。
+
+日常准备包可用 `npm run dist:pack`，完整安装验证用 `npm run test:install`。这两条命令不会提交、推送或发布到 npm。
 
 `.github/workflows/release.yml` 在 `v*` tag 上调用相同验证流程。验证成功后校验 tag 与 `package.json.version` 一致，下载该流程已经检查过的同一安装包，复核 SHA-256，再创建 GitHub Release。发布任务只有所需的 `contents: write` 权限，不运行 `npm publish`。
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { dirname, join, resolve } from 'node:path';
+import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { createConfig, defaultConfigPath, parseConfig, publicConfig, readConfig, writeConfig, type RuntimeConfig } from './config.ts';
 import { doctor } from './doctor.ts';
 import { findPackageRoot, installProfile, startProfile } from './runtime.ts';
 import { createInvitation, runnerCommand } from './federation.ts';
 import { revokePairing } from '../hub/federation-credentials.ts';
+import { login } from './login.ts';
 
 export const HELP = `hapi-dsh — official DSH Web profile with the HAPI workspace plugin
 
 Usage:
   hapi-dsh init --hapi-url URL [configuration options] [--config-only]
   hapi-dsh install [--config FILE]
+  hapi-dsh login [--config FILE] [--stdin]
   hapi-dsh doctor [--config FILE] [--offline] [--json]
   hapi-dsh start [--config FILE] [--no-open]
   hapi-dsh config [--config FILE]
@@ -19,6 +22,7 @@ Usage:
   hapi-dsh revoke --machine-id ID [--config FILE]
   hapi-dsh runner init --pairing-file PRIVATE_FILE [--config FILE] [--dsh-home DIR] [--profile NAME] [--config-only]
   hapi-dsh runner install|start|config [--config FILE]
+  hapi-dsh --version
 
 hub is an alias for start. Pairing invitations contain a credential and are written
 with mode 0600; transfer them privately to the intended Runner machine.
@@ -38,29 +42,32 @@ Configuration options (init):
   --dsh-command PATH Override the bundled DSH launcher; its exact version is checked
   --config-only      Create config without installing the DSH profile
 
-Set the HAPI access token through the selected environment variable or the private
-config file. Credentials are never accepted as command-line arguments. init refuses
+login reads the HAPI access token without echoing it and saves it in the private
+config. --stdin reads it from a pipe instead. Environment variables still take priority.
+Credentials are never accepted as command-line arguments. init refuses
 to replace an existing config. install preserves an existing Web profile and its plugins.
 `;
 
-type CommandName = 'init' | 'install' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'help';
-type FlagName = 'config' | 'hapi-url' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'token-env' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file';
+type CommandName = 'init' | 'install' | 'login' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'help' | 'version';
+type FlagName = 'config' | 'hapi-url' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'token-env' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file' | 'stdin';
 export interface ParsedArguments { command: CommandName; action?: string; flags: Partial<Record<FlagName, string | true>> }
 const valueFlags = new Set(['config', 'hapi-url', 'dsh-home', 'profile', 'host', 'port', 'public-url', 'trusted-host', 'tls-cert', 'tls-key', 'token-env', 'dsh-command']);
-const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open']);
-const allowed: Record<Exclude<CommandName, 'help'>, ReadonlySet<string>> = {
+const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open', 'stdin']);
+const allowed: Record<Exclude<CommandName, 'help' | 'version'>, ReadonlySet<string>> = {
     init: new Set([...valueFlags, 'config-only']),
     install: new Set(['config']), doctor: new Set(['config', 'offline', 'json']),
+    login: new Set(['config', 'stdin']),
     start: new Set(['config', 'no-open']), config: new Set(['config']),
     pair: new Set(['config', 'name', 'hub-url', 'output', 'machine-id']), revoke: new Set(['config', 'machine-id']),
     runner: new Set(['config']),
 };
 
 export function parseArguments(argv: readonly string[]): ParsedArguments {
+    if (argv.length === 1 && ['--version', '-V', 'version'].includes(argv[0]!)) return { command: 'version', flags: {} };
     if (argv.length === 0 || argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') return { command: 'help', flags: {} };
     const first = argv[0] === 'hub' ? 'start' : argv[0];
     if (!first || !Object.hasOwn(allowed, first)) throw new Error('Unknown command; run hapi-dsh --help');
-    const command = first as Exclude<CommandName, 'help'>;
+    const command = first as Exclude<CommandName, 'help' | 'version'>;
     const action = command === 'runner' ? argv[1] : undefined;
     if (command === 'runner' && !['init', 'install', 'start', 'config'].includes(action ?? '')) throw new Error('runner requires init, install, start, or config');
     const validFlags = command === 'runner' && action === 'init'
@@ -126,6 +133,11 @@ export function configFromArguments(flags: ParsedArguments['flags'], env: NodeJS
 export async function main(argv: readonly string[] = process.argv.slice(2)): Promise<number> {
     const { command, flags, action } = parseArguments(argv);
     if (command === 'help') { process.stdout.write(HELP); return 0; }
+    if (command === 'version') {
+        const manifest = JSON.parse(await readFile(join(await findPackageRoot(), 'package.json'), 'utf8')) as { version: string };
+        process.stdout.write(`${manifest.version}\n`);
+        return 0;
+    }
     if (command === 'runner') return runnerCommand(action!, flags);
     const configFile = resolve(flagValue(flags, 'config') ?? defaultConfigPath());
     if (command === 'init') {
@@ -137,10 +149,16 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
             await installProfile(config, configFile, await findPackageRoot());
             process.stdout.write(`Official DSH Web profile ${config.dsh.profile} is ready.\n`);
         }
-        process.stdout.write(`Set ${config.hapi.tokenEnv}, then run hapi-dsh doctor and hapi-dsh start with this config.\n`);
+        process.stdout.write(`Run hapi-dsh login, then hapi-dsh doctor and hapi-dsh start. Use --config ${JSON.stringify(configFile)} for this configuration.\n`);
         return 0;
     }
     const config = await readConfig(configFile);
+    if (command === 'login') {
+        await login(config, configFile, flags.stdin === true);
+        process.stdout.write('HAPI access token saved. Run hapi-dsh doctor to check the connection.\n');
+        if (process.env[config.hapi.tokenEnv]) process.stdout.write(`${config.hapi.tokenEnv} is set and takes priority over the saved token.\n`);
+        return 0;
+    }
     if (command === 'pair') {
         const name = flagValue(flags, 'name');
         const output = flagValue(flags, 'output');
@@ -180,7 +198,8 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 }
 
 const invokedPath = process.argv[1];
-if (invokedPath && import.meta.url === pathToFileURL(resolve(invokedPath)).href) {
+// npm's Unix bin is a symlink; Node resolves import.meta.url to the real file.
+if (invokedPath && import.meta.url === pathToFileURL(await realpath(resolve(invokedPath))).href) {
     main().then((code) => { process.exitCode = code; }).catch((error: unknown) => {
         const message = (error as NodeJS.ErrnoException)?.code === 'EEXIST'
             ? 'Configuration already exists. Use install to retry setup, or select a different --config file.'

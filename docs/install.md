@@ -1,5 +1,7 @@
 # 安装与运行
 
+首次使用预构建 `.tgz` 的同学先看[快速安装指南](../QUICKSTART.md)，Windows、macOS 和 Linux 使用同一个包。下面补充 HAPI 准备、远程部署和高级配置。
+
 ## 准备 HAPI
 
 本插件接入已经运行的 HAPI Hub。要保留本仓库所适配的原生 Codex 身份、队列、审批和恢复语义，Hub 与其 HAPI Runner 使用同一固定源码：
@@ -48,13 +50,12 @@ node dist/cli.js init \
 输入令牌、检查、启动：
 
 ```bash
-read -r -s -p 'HAPI access token: ' HAPI_DSH_TOKEN
-export HAPI_DSH_TOKEN
+node dist/cli.js login
 node dist/cli.js doctor
 node dist/cli.js start --no-open
 ```
 
-命名空间使用 HAPI 所接受的访问令牌形式。插件先向 `/api/auth` 交换 Web JWT，随后使用 JWT 访问会话和机器目录；不会把 CLI 令牌当作现成 JWT。
+`login` 交互输入不回显，并保存到已有私有配置；自动化可使用 `login --stdin`。已有环境变量仍优先于保存值。命名空间使用 HAPI 所接受的访问令牌形式。插件先向 `/api/auth` 交换 Web JWT，随后使用 JWT 访问会话和机器目录；不会把 CLI 令牌当作现成 JWT。
 
 `doctor --offline` 只检查本机版本、产物和 profile；`doctor --json` 提供结构化结果。缺少在线 HAPI Runner 会给出提示，原生会话创建需要 Runner 真正在线。
 
