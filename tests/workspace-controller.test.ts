@@ -93,6 +93,25 @@ function fixture() {
     return { sessions, navigation, options, refs, add, project, publish, phase, slow, deferred, renamed, actions, memory, disposeMain: () => main?.release() }
 }
 
+test('related source tools reuse one pane without replacing another session or explicit resource', () => {
+    const source = fixture(); source.add('alpha'); source.add('beta')
+    const controller = new WorkspaceController(source.options)
+    const reuseTabs = ['hapi-notes', 'hapi-history', 'hapi-schedule']
+    controller.openSession('alpha')
+    const conversation = controller.store.focusedPane().id
+    controller.openTab('hapi-notes', { sessionId: 'alpha', beside: 'horizontal', reuseTabs })
+    const tools = controller.store.focusedPane().id
+    controller.store.focus(conversation)
+    controller.openTab('hapi-history', { sessionId: 'alpha', beside: 'horizontal', reuseTabs })
+    assert.equal(controller.store.focusedPane().id, tools)
+    assert.equal(panes(controller.store.getSnapshot().windows[0]!.root).length, 2)
+    controller.openTab('hapi-notes', { sessionId: 'beta', beside: 'horizontal', reuseTabs })
+    assert.notEqual(controller.store.focusedPane().id, tools)
+    controller.openTab('hapi-notes', { sessionId: 'alpha', beside: 'horizontal' })
+    assert.notEqual(controller.store.focusedPane().id, tools, 'explicit independent tabs keep their own occurrence')
+    controller.dispose(); source.disposeMain()
+})
+
 test('creation hand-off observes only explicit creation success after opening the exact resource', async () => {
     const source = fixture()
     source.add('existing')

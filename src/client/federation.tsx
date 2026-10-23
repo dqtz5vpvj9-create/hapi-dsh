@@ -29,6 +29,7 @@ import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
 import { HostBootQueue } from './surface/host-boot-queue.ts'
+import { observeForegroundActivity } from './foreground-activity.ts'
 import { canReleaseHistory } from './surface/history-retention.ts'
 import type { UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
 import type { HapiProjection } from '../codex/projection-types.ts'
@@ -389,6 +390,16 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     document.body.append(parking)
     let unsubscribeLayout: (() => void) | undefined
     let sharedViewSequence = 0
+    const focusConversation = (resourceId: string, target?: Parameters<WorkspacePaneNavigation['locate']>[0]): string => {
+        const existing = workspace.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane =>
+            pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId
+            && (pane.resource.kind === 'chat' || pane.resource.kind === 'view' && pane.resource.target.type === 'conversation'))
+        if (existing) workspace.store.focus(existing.id)
+        else workspace.openSession(resourceId, 'horizontal')
+        const paneId = workspace.store.focusedPane().id
+        if (target) workspace.locateInPane(paneId, resourceId, target)
+        return paneId
+    }
     const recentlyViewed: SessionId[] = []
     const sharedConversation = (resource: Resource): boolean => shared && (resource.kind === 'chat' || resource.kind === 'view' && resource.target.type === 'conversation')
     const warmRecent = (): void => {
@@ -485,6 +496,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             locate: target => { if (navigationAllowed()) workspace.locateInPane(paneId, resourceId, target) },
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
+            focusConversation: target => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); return focusConversation(resourceId, target) },
             openSuccessor: async id => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); await workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, id), paneId) },
             openSession: (id, options) => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside, options?.target) },
             revealConversation: () => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.updateView(paneId, { type: 'conversation' }, workspace.getSnapshot().catalog.byId[resourceId]?.displayTitle ?? 'Conversation') },
@@ -627,6 +639,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             readLegacyScratchlist: ui.readLegacyScratchlist,
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),
             retainForDraftTransfer: () => retention.retain(),
+            focusConversation: target => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); return focusConversation(resourceId, target) },
             openSession: (id, options) => { if (!navigationAllowed()) return; workspace.store.focus(paneId); workspace.openSession(sessionResourceId(host.id, id), options?.beside, options?.target) },
             openSuccessor: async displaySessionId => { if (!navigationAllowed()) throw new Error('The original pane was replaced'); await workspace.openSuccessorSession(resourceId, sessionResourceId(host.id, displaySessionId), paneId) },
             state: { getSnapshot: () => presentation, subscribe(listener) { presentationListeners.add(listener); return () => { presentationListeners.delete(listener) } } },
@@ -728,7 +741,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) return
                 reference = graph.ctx.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
                 if (resource.kind === 'chat' || resource.kind === 'view' && resource.target.type === 'conversation') {
-                    uninitialHistory = bindInitialHistory(surface, reference, navigation.state)
+                    uninitialHistory = bindInitialHistory(surface, reference, navigation)
                 }
                 void reference.ready.catch(fail)
                 graph.ctx.uiWorkspace.openSession(sourceId as SessionId)
@@ -947,19 +960,22 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     const running = new Map<string, { abort: AbortController; runtime?: HostRuntime }>()
     const logical = new Map<string, string>()
     const reported = new Map<string, string>()
+    const activity = observeForegroundActivity(document)
     const boots = new HostBootQueue(() => {
         const resource = workspace.store.focusedPane().resource
         return resource.kind === 'empty' ? undefined : parseSessionResourceId(resource.sessionId).hostId
     }, () => {
         const pane = workspace.store.focusedPane()
-        if (pane.resource.kind === 'empty') return false
+        if (pane.resource.kind === 'empty') return activity.busy()
         const lease = workspace.getSnapshot().leases.get(pane.id)
-        if (lease?.status === 'failed') return false
+        if (lease?.status === 'failed') return activity.busy()
         // Do not evaluate an unrelated Host's complete plugin graph while the
         // selected conversation is binding and painting its initial history.
         const surface = document.querySelector(`[data-hapi-pane-instance="${CSS.escape(pane.id)}"]`)
         const opening = surface?.getAttribute('data-hapi-pane-opening')
-        return opening ? opening === 'loading' || opening === 'painting' : !surface?.hasAttribute('data-hapi-pane-booted')
+        const pending = opening ? opening === 'loading' || opening === 'painting' : !surface?.hasAttribute('data-hapi-pane-booted')
+        if (pending) activity.defer()
+        return pending || activity.busy()
     })
     const unprioritize = workspace.store.subscribe(boots.prioritize)
     const containShortcuts = (event: KeyboardEvent): void => {
@@ -1018,7 +1034,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     void poll()
     const timer = setInterval(() => { void poll() }, 3000)
     return async () => {
-        lifetime.abort(); clearInterval(timer); unprioritize(); boots.dispose()
+        lifetime.abort(); clearInterval(timer); unprioritize(); boots.dispose(); activity.dispose()
         unresolveSource()
         document.removeEventListener('keydown', containShortcuts)
         for (const entry of running.values()) entry.abort.abort()

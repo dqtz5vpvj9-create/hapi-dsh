@@ -23,7 +23,9 @@ if (!pack || typeof pack.filename !== 'string' || basename(pack.filename) !== pa
 }
 const paths = new Set(pack.files.map(file => file.path));
 const required = [
-    'package.json', 'README.md', 'QUICKSTART.md', 'LICENSE', 'NOTICE', 'dist/index.js', 'dist/client.js', 'dist/client.voice.js', 'dist/client.capture.js', 'dist/cli.js', 'dist/session-controller.js',
+    'package.json', 'README.md', 'QUICKSTART.md', 'LICENSE', 'NOTICE', 'dist/index.js', 'dist/client.js',
+    ...['voice', 'capture', 'native-panels', 'session-panels', 'administration'].map(name => `dist/client.${name}.js`),
+    'dist/cli.js', 'dist/session-controller.js',
     'dist/runner/index.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml',
     'dist/types/index.d.ts', 'dist/types/client/index.d.ts', 'dist/types/cli/index.d.ts',
     'config/cordis.patch.yml', 'config/runner.patch.yml', 'docs/install.md', 'docs/architecture.md',

@@ -441,7 +441,10 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
         const size = (selector: string) => pane.querySelector(selector)?.getBoundingClientRect().height ?? 0
         return { left: pane.getBoundingClientRect().left, width: pane.getBoundingClientRect().width, viewport: innerWidth,
           overflow: document.documentElement.scrollWidth - innerWidth, composer: size('[data-composer-card]'), header: size('.hapi-pane-header'),
-          bottom: document.querySelector('.hapi-statusbar')?.getBoundingClientRect().height ?? 0 }
+          bottom: document.querySelector('.hapi-statusbar')?.getBoundingClientRect().height ?? 0,
+          scrollBoundary: { root: getComputedStyle(document.documentElement).overscrollBehaviorY,
+            body: getComputedStyle(document.body).overscrollBehaviorY,
+            transcript: getComputedStyle(pane.querySelector('[data-conversation-scroll]')!).overscrollBehaviorY } }
       })
       const portrait = await measure()
       expect(portrait.left).toBeLessThanOrEqual(2); expect(portrait.width).toBeGreaterThanOrEqual(width - 4)
@@ -449,6 +452,9 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       expect(portrait.composer).toBeLessThanOrEqual(UI_BUDGETS.mobileComposerPx)
       expect(portrait.header).toBeLessThanOrEqual(UI_BUDGETS.mobileHeaderPx)
       expect(portrait.bottom).toBeLessThanOrEqual(UI_BUDGETS.mobileBottomPx)
+      // Headless Chromium has no Android refresh spinner. Verify the effective
+      // browser CSS contract rather than claiming a physical Chrome UI test.
+      expect(portrait.scrollBoundary).toEqual({ root: 'none', body: 'none', transcript: 'contain' })
       await page.setViewportSize({ width, height: 440 }); await expect(composer(pane)).toBeVisible()
       await page.setViewportSize({ width: 844, height: width }); await expect(composer(pane)).toHaveText('Mobile draft survives width changes')
       await page.setViewportSize({ width, height: 844 }); await expect(composer(pane)).toHaveText('Mobile draft survives width changes')

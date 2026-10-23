@@ -18,6 +18,34 @@ const alpha: ShareTarget = { kind: 'hapi', hubId: 'hub-alpha', sessionId: 'same-
 async function settle(until: () => boolean) { for (let step = 0; step < 100; step++) { if (until()) return; await new Promise<void>(resolve => setImmediate(resolve)); } assert.fail('Share operation did not settle'); }
 function storage(owner = 'same-browser-window') { return { getItem: () => owner, setItem() {} }; }
 
+test('original notes wait for the named composer and keep existing share receipts unchanged', async () => {
+    const inbox = new WorkspaceShareInbox(new Transfers(), storage());
+    await inbox.ingest(payload());
+    const previous = inbox.getSnapshot(); let calls = 0, wrong = 0, ready = false;
+    inbox.register(alpha, { paneId: 'plugin-pane', ready: () => true, async insert() { wrong++; return { afterText: '' }; } });
+    inbox.register(beta, { paneId: 'chat-pane', ready: () => true, async insert() { wrong++; return { afterText: '' }; } });
+    const content = { ...payload(), text: '  Original note\n' };
+    const inserting = inbox.insertOriginal(alpha, 'chat-pane', content, new AbortController().signal);
+    inbox.register(alpha, { paneId: 'chat-pane', ready: () => ready, async insert(value, _signal, options) {
+        calls++; assert.equal(value.text, content.text); assert.equal(options?.exactText, true);
+        assert.equal(await value.files[0]!.blob.text(), 'actual fixture bytes');
+        return { afterText: value.text };
+    } });
+    await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 0);
+    ready = true; inbox.wake(); await inserting; inbox.wake();
+    assert.equal(calls, 1); assert.equal(wrong, 0); assert.equal(inbox.getSnapshot(), previous);
+    inbox.dispose();
+});
+
+test('cancelled note insertion never writes when its composer appears later', async () => {
+    const inbox = new WorkspaceShareInbox(new Transfers(), storage()), abort = new AbortController(); let calls = 0;
+    const inserting = inbox.insertOriginal(alpha, 'chat-pane', payload(), abort.signal);
+    abort.abort(); await assert.rejects(inserting, { name: 'AbortError' });
+    inbox.register(alpha, { paneId: 'chat-pane', ready: () => true, async insert() { calls++; return { afterText: '' }; } });
+    inbox.wake(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 0);
+    inbox.dispose();
+});
+
 test('share hand-off requires exact Hub/session and a ready target; insertion is claimed before effects', async () => {
     const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage()); let ready = false, calls = 0, wrong = 0;
     const id = await inbox.ingest(payload());

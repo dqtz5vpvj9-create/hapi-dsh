@@ -1,5 +1,5 @@
 import type { SessionBinding, SessionEventWindow, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+import type { WorkspacePaneNavigation } from '../pane-navigation.ts'
 import { keyIntent } from './intent.ts'
 import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
@@ -83,6 +83,7 @@ export class InitialHistoryPlan {
 interface SharedInitialPlan {
     readonly plan: InitialHistoryPlan
     readonly listeners: Set<() => void>
+    readonly navigationPending: Set<() => boolean>
 }
 
 // Public Session faces identify exact retained generations. Nothing here owns a
@@ -102,16 +103,17 @@ const plans = new WeakMap<SessionBinding['session'], SharedInitialPlan>()
 export function bindInitialHistory(
     target: HTMLElement,
     reference: SessionReference,
-    visibility: ObservableSnapshot<{ visible: boolean }>,
+    navigation: Pick<WorkspacePaneNavigation, 'state' | 'reading'>,
 ): () => void {
+    const visibility = navigation.state
     const binding = reference.binding
     const session = binding.session
     let shared = plans.get(session)
     if (shared === undefined) {
-        shared = { plan: new InitialHistoryPlan(), listeners: new Set() }
+        shared = { plan: new InitialHistoryPlan(), listeners: new Set(), navigationPending: new Set() }
         plans.set(session, shared)
     }
-    const { plan, listeners } = shared
+    const { plan, listeners, navigationPending } = shared
     const { gate, ledger } = automaticHistoryBounds(target.ownerDocument)
     const identity = automaticHistoryIdentity(target, reference.sessionId)
     const frame = target.ownerDocument.defaultView
@@ -120,6 +122,17 @@ export function bindInitialHistory(
     let timer: ReturnType<typeof setTimeout> | undefined
     let paint: number | undefined
     const publish = (): void => { for (const listener of listeners) listener() }
+    // An explicit destination must acquire the official history flight first.
+    // The reading binding owns this attribute, including reload restoration;
+    // a completed target can remain selected without blocking context forever.
+    const destinationPending = (): boolean => {
+        if (!target.isConnected || target.hidden || !visibility.getSnapshot().visible) return false
+        const state = target.getAttribute('data-hapi-reading')
+        const intent = navigation.reading.getSnapshot()
+        const settled = state === 'ready' || state === 'error' || state === 'reader'
+        return state === 'loading' || Boolean(intent && intent.target.kind !== 'latest' && !settled)
+    }
+    navigationPending.add(destinationPending)
     const mark = (): void => {
         if (!disposed && target.getAttribute(INITIAL_HISTORY_ATTRIBUTE) !== plan.state) {
             target.setAttribute(INITIAL_HISTORY_ATTRIBUTE, plan.state)
@@ -137,6 +150,7 @@ export function bindInitialHistory(
     const check = (): void => {
         timer = undefined
         if (disposed || !ready || !target.isConnected || !visibility.getSnapshot().visible || target.hidden) return
+        if ([...navigationPending].some(pending => pending())) return
         const snapshot = session.getSnapshot()
         const window = binding.eventSource.getSnapshot()
         const before = probeInitialWindow(window)
@@ -178,7 +192,10 @@ export function bindInitialHistory(
         plan.interrupt(); publish()
     }
     listeners.add(changed)
-    const unsubscribe = [session.subscribe(changed), binding.eventSource.subscribe(changed), visibility.subscribe(changed), gate.subscribe(changed)]
+    const readingObserver = new MutationObserver(publish)
+    readingObserver.observe(target, { attributes: true, attributeFilter: ['data-hapi-reading'] })
+    const unsubscribe = [session.subscribe(changed), binding.eventSource.subscribe(changed), visibility.subscribe(publish),
+        navigation.reading.subscribe(publish), gate.subscribe(changed)]
     const inputs = ['pointerdown', 'touchstart', 'wheel', 'keydown'] as const
     for (const input of inputs) target.addEventListener(input, reader, { capture: true, passive: true })
     void reference.ready.then(() => {
@@ -195,8 +212,11 @@ export function bindInitialHistory(
         if (timer !== undefined) clearTimeout(timer)
         if (paint !== undefined) frame?.cancelAnimationFrame(paint)
         for (const unlisten of unsubscribe) unlisten()
+        readingObserver.disconnect()
         for (const input of inputs) target.removeEventListener(input, reader, { capture: true })
         listeners.delete(changed)
+        navigationPending.delete(destinationPending)
+        publish()
         target.removeAttribute(INITIAL_HISTORY_ATTRIBUTE)
     }
 }

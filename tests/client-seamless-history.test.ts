@@ -8,6 +8,33 @@ import type { AnchorCorrectionInput } from '../src/client/seamless/anchor.ts'
 import type { EarlierViewState } from '../src/client/seamless/policy.ts'
 import { InitialHistoryPlan, probeInitialWindow } from '../src/client/seamless/initial.ts'
 import type { SessionEventWindow } from '@deepseek-ai/dsh-api-session-controller/client'
+import { historyWindowWasReset, probeHistoryWindow } from '../src/client/seamless/controller.ts'
+
+test('a retiring live-tail anchor does not cancel the pending older page', () => {
+    const requested = { firstKey: 'turn-175:input', count: 148 }
+    assert.equal(historyWindowWasReset(requested, { firstKey: 'turn-175:input', count: 147 }), false)
+    assert.equal(historyWindowWasReset(requested, { firstKey: 'turn-173:input', count: 205 }), false,
+        'the actual prepend can still commit after a transient tail contraction')
+})
+
+test('a genuinely shortened history window with a replacement head still resets paging', () => {
+    const requested = { firstKey: 'turn-175:input', count: 148 }
+    assert.equal(historyWindowWasReset(requested, { firstKey: 'turn-179:input', count: 48 }), true)
+    assert.equal(historyWindowWasReset(requested, { firstKey: null, count: 0 }), true)
+})
+
+test('history progress probes identities once without requesting layout', () => {
+    let queries = 0
+    const row = (key: string | null, hidden = false) => ({
+        getAttribute: () => key,
+        closest: () => hidden ? {} : null,
+        getBoundingClientRect: () => { throw new Error('Structural history probes must not force layout') },
+    })
+    const rows = [row('hidden', true), row(''), row(null), row('first-readable'), row('tail')]
+    const column = { querySelectorAll() { queries++; return rows } } as unknown as HTMLElement
+    assert.deepEqual(probeHistoryWindow(column), { firstKey: 'first-readable', count: 5 })
+    assert.equal(queries, 1)
+})
 
 // ---------------------------------------------------------------------------
 // Reader intent normalization

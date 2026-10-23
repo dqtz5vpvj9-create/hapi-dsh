@@ -4,6 +4,7 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 // No messages, drafts or credentials enter this document. The browser reads
 // only its existing layout and puts labels into textContent, never HTML.
 export const WORKSPACE_BOOT_STYLE = `
+html,body{overscroll-behavior-y:none}
 #hapi-workspace-boot{position:fixed;inset:0;z-index:1000;display:flex;background:#fafafa;color:#242424;font:13px/1.5 system-ui,sans-serif;color-scheme:light dark}
 #hapi-workspace-boot *{box-sizing:border-box}#hapi-workspace-boot aside{width:264px;padding:18px;border-right:1px solid #ddd;background:#f3f3f3}
 #hapi-workspace-boot strong{font-size:15px}#hapi-workspace-boot small{display:block;color:#777;margin-top:5px}

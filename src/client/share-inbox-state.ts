@@ -3,8 +3,9 @@ import { BrowserShareTransfers, shareTargetKey, validateSharePayload, type Share
 import type { HandoffAddress } from './draft-handoff.ts';
 
 export interface ShareReceiver {
+    readonly paneId?: string | undefined;
     ready(): boolean;
-    insert(payload: SharePayload, signal: AbortSignal): Promise<{ afterText: string }>;
+    insert(payload: SharePayload, signal: AbortSignal, options?: { exactText: boolean }): Promise<{ afterText: string }>;
 }
 export interface ShareInboxSnapshot {
     record: ShareRecord | null; phase: 'idle' | 'loading' | 'pick' | 'creating' | 'waiting' | 'inserting' | 'inserted' | 'unknown' | 'error';
@@ -15,6 +16,7 @@ export class WorkspaceShareInbox {
     private snapshot: ShareInboxSnapshot = { record: null, phase: 'idle', opened: false, error: null };
     private readonly listeners = new Set<() => void>();
     private readonly receivers = new Map<string, Set<ShareReceiver>>();
+    private readonly receiverChanges = new Set<() => void>();
     private readonly lifetime = new AbortController();
     private loading = 0;
     private running = false;
@@ -94,7 +96,24 @@ export class WorkspaceShareInbox {
         entries.add(receiver); this.receivers.set(key, entries); this.wake();
         return () => { entries.delete(receiver); if (!entries.size) this.receivers.delete(key); };
     }
-    wake = (): void => { queueMicrotask(() => { void this.apply(); }); };
+    wake = (): void => { queueMicrotask(() => { for (const changed of this.receiverChanges) changed(); void this.apply(); }); };
+    /** An original Hub note is already durable. Insert it once into the named
+     * live composer, without creating a second share or changing its receipts. */
+    async insertOriginal(target: ShareTarget, paneId: string, payload: SharePayload, signal: AbortSignal): Promise<void> {
+        const lifetime = AbortSignal.any([signal, this.lifetime.signal, AbortSignal.timeout(30_000)]);
+        lifetime.throwIfAborted();
+        const receiver = await new Promise<ShareReceiver>((resolve, reject) => {
+            const finish = () => { this.receiverChanges.delete(changed); lifetime.removeEventListener('abort', abort); };
+            const abort = () => { finish(); reject(lifetime.reason); };
+            const changed = () => {
+                const current = [...this.receivers.get(shareTargetKey(target)) ?? []].find(row => row.paneId === paneId && row.ready());
+                if (current) { finish(); resolve(current); }
+            };
+            this.receiverChanges.add(changed); lifetime.addEventListener('abort', abort, { once: true }); changed();
+        });
+        lifetime.throwIfAborted();
+        await receiver.insert(payload, lifetime, { exactText: true });
+    }
     private async apply(): Promise<void> {
         const { record, phase } = this.snapshot, delivery = record?.hapiDshDelivery;
         if (this.running || phase !== 'waiting' || !record || !delivery || delivery.owner !== this.owner) return;

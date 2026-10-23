@@ -116,7 +116,7 @@ export function SourceNotesPanel({ api, source, active, language, onUse, legacyR
         try { storage()?.setItem(`hapi-dsh:note-order:${identity(source)}`, JSON.stringify(ids)); } catch { /* In-memory ordering remains usable. */ }
     };
     return <section className="hapi-source-panel" aria-label={tr('Scratchlist', '备忘录')}>
-        <header><h2>{tr('Scratchlist', '备忘录')}</h2><button type="button" disabled={busy} onClick={() => { void refresh(); }}>{tr('Refresh', '刷新')}</button></header>
+        <header><h2 className="hapi-source-panel-title">{tr('Scratchlist', '备忘录')}</h2><button type="button" disabled={busy} onClick={() => { void refresh(); }}>{tr('Refresh', '刷新')}</button></header>
         <p>{tr('Save notes and drafts with this conversation. Use in composer when you are ready.', '将笔记和草稿保存在这条聊天中，需要时再放入输入框。')}</p>
         <NoteMigration api={api} source={source} legacyRaw={legacyRaw} language={language} onRefresh={refresh}/>
         {legacyReadError && <p role="alert" className="hapi-error">{tr('Original browser notes could not be read:', '无法读取原浏览器笔记：')} {legacyReadError}</p>}
@@ -267,7 +267,7 @@ export function SourceSchedulePanel({ api, source, sessionId, language, readOnly
     };
     const acknowledged = currentReceipt && !['dispatching', 'indeterminate'].includes(currentReceipt.state);
     return <section className="hapi-source-panel" aria-label={tr('Scheduled messages', '定时消息')}>
-        <h2>{tr('Scheduled messages', '定时消息')}</h2><p>{tr('The original Hub owns the schedule. You can close this browser after it confirms the queue.', '由原 Hub 保存定时计划，确认入队后可以关闭浏览器。')}</p>
+        <h2 className="hapi-source-panel-title">{tr('Scheduled messages', '定时消息')}</h2><p>{tr('The original Hub owns the schedule. You can close this browser after it confirms the queue.', '由原 Hub 保存定时计划，确认入队后可以关闭浏览器。')}</p>
         {error && <p className="hapi-error" role="alert">{error}</p>}
         <label>{tr('Message', '消息')}<textarea rows={6} value={text} disabled={readOnly || busy || Boolean(intent)} onChange={event => applyDraft({ text: event.currentTarget.value })}/></label>
         <fieldset disabled={readOnly || busy || Boolean(intent)}><legend>{tr('When to send', '何时发送')}</legend>
@@ -279,7 +279,7 @@ export function SourceSchedulePanel({ api, source, sessionId, language, readOnly
             <button type="button" aria-pressed={selection.type === 'absolute'} onClick={() => applyDraft({ selection: { type: 'absolute', ms: new Date(at).getTime() } })}>{tr('Use this date and time', '使用此日期和时间')}</button>
         </fieldset>
         <small>{localSaved ? tr('Draft saved on this device', '草稿已保存在此设备') : tr('Browser storage unavailable; the submission is blocked until its identity can be saved.', '浏览器存储不可用，在提交身份可保存前不能发送。')}</small>
-        <div className="hapi-button-row"><button type="button" disabled={busy || (!intent && readOnly) || Boolean(acknowledged)} onClick={() => { void (intent ? inspect() : submit()); }}>{intent ? tr('Check this submission', '检查本次提交') : tr('Schedule message', '添加定时消息')}</button>
+        <div className="hapi-button-row"><button type="button" className="hapi-panel-primary" disabled={busy || (!intent && readOnly) || Boolean(acknowledged)} onClick={() => { void (intent ? inspect() : submit()); }}>{intent ? tr('Check this submission', '检查本次提交') : tr('Schedule message', '添加定时消息')}</button>
             {intent && !currentReceipt && error && <button type="button" disabled={busy || readOnly} onClick={() => { void submit(); }}>{tr('Retry the same request', '重试同一请求')}</button>}
             {acknowledged && <button type="button" disabled={busy} onClick={() => applyDraft({ intent: null, receipt: null, text: '' })}>{tr('New scheduled message', '新建定时消息')}</button>}</div>
         {currentReceipt && <p role="status">{currentReceipt.state}{currentReceipt.error ? ` · ${currentReceipt.error}` : ''}</p>}

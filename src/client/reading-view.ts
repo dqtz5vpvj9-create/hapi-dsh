@@ -4,8 +4,9 @@ import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/c
 import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import type { PaneReadingIntent } from './reading-intent.ts'
-import { messageNodeTarget, parseReloadReadingAnchor, placeReadingAnchor, revealChatElement, type ReloadReadingAnchor } from './reading-anchor.ts'
+import { findChatElement, messageNodeTarget, parseReloadReadingAnchor, placeReadingAnchor, revealChatElement, type ReloadReadingAnchor } from './reading-anchor.ts'
 import { keyIntent } from './seamless/intent.ts'
+import { loadHistoryThrough } from './history-navigation.ts'
 import type {} from './source-navigation.ts'
 
 /** Per-occurrence destination lifetime. Live/history/focus never request latest. */
@@ -14,13 +15,16 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     if (!window) return () => {}
     const source = navigation.reading
     type ReadingRequest = { intent: PaneReadingIntent | undefined; reload?: ReloadReadingAnchor | undefined;
-        phase: 'waiting' | 'running' | 'done' | 'error' | 'reader'; error?: unknown }
+        phase: 'waiting' | 'running' | 'done' | 'error' | 'reader'; error?: unknown; recovery?: boolean }
     let disposed = false, ready = false, observed = false, observedIntent: PaneReadingIntent | undefined
     let request: ReadingRequest | undefined
     let pending: AbortController | undefined
     let failure: HTMLElement | undefined
     let retainedAnchor: ReloadReadingAnchor | undefined, readerOwned = false
     let sampleFrame: number | undefined
+    let readerMoving = false, touchHeld = false, pointerHeld = false, readerScrolled = false
+    let settleTimer: number | undefined
+    let settleFrame: number | undefined
     let eventRevision = reference.binding.eventSource.getSnapshot().revision
     const projected = ctx.sessions.list.getSnapshot().byId[reference.sessionId]?.projectionValues
     const native = projected?.hapi ?? projected?.hapiObserved
@@ -106,12 +110,13 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                         navigation.openSession(located.sessionId); return
                     }
                     seq = located.seq
-                    await reference.binding.session.loadThrough(located.seq); signal.throwIfAborted()
+                    await loadHistoryThrough(reference.binding.session, located.seq, signal); signal.throwIfAborted()
                     key = messageNodeTarget(ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot(), seq)?.key ?? key
-                }
-                await reference.binding.session.loadThrough(seq as SessionSeq); signal.throwIfAborted()
+                } else await loadHistoryThrough(reference.binding.session, seq as SessionSeq, signal)
+                signal.throwIfAborted()
                 const clicked = new WeakSet<HTMLElement>()
                 const row = await waitFor(() => revealChatElement(root, { key, kind: 'message' }, clicked), signal)
+                signal.throwIfAborted()
                 placeReadingAnchor(scrollport, row, reload.offset)
             } else if (target?.kind === 'latest') {
                 // Activate the official return-to-bottom action when paused;
@@ -141,13 +146,18 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             restored = undefined
         }
         if (!visible()) {
+            readerMoving = touchHeld = pointerHeld = readerScrolled = false
+            if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+            settleTimer = undefined
+            if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
+            settleFrame = undefined
             if (pending && !pending.signal.aborted) {
                 pending.abort(); pending = undefined
                 if (request?.phase === 'running') request.phase = 'waiting'
             }
             clearFailure(); return
         }
-        if (request?.phase === 'waiting') void apply(request)
+        if (request?.phase === 'waiting' && !(request.recovery && readerMoving)) void apply(request)
         else if (request?.phase === 'error' && !failure) {
             const current = request
             showFailure(current.error, () => retry(current))
@@ -161,10 +171,71 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             || element.closest('input,textarea,[contenteditable="true"],[data-composer-card]')) return
         if (event.type === 'keydown' && keyIntent((event as KeyboardEvent).key, event as KeyboardEvent) === 'none') return
         readerOwned = true
+        readerMoving = true
+        if (event.type === 'touchstart') touchHeld = true
+        if (event.type === 'pointerdown' && (event as PointerEvent).pointerType !== 'touch') pointerHeld = true
         pending?.abort(); pending = undefined
-        if (request) request.phase = 'reader'
+        if (request && !(request.recovery && request.phase === 'waiting')) request.phase = 'reader'
         if (root.dataset.hapiReading !== 'reader') root.dataset.hapiReading = 'reader'
+        deferSettlement()
         scheduleSample()
+    }
+    const settleReader = (): void => {
+        if (touchHeld || pointerHeld || !readerMoving || disposed) return
+        const moved = readerScrolled
+        readerMoving = false; readerScrolled = false
+        if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+        settleTimer = undefined
+        if (request?.recovery && request.phase === 'waiting') {
+            // The reader may have travelled since replace arrived. Prefer the
+            // settled visible position, but retain the old bookmark when the
+            // replacement removed that history and it must be loaded again.
+            if (moved && (!request.reload || findChatElement(root, request.reload.key))) {
+                const current = readAnchor(), port = root.querySelector<HTMLElement>('[data-conversation-scroll]')
+                if (!current && port && port.scrollHeight - port.clientHeight - port.scrollTop < 4) {
+                    // Reaching the tail is also a reading decision. Do not pull
+                    // the reader back to an earlier bookmark still in the DOM.
+                    request.phase = 'reader'; request.reload = undefined; retainedAnchor = undefined
+                } else request.reload = current ?? request.reload
+            }
+            update()
+        }
+        scheduleSample()
+    }
+    const deferSettlement = (): void => {
+        if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+        settleTimer = undefined
+        if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
+        settleFrame = undefined
+        if (touchHeld || pointerHeld || !readerMoving) return
+        const port = root.querySelector<HTMLElement>('[data-conversation-scroll]')
+        // touchend/pointercancel are not the end of native inertial scrolling.
+        // A short no-scroll grace handles taps and late first compositor events;
+        // older browsers extend this fallback on every outer scroll instead.
+        if (readerScrolled && port && 'onscrollend' in port) return
+        settleTimer = window.setTimeout(settleReader, 180)
+    }
+    const releaseReader = (event: Event): void => {
+        if (!event.isTrusted) return
+        if (event.type === 'touchend' || event.type === 'touchcancel') touchHeld = (event as TouchEvent).touches.length > 0
+        else if ((event as PointerEvent).pointerType !== 'touch') pointerHeld = false
+        deferSettlement()
+    }
+    const scroll = (event: Event): void => {
+        if (event.target === root.querySelector('[data-conversation-scroll]') && readerMoving) {
+            readerScrolled = true
+            deferSettlement()
+        }
+        scheduleSample()
+    }
+    const scrollend = (event: Event): void => {
+        if (!readerMoving || event.target !== root.querySelector('[data-conversation-scroll]')) return
+        if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+        settleTimer = undefined
+        if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
+        // This listener runs in capture. Let the official scrollend listeners
+        // publish their final reading state before our implicit recovery starts.
+        settleFrame = window.requestAnimationFrame(() => { settleFrame = undefined; settleReader() })
     }
     const readAnchor = (): ReloadReadingAnchor | undefined => {
         if (!ready || !visible()) return undefined
@@ -223,7 +294,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         const exact = request?.intent?.target.kind !== undefined && request.intent.target.kind !== 'latest' && !readerOwned
         if (!retainedAnchor && !exact) return
         pending?.abort(); pending = undefined
-        request = { intent: source?.getSnapshot(), ...(retainedAnchor ? { reload: retainedAnchor } : {}), phase: 'waiting' }
+        request = { intent: source?.getSnapshot(), ...(retainedAnchor ? { reload: retainedAnchor } : {}), phase: 'waiting', recovery: true }
         update()
     }
     const remember = (): void => {
@@ -233,16 +304,24 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged), ...(source ? [source.subscribe(update)] : [])]
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
     for (const event of events) root.addEventListener(event, reader, { capture: true, passive: true })
-    root.addEventListener('scroll', scheduleSample, { capture: true, passive: true })
+    root.addEventListener('scroll', scroll, { capture: true, passive: true })
+    root.addEventListener('scrollend', scrollend, { capture: true, passive: true })
+    for (const event of ['touchend', 'touchcancel']) root.addEventListener(event, releaseReader, { capture: true, passive: true })
+    for (const event of ['pointerup', 'pointercancel']) window.addEventListener(event, releaseReader, { capture: true, passive: true })
     window.addEventListener('pagehide', remember)
     void reference.ready.then(() => { if (!disposed) { ready = true; update() } }, () => {})
     return () => {
         remember(); disposed = true; pending?.abort(); clearFailure()
         if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
         if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
+        if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+        if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
         for (const stop of stops) stop()
         for (const event of events) root.removeEventListener(event, reader, { capture: true })
-        root.removeEventListener('scroll', scheduleSample, { capture: true })
+        root.removeEventListener('scroll', scroll, { capture: true })
+        root.removeEventListener('scrollend', scrollend, { capture: true })
+        for (const event of ['touchend', 'touchcancel']) root.removeEventListener(event, releaseReader, { capture: true })
+        for (const event of ['pointerup', 'pointercancel']) window.removeEventListener(event, releaseReader, { capture: true })
         window.removeEventListener('pagehide', remember)
         delete root.dataset.hapiReading
     }

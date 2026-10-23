@@ -1,8 +1,10 @@
 import { acknowledgePreviewNotice } from './preview-notice.ts'
+import { openConversationTool } from './conversation-tools.ts'
 /** Official DSH browser integration with explicit HAPI wire fixtures, without model/CLI credentials. */
 import { test, expect, type Page } from '@playwright/test'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
 import type { SourceHistoryPiResult, SourceHistoryTools } from '../src/hapi-agent/history-types.ts'
+import { initialWorkspace } from '../src/client/model.ts'
 
 async function openWorkspace(page: Page, environment: OfficialEnvironment) {
   await page.goto(environment.launchUrl)
@@ -10,11 +12,7 @@ async function openWorkspace(page: Page, environment: OfficialEnvironment) {
   await acknowledgePreviewNotice(page, environment)
 }
 async function openSource(page: Page, name: string, tab: string) {
-  await page.locator('.hapi-session-open').filter({ hasText: name }).click()
-  const pane = page.getByRole('region', { name: `Pane: ${name}`, exact: true })
-  await expect(pane).toBeVisible()
-  await pane.getByRole('combobox', { name: 'Conversation tools', exact: true }).selectOption(tab)
-  return pane
+  return openConversationTool(page, name, tab === 'hapi-library' ? 'History & accounts' : 'Session tools')
 }
 
 test.describe('original Pi histories and native migrations in official plugin tabs', () => {
@@ -28,10 +26,22 @@ test.describe('original Pi histories and native migrations in official plugin ta
       { id: 'home-target', label: 'Fixture migration target', path: '/fixture/target-codex-home' },
     ])
     const cursor = environment.hapi.history.addCursor(environment.hapi, 'cross-host')
+    environment.hapi.emit({ type: 'session-added', sessionId: cursor.session.id })
     environment.hapi.history.cursorRefusals.set(cursor.session.id, { ok: false, sessionId: cursor.session.id,
       reason: 'cross_host_session', message: 'Fixture legacy store belongs to another HAPI host', durationMs: 1 })
   })
   test.afterAll(async () => { await environment?.close() })
+  test.beforeEach(async () => {
+    // The Host is shared, but each test starts with its own empty layout. No
+    // previous browser remains open to race this revision-checked fixture write.
+    const document = await environment.rpc<{ revision: number }>('hapi/workspaceGet')
+    let serial = 0
+    const result = await environment.rpc<{ status: string }>('hapi/workspacePut', {
+      expectedRevision: document.revision, operationId: `history-reset-${crypto.randomUUID()}`,
+      state: initialWorkspace(() => `history-layout-${++serial}`),
+    })
+    expect(result.status).toBe('applied')
+  })
 
   test('lost Pi import recovers the original branch and continues it once after reload', async ({ page }) => {
     const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
@@ -108,6 +118,10 @@ test.describe('original Pi histories and native migrations in official plugin ta
   test('Cursor shows exact source refusal without private response fields, then retains the legacy store on explicit migration', async ({ page }) => {
     const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
     await openWorkspace(page, environment)
+    await page.getByRole('button', { name: 'List options', exact: true }).click()
+    const options = page.getByRole('dialog', { name: 'List options', exact: true })
+    await options.getByRole('checkbox', { name: 'Show archived conversations', exact: true }).check()
+    await options.press('Escape')
     const pane = await openSource(page, 'Cursor history cross-host', 'hapi-session-tools')
     const migration = pane.getByRole('region', { name: 'Native history and migration', exact: true })
     await expect(migration.getByRole('checkbox', { name: 'Keep the original legacy store after migration', exact: true })).toBeChecked()

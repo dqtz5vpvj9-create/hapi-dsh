@@ -171,7 +171,7 @@ export function installSessionViewHost(ctx: Context): {
             if (entries.has(identity)) throw new Error(`Pane ${options.paneId} already has a session view on this Host`)
             let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading' }
             entries.set(identity, entry); publish()
-            const stopHistory = bindInitialHistory(options.target, options.reference, options.navigation.state)
+            const stopHistory = bindInitialHistory(options.target, options.reference, options.navigation)
             const stopReading = bindPaneReading(ctx, options.target, options.reference, options.navigation)
             const uninitialHistory = (): void => { stopHistory(); stopReading() }
             initialHistory.set(identity, uninitialHistory)

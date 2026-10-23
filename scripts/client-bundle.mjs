@@ -4,7 +4,7 @@ import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
-export async function buildClientBundle(buildIdentity) {
+export async function buildClientBundle(buildIdentity, { publish = true, minifyIdentifiers = true } = {}) {
     const modulesSource = await readFile(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-client-modules/client'), 'utf8');
     // The official store is a Web platform seed, not a downloadable graph entry.
     const storeRuntime = await build({
@@ -14,7 +14,7 @@ export async function buildClientBundle(buildIdentity) {
     });
     const options = {
         bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
-        write: false, jsx: 'automatic', legalComments: 'inline', minifyWhitespace: true, minifySyntax: true,
+        write: false, jsx: 'automatic', legalComments: 'inline', minifyWhitespace: true, minifySyntax: true, minifyIdentifiers,
         metafile: Boolean(process.env.HAPI_DSH_BUNDLE_REPORT),
         logOverride: { 'import-is-undefined': 'error' },
         define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text),
@@ -33,16 +33,21 @@ export async function buildClientBundle(buildIdentity) {
             '@deepseek-ai/dsh-api-terminal-controller/client',
         ],
     };
-    const chunks = [['client.voice.js', 'src/client/source-voice/composer.tsx'], ['client.capture.js', 'html2canvas-pro']];
+    const chunks = [
+        ['client.voice.js', 'src/client/source-voice/composer.tsx'], ['client.capture.js', 'html2canvas-pro'],
+        ['client.native-panels.js', 'src/client/native-panels.ts'], ['client.session-panels.js', 'src/client/session-extras.tsx'],
+        ['client.administration.js', 'src/client/source-admin-panel.tsx'],
+    ];
     const [result, ...extras] = await Promise.all([
         build({ ...options, entryPoints: ['src/client/index.ts'] }),
         ...chunks.map(([, entry]) => build({ ...options, entryPoints: [entry] })),
     ]);
     const body = result.outputFiles[0].text;
     if (result.metafile) await writeFile(process.env.HAPI_DSH_BUNDLE_REPORT, JSON.stringify(result.metafile));
+    if (!publish) return result;
     await mkdir('dist', { recursive: true });
     // Publish each supported package-local chunk before announcing the new main
-    // bundle. Ordinary conversations do not load voice SDKs or PNG capture.
+    // bundle. Conversations do not load optional panels, voice SDKs or PNG capture.
     for (let i = 0; i < chunks.length; i++) {
         const fileName = chunks[i][0], pendingChunk = `dist/${fileName}.${process.pid}.pending`;
         await writeFile(pendingChunk, `window.__ModuleLoader__.load({id:"hapi-dsh",chunk:${JSON.stringify(fileName)},factory:function(require){var module={exports:{}};var exports=module.exports;\n${extras[i].outputFiles[0].text}\nreturn module.exports;}});\n`);
@@ -52,4 +57,5 @@ export async function buildClientBundle(buildIdentity) {
     const pending = `dist/client.js.${process.pid}.pending`;
     await writeFile(pending, `window.__ModuleLoader__.load({id:"hapi-dsh",factory:function(require){var module={exports:{}};var exports=module.exports;\n${body}\nreturn module.exports;}});\n`);
     await rename(pending, 'dist/client.js');
+    return result;
 }

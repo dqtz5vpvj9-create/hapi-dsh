@@ -2,6 +2,7 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { availableParallelism, loadavg } from 'node:os';
+import { probeTouch } from './probe-touch.mjs';
 const root = process.env.HAPI_DSH_TEST_ROOT ?? '/mnt/cache/data-cache';
 await mkdir(root, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -19,6 +20,7 @@ const readRpcs = new Set([
   '/api/hapi/sourceNotificationSettings', '/api/hapi/sourceAdministration', '/api/hapi/sourceReadStates',
   '/api/hapi/sourceQueuedEdits', '/api/hapi/nativeSettings', '/api/hapi/sourceSummarySettings',
   '/api/hapi/sourceSessionResolve',
+  '/api/hapi/sourceReadingAnchor',
   '/api/hapi/nativePlan', '/api/commands/list', '/api/skills/list',
   '/api/llm/listProviders', '/api/llm/listConfigurableProviders',
 ]);
@@ -63,9 +65,52 @@ page.on('websocket', socket => { transport.webSockets++; socket.on('framereceive
   transport.receivedFrames++; const bytes = Buffer.byteLength(payload); transport.decodedBytes += bytes;
   transport.maxDecodedFrame = Math.max(transport.maxDecodedFrame, bytes);
   if (bytes > 16_384 && transport.frames.length < 300) {
-    let kind = 'binary';
-    if (typeof payload === 'string') { try { const frame = JSON.parse(payload); kind = [frame.type, frame.value?.type].filter(value => typeof value === 'string').join('/'); } catch { kind = 'text'; } }
-    transport.frames.push({ run: runIndex, at: performance.now() - runStarted, kind, decodedBytes: bytes });
+    let kind = 'binary', snapshotSizes;
+    if (typeof payload === 'string') { try {
+      const frame = JSON.parse(payload); kind = [frame.type, frame.value?.type].filter(value => typeof value === 'string').join('/');
+      if (frame.value?.type === 'snapshot') {
+        const value = frame.value, size = value => value === undefined ? 0 : Buffer.byteLength(JSON.stringify(value));
+        // Log only known schema names and aggregate byte counts. Plugin event
+        // names use a colon, so grouping only slash-prefixed core events hid
+        // repeated source projection values in the former "other" bucket.
+        const pluginKinds = new Set([
+          'plugin:hapi-dsh/state', 'plugin:hapi-dsh/status', 'plugin:hapi-dsh/notices', 'plugin:hapi-dsh/native-item',
+          'plugin:hapi-dsh/session-state', 'plugin:hapi-dsh/execution',
+          'plugin:hapi-dsh-observed/state', 'plugin:hapi-dsh-observed/status', 'plugin:hapi-dsh-observed/notices',
+          'plugin:hapi-dsh-observed/item', 'plugin:hapi-dsh/tool-progress', 'plugin:hapi-dsh/codex-review',
+        ]);
+        const fieldNames = ['execution', 'pendingRequests', 'resolvedRequests', 'delivery', 'sidechains', 'sidechain',
+          'dshChild', 'team', 'notices', 'usage', 'threadGoal', 'error', 'readOnly', 'readOnlyReason',
+          'nativeConnection', 'active', 'thinking', 'model', 'reasoningEffort', 'effort', 'permissionMode', 'serviceTier'];
+        const recordKinds = {}, pluginRecords = {}, previousData = new Map();
+        for (const record of value.records ?? []) {
+          const type = record.event?.type;
+          const group = typeof type === 'string' && type.startsWith('plugin:') ? 'plugin'
+            : typeof type === 'string' && /^(user|assistant|tool|step|turn)\//.test(type) ? type.split('/')[0] : 'other';
+          const row = recordKinds[group] ??= { count: 0, bytes: 0 }; row.count++; row.bytes += size(record);
+          if (group === 'plugin') {
+            const knownType = pluginKinds.has(type) ? type : 'other-plugin';
+            const entry = pluginRecords[knownType] ??= { count: 0, bytes: 0, fields: {} };
+            entry.count++; entry.bytes += size(record);
+            if (knownType !== 'other-plugin' && /\/(state|status|session-state)$/.test(knownType)) {
+              const data = record.event.data, previous = previousData.get(knownType);
+              if (data && typeof data === 'object') for (const field of fieldNames) {
+                if (!Object.hasOwn(data, field)) continue;
+                const current = JSON.stringify(data[field]);
+                const stats = entry.fields[field] ??= { count: 0, bytes: 0, changes: 0 };
+                stats.count++; stats.bytes += size(data[field]);
+                if (!previous || previous[field] !== current) stats.changes++;
+              }
+              if (data && typeof data === 'object') previousData.set(knownType,
+                Object.fromEntries(fieldNames.filter(field => Object.hasOwn(data, field)).map(field => [field, JSON.stringify(data[field])])));
+            }
+          }
+        }
+        snapshotSizes = { records: size(value.records), projections: size(value.projections), assistantStream: size(value.assistantStream),
+          recordCount: value.records?.length ?? 0, largestRecord: Math.max(0, ...(value.records ?? []).map(size)), recordKinds, pluginRecords };
+      }
+    } catch { kind = 'text'; } }
+    transport.frames.push({ run: runIndex, at: performance.now() - runStarted, kind, decodedBytes: bytes, ...(snapshotSizes ? { snapshotSizes } : {}) });
   }
 }); socket.on('socketerror', () => transport.errors++); });
 page.on('pageerror', e => errors.push(e.name));
@@ -124,6 +169,16 @@ try {
     }
     report.runs.push({ mode: i ? 'repeat navigation with browser cache' : 'fresh browser navigation', ...result, network, failure });
     console.log(JSON.stringify({ run: i, workspace: result.workspace, body: result.body, editor: result.editor, bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure, longestTasks: result.tasks.sort((a,b) => b.ms-a.ms).slice(0,5) }));
+    if (process.env.HAPI_DSH_TOUCH_PROBE && i === 0 && !failure) {
+      if (process.env.HAPI_DSH_PROFILE) await cdp.send('Profiler.start');
+      report.touch = await probeTouch(page, cdp);
+      report.touch.tasks = await page.evaluate(() => window.__coldOpen.tasks);
+      if (process.env.HAPI_DSH_PROFILE) {
+        const { profile } = await cdp.send('Profiler.stop');
+        await writeFile(`${root}/hapi-touch.cpuprofile`, JSON.stringify(profile), { mode: 0o600 });
+      }
+      console.log(JSON.stringify({ touch: report.touch.runs.map(({ direction, metrics }) => ({ direction, metrics })) }));
+    }
   }
 } catch (e) { report.failure = e.name; process.exitCode = 1; }
 finally {

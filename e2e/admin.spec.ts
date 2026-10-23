@@ -10,18 +10,23 @@ test.describe('original HAPI administration in the unchanged official Settings s
 
     test('settings, machine profile, lost restart receipt, source usage and SQLite download stay in one workspace', async ({ page }, info) => {
         const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+        let panelRequests = 0;
+        page.on('request', request => { if (request.url().includes('client.administration.js')) panelRequests++; });
         page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
         try {
             environment.hapi.admin.machines[0]!.health = { collectedAt: Date.now(), cpuCount: 8, load1m: 2.4, cpuPercent: 72, memoryPercent: 91, uptimeSeconds: 6540 };
             await page.goto(environment.launchUrl);
             await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
             await acknowledgePreviewNotice(page, environment)
+            await page.getByRole('button', { name: 'List options', exact: true }).click();
             await page.locator('.hapi-sidebar-native > details > summary').click();
             const machineRow = page.locator('[data-source-machine="machine-alpha"]');
             await expect(machineRow).toContainText('CPU 72%'); await expect(machineRow).toContainText('RAM 91%');
             await machineRow.locator('summary').click();
             await expect(machineRow).toContainText('High load'); await expect(machineRow).toContainText('2.4/8');
             await expect(machineRow).toContainText('1h 49m'); await expect(machineRow).toContainText('fixture-1.0');
+            expect(panelRequests).toBe(0);
+            await page.getByRole('dialog', { name: 'List options', exact: true }).press('Escape');
             await page.getByRole('button', { name: 'Account menu', exact: true }).click();
             await page.getByRole('menuitem', { name: 'Settings', exact: false }).click();
             const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
@@ -30,6 +35,7 @@ test.describe('original HAPI administration in the unchanged official Settings s
             await panel.getByLabel('Ask agents for compact task summaries', { exact: false }).click();
             await expect.poll(() => environment.hapi.admin.settings.sessionSummaryContract).toBe(true);
             await expect(panel.getByLabel('Ask agents for compact task summaries', { exact: false })).toBeChecked();
+            expect(panelRequests).toBe(1);
 
             await panel.getByRole('tab', { name: 'Machines', exact: true }).click();
             await panel.getByRole('combobox', { name: 'Machine', exact: true }).selectOption('machine-alpha');

@@ -25,10 +25,10 @@ function cacheRoot(): string { return process.env.HAPI_DSH_E2E_CACHE ?? join(tmp
 
 interface E2eTemplate { key: string; root: string; hubHome: string; runnerHome: string; provider: string }
 
-/** Identity of everything a prepared profile depends on; a dist or fixture rebuild invalidates it. */
+/** Installed profiles link to this repo. Client-only rebuilds need no reinstall. */
 async function templateKey(): Promise<string> {
     const rows = ['hapi-dsh-e2e-template-v1'];
-    const files = ['package.json', 'dist/client.js', 'dist/index.js', 'dist/runner/index.js', 'dist/runner/config.js', 'dist/runner/client.js', 'dist/runner/protocol.js', 'dist/runner/tunnel.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml', 'e2e/provider-fixture.mjs'];
+    const files = ['package.json', 'package-lock.json', 'dist/index.js', 'dist/runner/index.js', 'dist/runner/config.js', 'dist/runner/client.js', 'dist/runner/protocol.js', 'dist/runner/tunnel.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml', 'e2e/provider-fixture.mjs'];
     for (const path of files) {
         try {
             const info = await stat(join(root, path));

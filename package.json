@@ -104,6 +104,7 @@
     "test:ui": "node --import tsx scripts/warm-e2e.ts accept",
     "test:ui:ci": "node --import tsx e2e/ui-cli.ts",
     "test:ui:probe": "playwright test e2e/ui-probe.spec.ts",
+    "test:ui:touch": "playwright test e2e/mobile-scroll.spec.ts",
     "test:perf": "node --import tsx scripts/warm-e2e.ts perf",
     "test:perf:production": "node scripts/probe-cold-open.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",

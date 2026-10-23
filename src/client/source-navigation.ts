@@ -3,6 +3,7 @@ import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types';
 import type {} from '@deepseek-ai/dsh-api-session-controller/client';
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts';
 import { messageNodeTarget, placeReadingAnchor, revealChatElement } from './reading-anchor.ts';
+import { loadHistoryThrough } from './history-navigation.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hapiMessageNavigation: SourceMessageNavigation } }
 
@@ -47,7 +48,7 @@ export class SourceMessageNavigation {
         try {
             const binding = this.ctx.sessions.binding(sessionId);
             if (!binding) throw new Error('The conversation is no longer open in this pane.');
-            await binding.session.loadThrough(seq);
+            await loadHistoryThrough(binding.session, seq, lifetime, () => this.ctx.sessions.binding(sessionId) === binding);
             lifetime.throwIfAborted();
             if (this.ctx.sessions.binding(sessionId) !== binding) throw new Error('The conversation was replaced while loading history.');
             // Public Chat nodes cover assistant and Tool lifecycles. Folded

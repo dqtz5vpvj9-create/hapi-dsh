@@ -29,8 +29,10 @@ export interface WorkspacePaneNavigation extends WorkspaceUiScope {
     openSession(displaySessionId: string, options?: { beside?: SplitAxis; target?: PaneReadingTarget }): void
     /** Reveal this graph's own unchanged Conversation, retaining every tab. */
     revealConversation(): void
+    /** Focus this source's shared composer without replacing the plugin view. */
+    focusConversation(target?: PaneReadingTarget): string
     openResource(address: string, options?: { kind?: string; params?: NavigationValue; beside?: SplitAxis }): void
-    openTab(kind: string, options?: { address?: string; params?: NavigationValue; beside?: SplitAxis; title?: string }): void
+    openTab(kind: string, options?: { address?: string; params?: NavigationValue; beside?: SplitAxis; title?: string; reuseTabs?: readonly string[] }): void
     openPanel(panelId: string, options?: { beside?: SplitAxis }): void
     /** Copy a real occurrence's navigation into a workspace pane. */
     openView(target: DshPaneTarget, options?: { beside?: SplitAxis; title?: string }): void

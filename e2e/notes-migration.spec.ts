@@ -1,4 +1,5 @@
 import { acknowledgePreviewNotice } from './preview-notice.ts'
+import { openConversationTool } from './conversation-tools.ts'
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
@@ -20,9 +21,7 @@ test.describe('original browser notes inside the official DSH workspace', () => 
         await page.addInitScript(value => { localStorage.setItem('hapi.scratchlist.v1.native-alpha', value); }, raw);
         await page.goto(environment.launchUrl); await expect(page.locator('[data-hapi-workspace]')).toBeVisible();
         await acknowledgePreviewNotice(page, environment)
-        await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex alpha' }).click();
-        const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
-        const tools = pane.getByRole('combobox', { name: 'Conversation tools', exact: true }); await tools.selectOption('hapi-notes');
+        const pane = await openConversationTool(page, 'Native Codex alpha', 'Scratchlist');
         const notes = pane.getByRole('region', { name: 'Scratchlist', exact: true });
         const migration = notes.getByRole('region', { name: 'Original notes migration', exact: true });
         await expect(migration).toContainText('e2e-native-hub / native-alpha');
@@ -48,7 +47,7 @@ test.describe('original browser notes inside the official DSH workspace', () => 
         await migration.getByRole('button', { name: 'Download original backup', exact: true }).click();
         const backup = await downloadingBackup; expect(await readFile((await backup.path())!, 'utf8')).toBe(raw);
         expect(await page.evaluate(() => localStorage.getItem('hapi.scratchlist.v1.native-alpha'))).toBe(raw);
-        await page.reload(); await expect(pane).toBeVisible(); await tools.selectOption('hapi-notes');
+        await page.reload(); await expect(pane).toBeVisible();
         await expect(migration).toContainText('2 / 2 resolved');
         expect(environment.hapi.extras.mutations.filter(row => row.method === 'POST' && row.tail === 'scratchlist')).toHaveLength(2);
         expect(environment.hapi.sent).toHaveLength(0); expect(errors).toEqual([]);

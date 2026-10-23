@@ -10,11 +10,9 @@ import type {} from '../hapi-agent/projection-types.ts';
 import type {} from './pane-navigation.ts';
 import type {} from './source-navigation.ts';
 import { remoteValue, type HapiRemoteApi, type CatalogMachine, type SourceNote } from '../client-api.ts';
-import { NativeLibraryPanel, NativeSessionToolsPanel } from './native-library.tsx';
+import { NativeLibraryPanel, NativeSessionToolsPanel, SourceHistoryPanel, SourceNotesPanel, SourceSchedulePanel, SourceMigrationPanel } from './deferred-panels.tsx';
 import { SourceSessionToolsPanel } from './source-lifecycle.tsx';
-import { SourceHistoryPanel, SourceNotesPanel, SourceSchedulePanel } from './session-extras.tsx';
 import { installSourceComposerBridge } from './source-composer.tsx';
-import { SourceMigrationPanel } from './source-history.tsx';
 import { SourceTitlePanel } from './source-title-panel.tsx';
 import { installSourceComposerParking } from './source-composer-parking.tsx';
 import { installComposerGoal } from './composer-goal.tsx';
@@ -46,6 +44,28 @@ const styles = `
 .hapi-source-panel small{opacity:.7}.hapi-source-panel .hapi-error{color:var(--text-error,#d45d62);overflow-wrap:anywhere}.hapi-source-panel a{color:var(--text-link,#6888db)}
 .hapi-source-notes,.hapi-source-outline{padding:0;list-style:none;display:grid;gap:14px}.hapi-source-notes>li{border:1px solid var(--border-secondary,#8885);border-radius:8px;padding:12px}.hapi-source-note-text{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%}
 .hapi-source-outline>li{display:grid;gap:3px}.hapi-source-outline button{text-align:start;overflow-wrap:anywhere;white-space:pre-wrap}.hapi-source-file-pick{max-width:100%;font-size:12px}.hapi-source-panel .hapi-source-file-pick input{font-size:12px;padding:4px}
+/* Match the workspace chrome rather than browser-default form styling. */
+.hapi-source-panel{font:var(--hapi-font-body,14px/22px system-ui);padding:16px 20px;overscroll-behavior:contain}
+.hapi-source-panel header{margin-bottom:12px}.hapi-source-panel header h2{margin:0;font-weight:600}
+.hapi-source-panel>p{color:var(--hapi-secondary);margin:8px 0 16px}
+.hapi-source-panel fieldset{min-width:0;margin:18px 0 8px;padding:12px;border:0;border-radius:10px;background:var(--hapi-muted,#f6f7f8)}
+.hapi-source-panel legend{padding:0;font-weight:500}.hapi-source-panel label{margin:12px 0;gap:6px}
+.hapi-source-panel input:not([type=checkbox]),.hapi-source-panel textarea,.hapi-source-panel select{border-color:var(--hapi-border,#d8dedf);border-radius:8px;background:var(--hapi-bg,#fff);padding:9px 10px}
+.hapi-source-panel button{min-height:34px;border-color:transparent;border-radius:7px;background:var(--hapi-muted,#f6f7f8);padding:6px 10px;line-height:20px}
+.hapi-source-panel button:hover:not(:disabled){background:var(--hapi-hover,#eef2f1)}
+.hapi-source-panel :is(button,input,select,textarea):focus-visible{outline:2px solid var(--hapi-accent,#359b6c);outline-offset:2px}
+.hapi-source-panel button[aria-pressed=true]{color:var(--hapi-accent);border-color:var(--hapi-accent);background:color-mix(in srgb,var(--hapi-accent) 9%,transparent)}
+.hapi-source-panel button[type=submit],.hapi-source-panel .hapi-panel-primary{color:var(--hapi-bg,#fff);background:var(--hapi-accent,#359b6c)}
+.hapi-source-panel .hapi-button-row{gap:6px;margin:8px 0;align-items:center}.hapi-source-panel .hapi-button-row>label{margin:0}
+.hapi-source-panel small{opacity:1;color:var(--hapi-secondary);font-size:11px}
+.hapi-source-panel ul:empty{display:none}.hapi-source-notes{margin-top:16px;gap:10px}.hapi-source-notes>li{border-color:var(--hapi-border,#d8dedf);border-radius:10px;padding:12px}.hapi-source-note-text{margin:0 0 8px}
+.hapi-source-panel .hapi-source-file-pick{flex:1;min-width:140px}.hapi-source-panel .hapi-source-file-pick input{border:0;padding:0;background:transparent}
+.hapi-source-file-pick input::file-selector-button{font:inherit;border:0;border-radius:6px;background:var(--hapi-muted,#f6f7f8);color:inherit;padding:8px;margin-right:8px;cursor:pointer}
+.hapi-source-outline button{border:0;background:transparent;padding:7px 0}.hapi-source-outline>li{padding:7px 0;border-bottom:1px solid var(--hapi-border,#d8dedf)}
+.hapi-plugin-view-shell .hapi-source-panel-title{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.hapi-plugin-view-shell .hapi-source-panel>header:has(>.hapi-source-panel-title){justify-content:flex-end;margin-bottom:0}
+@media(max-width:600px){.hapi-source-panel{padding:12px 16px}.hapi-source-panel button,.hapi-source-file-pick input::file-selector-button{min-height:40px}}
+@media(pointer:coarse){.hapi-source-panel button,.hapi-source-file-pick input::file-selector-button{min-height:44px}.hapi-source-panel button[aria-label]{min-width:44px}}
 .hapi-source-toolbar{display:inline-flex;align-items:center}.hapi-source-toolbar select{max-width:160px;font-size:12px;padding:3px 6px}
 .hapi-source-message{min-width:0;outline-offset:5px;border-radius:6px}.hapi-source-message:focus{outline:none}
 .hapi-team-members{display:flex;flex-wrap:wrap;gap:8px;list-style:none;padding:0}.hapi-team-members li{display:flex;gap:6px;flex-wrap:wrap;border:1px solid var(--border-secondary,#8885);border-radius:18px;padding:4px 9px}.hapi-team-members li[data-state=active]{border-color:#3b996b}.hapi-team-members li[data-state=shutdown]{opacity:.65}.hapi-team-tasks,.hapi-team-messages,.hapi-team-events{list-style:none;padding:0;display:grid;gap:12px}.hapi-team-tasks>li,.hapi-team-messages>li,.hapi-team-events>li{border:1px solid var(--border-secondary,#8885);border-radius:8px;padding:10px}.hapi-team-tasks li>div,.hapi-team-messages li>div{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.hapi-team-tasks [data-state=blocked]{border-color:var(--text-error,#d45d62)}.hapi-source-collaboration pre{overflow:auto;max-height:45vh;white-space:pre-wrap;overflow-wrap:anywhere}.hapi-source-collaboration code{overflow-wrap:anywhere}.hapi-source-collaboration time{font-size:11px;opacity:.65}
@@ -120,7 +140,7 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
             if (definition.kind === 'hapi-schedule') return <SourceSchedulePanel key={props.sessionId} {...shared} readOnly={projection.readOnly} delivery={projection.delivery} draftStorage={ctx.get('hapiWorkspaceUi')?.sourceScheduleDrafts}/>;
             if (definition.kind === 'hapi-history') return <SourceHistoryPanel key={props.sessionId} {...shared} exportPreferences={ctx.get('hapiWorkspaceUi')?.preferences} onJump={async messageId => {
                 const navigation = ctx.get('hapiMessageNavigation'); if (!navigation) throw new Error('Conversation navigation is not ready.');
-                if (pane) { pane.revealConversation(); pane.locate({ kind: 'message', messageId, origin: 'search' }); }
+                if (pane) pane.focusConversation({ kind: 'message', messageId, origin: 'search' });
                 else await navigation.reveal(props.sessionId, messageId, tab.signal);
             }}/>;
             const useNote = async (note: SourceNote, urls: Record<string, string>) => {
@@ -136,12 +156,18 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
                     files.push(new File([blob], attachment.filename, { type: attachment.mimeType }));
                 }
                 if (ctx.sessions.binding(props.sessionId) !== binding) throw new Error('The source conversation changed while reading its note.');
+                if (pane) {
+                    const targetPane = pane.focusConversation();
+                    await pane.shareInbox.insertOriginal({ kind: 'hapi', hubId: source.sourceHubId, sessionId: source.sourceSessionId }, targetPane,
+                        { title: '', text: note.text, url: '', files: files.map(file => ({ name: file.name, type: file.type, blob: file })), createdAt: Date.now() }, tab.signal);
+                    return;
+                }
                 const removeAdded = await composer.addFiles(props.sessionId, files, tab.signal);
                 if (!props.inputActions.insertText(note.text, insertion)) {
                     removeAdded();
                     throw new Error(lang.startsWith('zh') ? '输入框已发生变化，笔记仍保留，请重试。' : 'The composer changed. The note is retained; try inserting it again.');
                 }
-                props.inputActions.persistDraft(); pane?.revealConversation();
+                props.inputActions.persistDraft();
                 ctx.conversation.input.for(binding.ctx).focus();
             };
             // Only the notes tab asks the root browser for its one original
@@ -165,7 +191,7 @@ export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
                 <div className="hapi-composer-overflow-section">
                     <span className="hapi-composer-overflow-title">{chinese ? '会话工具' : 'Conversation tools'}</span>
                     {definitions.map(row => <button type="button" key={row.kind} onClick={() => {
-                        if (pane) pane.openTab(row.kind);
+                        if (pane) pane.openTab(row.kind, { title: title(row.kind), reuseTabs: definitions.map(item => item.kind) });
                         else ctx.sidebarRight.openTabIn(props.sessionId, row.kind);
                         onClose();
                     }}>{title(row.kind)}</button>)}

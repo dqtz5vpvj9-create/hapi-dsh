@@ -25,14 +25,13 @@ import type { SidebarFilter } from '../workspace/sidebar-state.ts'
 import { projectSidebarRows, sidebarTree, type SidebarBranch, type SidebarTreeRow } from '../workspace/sidebar-tree.ts'
 import type { WorkbenchSource } from '../workbench-types.ts'
 import { isSourceChild, sourceIdentity } from '../workspace/legacy.ts'
-import { NativeLibraryPanel, NativeSessionToolsPanel } from './native-library.tsx'
+import { NativeLibraryPanel, NativeSessionToolsPanel, SourceMigrationPanel } from './deferred-panels.tsx'
 import { SourceSessionToolsPanel } from './source-lifecycle.tsx'
 import { SourcePinButton } from './source-pin.tsx'
 import { SidebarActionSurface } from './sidebar-action-surface.tsx'
 import { sidebarActionFacts, sidebarMenuPosition, SidebarPress } from '../workspace/sidebar-actions.ts'
 import { SourceExportPanel } from './source-export.tsx'
 import { SourceTitlePanel } from './source-title-panel.tsx'
-import { SourceMigrationPanel } from './source-history.tsx'
 import { MachineHealthRow } from './machine-health-view.tsx'
 import { useWorkspacePaneDrop, dropOnWorkspaceWindow } from './workspace-drag.tsx'
 import { useWorkspaceLinks, WorkspaceLinkNotice } from './workspace-links.tsx'
@@ -183,12 +182,16 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         if (!node) return
         node.inert = hidden
         if (hidden) return
-        const measure = (): void => {
-            const { width, height } = node.getBoundingClientRect()
-            if (width > 0 && height > 0) lastVisibleSize.current = { width, height }
-        }
-        measure()
-        const observer = new ResizeObserver(measure); observer.observe(node)
+        // ResizeObserver already carries the completed border-box layout. A
+        // synchronous rect read here forces the entire Conversation to lay out
+        // inside React's initial commit, before the browser can paint it.
+        const observer = new ResizeObserver(entries => {
+            const size = entries[0]?.borderBoxSize[0]
+            if (size && size.inlineSize > 0 && size.blockSize > 0) {
+                lastVisibleSize.current = { width: size.inlineSize, height: size.blockSize }
+            }
+        })
+        observer.observe(node, { box: 'border-box' })
         return () => { observer.disconnect() }
     }, [hidden])
     useEffect(() => {

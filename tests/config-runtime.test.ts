@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createConfig, DSH_VERSION } from '../src/cli/config.ts';
-import { assertProfileProviders, installProfile, runtimeEnvironment, startArguments, verifyBundleArtifacts, type Command, type CommandRunner } from '../src/cli/runtime.ts';
+import { CLIENT_CHUNKS, assertProfileProviders, installProfile, runtimeEnvironment, startArguments, verifyBundleArtifacts, type Command, type CommandRunner } from '../src/cli/runtime.ts';
 import { checkHapi } from '../src/cli/doctor.ts';
 import { parseDocument, stringify } from 'yaml';
 import { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include';
@@ -25,7 +25,7 @@ async function fixture(directory: string): Promise<string> {
         name: 'hapi-dsh', main: './host.js', exports: { './client': { default: './client.js' } },
         dsh: { bundle: { patch: './patch.yml' } },
     }));
-    for (const name of ['host.js', 'client.js', 'patch.yml']) await writeFile(join(root, name), '');
+    for (const name of ['host.js', 'client.js', 'patch.yml', ...CLIENT_CHUNKS]) await writeFile(join(root, name), '');
     return root;
 }
 
@@ -159,6 +159,21 @@ test('artifact verification refuses an escaping client export', async (t) => {
     manifest.exports['./client'].default = '../outside.js';
     await writeFile(join(root, 'package.json'), JSON.stringify(manifest));
     await assert.rejects(verifyBundleArtifacts(root), /escapes/);
+});
+
+test('artifact verification catches every missing deferred Client chunk and leaves the Runner Host-only', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-chunks-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const root = await fixture(directory);
+    await verifyBundleArtifacts(root);
+    for (const name of CLIENT_CHUNKS) {
+        await rm(join(root, name));
+        await assert.rejects(verifyBundleArtifacts(root), error => error instanceof Error && error.message.includes(name));
+        await writeFile(join(root, name), '');
+    }
+    await writeFile(join(root, 'package.json'), JSON.stringify({ name: 'hapi-dsh-runner', main: './host.js', dsh: { bundle: { patch: './patch.yml' } } }));
+    for (const name of CLIENT_CHUNKS) await rm(join(root, name));
+    await verifyBundleArtifacts(root, 'hapi-dsh-runner');
 });
 
 test('runtime environment carries only the config path and start uses the official Web flags', () => {

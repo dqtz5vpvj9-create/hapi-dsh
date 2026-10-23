@@ -40,6 +40,12 @@ jobs:
           HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-ui
         run: npm run test:ui:ci
       - name: Full browser regression suite
+        env:
+          HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-browser
+          HAPI_DSH_VISUAL_DIR: ${{ runner.temp }}/hapi-dsh-visual
+          # The fixed webshot utility is installed on the Agent host. CI runs
+          # gesture assertions but does not claim a human screenshot review.
+          HAPI_DSH_VISUAL_REVIEW: 'off'
         run: npm run test:e2e
       - name: Upload browser reports
         if: always()
@@ -50,6 +56,7 @@ jobs:
             playwright-report/
             test-results/
             ${{ runner.temp }}/hapi-dsh-ui/hapi-ui-acceptance-*.json
+            ${{ runner.temp }}/hapi-dsh-visual/
           if-no-files-found: ignore
           retention-days: 7
   package:

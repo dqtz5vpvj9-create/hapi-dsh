@@ -1,11 +1,13 @@
 import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules';
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 
+const HMR = '@deepseek-ai/dsh-client-hmr';
+
 // These pages do not render a conversation. HMR joins the second stage too:
 // its initial full-graph frame would otherwise undo the initial roster before
 // the official boot kernel can mount the workspace.
 const SECOND_STAGE = new Set([
-    '@deepseek-ai/dsh-client-hmr',
+    HMR,
     '@deepseek-ai/dsh-client-ui-settings-account',
     '@deepseek-ai/dsh-client-ui-plugin-manager',
     '@deepseek-ai/dsh-client-ui-sidebar-documentpreview',
@@ -24,20 +26,47 @@ const SECOND_STAGE = new Set([
     '@deepseek-ai/dsh-client-ui-settings-agent-loop',
     '@deepseek-ai/dsh-client-product-analytics',
 ]);
+// Model settings also owns first-run welcome/credential onboarding, and the
+// Cordis runner receives transient inspect requests. Both stay in stage one.
+
+type BootEntry = WebBootGraph['entries'][number];
+function includeDependencies(rows: ReadonlyMap<string, BootEntry>, id: string, keep: Set<string>): void {
+    const row = rows.get(id) ?? rows.get(id.replace(/\/client$/, ''));
+    if (!row || keep.has(row.id)) return;
+    keep.add(row.id);
+    for (const dependency of [...row.inject ?? [], ...row.external ?? []]) includeDependencies(rows, dependency, keep);
+}
 
 /** Compose data for the official loader; no upstream code or factories change.
  * Required dependency closures always win over the optional-page policy. */
 export function workspaceBootGraph(graph: WebBootGraph): WebBootGraph {
     const rows = new Map(graph.entries.map(row => [row.id, row]));
     const keep = new Set<string>();
-    const include = (id: string): void => {
-        const row = rows.get(id) ?? rows.get(id.replace(/\/client$/, ''));
-        if (!row || keep.has(row.id)) return;
-        keep.add(row.id);
-        for (const dependency of [...row.inject ?? [], ...row.external ?? []]) include(dependency);
-    };
-    for (const row of graph.entries) if (!SECOND_STAGE.has(row.id)) include(row.id);
+    for (const row of graph.entries) if (!SECOND_STAGE.has(row.id)) includeDependencies(rows, row.id, keep);
     return independentBootBatches({ ...graph, entries: graph.entries.filter(row => keep.has(row.id)) });
+}
+
+/** Each official sync adds one optional entry and its complete dependency
+ * closure. Callers can yield to a reader between syncs without removing any
+ * existing entry. All stages use this fresh Host graph, including its revs.
+ * HMR and optional entries needing it join the final complete graph. A required
+ * stage-one dependency on HMR wins: it was already present and stays present. */
+export function deferredBootStages(graph: WebBootGraph): readonly WebBootGraph[] {
+    const rows = new Map(graph.entries.map(row => [row.id, row]));
+    const keep = new Set(workspaceBootGraph(graph).entries.map(row => row.id));
+    const stages: WebBootGraph[] = [];
+    for (const row of graph.entries) {
+        if (keep.has(row.id) || row.id === HMR) continue;
+        const closure = new Set<string>();
+        includeDependencies(rows, row.id, closure);
+        if (!keep.has(HMR) && closure.has(HMR)) continue;
+        for (const id of closure) keep.add(id);
+        stages.push(independentBootBatches({ ...graph, entries: graph.entries.filter(entry => keep.has(entry.id)) }));
+    }
+    // Even an all-required graph gets one sync: its revisions may have changed
+    // while this browser downloaded its original first-stage carrier.
+    if (keep.size < rows.size || stages.length === 0) stages.push(independentBootBatches(graph));
+    return stages;
 }
 
 /** Keep full-graph reconciliation from executing a combo containing factories

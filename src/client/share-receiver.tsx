@@ -41,10 +41,10 @@ export function installShareReceiver(ctx: Context, existingBridge?: SourceCompos
                     if (latest.source && handoffs.blocksSource({ hubId: latest.source.hubId, sessionId: latest.source.hapiSessionId })) return false;
                     return !['adjudicating', 'submitting'].includes(owner.conversation.input.for(binding.ctx).state.getSnapshot().phase);
                 };
-                const receiver: ShareReceiver = { ready, async insert(payload, signal) {
+                const receiver: ShareReceiver = { paneId: pane?.paneId, ready, async insert(payload, signal, options) {
                     const binding = owner.sessions.binding(props.sessionId); if (!binding || !ready()) throw new Error('The original composer is not ready.');
                     const facade = owner.conversation.input.for(binding.ctx), before = facade.state.getSnapshot();
-                    const seed = shareSeedText(payload), suffix = seed ? `${before.draft ? '\n\n' : ''}${seed}` : '';
+                    const seed = options?.exactText ? payload.text : shareSeedText(payload), suffix = seed ? `${before.draft ? '\n\n' : ''}${seed}` : '';
                     const files = payload.files.map(file => new File([file.blob], file.name, { type: file.type }));
                     const undo = await bridge.addFiles(props.sessionId, files, signal);
                     try {

@@ -9,7 +9,12 @@
  * programmatically, so this controller automates the *user* action instead of
  * reimplementing the anchor owner: it watches the conversation scrollport for a
  * deliberate upward gesture near the top and clicks the official control. All
- * paging, anchoring, and rendering stay upstream.
+ * paging and rendering stay upstream. Normal paging anchors stay upstream too;
+ * the sole exception is an in-flight automatic page interrupted by a new held
+ * touch, after the official reader has released its anchor. One visible row
+ * supplies a commit-time correction until finger release or outer scrollend.
+ * Touch paging waits for the outer scrollport to settle: the official button
+ * retains a fixed reading anchor, which must not be acquired mid-drag/inertia.
  *
  * Safety rules (from the design review):
  * - Only an explicit upward gesture (wheel/touch/key, or a scroll sample within
@@ -34,7 +39,7 @@
  * manual control. The pinned dependency version is the compatibility contract.
  */
 
-import { firstAnchor } from './anchor.ts'
+import { captureInterruptedPrepend, INTERRUPTED_PREPEND_STYLE, type InterruptedPrependAnchor } from './interrupted-anchor.ts'
 import type { AggregateLoadGate, SessionPageLedger, AggregateLoadLimits } from './concurrency.ts'
 import type { EarlierLoadBudgetLimits } from './budget.ts'
 import { keyIntent, scrollIntent, touchIntent, wheelIntent, type ReaderIntent } from './intent.ts'
@@ -87,6 +92,8 @@ export interface SeamlessHistoryOptions {
 
 /** How long a scroll/hit sample stays attributable to a real reader input. */
 const FRESH_INPUT_MS = 250
+/** Scrollend fallback for older engines; every outer scroll sample postpones it. */
+const TOUCH_SCROLL_QUIET_MS = 180
 /** Earliest point at which "control re-enabled without progress" is a failure. */
 const MIN_FAILURE_OBSERVE_MS = 600
 /** Pending progress poll cadence; cheap because it only runs while one page is loading. */
@@ -145,15 +152,17 @@ interface PendingLoad {
 /**
  * Read a topmost-anchored progress probe.
  *
- * @param scroller - conversation scrollport.
  * @param column - outer chat column.
  * @returns stable measurements used to prove a prepend happened.
  */
-function takeProbe(scroller: HTMLElement, column: HTMLElement): ProgressProbe {
-    return {
-        firstKey: firstAnchor(scroller, column)?.key ?? null,
-        count: column.querySelectorAll('[data-chat-anchor-key]').length,
+export function probeHistoryWindow(column: HTMLElement): ProgressProbe {
+    const rows = column.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')
+    for (const row of rows) {
+        if (row.closest('[hidden]') !== null) continue
+        const key = row.getAttribute('data-chat-anchor-key')
+        if (key !== null && key !== '') return { firstKey: key, count: rows.length }
     }
+    return { firstKey: null, count: rows.length }
 }
 
 /**
@@ -180,10 +189,14 @@ function progressed(before: ProgressProbe, after: ProgressProbe): boolean {
  *
  * @param before - probe captured when the request started.
  * @param after - probe read after the request settled.
- * @returns whether the transcript got smaller (rewind/resync), not longer.
+ * A live tail can retire an ephemeral anchor without changing the retained
+ * history head. That contraction is not a source-window replacement and must
+ * not cancel the older page that is still in flight.
+ *
+ * @returns whether a smaller window also replaced its earliest identity.
  */
-function resynced(before: ProgressProbe, after: ProgressProbe): boolean {
-    return after.count < before.count
+export function historyWindowWasReset(before: ProgressProbe, after: ProgressProbe): boolean {
+    return after.count < before.count && after.firstKey !== before.firstKey
 }
 
 /**
@@ -265,7 +278,15 @@ class ConversationHistoryController {
     private lastUserInputAt = Number.NEGATIVE_INFINITY
     private quietUntil = Number.NEGATIVE_INFINITY
     private touchY: number | null = null
+    private touchActive = false
+    private touchMotion = false
+    private touchScrolling = false
+    private touchWantsEarlier = false
+    private touchCancelled = false
+    private touchSettleTimer: ReturnType<typeof setTimeout> | undefined
+    private touchEndFrame: number | undefined
     private pending: PendingLoad | null = null
+    private interruptedAnchor: InterruptedPrependAnchor | null = null
     private deadline: ReturnType<typeof setTimeout> | undefined
     private poll: ReturnType<typeof setInterval> | undefined
     private observer: MutationObserver | null = null
@@ -301,12 +322,14 @@ class ConversationHistoryController {
         })
         this.sessionId = content.getAttribute('data-conversation-session')
         this.listen('scroll', this.onScroll, { capture: true, passive: true })
+        this.listen('scrollend', this.onScrollEnd, { capture: true, passive: true })
         this.listen('wheel', this.onWheel, { passive: true })
         this.listen('touchstart', this.onTouchStart, { passive: true })
         this.listen('touchmove', this.onTouchMove, { passive: true })
         this.listen('touchend', this.onTouchEnd, { passive: true })
         this.listen('touchcancel', this.onTouchEnd, { passive: true })
         this.listen('keydown', this.onKeyDown, { passive: true })
+        this.listen('pointerdown', this.onPointerDown, { passive: true })
     }
 
     /** The clock shared by every controller of this document. */
@@ -359,7 +382,7 @@ class ConversationHistoryController {
 
     /** Read the transcript probe used to prove a prepend; only while watching. */
     private probeOf(measured: Measured): ProgressProbe {
-        return takeProbe(measured.scroller, measured.column)
+        return probeHistoryWindow(measured.column)
     }
 
     /** Read the official state the policy needs, including reader fixation. */
@@ -420,6 +443,7 @@ class ConversationHistoryController {
         this.lastUserInputAt = Number.NEGATIVE_INFINITY
         this.quietUntil = Number.NEGATIVE_INFINITY
         this.touchY = null
+        this.cancelTouchPaging()
         this.recoveryProbe = null
         this.awaitingRecovery = false
         this.mark(null)
@@ -505,6 +529,12 @@ class ConversationHistoryController {
     private input(intent: ReaderIntent, now: number): void {
         if (intent !== 'up' && intent !== 'down') return
         this.lastUserInputAt = now
+        if (this.touchMotion) {
+            const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+            this.touchWantsEarlier = !this.touchCancelled && intent === 'up' && scroller !== null
+                && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)
+            return
+        }
         if (intent !== 'up') return
         this.requestEarlier(now)
     }
@@ -518,8 +548,14 @@ class ConversationHistoryController {
         const current = target.scrollTop
         const previous = this.lastScrollTop
         this.lastScrollTop = current
-        if (previous === null) return
         const now = this.now()
+        if (this.touchMotion) {
+            this.touchScrolling = true
+            if (previous !== null) this.input(scrollIntent(previous, current), now)
+            this.scheduleTouchFallback(target)
+            return
+        }
+        if (previous === null) return
         const intent = scrollIntent(previous, current)
         // Restore, jump, follow, and anchor compensation also move scrollTop.
         // Only a sample attributable to a reader gesture may page history: a
@@ -537,6 +573,7 @@ class ConversationHistoryController {
 
     /** A wheel sample is the primary desktop gesture; respect nested scrollports. */
     private readonly onWheel = (event: WheelEvent): void => {
+        if (event.isTrusted) this.releaseInterruptedAnchor()
         if (!this.usable()) return
         this.ensureSession()
         const intent = wheelIntent(event.deltaY, event.deltaMode)
@@ -551,15 +588,34 @@ class ConversationHistoryController {
 
     /** Touch start only records the finger position for inertial intent. */
     private readonly onTouchStart = (event: TouchEvent): void => {
-        if (event.touches.length !== 1) { this.touchY = null; return }
+        this.ensureSession()
+        this.cancelTouchPaging()
+        this.releaseInterruptedAnchor()
+        this.touchY = null
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (event.touches.length !== 1 || !(event.target instanceof Element) || !scroller?.contains(event.target)) return
+        this.touchActive = true
+        this.touchMotion = true
         this.touchY = event.touches[0]?.clientY ?? null
+        // The official capture listener has relinquished its paging anchor for
+        // this new gesture. During a held drag Chromium also suspends native
+        // scroll anchoring. Retain one current row for this pending page only.
+        // A process-heading button is also a valid place to start a pan. Its
+        // click happens after touchend, which has already released this owner.
+        if (event.isTrusted && this.pending !== null && this.usable()
+            && !isEditable(event.target)
+            && !this.innerScrollConsumes(event.target, scroller, 'up')
+            && !this.innerScrollConsumes(event.target, scroller, 'down')) {
+            this.interruptedAnchor = captureInterruptedPrepend(scroller)
+        }
     }
 
     /** Touch move carries the direction of the finger and of momentum drags. */
     private readonly onTouchMove = (event: TouchEvent): void => {
         if (!this.usable()) return
-        if (event.touches.length !== 1) { this.touchY = null; return }
+        if (event.touches.length !== 1) { this.touchY = null; this.cancelTouchPaging(); return }
         this.ensureSession()
+        if (!this.touchMotion) return
         const current = event.touches[0]?.clientY
         if (current === undefined) { this.touchY = null; return }
         const intent = touchIntent(this.touchY, current)
@@ -569,15 +625,100 @@ class ConversationHistoryController {
         if (scroller === null) return
         const target = event.target
         if (!(target instanceof Element)) return
-        if (this.innerScrollConsumes(target, scroller, intent)) return
+        if (this.innerScrollConsumes(target, scroller, intent)) { this.touchWantsEarlier = false; return }
         this.input(intent, this.now())
     }
 
-    /** Touch end clears the tracked finger so inertia cannot fabricate intent. */
-    private readonly onTouchEnd = (): void => { this.touchY = null }
+    /** The finger leaving is not the end of native momentum scrolling. */
+    private readonly onTouchEnd = (event: TouchEvent): void => {
+        // Native anchoring works during inertia and preserves its velocity.
+        // Never replace that path with a script scrollTop write after release.
+        this.releaseInterruptedAnchor()
+        this.touchY = null
+        this.touchActive = false
+        if (event.type === 'touchcancel') {
+            this.touchCancelled = true
+            this.touchWantsEarlier = false
+            this.lastUserInputAt = Number.NEGATIVE_INFINITY
+        }
+        if (!this.touchMotion) return
+        // A compositor scroll can arrive after touchend. Every delivered outer
+        // scroll cancels this grace and waits for the actual native scrollend.
+        if (!this.touchScrolling) {
+            this.touchSettleTimer = setTimeout(() => {
+                this.touchSettleTimer = undefined
+                if (!this.touchScrolling) this.settleTouchPaging()
+            }, TOUCH_SCROLL_QUIET_MS)
+            return
+        }
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller) this.scheduleTouchFallback(scroller)
+    }
+
+    private readonly onScrollEnd = (event: Event): void => {
+        if (!(event.target instanceof HTMLElement) || !event.target.matches(SCROLLER_SELECTOR)) return
+        this.releaseInterruptedAnchor()
+        if (!this.touchMotion) return
+        this.touchScrolling = false
+        // Let the official handler commit its last reading sample first.
+        if (!this.touchActive) {
+            if (this.touchEndFrame !== undefined) this.frame.cancelAnimationFrame(this.touchEndFrame)
+            this.touchEndFrame = this.frame.requestAnimationFrame(() => {
+                this.touchEndFrame = undefined
+                if (!this.touchScrolling) this.settleTouchPaging()
+            })
+        }
+    }
+
+    private scheduleTouchFallback(scroller: HTMLElement): void {
+        if (this.touchSettleTimer !== undefined) clearTimeout(this.touchSettleTimer)
+        if (this.touchEndFrame !== undefined) this.frame.cancelAnimationFrame(this.touchEndFrame)
+        this.touchSettleTimer = undefined
+        this.touchEndFrame = undefined
+        if (this.touchActive || 'onscrollend' in scroller) return
+        this.touchSettleTimer = setTimeout(() => {
+            this.touchSettleTimer = undefined
+            this.settleTouchPaging()
+        }, TOUCH_SCROLL_QUIET_MS)
+    }
+
+    private settleTouchPaging(): void {
+        if (this.touchActive || !this.touchMotion) return
+        this.ensureSession()
+        if (!this.touchMotion) return
+        const requested = this.touchWantsEarlier
+        this.cancelTouchPaging()
+        if (requested && this.usable()) this.requestEarlier(this.now())
+    }
+
+    private cancelTouchPaging(): void {
+        this.releaseInterruptedAnchor()
+        if (this.touchSettleTimer !== undefined) clearTimeout(this.touchSettleTimer)
+        if (this.touchEndFrame !== undefined) this.frame.cancelAnimationFrame(this.touchEndFrame)
+        this.touchSettleTimer = undefined
+        this.touchEndFrame = undefined
+        this.touchActive = false
+        this.touchMotion = false
+        this.touchScrolling = false
+        this.touchWantsEarlier = false
+        this.touchCancelled = false
+    }
+
+    private releaseInterruptedAnchor(): void {
+        this.interruptedAnchor?.release()
+        this.interruptedAnchor = null
+    }
+
+    private readonly onPointerDown = (event: PointerEvent): void => {
+        if (event.isTrusted && event.target instanceof Element
+            && event.target.closest('button, a, input, textarea, select, [contenteditable]') !== null) {
+            this.releaseInterruptedAnchor()
+        }
+    }
 
     /** Keyboard scrolling only counts when the transcript, not an editor, owns it. */
     private readonly onKeyDown = (event: KeyboardEvent): void => {
+        if (event.isTrusted) this.releaseInterruptedAnchor()
         if (!this.usable()) return
         this.ensureSession()
         const intent = keyIntent(event.key, event)
@@ -674,9 +815,11 @@ class ConversationHistoryController {
         if (this.policy.expire(now)) { this.failPending('timeout', now); return }
         const measured = this.measure()
         if (measured === null) { this.settle('reset', now, 'view-unmounted'); return }
+        if (!this.usable() || measured.followingTail) this.releaseInterruptedAnchor()
         const after = this.probeOf(measured)
-        if (resynced(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
+        if (historyWindowWasReset(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
         if (progressed(pending.probe, after)) { this.commitPending(now); return }
+        this.interruptedAnchor?.refresh()
         // The official control re-enabling means the fetch settled with nothing
         // prepended. A control still disabled means upstream is still loading:
         // keep waiting, never click again.
@@ -695,7 +838,7 @@ class ConversationHistoryController {
         if (measured !== null) {
             const after = this.probeOf(measured)
             if (progressed(pending.probe, after)) { this.commitPending(now); return }
-            if (resynced(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
+            if (historyWindowWasReset(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
         }
         this.failPending('timeout', now)
     }
@@ -704,6 +847,8 @@ class ConversationHistoryController {
     private commitPending(now: number): void {
         const pending = this.pending
         if (pending === null) return
+        this.interruptedAnchor?.commit()
+        this.interruptedAnchor = null
         this.pending = null
         this.clearPendingTimers()
         this.policy.committed(now)
@@ -718,6 +863,7 @@ class ConversationHistoryController {
 
     /** Record one failed page; automatic loading may suspend, the manual control stays. */
     private failPending(detail: 'timeout' | 'no-progress' | 'error', now: number): void {
+        this.releaseInterruptedAnchor()
         const pending = this.pending
         if (pending === null) return
         this.pending = null
@@ -735,6 +881,7 @@ class ConversationHistoryController {
 
     /** Record a reset/replace: cancel the generation and drop local budgets. */
     private settle(kind: 'error' | 'reset', now: number, detail = 'error'): void {
+        this.releaseInterruptedAnchor()
         if (this.pending === null) return
         this.pending = null
         this.clearPendingTimers()
@@ -773,6 +920,7 @@ class ConversationHistoryController {
 
     /** Cancel an in-flight request without counting it as a failure (session switch). */
     private cancelPending(detail: string): void {
+        this.releaseInterruptedAnchor()
         if (this.pending === null) return
         this.pending = null
         this.clearPendingTimers()
@@ -786,6 +934,7 @@ class ConversationHistoryController {
         if (this.disposed) return
         this.disposed = true
         this.cancelPending('disposed')
+        this.cancelTouchPaging()
         this.unlisten()
         this.observer?.disconnect()
         this.observer = null
@@ -821,6 +970,9 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
         aggregate: options.aggregate, maxPages: options.maxAutomaticPagesPerSession ?? DEFAULT_MAX_AUTOMATIC_PAGES_PER_SESSION,
     })
     const controllers = new Map<HTMLElement, ConversationHistoryController>()
+    const interruptedStyle = root.createElement('style')
+    interruptedStyle.textContent = INTERRUPTED_PREPEND_STYLE
+    root.head.append(interruptedStyle)
     let scheduled = false
     let disposed = false
 
@@ -881,6 +1033,7 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
         root.removeEventListener('pointercancel', pointerUp, { capture: true })
         for (const controller of controllers.values()) controller.dispose()
         controllers.clear()
+        interruptedStyle.remove()
         gate.reset()
         ledger.reset()
         INSTALLED.delete(root)

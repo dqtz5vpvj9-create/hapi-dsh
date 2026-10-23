@@ -93,6 +93,8 @@ export interface WorkspaceViewOptions {
     /** Restore the address of a real existing official tab occurrence. */
     address?: string
     title?: string
+    /** Related singleton tabs share a utility pane; their official tabs remain retained. */
+    reuseTabs?: readonly string[]
 }
 
 export interface WorkspaceCatalogRow extends SessionSummary {
@@ -1140,14 +1142,17 @@ export class WorkspaceController {
         const source = sourceIdentity(this.snapshot.catalog.byId[sessionId])
         // Resource opens reveal an existing address. Independent page instances
         // keep their official multiple semantics when no address exists yet.
-        const existing = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => {
+        const candidates = this.store.getSnapshot().windows.flatMap(window => panes(window.root))
+        const existing = candidates.find(pane => {
             if (pane.resource.kind !== 'view' || pane.resource.sessionId !== sessionId) return false
             const previous = pane.resource.target
             if (target.type === 'resource') return previous.type === 'resource' && previous.address === target.address && previous.kind === target.kind
             if (target.type === 'tab') return target.address !== undefined && previous.type === 'tab' && previous.address === target.address && previous.kind === target.kind
             if (target.type === 'panel') return previous.type === 'panel' && previous.panelId === target.panelId
             return false
-        })
+        }) ?? (target.type === 'tab' && options.reuseTabs?.includes(target.kind) ? candidates.find(pane =>
+            pane.resource.kind === 'view' && pane.resource.sessionId === sessionId && pane.resource.target.type === 'tab'
+            && options.reuseTabs!.includes(pane.resource.target.kind)) : undefined)
         if (existing) { this.store.updateView(existing.id, target, options.title); this.store.focus(existing.id) }
         else this.store.openResource({ kind: 'view', sessionId, viewId: this.options.nextId?.() ?? randomId(), target,
             ...(options.title === undefined ? {} : { title: options.title }),

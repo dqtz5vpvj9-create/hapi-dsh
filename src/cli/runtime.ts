@@ -138,6 +138,8 @@ export async function findPackageRoot(anchor: string = import.meta.url): Promise
     }
 }
 
+export const CLIENT_CHUNKS = ['client.voice.js', 'client.capture.js', 'client.native-panels.js', 'client.session-panels.js', 'client.administration.js'] as const;
+
 export async function verifyBundleArtifacts(packageRoot: string, expectedName: 'hapi-dsh' | 'hapi-dsh-runner' = 'hapi-dsh'): Promise<void> {
     const manifest: {
         name?: unknown;
@@ -151,7 +153,8 @@ export async function verifyBundleArtifacts(packageRoot: string, expectedName: '
     const patch = manifest.dsh?.bundle?.patch;
     if (expectedName === 'hapi-dsh' && !clientPath || !patch) throw new Error('The package is missing its DSH Client or bundle declaration');
     if (expectedName === 'hapi-dsh-runner' && clientPath) throw new Error('The Runner bundle must be Host-only');
-    const files = [manifest.main, ...(clientPath ? [clientPath] : []), ...(Array.isArray(patch) ? patch : [patch])];
+    const files = [manifest.main, ...(clientPath ? [clientPath, ...CLIENT_CHUNKS.map(name => join(dirname(clientPath), name))] : []),
+        ...(Array.isArray(patch) ? patch : [patch])];
     for (const file of files) {
         const path = resolve(packageRoot, file);
         const relativePath = relative(resolve(packageRoot), path);

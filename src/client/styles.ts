@@ -1,5 +1,9 @@
-/** Scoped chrome only. Official Conversation owns every chat/composer style. */
+/** Workspace chrome and scroll boundaries. Official Conversation owns chat rendering. */
 export const workspaceStyles = String.raw`
+/* A transcript reaching its edge must not become Chrome's page refresh.
+   Preserve native panning and pinch zoom; only stop vertical scroll chaining. */
+html,body {overscroll-behavior-y:none}
+.hapi-workspace [data-conversation-scroll],.hapi-session-list,.hapi-source-panel {overscroll-behavior-y:contain}
 .hapi-workspace,.hapi-session-sidebar,.hapi-session-rail,.hapi-dialog,.hapi-conversation,.hapi-remote-shell,.hapi-sidebar-context {
  --hapi-bg:var(--dsw-alias-bg-layer-1,#fff);--hapi-muted:var(--dsw-alias-bg-layer-2,#f6f7f8);
  --hapi-fg:var(--dsw-alias-label-primary,#22272c);--hapi-secondary:var(--dsw-alias-label-secondary,#65717b);

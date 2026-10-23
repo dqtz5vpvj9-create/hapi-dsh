@@ -16,6 +16,7 @@ if (!match) throw new Error('Run distribution-pack.mjs first to produce a verifi
 const archive = resolve('artifacts', match[2]);
 assert.equal(createHash('sha256').update(await readFile(archive)).digest('hex'), match[1], 'Package checksum mismatch');
 const manifest = JSON.parse(await readFile('package.json', 'utf8'));
+const clientChunks = ['voice', 'capture', 'native-panels', 'session-panels', 'administration'].map(name => `client.${name}.js`);
 
 const temporaryRoot = process.env.HAPI_DSH_TEST_ROOT ?? (existsSync('/mnt/cache/data-cache') ? '/mnt/cache/data-cache' : tmpdir());
 await mkdir(temporaryRoot, { recursive: true });
@@ -40,6 +41,11 @@ try {
     await npm(['install', '--prefix', directory, '--omit=dev', '--no-audit', '--no-fund', 'pnpm@11.28.5', archive]);
     const packageRoot = join(directory, 'node_modules', 'hapi-dsh');
     const cli = join(packageRoot, 'dist', 'cli.js');
+    for (const fileName of clientChunks) {
+        const source = await readFile(join(packageRoot, 'dist', fileName), 'utf8');
+        assert.ok(source.startsWith('window.__ModuleLoader__.load('), `${fileName} must be an official package-local chunk`);
+        assert.ok(source.includes(`chunk:${JSON.stringify(fileName)}`), `${fileName} must register its matching chunk name`);
+    }
     await run(process.execPath, ['--input-type=module', '-e', 'for (const path of process.argv.slice(1)) await import(path);',
         ...['index.js', 'session-controller.js', 'runner/index.js'].map(path => pathToFileURL(join(packageRoot, 'dist', path)).href)]);
     assert.match(await installed(['--help']), /official DSH Web profile/);
@@ -77,12 +83,26 @@ try {
     assert.ok(launch, 'Installed Host did not print a login URL');
     const response = await fetch(launch.trim(), { redirect: 'manual', signal: AbortSignal.timeout(10_000) });
     assert.equal(response.status, 303, 'Official admission endpoint must accept its login URL');
-    const html = await fetch(new URL(response.headers.get('location') ?? '/', launch.trim()), {
-        headers: { cookie: response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ') },
+    const pageUrl = new URL(response.headers.get('location') ?? '/', launch.trim());
+    const headers = { cookie: response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ') };
+    const html = await fetch(pageUrl, {
+        headers,
         signal: AbortSignal.timeout(10_000),
     });
     assert.equal(html.status, 200);
-    assert.match(await html.text(), /<script/);
+    const page = await html.text();
+    const boot = /<script>globalThis\["__DSH_BOOT__"\] = ([\s\S]*?)<\/script>/.exec(page);
+    assert.ok(boot, 'Installed Host must provide its official client boot graph');
+    const entry = JSON.parse(boot[1]).entries.find(value => value.id === manifest.name);
+    assert.equal(typeof entry?.rev, 'string', 'Installed package must appear in the official client boot graph');
+    for (const fileName of clientChunks) {
+        const url = new URL(`plugins/${manifest.name}/${fileName}`, pageUrl);
+        url.searchParams.set('rev', entry.rev);
+        const chunk = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+        assert.equal(chunk.status, 200, `Installed Host must serve ${fileName} at its current revision`);
+        assert.match(chunk.headers.get('content-type') ?? '', /javascript/);
+        assert.ok((await chunk.text()).includes(`chunk:${JSON.stringify(fileName)}`), `${fileName} HTTP response must register its matching chunk`);
+    }
 
     const invitation = join(directory, 'invitation.json');
     const runnerConfig = join(directory, 'runner.json');
@@ -99,7 +119,7 @@ try {
     await installed(['revoke', '--machine-id', 'package-fixture', '--config', config]);
     const paired = JSON.parse(await readFile(join(directory, 'runner-pairings.json'), 'utf8'));
     assert.deepEqual(paired.machines, []);
-    process.stdout.write('Clean tarball, npm executable, login, offline doctor, HTTP boot, Runner install, redaction, and revocation passed. No live HAPI/model call was made.\n');
+    process.stdout.write('Clean tarball, npm executable, login, offline doctor, HTTP boot, five lazy chunk routes, Runner install, redaction, and revocation passed. No live HAPI/model call was made.\n');
 } finally {
     if (host?.pid && host.exitCode === null) {
         if (process.platform === 'win32') await runFile('taskkill.exe', ['/PID', String(host.pid), '/T', '/F']);

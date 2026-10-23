@@ -2,7 +2,7 @@
  * explicit protocol fixtures. Browser composition is covered by the shared-
  * graph Playwright spec, not claimed by this lifecycle test. */
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
+import { test, type TestContext } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { Context } from '@deepseek-ai/cordis'
@@ -58,7 +58,19 @@ function reference(id: string, source = sessionSource(id)) {
     return { ref, source, resolve: () => resolve(binding), reject, releases: () => releases }
 }
 
-async function fixture() {
+async function fixture(t: TestContext) {
+    const previousObserver = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver')
+    const observers = new Set<object>()
+    // These lifecycle fixtures never navigate or mutate reading state. Observe
+    // installation and disposal without pretending to run browser mutations.
+    Object.defineProperty(globalThis, 'MutationObserver', { configurable: true, value: class {
+        observe() { observers.add(this) }
+        disconnect() { observers.delete(this) }
+    } })
+    t.after(() => {
+        if (previousObserver) Object.defineProperty(globalThis, 'MutationObserver', previousObserver)
+        else Reflect.deleteProperty(globalThis, 'MutationObserver')
+    })
     const root = new Context()
     new SlotRegistry(root)
     const declaration = root.plugin({ name: 'test-official-shell-declaration', inject: ['slots'], apply(ctx: Context) {
@@ -73,11 +85,14 @@ async function fixture() {
     } })
     await plugin
     const document = { defaultView: null } as Document
-    const surfaces: Array<{ attributes: Map<string, string>; listeners: Set<EventListenerOrEventListenerObject>; state: ReturnType<typeof observable<{ focused: boolean; visible: boolean }>> }> = []
+    const surfaces: Array<{ attributes: Map<string, string>; listeners: Set<EventListenerOrEventListenerObject>;
+        state: ReturnType<typeof observable<{ focused: boolean; visible: boolean }>>;
+        reading: ReturnType<typeof observable<undefined>> }> = []
     const surface = (paneId: string) => {
         const attributes = new Map<string, string>([['data-hapi-host', 'fixture-host']])
         const listeners = new Set<EventListenerOrEventListenerObject>()
         const state = observable({ focused: true, visible: true })
+        const reading = observable(undefined)
         // The protocol target is connected, with no real DOM rendering/layout.
         // Distinct event kinds may share a callback, as in the browser helper.
         const byType = new Map<string, EventListenerOrEventListenerObject>()
@@ -93,18 +108,18 @@ async function fixture() {
                 if (![...byType.values()].includes(listener)) listeners.delete(listener)
             },
         } as unknown as HTMLElement
-        surfaces.push({ attributes, listeners, state })
-        return { paneId, target, navigation: { paneId, state } as unknown as WorkspacePaneNavigation }
+        surfaces.push({ attributes, listeners, state, reading })
+        return { paneId, target, navigation: { paneId, state, reading } as unknown as WorkspacePaneNavigation }
     }
     const mount = (paneId: string, ref: SessionReference, onError?: (error: unknown) => void) => host.mount({
         ...surface(paneId), reference: ref,
         ...(onError ? { onError } : {}),
     })
-    return { root, host, mount, surface, surfaces, plugin, close: () => root.fiber.dispose() }
+    return { root, host, mount, surface, surfaces, observers, plugin, close: () => root.fiber.dispose() }
 }
 
-test('one Host adds one official shell contribution and independent explicit view lifetimes', async () => {
-    const f = await fixture()
+test('one Host adds one official shell contribution and independent explicit view lifetimes', async t => {
+    const f = await fixture(t)
     const alpha = reference('alpha'), beta = reference('beta')
     try {
         const a = f.mount('pane-a', alpha.ref), b = f.mount('pane-b', beta.ref)
@@ -126,8 +141,8 @@ test('one Host adds one official shell contribution and independent explicit vie
     } finally { await f.close() }
 })
 
-test('closing a loading pane suppresses its later failure and cannot poison a replacement', async () => {
-    const f = await fixture()
+test('closing a loading pane suppresses its later failure and cannot poison a replacement', async t => {
+    const f = await fixture(t)
     const old = reference('old-session'), current = reference('new-session')
     const failures: unknown[] = []
     try {
@@ -147,8 +162,8 @@ test('closing a loading pane suppresses its later failure and cannot poison a re
     } finally { await f.close() }
 })
 
-test('Host teardown leaves borrowed references untouched and ignores outstanding waits', async () => {
-    const f = await fixture()
+test('Host teardown leaves borrowed references untouched and ignores outstanding waits', async t => {
+    const f = await fixture(t)
     const shared = reference('same-session')
     const failures: unknown[] = []
     try {
@@ -158,10 +173,14 @@ test('Host teardown leaves borrowed references untouched and ignores outstanding
         assert.equal(shared.source.state.subscriptions(), 2)
         assert.equal(shared.source.events.subscriptions(), 2)
         assert.ok(f.surfaces.every(surface => surface.state.subscriptions() === 1 && surface.listeners.size > 0))
+        assert.ok(f.surfaces.every(surface => surface.reading.subscriptions() === 1))
+        assert.equal(f.observers.size, 2)
         f.host.dispose(); f.host.dispose()
         assert.equal(shared.source.state.subscriptions(), 0)
         assert.equal(shared.source.events.subscriptions(), 0)
         assert.ok(f.surfaces.every(surface => surface.state.subscriptions() === 0 && surface.listeners.size === 0))
+        assert.ok(f.surfaces.every(surface => surface.reading.subscriptions() === 0))
+        assert.equal(f.observers.size, 0)
         assert.ok(f.surfaces.every(surface => !surface.attributes.has('data-hapi-initial-history')))
         shared.reject(new Error('read cancelled on Host departure')); await tick()
         one.dispose()
@@ -172,8 +191,8 @@ test('Host teardown leaves borrowed references untouched and ignores outstanding
     } finally { await f.close() }
 })
 
-test('a retired draft-transfer occurrence can coexist with its same-pane successor', async () => {
-    const f = await fixture()
+test('a retired draft-transfer occurrence can coexist with its same-pane successor', async t => {
+    const f = await fixture(t)
     const source = reference('source'), successor = reference('successor')
     try {
         const first = f.host.mount({ ...f.surface('pane'), instanceId: 'source-instance', reference: source.ref })
@@ -187,8 +206,8 @@ test('a retired draft-transfer occurrence can coexist with its same-pane success
     } finally { await f.close() }
 })
 
-test('a closed loading occurrence cannot poison a surviving reference to the same official Session face', async () => {
-    const f = await fixture()
+test('a closed loading occurrence cannot poison a surviving reference to the same official Session face', async t => {
+    const f = await fixture(t)
     const source = sessionSource('shared-initial-window')
     const old = reference('shared-initial-window', source), current = reference('shared-initial-window', source)
     try {
