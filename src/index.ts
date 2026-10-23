@@ -80,6 +80,9 @@ import { FederationHub } from './hub/federation.ts';
 import { legacyWorkspaceSnapshotSchema, type LegacyWorkspaceSnapshot } from './legacy-workspace-types.ts';
 import { mountBootstrapRoute } from './shared/bootstrap.ts';
 import { deferWorkspaceEntry, workspaceBootInjections } from './shared/workspace-boot.ts';
+import { stageWorkspaceBoot } from './shared/boot-graph.ts';
+import { compressedStreamInjection, mountCompressedStream } from './shared/compressed-stream.ts';
+import { mountVersionedAssets } from './shared/versioned-assets.ts';
 import { mountPluginEvents } from './shared/plugin-events.ts';
 import { officialProviderConfig } from './shared/official-provider.ts';
 
@@ -504,13 +507,13 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     // uses it after an explicit `session_inactive` (409) rejection, once.
     const resumeSession = (hapiSessionId: string): Promise<string> => client.resumeSession(hapiSessionId);
     const codex = new CodexService(ctx, client, {
-        stateDirectory: join(dataDirectory, 'native'), fastHistorySeed: true, resolveAttachments: attachmentResolver(ctx.attachments, client),
+        stateDirectory: join(dataDirectory, 'native'), fastHistorySeed: true, discovery: 'on-demand', resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client),
         onError: (error) => { ctx.logger.warn(`Native Codex synchronization: ${error.message}`); },
         resumeSession,
     });
     const observed = new HapiAgentService(ctx, client, {
-        stateDirectory: join(dataDirectory, 'observed'), fastHistorySeed: true, resolveAttachments: attachmentResolver(ctx.attachments, client),
+        stateDirectory: join(dataDirectory, 'observed'), fastHistorySeed: true, discovery: 'on-demand', resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client), importAttachment: sourceUploadImporter(ctx.attachments, client),
         importGeneratedMedia: sourceGeneratedMediaImporter(ctx.attachments, client),
         importInline: sourceInlineImporter(ctx.attachments),
@@ -584,8 +587,14 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         webServer: ctx.webServer, clientModules: ctx.clientModules, connection: ctx.connection,
         appReady: ctx.get('appReady') as { onReady(callback: () => void): () => void },
     }), 'hapi-dsh: local pane plugin bootstrap');
-    ctx.on('webserver/index-inject', table => { table.push(...workspaceBootInjections()); });
+    ctx.on('webserver/index-inject', table => {
+        stageWorkspaceBoot(table, ctx.clientModules.graph());
+        table.push(compressedStreamInjection);
+        table.push(...workspaceBootInjections());
+    });
     ctx.effect(() => ctx.webServer.tapIndex(deferWorkspaceEntry), 'hapi-dsh: first-paint workspace layout');
+    ctx.effect(() => mountCompressedStream({ webServer: ctx.webServer, connection: ctx.connection }), 'hapi-dsh: compressed official streams');
+    ctx.effect(() => mountVersionedAssets(ctx.webServer), 'hapi-dsh: versioned Web shell assets');
     await federation.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountPluginEvents({ webServer: ctx.webServer, connection: ctx.connection,
         hasHost: id => federation.listMachines().some(host => host.id === id && host.online),

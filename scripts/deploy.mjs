@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
+import WebSocket from 'ws'
 
 const host = process.argv.includes('--host')
 if (process.argv.slice(2).some(arg => arg !== '--host')) throw new Error('Usage: npm run deploy [-- --host]')
@@ -31,9 +32,11 @@ let ready = false
 for (let attempt = 0; attempt < 45; attempt++) {
     try {
         const page = await fetch(launch.origin, { headers, signal: AbortSignal.timeout(5_000) })
-        const html = await page.text()
-        const asset = [...html.matchAll(/(?:href|src)="([^"]*hapi-dsh\/client\.js[^"]*)"/g)][0]?.[1]?.replaceAll('&amp;', '&')
-        if (page.ok && asset) {
+        await page.arrayBuffer()
+        const bootstrap = await fetch(new URL('/hapi-dsh/bootstrap', launch), { headers, signal: AbortSignal.timeout(5_000) })
+        const graph = bootstrap.ok ? (await bootstrap.json()).graph : undefined
+        const asset = graph?.entries?.find(entry => entry.id === 'hapi-dsh')?.url
+        if (page.ok && typeof asset === 'string') {
             const bundle = await fetch(new URL(asset, launch), { headers, signal: AbortSignal.timeout(5_000) })
             if (bundle.ok) { await bundle.arrayBuffer(); ready = true; break }
         }
@@ -42,4 +45,17 @@ for (let attempt = 0; attempt < 45; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 2_000))
 }
 if (!ready) throw new Error('Build finished, but the HTTP endpoint did not become ready; inspect the service log')
-process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. HTTP ready; the Agent must report UI/performance acceptance separately.\n`)
+// HTTP readiness cannot detect an authority-bound cookie lost by a WS proxy.
+// Exercise the public TLS route with the same admitted cookie, without opening
+// any logical Session stream or dispatching an operation.
+await new Promise((resolve, reject) => {
+    const url = new URL('/hapi-dsh/remote.mux', launch); url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = new WebSocket(url, { headers: { ...headers, origin: launch.origin }, handshakeTimeout: 10_000 })
+    socket.once('error', reject)
+    socket.once('open', () => {
+        const compressed = socket.extensions.includes('permessage-deflate')
+        socket.close()
+        if (compressed) resolve(); else reject(new Error('The public Session stream did not negotiate compression'))
+    })
+})
+process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. HTTP and authenticated compressed WebSocket ready; the Agent must report UI/performance acceptance separately.\n`)

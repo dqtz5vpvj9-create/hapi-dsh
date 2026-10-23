@@ -54,8 +54,11 @@ export class WarmOfficialSession {
     this.historyRequests = useBoundedSourceHistory(long).requests
     environment.hapi.emit({ type: 'session-added', sessionId: long.session.id })
     await expect.poll(async () => {
-      const catalog = await environment.rpc<{ sessions: Array<{ hapiSessionId: string }> }>('hapi/catalog')
-      return ['native-alpha', 'native-beta', 'native-warm-history'].every(id => catalog.sessions.some(row => row.hapiSessionId === id))
+      const catalog = await environment.rpc<{ sourceDiscovery: { sessions: Array<{ sourceSessionId: string }> } }>('hapi/catalog')
+      // Catalog readiness must not preload the test conversations. A first
+      // click now measures real on-demand source admission and history work.
+      return ['native-alpha', 'native-beta', 'native-warm-history', 'native-accept-history']
+        .every(id => catalog.sourceDiscovery.sessions.some(row => row.sourceSessionId === id))
     }, { timeout: 30_000 }).toBe(true)
     this.coldHostMs = Math.round(performance.now() - started)
   }

@@ -16,6 +16,8 @@ import { SourceHistoryLifetimes } from '../codex/history-lifecycle.js'
 import { SourceHistorySync } from '../codex/history-sync.js'
 
 export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'displayRevision' | 'onHistoryChanged'> {
+  /** Source discovery is independent of materializing display histories. */
+  discovery?: 'eager' | 'on-demand'
   onDisplayReset?: (oldId: SessionId, newId: SessionId) => void | Promise<void>
   onError?: (error: Error, sourceSessionId?: string) => void
   /** A deployment may prefer an already federated official DSH Host for that same source. */
@@ -68,8 +70,20 @@ export class HapiAgentService {
     await agent?.dispose()
   }
   failures(): ReadonlyMap<string, string> { return this.errors }
+  /** View admission needs current identity, not another complete archive scan. */
+  async openSource(sourceId: string): Promise<HapiObservedAgent | undefined> {
+    const existing = this.agents.get(sourceId)
+    if (!existing) return this.attach(sourceId)
+    const source = await this.transport.getSession(sourceId)
+    if (!this.eligible(source) || !sameObservedIdentity(existing.binding, observedBinding(this.transport.hubId, source))) {
+      return this.reconcileSource(sourceId)
+    }
+    await existing.refreshSettings()
+    return this.agents.get(sourceId) === existing ? existing : this.openSource(sourceId)
+  }
   private eligible(source: HapiSession): boolean { return source.metadata?.codexNativeSession !== true && (this.options.includeSession?.(source) ?? true) }
   async refreshCatalog(): Promise<void> {
+    if (this.options.discovery === 'on-demand') return
     if (this.catalogRefresh) return this.catalogRefresh
     const task = (async () => {
       const sources = await this.transport.listSessions()
@@ -239,7 +253,7 @@ export class HapiAgentService {
     const id = event.sessionId
     if (event.type === 'session-added') this.lifetimes.revive(id)
     if (event.type === 'session-added' || event.type === 'session-updated') this.excluded.delete(id)
-    if (!this.excluded.has(id)) this.historyFor(id).capture(event)
+    if (!this.excluded.has(id) && (this.options.discovery !== 'on-demand' || this.historyJournals.has(id))) this.historyFor(id).capture(event)
     if (event.type === 'session-removed') {
       if (this.agents.has(id) || this.attaching.has(id)) this.advanceRevision(id)
       this.lifetimes.remove(id); this.historyJournals.delete(id); this.excluded.delete(id)
@@ -248,6 +262,7 @@ export class HapiAgentService {
   }
 
   private queue(sourceId: string, event: HapiEvent): void {
+    if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
     const version = this.lifetimes.version(sourceId), checkpoint = this.historyJournals.get(sourceId)?.checkpoint()
     const removedAgent = event.type === 'session-removed' ? this.agents.get(sourceId) : undefined
     const previous = this.work.get(sourceId) ?? Promise.resolve()

@@ -7,7 +7,7 @@ import { nativeStateDirectory } from '../src/codex/state-directory.ts'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore, { Session, SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { Session, SessionId, pluginRecordOf } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { type AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -25,6 +25,8 @@ import { NativeApprovals } from '../src/codex/approvals.js'
 import { readNativeHistory } from '../src/codex/history.js'
 import { CodexService, type CodexServiceOptions } from '../src/codex/service.js'
 import { HistoryReadInvalidatedError } from '../src/codex/history-journal.js'
+import { hapiProjectionDefinition } from '../src/codex/projection-state.ts'
+import type { HapiProjection } from '../src/codex/projection-types.ts'
 
 const THREAD = 'native-thread-1'
 const TURN = 'native-turn-1'
@@ -144,6 +146,55 @@ async function mount(fake: FakeHapi, directory: string, options: Partial<CodexSe
   const mounted = service
   return { ctx, service: mounted, async close() { await mounted.dispose(); await ctx.fiber.dispose() } }
 }
+
+test('opening a current native owner does not wait for or reread its archive', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-open-owner-'), fake = new FakeHapi()
+  const app = await mount(fake, directory)
+  try {
+    const original = app.service.list()[0]!, reads = fake.reads.length
+    fake.historyFailure = new Error('Archive unavailable while the live owner is reachable')
+    fake.source.model = 'fresh-source-model'
+    const opened = await app.service.openSource(fake.source.id)
+    assert.equal(opened, original)
+    assert.equal(opened?.projection.model, 'fresh-source-model')
+    assert.equal(fake.reads.length, reads)
+    assert.equal(fake.sent.length, 0)
+    assert.equal(fake.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('status churn does not duplicate large source notices in the official log, and replay remains lossless', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-status-log-'), fake = new FakeHapi()
+  fake.rows = [{ id: 'notice', localId: null, seq: 1, createdAt: 1000, content: {
+    role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Synthetic notice', details: 'details '.repeat(30_000) } },
+  } }]
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!, start = agent.session.seq
+    for (let i = 0; i < 100; i++) {
+      fake.source.execution = { ...fake.source.execution!, sequence: i + 2 }
+      fake.source.executionVersion = i + 2
+      await agent.refreshSettings()
+    }
+    const additions = agent.session.snapshotEvents().filter(event => event.seq >= start)
+    assert.equal(additions.filter(event => pluginRecordOf(event)?.type === 'plugin:hapi-dsh/status').length, 100)
+    assert.ok(JSON.stringify(additions).length < 500_000, '100 small status changes must not retain 24 MB of repeated notice details')
+    let replay: HapiProjection = null
+    for (const event of agent.session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
+    assert.deepEqual(replay, agent.projection)
+    assert.deepEqual(app.ctx.sessionProjections.snapshot(agent.session).values.hapi, replay)
+    assert.equal(replay?.notices[0]?.details?.length, 240_000)
+    const next = { id: 'notice-2', localId: null, seq: 2, createdAt: 2000, content: {
+      role: 'agent', content: { type: 'event', data: { type: 'message', message: 'Next synthetic notice' } },
+    } }
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: next })
+    await app.service.settled()
+    replay = null
+    for (const event of agent.session.snapshotEvents()) replay = hapiProjectionDefinition.apply(replay, event)
+    assert.deepEqual(replay, agent.projection)
+    assert.equal(replay?.notices.length, 2)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
 
 test('native scheduled delivery remains source-owned through abort, view closure and offline receipt recovery', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-')), fake = new FakeHapi()
@@ -1140,6 +1191,32 @@ test('native failed cache reconciliation retries automatically without a later s
     assert.equal(app.service.list()[0]!.projection.error, null)
     assert.equal(fake.sent.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('on-demand native discovery ignores unopened activity and captures arrivals during explicit opening', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-lazy-')), fake = new FakeHapi()
+  let reads = 0, release!: (value: HapiMessagesPage) => void, reading!: () => void
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve }), started = new Promise<void>(resolve => { reading = resolve })
+  fake.readHook = () => { reads++; reading(); return blocked }
+  const app = await mount(fake, directory, { discovery: 'on-demand' })
+  try {
+    fake.emit({ type: 'session-updated', sessionId: fake.source.id })
+    fake.emit({ type: 'connection-changed', data: { status: 'connected' } })
+    await app.service.settled()
+    assert.equal(app.service.list().length, 0); assert.equal(reads, 0)
+    const opening = app.service.openSource(fake.source.id)
+    await started
+    const live = agentBody('message', { message: 'Arrived while opening lazily' }, 'lazy-live')
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
+    release(page([user()]))
+    const agent = await opening
+    await app.service.settled()
+    assert.ok(agent); assert.notEqual(agent.resolveSourceMessageDisplaySeq(live.id), undefined)
+    fake.emit({ type: 'session-removed', sessionId: fake.source.id })
+    await app.service.settled()
+    assert.equal(await app.service.openSource(fake.source.id), undefined)
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { release(page([])); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
 test('native default seed waits for complete initial history and needs no routine display replacement', async () => {

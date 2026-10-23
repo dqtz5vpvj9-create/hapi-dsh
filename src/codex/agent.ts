@@ -34,6 +34,7 @@ import { ObservedScopeIndex } from '../hapi-agent/scopes.js'
 import { parseObservedHistory, parseObservedMessage } from '../hapi-agent/parser.js'
 import { sourceTeamProjection, acceptSourceStructuredState } from '../source-collaboration-types.js'
 import { queuedAttachments, queuedEditCandidate as readQueuedEditCandidate } from './queued-edit-candidate.js'
+import { SourceStatePublisher } from '../shared/source-state-publisher.ts'
 
 export interface NativeCodexOptions {
   stateDirectory: string
@@ -213,7 +214,11 @@ export class NativeCodexAgent implements Agent {
   private connected = true
   private fault: string | null = null
   private historyReadFault = false
-  private projectionFingerprint = ''
+  private readonly projectionPublisher = new SourceStatePublisher<NonNullable<HapiProjection>>({
+    initial: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/state', value) },
+    status: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/status', value) },
+    notices: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh/notices', value) },
+  })
   private sourceRunning = false
   private lastTitle: string | undefined
   private lastTitleEvent: { title: string; seq: SessionSeq } | undefined
@@ -303,7 +308,7 @@ export class NativeCodexAgent implements Agent {
       let rows = initialRows
       let checkpoint = options.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
-        const cached = options.fastHistorySeed ? agent.cache.snapshot() : undefined
+        const cached = options.fastHistorySeed ? agent.cache.snapshot(true) : undefined
         // Legacy caches predate structural epochs. Seed their bounded live
         // tail first so index notifications need not wait for a full archive.
         if (cached?.epoch !== undefined) {
@@ -314,7 +319,7 @@ export class NativeCodexAgent implements Agent {
           agent.historyReadFault = true
         } else try {
           checkpoint = agent.historyJournal.checkpoint()
-          const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
+          const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, 1)
             : { ...await readNativeHistorySnapshot(transport, source.id), complete: true }
           agent.historyEpoch = tail.epoch
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
@@ -348,7 +353,8 @@ export class NativeCodexAgent implements Agent {
       agent.publishProjection()
       options.assertSourceCurrent?.()
       agent.historyJournal.assertCurrent(checkpoint)
-      agent.cache.write(rows, !agent.historyStale, agent.historyEpoch)
+      if (options.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, !agent.historyStale, agent.historyEpoch)
+      else agent.cache.write(rows, !agent.historyStale, agent.historyEpoch)
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindNativeCommands(agent)
@@ -787,11 +793,7 @@ export class NativeCodexAgent implements Agent {
   private publishProjection(): void {
     if (this.disposed || !this.approvals) return
     this.children.publishOwner()
-    const value = this.projection
-    const fingerprint = JSON.stringify(value)
-    if (fingerprint === this.projectionFingerprint) return
-    appendPluginRecord(this.session, 'plugin:hapi-dsh/state', value)
-    this.projectionFingerprint = fingerprint
+    this.projectionPublisher.publish(this.projection)
   }
   private assertWritable(): void {
     // Inactive/history/disconnected/fault sessions still accept a durable

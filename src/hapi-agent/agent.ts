@@ -4,6 +4,7 @@ import { agentEvents, type Agent, type AgentCancelCause, type AgentEventDispatch
 import { freezeMessage, MessageId, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
 import { appendPluginRecord, SessionId, type Session, type SessionSeq } from '@deepseek-ai/dsh-session'
+import { SourceStatePublisher } from '../shared/source-state-publisher.ts'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-api-session-controller/types'
 import { NativeApprovals } from '../codex/approvals.js'
@@ -108,7 +109,11 @@ export class HapiObservedAgent implements Agent {
   private connected: boolean
   private fault: string | null = null
   private historyReadFault = false
-  private fingerprint = ''
+  private readonly projectionPublisher = new SourceStatePublisher<NonNullable<HapiObservedProjection>>({
+    initial: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/state', value) },
+    status: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/status', value) },
+    notices: value => { appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/notices', value) },
+  })
   private lastSelection = ''
   private lastTitle: { title: string; seq: SessionSeq } | undefined
   private pendingRefresh: Promise<void> | undefined
@@ -189,7 +194,7 @@ export class HapiObservedAgent implements Agent {
       let rows = initialRows
       let checkpoint = config.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
-        const cached = config.fastHistorySeed ? agent.cache.snapshot() : undefined
+        const cached = config.fastHistorySeed ? agent.cache.snapshot(true) : undefined
         if (cached) {
           rows = agent.historyJournal.overlayCache(cached.rows)
           agent.historyStale = true
@@ -197,7 +202,7 @@ export class HapiObservedAgent implements Agent {
           agent.historyReadFault = true
         } else try {
           checkpoint = agent.historyJournal.checkpoint()
-          const tail = config.fastHistorySeed ? await readNativeHistoryTail(transport, source.id)
+          const tail = config.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, 1)
             : { rows: await readNativeHistory(transport, source.id), complete: true }
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
           agent.historyStale = !tail.complete
@@ -224,7 +229,8 @@ export class HapiObservedAgent implements Agent {
       agent.syncInbox(); agent.publish()
       config.assertSourceCurrent?.()
       agent.historyJournal.assertCurrent(checkpoint)
-      agent.cache.write(rows, !agent.historyStale)
+      if (config.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, !agent.historyStale)
+      else agent.cache.write(rows, !agent.historyStale)
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindObservedCommands(agent)
@@ -562,8 +568,7 @@ export class HapiObservedAgent implements Agent {
     if (this.disposed || !this.approvals) return
     this.children.publishOwner()
     this.dshChildren.publishOwner()
-    const value = this.projection, key = JSON.stringify(value)
-    if (key !== this.fingerprint) { appendPluginRecord(this.session, 'plugin:hapi-dsh-observed/state', value); this.fingerprint = key }
+    this.projectionPublisher.publish(this.projection)
   }
   private assertWritable(): void {
     // Inactive/history/disconnected/fault sessions still accept a durable

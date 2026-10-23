@@ -14,8 +14,9 @@ import { nativeProjection, observedProjection, paneTitle, sessionActivity, sessi
 import { useNarrowViewport, useWorkspaceViewport } from '../workspace/viewport.ts'
 import { useDebouncedSidebarQuery } from './sidebar-search-query.ts'
 import { pendingTarget } from '../workspace/pending-target.ts'
-import { sourceDiscoveryRows } from '../workspace/source-discovery.ts'
-import { SourceDiscoveryList } from './source-discovery.tsx'
+import { sourceDiscoveryRows, type SourceDiscoveryRow } from '../workspace/source-discovery.ts'
+import { discoveredSourceKey } from '../source-discovery-types.ts'
+import { SourceDiscoveryList, DiscoveredSourceRow, compactDiscoveryStyles } from './source-discovery.tsx'
 import { SourceResumeMenu } from './source-resume-menu.tsx'
 import { sourceResumeIdentity } from './source-resume-command.ts'
 import type { WorkspaceCatalogRow } from './controller.ts'
@@ -651,12 +652,20 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
             || facts?.pendingDescendant === true || facts?.selected === true && selectedId !== branch.row.id
     }
     let previousRootTime: number | undefined
-    const recentRows = projectSidebarRows(tree, showChildren).map(item => {
-        const time = recency.timeFor(item.branch.row), followingDay = previousRootTime !== undefined
+    type RecentItem = { kind: 'display'; item: SidebarTreeRow } | { kind: 'source'; row: SourceDiscoveryRow }
+    const recentRoots: Array<{ time: number; score: number; items: RecentItem[] }> = [
+        ...tree.map(branch => ({ time: recency.timeFor(branch.row), score: searchIndex.scores.get(branch.row.id) ?? 0,
+            items: projectSidebarRows([branch], showChildren).map(item => ({ kind: 'display' as const, item })) })),
+        ...discoveredMatching.map(row => ({ time: row.source.updatedAt, score: row.score, items: [{ kind: 'source' as const, row }] })),
+    ]
+    if (discoveredMatching.length) recentRoots.sort((left, right) => (hasQuery ? right.score - left.score : 0) || right.time - left.time)
+    const recentRows = recentRoots.flatMap(root => root.items.map(value => {
+        const item = value.kind === 'display' ? value.item : { id: `source:${discoveredSourceKey(value.row.source)}`, depth: 0 }
+        const time = root.time, followingDay = previousRootTime !== undefined
         const heading = item.depth === 0 ? sidebarDayLabel(time, previousRootTime, { today: t('today'), yesterday: t('yesterday') }, document.documentElement.lang || undefined) : null
         if (item.depth === 0) previousRootTime = time
-        return { ...item, heading, followingDay, day: localDayKey(time) }
-    })
+        return { ...value, id: item.id, heading, followingDay, day: localDayKey(time) }
+    }))
     const action = (id: string, kind: 'pin' | 'unpin' | 'archive' | 'unarchive' | 'fork'): void => {
         const row = snapshot.catalog.byId[id]
         if (row?.hostId === 'local' && sourceIdentity(row)) {
@@ -747,7 +756,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const renderBranch = (branch: SidebarBranch): ReactNode => projectSidebarRows([branch], showChildren).map(renderRow)
     const renderRecentRow = (item: typeof recentRows[number]): ReactNode => <>
         {item.heading && <div className="hapi-session-date" data-session-scroll-anchor={`day:${item.day}:${item.id}`} data-following-day={item.followingDay || undefined}>{item.heading}</div>}
-        {renderRow(item)}
+        {item.kind === 'display' ? renderRow(item.item) : <DiscoveredSourceRow row={item.row} chinese={language.startsWith('zh')} onOpen={source => controller.openSourceSession(source)}/>}
     </>
     const pinned = tree.filter(({ row }) => globalPinnedIds.has(row.id))
     const unpinned = tree.filter(({ row }) => !globalPinnedIds.has(row.id))
@@ -787,7 +796,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         </section>
     }
     const body = <div className={`hapi-session-sidebar${mobile && snapshot.pickingSession ? ' hapi-session-picker' : ''}`}>
-        <header><strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length} ${t('sessions')}`}>{tree.length}</span>
+        <style>{compactDiscoveryStyles}</style>
+        <header><strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length + discoveredMatching.length} ${t('sessions')}`}>{tree.length + discoveredMatching.length}</span>
             {snapshot.pickingSession && <button type="button" className="hapi-picker-back" onClick={controller.closeSessionPicker}>{t('backToWorkspace')}</button>}
             <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
             <IconButton label={t('sidebarOptions')} icon="more" onClick={() => setOptionsOpen(true)}/>
@@ -795,8 +805,8 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         <SidebarSearchControls query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
         <div className="hapi-session-list" aria-label={t('allChats')} ref={setScrollElement}>
-            <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={rows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
-            {!tree.length && <p className="hapi-list-empty" role="status">{snapshot.catalog.phase === 'ready' ? t('noSessions') : t('loading')}</p>}
+            <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={recentRows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
+            {!tree.length && !discoveredMatching.length && <p className="hapi-list-empty" role="status">{snapshot.catalog.phase === 'ready' ? t('noSessions') : t('loading')}</p>}
             {mode === 'recent' ? <SidebarWindow items={recentRows} scrollElement={scrollElement} scrollObserverRef={scrollObserver} selectedId={selectedId}
                 narrow={mobile} renderItem={renderRecentRow} estimateSize={(item, base) => base + (item.heading ? item.followingDay ? 37 : 26 : 0)}/> : <>
                 {renderSection('global-pinned', 'pinnedGroup', [{ label: 'pinnedGroup', children: pinned }])}
@@ -828,7 +838,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                 </section>
             })}</>}
             <SourceDiscoveryList discovery={snapshot.sourceDiscovery} catalogRows={rows} machines={snapshot.machines}
-                {...sourceFilters} filter={filter} previewLimit={sessionPreviewLimit} language={language}
+                {...sourceFilters} filter={filter} previewLimit={sessionPreviewLimit} language={language} statusOnly={mode === 'recent'}
                 onOpen={source => controller.openSourceSession(source)} onRefresh={async () => {
                     try {
                         const catalog = (await import('../client-api.ts')).remoteValue(await api.catalog())

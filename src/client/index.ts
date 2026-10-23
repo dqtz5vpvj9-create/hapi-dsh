@@ -57,6 +57,7 @@ import { installShareInbox } from './share-inbox.tsx'
 import { installDraftHandoff } from './draft-handoff-dialog.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
 import { installWorkspaceLinkSettings } from './workspace-links.tsx'
+import { installDeferredPlugins } from './deferred-plugins.ts'
 
 export { WorkspaceController, sessionResourceId, parseSessionResourceId } from './controller.ts'
 export type { WorkspaceHost, WorkspaceOptions, WorkspaceSnapshot, WorkspacePersistence } from './controller.ts'
@@ -209,6 +210,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(await installSidebarNavigation(ctx, controller))
     disposers.push(installNewSessionShortcut(ctx.shortcuts, controller.requestNewSession))
     disposers.push(installFederation(ctx, controller))
+    disposers.push(installDeferredPlugins(ctx))
     disposers.push(installShareInbox(ctx, controller))
     disposers.push(installDraftHandoff(ctx, controller))
     const notifications = createWorkspaceNotifications(controller)

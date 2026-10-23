@@ -12,6 +12,7 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/types'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { officialProviderContext } from '../shared/official-provider.ts'
+import { openingWindow, sessionListHints } from '../shared/history-window.ts'
 import { isNativeDisplayId, isObservedDisplayId, isSourceChildDisplayId } from '../shared/source-display-id.ts'
 import type {} from '../index.ts'
 
@@ -48,7 +49,7 @@ export class NativeAwareSessionController extends TypertRemoteService {
   workspaceDesktop(): ReturnType<SessionController['workspaceDesktop']> { return this.ordinary.workspaceDesktop() }
 
   @Remote('list')
-  list(_request: SessionListRequest, signal: AbortSignal): Promise<SessionListValue> { return this.ordinary.list(_request, signal) }
+  async list(_request: SessionListRequest, signal: AbortSignal): Promise<SessionListValue> { return sessionListHints(await this.ordinary.list(_request, signal)) }
 
   @Remote('search')
   search(request: SessionSearchRequest, signal: AbortSignal): Promise<SessionSearchValue> { return this.ordinary.search(request, signal) }
@@ -137,7 +138,7 @@ export class NativeAwareSessionController extends TypertRemoteService {
   page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage> { return this.ordinary.page(request, signal) }
 
   @Remote({ mode: 'stream', resources: { session: addressedSession } })
-  follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> { return this.ordinary.follow(request, signal) }
+  follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> { return this.ordinary.follow(openingWindow(request), signal) }
 
   @Remote('projections')
   projections(request: SessionProjectionsRequest, signal: AbortSignal): Promise<SessionProjectionsValue> { return this.ordinary.projections(request, signal) }

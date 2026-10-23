@@ -3,7 +3,11 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { HapiMessage, HapiMessagesPage, HapiMessagesQuery, HapiTransport } from '../src/codex/contracts.ts'
 import { compareNativeMessages } from '../src/codex/native.ts'
-import { NativeHistoryEpochChangedError, readNativeHistory, readNativeHistoryUpdate } from '../src/codex/history.ts'
+import { NativeHistoryEpochChangedError, readNativeHistory, readNativeHistoryUpdate, readNativeHistoryTail } from '../src/codex/history.ts'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { NativeHistoryCache } from '../src/codex/history-cache.ts'
 
 interface Position { at: number; seq: number }
 const position = (row: HapiMessage): Position => ({ at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 })
@@ -56,6 +60,28 @@ class FakeHistory {
   }
 }
 const transport = (fake: FakeHistory): HapiTransport => fake as unknown as HapiTransport
+
+test('opening cache is bounded and can be read without parsing the archival file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-opening-cache-'))
+  try {
+    const cache = new NativeHistoryCache(directory, 'fixture')
+    cache.write(rows(10_000), true, 3)
+    assert.equal(cache.snapshot()?.rows.length, 10_000)
+    await writeFile(join(directory, 'fixture.history.json'), 'Archive deliberately not parseable by the opening read')
+    const opening = cache.snapshot(true)!
+    assert.equal(opening.epoch, 3); assert.equal(opening.complete, false)
+    assert.deepEqual(opening.rows.map(row => row.id), rows(10_000).slice(-200).map(row => row.id))
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('first viewport reads one epoch-checked source page and leaves earlier context to backfill', async () => {
+  const fake = new FakeHistory(); fake.rows = rows(10_000)
+  const opening = await readNativeHistoryTail(transport(fake), 'native-session', 1)
+  assert.equal(fake.requests.length, 2)
+  assert.equal(opening.rows.length, 200); assert.equal(opening.complete, false)
+  assert.equal(opening.context, 'limited'); assert.equal(opening.epoch, 1)
+  assert.equal(opening.rows.at(-1)?.id, 'row-9999')
+})
 
 test('live append reads a bounded overlap rather than all 10000 historical messages', async () => {
   const fake = new FakeHistory(); fake.rows = rows(10_000)

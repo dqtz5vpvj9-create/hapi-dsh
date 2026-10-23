@@ -15,11 +15,17 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 首开不加载语音 SDK 和长图导出库。两者通过 pinned DSH 的 `require.async()` 包内分块接口在使用时加载；快速验收会打开语音面板并实际导出 PNG，检查分块请求和下载内容。分析主包体积可运行 `HAPI_DSH_BUNDLE_REPORT=/mnt/cache/data-cache/hapi-bundle.json npm run build:client`，得到 esbuild 的模块体积报告。
 
-`npm run test:perf` 连续执行五轮桌面流程，再做 360/390px 手机模拟。Host 和 Chromium 进程复用，每轮清理浏览器 context 并重置合成布局；测试 fixture 的源历史和 Host 缓存保持，所以首轮与后续轮分别报告。测试代码可重新加载，修改 Host/fixture 初始化代码后重启常驻环境。只在客户端变动时重建客户端，避免安装 profile 和启动 Host 的重复开销。
+`npm run test:perf` 连续执行五轮桌面流程，再做 360/390px 手机模拟。Host 和 Chromium 进程复用，每轮清理浏览器 context 并重置合成布局；测试 fixture 的源历史和 Host 缓存保持，所以首轮与后续轮分别报告。Host 启动只等源目录就绪，不预先挂载测试会话；首轮点击包含真实的首次源挂载。打开计时只接受目标标题对应的 pane，不能把切换前的旧输入框计作新会话就绪。验收主体可重新加载，修改 Host/fixture 或导入的采样模块后须停止并重新启动常驻环境。只在客户端变动时重建客户端，避免安装 profile 和启动 Host 的重复开销。
+
+首屏采用较小历史窗口后，静止补页测试先通过官方按钮建立可滚动窗口，再固定阅读锚点并请求下一页；连续双向滚动另行使用真实 wheel 手势。不能在记录静止锚点后滚动 120px，再把这 120px 当成补页漂移。语音与导出分块使用资源观察器记录，避免长流程超过浏览器默认资源计时缓冲区后漏报。
 
 性能运行期间不并行执行构建、其他浏览器测试或 CPU 分析。性能失败保留，不通过重试挑选最好的一轮覆盖。采样器运行在浏览器内，打开计时从正常 sidebar 点击开始，分别等真实正文和可编辑输入框；外部 Playwright 等待不算打开耗时。
 
 完整导航另行计时：恢复测试从 `navigationStart` 到保存会话的真实正文和可编辑输入框，保留草稿断言。`npm run test:perf:production` 使用本机配置的 admission 文件，只读探测线上初次导航及带浏览器缓存的再次导航，输出工作区、正文、编辑器、资源耗时和主线程长任务。`HAPI_DSH_CPU_RATE=4 HAPI_DSH_PROBE_RUNS=1 npm run test:perf:production` 可增加 CPU 降速样本；这是模拟环境，不是真机测量。不得用 workspace ready、骨架或热切换数据替代这个完整耗时。
+
+弱网导航使用 `HAPI_DSH_LATENCY_MS=150 HAPI_DSH_DOWNLOAD_MBPS=1.6 HAPI_DSH_UPLOAD_MBPS=0.75 npm run test:perf:production`。这些是 CDP 的 HTTP 整形参数，不能冒充用户实际线路或 WebSocket 的端到端限速。报告区分 HTTP 编码/解码字节、WebSocket 解码字节、压缩协商、资源完成时间和首屏三个里程碑。探针对 RPC 使用只读许可表，阻止页面自动新建 Session 或保存布局，记录被阻止的路径和次数；不会用假成功回包掩盖这些行为。
+
+`TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阻断账户设置包的下载，仍须打开真实正文并编辑草稿；恢复下载后，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
 
 队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执不会出现在输入区，刷新不重发，真实排队消息仍可取回编辑；带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px。设置 `HAPI_DSH_VISUAL_OUTPUT=/mnt/cache/data-cache/source-presentation` 时额外调用 webshot 输出桌面及手机截图，需人工查看产物后才能报告视觉通过。
 

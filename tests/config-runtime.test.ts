@@ -66,13 +66,22 @@ test('official profile setup uses launcher flags and safe argv, and preserves ex
 });
 
 test('the installed bundle retains official Client roots and isolates their Host delegates using real patch semantics', async () => {
-    const original = providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name] }));
+    type Entry = Parameters<typeof applyEntryPatches>[0][number];
+    const flatten = (rows: Entry[]): Entry[] => rows.flatMap(row => [row, ...(row.group && Array.isArray(row.config) ? flatten(row.config) : [])]);
+    const web = flatten(parseDocument(await readFile(new URL('../node_modules/@deepseek-ai/dsh-web-app/cordis.patch.yml', import.meta.url), 'utf8'), { logLevel: 'silent' }).toJS()
+        .flatMap((row: { insert?: Entry[] }) => row.insert ?? []));
+    const webserver = web.find(row => row.id === 'webserver');
+    assert.ok(webserver);
+    const original = [...providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name] })), webserver];
+    const unchanged = structuredClone(original);
     const patch = parseDocument(await readFile(new URL('../config/cordis.patch.yml', import.meta.url), 'utf8'), { logLevel: 'silent' }).toJS() as Parameters<typeof applyEntryPatches>[1];
     const warnings: string[] = [];
     const combined = applyEntryPatches(original, patch, message => warnings.push(message));
     assert.deepEqual(warnings, []);
     assert.doesNotThrow(() => assertProfileProviders(stringify(combined)));
-    assert.deepEqual(original, providerNames.map(name => ({ id: name, name: OFFICIAL_PROVIDER_PACKAGES[name] })));
+    assert.deepEqual(original, unchanged);
+    assert.deepEqual(combined.find(row => row.id === 'webserver'), { ...webserver,
+        config: { ...webserver.config as object, compressionLevel: 5 } });
     const mistakenRename = applyEntryPatches(original, [{ id: 'workspace-files', name: 'hapi-dsh/workspace-files' }], () => {});
     assert.throws(() => assertProfileProviders(stringify(mistakenRename)), /did not activate/);
     assert.throws(() => assertProfileProviders(validDump.replace('sessionController: true', 'sessionController: false')), /did not activate/);

@@ -15,6 +15,9 @@ import { SourceHistoryLifetimes } from './history-lifecycle.js'
 import { SourceHistorySync } from './history-sync.js'
 
 export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRevision' | 'onHistoryChanged'> {
+  /** The unified source catalog already lists unopened sessions. Materialize
+   * their official display history only when a view or operation asks for it. */
+  discovery?: 'eager' | 'on-demand'
   onDisplayReset?: (oldDisplayId: SessionId, newDisplayId: SessionId) => void | Promise<void>
   onError?: (error: Error, sourceSessionId?: string) => void
 }
@@ -65,6 +68,20 @@ export class CodexService {
   byHapiSession(sessionId: string): NativeCodexAgent | undefined { return this.agents.get(sessionId) }
   failures(): ReadonlyMap<string, string> { return this.errors }
 
+  /** Opening an existing view verifies its owner without re-reading the archive.
+   * Lifecycle changes still enter the serialized generation replacement path. */
+  async openSource(sourceId: string): Promise<NativeCodexAgent | undefined> {
+    const existing = this.agents.get(sourceId)
+    if (!existing) return this.attach(sourceId)
+    const source = await this.transport.getSession(sourceId)
+    if (source.metadata?.flavor !== 'codex' || source.metadata.codexNativeSession !== true
+      || !source.metadata.codexSessionId || canonicalJson(bindingFor(this.transport.hubId, source)) !== canonicalJson(existing.binding)) {
+      return this.reconcileSource(sourceId)
+    }
+    await existing.refreshSettings()
+    return this.agents.get(sourceId) === existing ? existing : this.openSource(sourceId)
+  }
+
   /**
    * Reconcile an explicit source lifecycle operation. A versioned identity
    * change retires the old display/Agent before entering a new generation;
@@ -108,6 +125,7 @@ export class CodexService {
   }
 
   async refreshCatalog(): Promise<void> {
+    if (this.options.discovery === 'on-demand') return
     if (this.catalogRefresh) return this.catalogRefresh
     const work = (async () => {
       const sessions = await this.transport.listSessions()
@@ -270,7 +288,7 @@ export class CodexService {
     const id = event.sessionId
     if (event.type === 'session-added') this.lifetimes.revive(id)
     if (event.type === 'session-added' || event.type === 'session-updated') this.excluded.delete(id)
-    if (!this.excluded.has(id)) this.historyFor(id).capture(event)
+    if (!this.excluded.has(id) && (this.options.discovery !== 'on-demand' || this.historyJournals.has(id))) this.historyFor(id).capture(event)
     if (event.type === 'session-removed') {
       if (this.agents.has(id) || this.attaching.has(id)) this.advanceRevision(id)
       this.lifetimes.remove(id); this.historyJournals.delete(id); this.excluded.delete(id)
@@ -279,6 +297,7 @@ export class CodexService {
   }
 
   private queueFor(sourceId: string, event: HapiEvent): void {
+    if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
     const version = this.lifetimes.version(sourceId), checkpoint = this.historyJournals.get(sourceId)?.checkpoint()
     const removedAgent = event.type === 'session-removed' ? this.agents.get(sourceId) : undefined
     const previous = this.eventWork.get(sourceId) ?? Promise.resolve()

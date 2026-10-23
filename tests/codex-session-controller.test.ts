@@ -7,6 +7,7 @@ import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import SessionStore, { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SessionTitleService from '@deepseek-ai/dsh-session-title'
+import * as SessionTurnOutline from '@deepseek-ai/dsh-session-turn-outline'
 import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import RemoteAccessService, { type RemoteAccessBinding } from '@deepseek-ai/dsh-api-remote-access'
@@ -15,7 +16,8 @@ import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionController } from '@deepseek-ai/dsh-api-session-controller'
 import { TYPERT } from '@deepseek-ai/dsh-api-session-controller/typert'
 import { validateTypertManifest } from '@deepseek-ai/dsh-typert-loader'
-import type { SessionControlFrame, SessionListValue } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { SessionControlFrame, SessionListValue, SessionFollowFrame, SessionPage } from '@deepseek-ai/dsh-api-session-controller/types'
+import { openingWindow } from '../src/shared/history-window.ts'
 import { RemoteError, remoteMethods, type PeerId, type PeerScope, type Principal } from '@deepseek-ai/dsh-typert-protocol'
 import NativeAwareSessionController, { isNativeDisplayId, isObservedDisplayId } from '../src/codex/session-controller.ts'
 import { HapiObservedChild } from '../src/hapi-agent/children.js'
@@ -105,6 +107,44 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
 }
 
 const nativeId = SessionId(`hapi-codex-${'a'.repeat(32)}`)
+
+test('opening reads a bounded official suffix, pages older history and follows the next event without gaps', async () => {
+  const app = await mount(), abort = new AbortController()
+  try {
+    await app.ctx.plugin(SessionTurnOutline)
+    const { session } = app.ordinaryAgent('long-opening')
+    session.append('turn/start', { turn: 0 })
+    for (let i = 0; i < 150; i++) session.append('user/message', createUserMessage({
+      content: [{ type: 'text', text: `Synthetic input ${i}` }], source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
+    const request = { address: { kind: 'session', sessionId: session.id }, maxMessages: 500,
+      turnWindow: { minMessages: 50, minTurns: 2 } } as const
+    const listed = await app.invoke('list', { _request: {} }) as SessionListValue
+    assert.equal(Object.hasOwn(listed.items[0]!.projections!.values, 'turnOutline'), false)
+    assert.equal(app.ctx.sessionProjections.snapshot(session).values.turnOutline?.length, 1, 'the canonical rail is unchanged')
+    const stream = await app.stream('follow', { request }, { kind: 'owner' }, abort.signal)
+    const iterator = stream[Symbol.asyncIterator]()
+    const opening = (await iterator.next()).value as SessionFollowFrame
+    assert.equal(opening.type, 'snapshot')
+    if (opening.type !== 'snapshot') return
+    assert.equal(opening.projections.values.turnOutline?.length, 1, 'opening retains the complete official rail')
+    assert.equal(opening.records.filter(row => row.type === 'event' && row.event.type === 'user/message').length, 20)
+    assert.equal(opening.hasMore, true)
+    const first = opening.records[0]!
+    assert.equal(first.type, 'event')
+    if (first.type !== 'event') return
+    const older = await app.invoke('page', { request: { address: request.address, throughSeq: opening.cursor, beforeSeq: first.event.seq, maxMessages: 500 } }) as SessionPage
+    const all = [...older.records, ...opening.records].filter(row => row.type === 'event').map(row => row.event.seq)
+    assert.deepEqual(all, Array.from({ length: opening.cursor + 1 }, (_, i) => i))
+    const event = session.append('user/message', createUserMessage({ content: [{ type: 'text', text: 'Live suffix' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+    const next = (await iterator.next()).value as SessionFollowFrame
+    assert.equal(next.type, 'event')
+    if (next.type === 'event') assert.equal(next.event.seq, event.seq)
+    abort.abort(); await iterator.return?.()
+    assert.equal(openingWindow({ ...request, maxMessages: 0 }).maxMessages, 0, 'official invalid-request semantics are retained')
+    assert.equal(openingWindow({ ...request, turnWindow: { minMessages: 501, minTurns: 2 } }).turnWindow?.minMessages, 501)
+  } finally { abort.abort(); await app.close() }
+})
 
 test('public composition retains one isolated official constructor and the exact official Remote contract', async () => {
   const app = await mount()

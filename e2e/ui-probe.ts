@@ -11,7 +11,7 @@ export interface UiSample {
 declare global {
   interface Window {
     __hapiUiProbe: {
-      sample: UiSample; active: boolean; start: number
+      sample: UiSample; active: boolean; start: number; loadedChunks: string[]
       anchor?: { row: Element; port: Element; offset: number }
       begin(): void; end(): UiSample
     }
@@ -22,11 +22,19 @@ export async function installUiProbe(page: Page): Promise<void> {
   const install = () => {
     const empty = () => ({ frames: [] as number[], tasks: [] as number[], anchorOffsets: [] as number[], missingAnchors: 0, nodes: 0 })
     const probe: Window['__hapiUiProbe'] = {
-      sample: empty(), active: false, start: 0,
+      sample: empty(), active: false, start: 0, loadedChunks: [],
       begin() { this.sample = empty(); this.active = true; this.start = performance.now(); delete this.anchor },
       end() { this.active = false; this.sample.nodes = document.querySelectorAll('*').length; return this.sample },
     }
     window.__hapiUiProbe = probe
+    // Keep only the two lazy assets, independent of the browser's 250-entry
+    // resource timing buffer during a long interaction/streaming run.
+    new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        const path = new URL(entry.name).pathname
+        if (/client\.(voice|capture)\.js$/.test(path) && !probe.loadedChunks.includes(path)) probe.loadedChunks.push(path)
+      }
+    }).observe({ type: 'resource', buffered: true })
     new PerformanceObserver(list => {
       if (probe.active) for (const row of list.getEntries()) if (row.startTime >= probe.start) probe.sample.tasks.push(row.duration)
     }).observe({ type: 'longtask', buffered: true })

@@ -1,3 +1,5 @@
+import { hapiObservedProjectionDefinition } from '../src/hapi-agent/projection-state.ts'
+import type { HapiObservedProjection } from '../src/hapi-agent/projection-types.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -103,6 +105,34 @@ async function mount(fixture: Fixture, directory: string, options: Partial<HapiA
   assert.ok(service)
   return { ctx, service, async close() { await service!.dispose(); await ctx.fiber.dispose() } }
 }
+
+test('observed view admission skips archive reads and independent status records retain source notices', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-open-'), fixture = new Fixture()
+  const source = fixture.add('claude')
+  const app = await mount(fixture, directory)
+  try {
+    const agent = app.service.list()[0]!
+    fixture.emit({ type: 'message-received', sessionId: source.id, message: row('notice', 1, 'agent', {
+      type: 'event', data: { type: 'message', message: 'Synthetic source notice', details: 'detail '.repeat(30_000) },
+    }) })
+    await app.service.settled()
+    fixture.readMessages = async () => { throw new Error('Archive is deliberately unavailable') }
+    const start = agent.session.seq
+    for (let i = 0; i < 20; i++) {
+      source.thinking = !source.thinking
+      assert.equal(await app.service.openSource(source.id), agent)
+    }
+    const events = agent.session.snapshotEvents()
+    const additions = events.filter(event => event.seq >= start)
+    assert.ok(JSON.stringify(additions).length < 100_000)
+    let replay: HapiObservedProjection = null
+    for (const event of events) replay = hapiObservedProjectionDefinition.apply(replay, event)
+    assert.deepEqual(replay, agent.projection)
+    assert.equal(replay?.notices.length, 1)
+    assert.equal(fixture.aborts, 0)
+    assert.equal(fixture.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
 
 test('checking an external observed receipt uses exact source facts and never resends unknown input', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-receipt-')), source = new Fixture()
@@ -511,6 +541,29 @@ test('a failed original-source resume leaves an explicit retryable delivery with
     await agent.journal.settled()
     assert.deepEqual(source.sendTargets, ['claude'], 'only the explicit retry delivers')
     assert.equal(agent.projection.delivery[0]?.state, 'accepted')
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('on-demand observed discovery materializes only requested sources and retains live updates', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-lazy-')), fixture = new Fixture()
+  const source = fixture.add('pi'); fixture.add('claude')
+  const read = fixture.readMessages.bind(fixture), reads: string[] = []
+  fixture.readMessages = async id => { reads.push(id); return read(id) }
+  const app = await mount(fixture, directory, { discovery: 'on-demand' })
+  try {
+    fixture.emit({ type: 'session-updated', sessionId: 'claude' })
+    fixture.emit({ type: 'connection-changed', data: { status: 'connected' } })
+    await app.service.settled()
+    assert.equal(app.service.list().length, 0); assert.deepEqual(reads, [])
+    const agent = await app.service.openSource(source.id)
+    assert.ok(agent); assert.deepEqual(reads, ['pi'])
+    const live = codex('lazy-live', 2, { type: 'message', message: 'Live after lazy admission' })
+    fixture.rows.set(source.id, [live])
+    fixture.emit({ type: 'message-received', sessionId: source.id, message: live })
+    await app.service.settled()
+    assert.notEqual(agent.resolveSourceMessageDisplaySeq(live.id), undefined)
+    assert.ok(reads.every(id => id === 'pi'))
+    assert.equal(fixture.sent.length, 0); assert.equal(fixture.aborts, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 

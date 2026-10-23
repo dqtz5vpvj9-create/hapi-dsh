@@ -41,18 +41,19 @@ export function includesPreviousTurn(rows: readonly HapiMessage[]): boolean {
 
 /** Bounded initial context, independent of the later full-history backfill.
  * All retry passes share a 4,000-row budget and validate the original epoch. */
-export async function readNativeHistoryTail(transport: HapiTransport, sessionId: string): Promise<NativeHistoryTail> {
+export async function readNativeHistoryTail(transport: HapiTransport, sessionId: string, pages = 20): Promise<NativeHistoryTail> {
   let remaining = 20
   for (let attempt = 0; attempt < MAX_ATTEMPTS && remaining > 0; attempt++) {
     remaining--
     const first = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
     if (first.page.reset) continue
-    let page = first, rows = [...first.messages], invalidated = false
+    let page = first, rows = [...first.messages], invalidated = false, pagesRead = 1
     const epoch = first.page.epoch
-    while (page.page.hasMore && !includesPreviousTurn(rows) && remaining > 0) {
+    while (page.page.hasMore && !includesPreviousTurn(rows) && remaining > 0 && pagesRead < pages) {
       const at = page.page.nextBeforeAt, seq = page.page.nextBeforeSeq
       if (at === null || seq === null) break
       remaining--
+      pagesRead++
       const next = await transport.readMessages(sessionId, { limit: PAGE_SIZE, beforeAt: at, beforeSeq: seq, epoch, bounded: true })
       if (next.page.reset || next.page.epoch !== epoch) { invalidated = true; break }
       if (next.page.hasMore && (next.page.nextBeforeAt === null || next.page.nextBeforeSeq === null

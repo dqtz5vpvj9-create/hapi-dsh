@@ -11,9 +11,9 @@ function fixture() {
     const native = {
         byHapiSession: () => attached ? display : undefined,
         attach: async () => { nativeAttaches++; attached = true; return display; },
-        reconcileSource: async () => { reconciles++; return display; },
+        openSource: async () => { if (attached) reconciles++; else { nativeAttaches++; attached = true; } return display; },
     };
-    const observed = { byHapiSession: () => undefined, attach: async () => { observedAttaches++; return undefined; }, reconcileSource: async () => undefined };
+    const observed = { byHapiSession: () => undefined, attach: async () => { observedAttaches++; return undefined; }, openSource: async () => undefined };
     const resolver = new SourceSessionResolver({ hubId: 'original-hub', getSession: async () => { gets++; return session; } }, native, observed);
     return { resolver, changeSource: (value: HapiSession) => { session = value; }, changeDisplay: (hubId: string, sourceSessionId: string) => { display = { ...display, binding: { hubId, hapiSessionId: sourceSessionId } }; },
         counts: () => ({ gets, nativeAttaches, observedAttaches, reconciles }) };

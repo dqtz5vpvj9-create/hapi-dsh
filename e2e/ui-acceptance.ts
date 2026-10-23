@@ -31,15 +31,16 @@ async function openTitle(page: Page, title: string, text: string): Promise<Openi
     let bodyMs: number | undefined, composerMs: number | undefined
     while (performance.now() - started < 15_000) {
       await new Promise(requestAnimationFrame)
-      const pane = document.querySelector('.hapi-pane-focused')
+      const pane = [...document.querySelectorAll('.hapi-pane-focused')]
+        .find(pane => pane.getAttribute('aria-label') === `Pane: ${expected.title}`)
       const flow = pane?.querySelector('[data-chat-flow]')
       const input = pane?.querySelector<HTMLElement>('[data-composer-input][contenteditable="true"]')
-      if (flow?.textContent?.includes(expected) && flow.getBoundingClientRect().height && bodyMs === undefined) bodyMs = performance.now() - started
+      if (flow?.textContent?.includes(expected.text) && flow.getBoundingClientRect().height && bodyMs === undefined) bodyMs = performance.now() - started
       if (input && input.getBoundingClientRect().height && input.getAttribute('aria-disabled') !== 'true' && composerMs === undefined) composerMs = performance.now() - started
       if (bodyMs !== undefined && composerMs !== undefined) return { bodyMs, composerMs }
     }
     throw new Error(`Actual body/editor did not become usable: body=${bodyMs}, composer=${composerMs}`)
-  }, text)
+  }, { text, title })
 }
 
 async function split(page: Page): Promise<void> {
@@ -198,7 +199,20 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
     }
     page.on('request', onRequest)
     await check(`${prefix}: stationary prepend all frames <= 1px`, async () => {
-      await scrollport(history).evaluate(element => { element.scrollTop = 0 })
+      const loadOlder = history.locator('[data-chat-flow]:not([data-step-process-content]) > div > button').first()
+      // A 20-message opening window can fit on screen. Load enough official
+      // history to establish a scrollable reading position before measuring.
+      for (let page = 0; page < 3; page++) {
+        if (await scrollport(history).evaluate(port => port.scrollHeight > port.clientHeight * 2)) break
+        await expect(loadOlder).toBeEnabled()
+        const before = pages
+        await loadOlder.evaluate(button => (button as HTMLButtonElement).click())
+        await expect.poll(() => pages).toBeGreaterThan(before)
+        await expect(loadOlder).toBeEnabled()
+      }
+      const initialBox = (await scrollport(history).boundingBox())!
+      await page.mouse.move(initialBox.x + initialBox.width / 2, initialBox.y + initialBox.height / 3)
+      await page.mouse.wheel(0, -600)
       await expect(history.locator('[data-chat-following-tail]')).toHaveCount(0)
       // Let the official scroll controller settle before establishing a stationary baseline.
       await page.waitForTimeout(700)
@@ -210,9 +224,10 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
         window.__hapiUiProbe.begin()
         window.__hapiUiProbe.anchor = { row, port, offset: row.getBoundingClientRect().top - port.getBoundingClientRect().top }
       })
-      const box = (await scrollport(history).boundingBox())!
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 3)
-      await page.mouse.wheel(0, -120)
+      // Request a page without moving the viewport: wheel(-120) itself moves
+      // the anchor by 120px and cannot measure stationary prepend stability.
+      await expect(loadOlder).toBeEnabled()
+      await loadOlder.evaluate(button => (button as HTMLButtonElement).click())
       await expect.poll(() => pages, { timeout: 12_000 }).toBeGreaterThan(before)
       await expect(history.locator('[data-chat-flow]:not([data-step-process-content]) > div > button').first()).toBeEnabled()
       await page.waitForTimeout(300); await paint(page)
@@ -388,13 +403,13 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
     })
     if (run === 0) await check('voice and PNG capture load only on use', async () => {
       await open(page, 'alpha', 'Native history alpha in the official DSH Conversation.')
-      const chunks = () => page.evaluate(() => performance.getEntriesByType('resource').map(row => new URL(row.name).pathname).filter(path => /client\.(voice|capture)\.js$/.test(path)))
+      const chunks = () => page.evaluate(() => window.__hapiUiProbe.loadedChunks)
       expect(await chunks()).toEqual([])
       const alpha = paneFor(page, 'alpha')
       await alpha.getByRole('button', { name: 'Voice and dictation', exact: true }).click()
       const voice = page.getByRole('dialog', { name: 'Voice and dictation', exact: true })
       await expect(voice).toBeVisible()
-      expect((await chunks()).some(path => path.endsWith('client.voice.js'))).toBe(true)
+      await expect.poll(async () => (await chunks()).some(path => path.endsWith('client.voice.js'))).toBe(true)
       await voice.getByRole('button', { name: 'Close voice', exact: true }).click()
       await expect(voice).toHaveCount(0)
       await alpha.getByRole('button', { name: 'Share this turn', exact: true }).first().click()
@@ -405,7 +420,7 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       const file = await downloaded, bytes = await readFile((await file.path())!)
       expect(bytes.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       expect(bytes.readUInt32BE(20)).toBeGreaterThan(100)
-      expect((await chunks()).some(path => path.endsWith('client.capture.js'))).toBe(true)
+      await expect.poll(async () => (await chunks()).some(path => path.endsWith('client.capture.js'))).toBe(true)
       await share.getByRole('button', { name: 'Close share preview', exact: true }).click()
     })
     page.off('request', onRequest)
