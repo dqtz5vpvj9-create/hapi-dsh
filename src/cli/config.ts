@@ -1,13 +1,14 @@
-import { link, lstat, mkdir, open, rename, rm } from 'node:fs/promises';
+import { link, lstat, mkdir, open, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
+import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
 
 export const DSH_VERSION = '0.2.1-rc.2';
-export const HAPI_REVISION = '0f8ef6970884c92fb2ddca3070be2ec56cb50333';
+export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
 export const CONFIG_VERSION = 1;
 
 export interface RuntimeConfig {
@@ -247,7 +248,7 @@ export async function writePrivateJson(path: string, value: unknown, replace = f
             if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
                 throw new Error('Refusing to replace non-regular configuration');
             }
-            await rename(temporary, path);
+            await replacePrivateFile(temporary, path);
         } else {
             // Linking a completed file atomically excludes both overwrite and a partial configuration.
             await link(temporary, path);
