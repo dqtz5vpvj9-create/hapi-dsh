@@ -1,6 +1,6 @@
 import { createElement, Fragment, useMemo, type ComponentType } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
-import type { StoredEntry, LocaleNamespaceMap } from '@deepseek-ai/dsh-client-ui-slots'
+import type { StoredEntry, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import { SOURCE_TOOL_ALIASES, sourceToolBlocks } from './source-command-model.ts'
 
@@ -22,13 +22,15 @@ export function installSourceCommandViews(ctx: Context): () => void {
                     const entry = entries[index]
                     if (!entry) return
                     const Official = entry.component as ComponentType<ToolCallViewProps>
-                    const Alias = (props: ToolCallViewProps) => {
-                        const blocks = useMemo(() => sourceToolBlocks(props.block, target), [props.block])
+                    const Alias = (props: ToolCallViewProps & PropsLocale<'conversation'>) => {
+                        const blocks = useMemo(() => sourceToolBlocks(props.block, target, {
+                            read: props.t('tool.title.read'), search: props.t('tool.title.search'), listFiles: props.t('tool.title.glob'),
+                        }), [props.block, props.t])
                         return createElement(Fragment, null, blocks.map((block, index) =>
                             createElement(Official, { ...props, key: index, toolName: target, block } as ToolCallViewProps & { key: number })))
                     }
                     registrations.push(...names.map(key => ctx.slots.register({ name: 'tool.call.toolview', key,
-                        locale: (entry.locale ?? 'conversation') as keyof LocaleNamespaceMap, priority: 1000 }, Alias)))
+                        locale: 'conversation', priority: 1000 }, Alias)))
                 })
             } finally { updating = false }
         }

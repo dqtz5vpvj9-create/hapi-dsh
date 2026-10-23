@@ -16,7 +16,7 @@ import { en, zh } from './locales.ts'
 import { NativeActionLedger } from './native-state.ts'
 import { NativeControlLedger } from './native-control-state.ts'
 import { NativeForkAction, type NativeForkActionProps } from './native-fork-action.tsx'
-import type { NativeActionsApi } from './native-actions.tsx'
+import { createNativeActions } from './native-action-api.ts'
 import { createWorkspacePersistence } from './persistence.ts'
 import { SessionSidebar, WorkspaceRoot } from './ui.tsx'
 import type { SessionSidebarProps, WorkspaceRootProps } from './slots.ts'
@@ -116,14 +116,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     const controls = new NativeControlLedger(api)
     const observedControls = new ObservedControlLedger(api)
     disposers.push(() => { ledger.clear(); controls.clear(); observedControls.clear() })
-    const native: NativeActionsApi = {
-        ledger, controls, observedControls, branchLabel: () => ctx.locale.bind('chat')('message.branch'),
-        cancel: async (sessionId, localId) => remoteValue(await api.nativeCancel({ sessionId, localId })),
-        steer: async (sessionId, localId) => remoteValue(await api.nativeSteer({ sessionId, localId })),
-        retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
-        answer: async (sessionId, requestId, answer, deny) => remoteValue(await api.nativeAnswer({ sessionId, requestId, answer, ...(deny === undefined ? {} : { deny }) })),
-        resume: async sessionId => remoteValue(await api.resumeSession({ sessionId })),
-    }
+    const native = createNativeActions(ctx, api, ledger, controls, observedControls)
     let storage: Storage | undefined
     try { storage = globalThis.localStorage } catch { /* The controller still works when browser persistence is unavailable. */ }
     stage = 'create workspace controller'

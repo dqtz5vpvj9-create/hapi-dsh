@@ -44,7 +44,6 @@ function QueueRow({ row, sessionId, api, disabled, steer, zh, source }: {
             <button type="button" disabled={disabled || state.busy} aria-label={zh ? '立即插话' : 'Steer now'}
                 onClick={() => { void action.run(() => api.steer(sessionId, row.localId), false) }}><QueueIcon kind="send"/></button></Tooltip>}
         </div>
-        {row.state !== 'queued' && <small>{zh ? '等待源端确认' : 'Awaiting source confirmation'}</small>}
         {state.error && <p role="alert">{state.error}</p>}
     </div>
 }

@@ -1,3 +1,4 @@
+import { checkedQueueMessage } from '../hapi/queue-receipt.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent, type AgentCancelCause, type AgentEventDispatch, type AgentOptions, type AgentStatus, type Inbox, type InboxTarget } from '@deepseek-ai/dsh-agent'
 import { freezeMessage, MessageId, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
@@ -319,7 +320,15 @@ export class HapiObservedAgent implements Agent {
     return view
   }
   async checkDelivery(localId: string): Promise<DeliveryView | null> {
-    await this.journal.reconcileSource()
+    const state = await this.transport.getQueuedState(this.bound.hapiSessionId, [localId])
+    this.journal.reconcile(state)
+    const pending = this.queued.get(localId)
+    if (pending) {
+      const row = checkedQueueMessage(pending.row, state)
+      if (row) this.queued.set(localId, { ...pending, row })
+      else this.queued.delete(localId)
+    }
+    this.syncInbox(); this.publish()
     return this.deliveries().find(entry => entry.localId === localId) ?? null
   }
   cancel(cause: AgentCancelCause, options?: { keepInbox?: boolean }): void {

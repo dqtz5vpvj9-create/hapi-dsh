@@ -39,8 +39,8 @@ test('only source-owned queues suppress the incompatible official queue; ordinar
     } finally { await ctx.fiber.dispose() }
 })
 
-test('source queue includes unresolved delivery without reviving retired messages', () => {
+test('only confirmed queued messages occupy the queue dock; unknown receipts stay in pane status', () => {
     const states: DeliveryView['state'][] = ['queued', 'accepted', 'dispatching', 'indeterminate', 'invoked', 'cancelled', 'discarded', 'rejected']
     const rows = states.map((state, index): DeliveryView => ({ state, localId: String(index), messageId: String(index), text: '', mode: 'queue', createdAt: index, error: null }))
-    assert.deepEqual(editableSourceQueue(rows).map(row => row.state), states.slice(0, 4))
+    assert.deepEqual(editableSourceQueue(rows).map(row => row.state), ['queued'])
 })

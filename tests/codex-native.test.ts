@@ -171,6 +171,26 @@ test('native scheduled delivery remains source-owned through abort, view closure
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('checking an externally submitted native receipt reads source state without sending or guessing consumption', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-receipt-')), fake = new FakeHapi()
+  fake.rows = [{ ...user('external', false), deliveryState: 'indeterminate' }]
+  const app = await mount(fake, directory)
+  try {
+    const agent = app.service.list()[0]!
+    assert.equal(agent.projection.delivery[0]?.state, 'indeterminate')
+    fake.queue = { queuedLocalIds: ['external'], invokedLocalMessages: [] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'queued')
+    fake.queue = { queuedLocalIds: [], indeterminateLocalIds: ['external'], invokedLocalMessages: [] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'indeterminate')
+    fake.queue = { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'another-message', invokedAt: 2000 }] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'indeterminate')
+    fake.queue = { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'external', invokedAt: 2000 }] }
+    assert.equal(await agent.checkDelivery('external'), null)
+    assert.equal(agent.projection.delivery.length, 0)
+    assert.equal(fake.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('native discovery uses detail facts missing from HAPI summaries and registers real DSH sessions', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-'))
   const fake = new FakeHapi()

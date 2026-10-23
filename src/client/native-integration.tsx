@@ -1,8 +1,7 @@
 import { installDocumentSelections } from './document-selection.tsx'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { Context } from '@deepseek-ai/cordis'
 import { createElement } from 'react'
-import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
+import type { HapiRemoteApi } from '../client-api.ts'
 import { NativeActionLedger } from './native-state.ts'
 import { NativeControlLedger } from './native-control-state.ts'
 import type { NativeActionsApi } from './native-actions.tsx'
@@ -27,8 +26,8 @@ import { installComposerPicker } from './composer-picker/index.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
-import { installDiagnostics, setDiagnosticIdentity } from './diagnostics/index.ts'
-import { randomId } from './random-id.ts'
+import { installDiagnostics } from './diagnostics/index.ts'
+import { createNativeActions } from './native-action-api.ts'
 
 export interface NativePaneIntegration { api: HapiRemoteApi; native: NativeActionsApi; controls: NativeControlLedger }
 
@@ -40,31 +39,7 @@ declare module '@deepseek-ai/cordis' {
 export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open: (sessionId: string) => void, refresh: () => void): NativePaneIntegration & { dispose(): void } {
     const ledger = new NativeActionLedger({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value),
         removeItem: key => localStorage.removeItem(key) }), controls = new NativeControlLedger(api), observedControls = new ObservedControlLedger(api)
-    const native: NativeActionsApi = {
-        ledger, controls, observedControls, branchLabel: () => ctx.locale.bind('chat')('message.branch'),
-        stop: async sessionId => {
-            const binding = ctx.sessions.binding(sessionId as SessionId)
-            if (!binding) throw new Error('The source conversation is no longer open.')
-            return remoteValue(await binding.session.cancel())
-        },
-        cancel: async (sessionId, localId) => remoteValue(await api.nativeCancel({ sessionId, localId })),
-        steer: async (sessionId, localId) => remoteValue(await api.nativeSteer({ sessionId, localId })),
-        retry: async (sessionId, localId) => remoteValue(await api.nativeRetry({ sessionId, localId })),
-        check: async (sessionId, localId) => remoteValue(await api.nativeDeliveryCheck({ sessionId, localId })),
-        recover: async (sessionId, localId, action) => {
-            const key = 'hapi-dsh:delivery-recovery:' + JSON.stringify([sessionId, localId, action]);
-            const operationId = localStorage.getItem(key) ?? randomId();
-            localStorage.setItem(key, operationId);
-            const receipt = remoteValue(await api.nativeDeliveryRecover({ sessionId, localId, action, operationId }));
-            localStorage.removeItem(key);
-            return receipt;
-        },
-        answer: async (sessionId, requestId, answer, deny) => remoteValue(await api.nativeAnswer({ sessionId, requestId, answer, ...(deny === undefined ? {} : { deny }) })),
-        resume: async sessionId => remoteValue(await api.resumeSession({ sessionId })),
-        // One Host API can serve several panes; diagnostics retain each
-        // session identity and capture the request's own identity at dispatch.
-        identify: identity => setDiagnosticIdentity(api, identity),
-    }
+    const native = createNativeActions(ctx, api, ledger, controls, observedControls)
     // Page-global, copyable evidence for remote/console/window failures. This
     // never gates source execution and never renders into the conversation.
     const disposers: Array<() => void> = [installDiagnostics(api)]

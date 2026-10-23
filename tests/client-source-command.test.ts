@@ -21,7 +21,7 @@ test('source shell aliases render the registered official component and leave sp
     const alias = slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'CodexBash')!
     assert.ok(alias); assert.equal(alias.locale, 'conversation')
     const html = renderToStaticMarkup(createElement(alias.component as ComponentType<ToolCallViewProps>,
-        { phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash' } as ToolCallViewProps))
+        { phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash', t: (key: string) => key } as unknown as ToolCallViewProps))
     assert.equal(html, '<span data-official-bash="bash">pwd</span>')
     const Specialized = () => null
     const remove = slots.register({ name: 'tool.call.toolview', key: 'CodexBash', priority: 0 } as never, Specialized as never)
@@ -45,7 +45,8 @@ test('official shell exit markers reflect real source codes and missing codes st
     assert.deepEqual(adapted.content, [{ type: 'text', text: 'failure details\n[exit code: 2]' }])
     const unknown = sourceShellBlock(result({ cmd: 'check' }, 'unknown process status')) as ToolResultNode
     assert.deepEqual(unknown.content, [{ type: 'text', text: 'unknown process status' }])
-    assert.equal(unknown.args.text('description'), undefined)
+    assert.equal(unknown.args.text('description'), 'check')
+    assert.equal(JSON.parse(unknown.call!.argsRaw).description, undefined, 'Missing exit stays on the official persistent-shell result path')
 })
 
 function call(input: Record<string, unknown>): StartedToolCall {
@@ -119,6 +120,37 @@ test('PowerShell summaries unwrap only a recognized command invocation', () => {
     assert.equal(sourceCommandModel(call({ command: ['C:\\Windows\\pwsh.exe', '-NoProfile', '-Command', 'Get-Item .'] })).command, 'Get-Item .')
     assert.equal(sourceCommandModel(call({ command: 'pwsh -NoLogo -NoProfile -c Get-Item .' })).command, 'Get-Item .')
     assert.equal(sourceCommandModel(call({ command: 'other -c preserve' })).command, 'other -c preserve')
+})
+
+test('serialized POSIX shell envelopes reveal their command without evaluating substitutions', () => {
+    const cases = [
+        ["/usr/bin/zsh -lc 'cat AGENTS.md'", 'cat AGENTS.md'],
+        ['bash -c "printf \\"hello\\""', 'printf "hello"'],
+        ["/bin/sh -c 'printf '\\''hello'\\'''", "printf 'hello'"],
+        ["/bin/zsh -lc 'cat a; rg b src'", 'cat a; rg b src'],
+    ]
+    for (const [wrapped, command] of cases) assert.equal(sourceCommandModel(call({ command: wrapped })).command, command)
+    for (const command of ['other -c "keep me"', '/bin/sh -c "echo $SECRET"', "/bin/sh -c 'echo one'; echo two"])
+        assert.equal(sourceCommandModel(call({ command })).command, command)
+})
+
+test('source action metadata supplies compact localized titles while original commands and outputs remain available', () => {
+    const command = "/usr/bin/zsh -lc 'cat src/a.ts; rg needle src'"
+    const original = result({ command, command_actions: [
+        { type: 'read', command: 'cat src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
+        { type: 'search', command: 'rg needle src', query: 'needle', path: 'src' },
+    ] }, { stdout: 'full output', exit_code: 0 })
+    const before = JSON.stringify(original)
+    const adapted = sourceShellBlock(original, { read: '读取', search: '搜索', listFiles: '查找文件' }) as ToolResultNode
+    assert.equal(adapted.args.text('description'), '读取 a.ts · 搜索 needle')
+    assert.equal(adapted.args.text('command'), 'cat src/a.ts; rg needle src')
+    assert.equal(JSON.stringify(original), before)
+    assert.deepEqual(adapted.content, [{ type: 'text', text: 'full output\n[exit code: 0]' }])
+    const mixed = call({ command: 'cat a; npm test', command_actions: [{ type: 'read', name: 'a' }, { type: 'unknown', command: 'npm test' }] })
+    assert.equal(sourceShellBlock(mixed).args.text('description'), 'cat a; npm test', 'Do not summarize a mixed command as only reading')
+    const long = sourceShellBlock(call({ command: 'rg ' + 'x'.repeat(300) }))
+    assert.ok(long.args.text('description')!.length <= 120)
+    assert.equal(long.args.text('command'), 'rg ' + 'x'.repeat(300))
 })
 
 test('patch and file aliases retain source errors and never fabricate an applied diff', () => {

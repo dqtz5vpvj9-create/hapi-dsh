@@ -1,3 +1,4 @@
+import { checkedQueueMessage } from '../hapi/queue-receipt.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   agentEvents, type Agent, type AgentCancelCause, type AgentEventDispatch, type AgentOptions, type AgentStatus,
@@ -446,7 +447,15 @@ export class NativeCodexAgent implements Agent {
     return view
   }
   async checkDelivery(localId: string): Promise<DeliveryView | null> {
-    await this.journal.reconcileSource()
+    const state = await this.transport.getQueuedState(this.binding.hapiSessionId, [localId])
+    this.journal.reconcile(state)
+    const pending = this.queued.get(localId)
+    if (pending) {
+      const raw = checkedQueueMessage(pending.raw, state)
+      if (raw) this.queued.set(localId, { ...pending, raw })
+      else this.queued.delete(localId)
+    }
+    this.syncInbox(); this.publishProjection()
     return this.deliveries().find(entry => entry.localId === localId) ?? null
   }
   steer(message: UserMessage): void { this.send(message, 'next-step', true) }

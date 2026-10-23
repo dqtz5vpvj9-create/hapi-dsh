@@ -5,7 +5,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { DeliveryView } from '../codex/projection-types.ts'
 
 export function editableSourceQueue(rows: readonly DeliveryView[]): DeliveryView[] {
-    return rows.filter(row => ['queued', 'accepted', 'dispatching', 'indeterminate'].includes(row.state))
+    // A transport receipt is not a queue position. Uncertain/failed deliveries
+    // remain available in the pane's source-status panel, never in this dock.
+    return rows.filter(row => row.state === 'queued')
 }
 
 /** Native queue ownership is different; ordinary DSH keeps its original queue. */

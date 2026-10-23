@@ -21,6 +21,8 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 完整导航另行计时：恢复测试从 `navigationStart` 到保存会话的真实正文和可编辑输入框，保留草稿断言。`npm run test:perf:production` 使用本机配置的 admission 文件，只读探测线上初次导航及带浏览器缓存的再次导航，输出工作区、正文、编辑器、资源耗时和主线程长任务。`HAPI_DSH_CPU_RATE=4 HAPI_DSH_PROBE_RUNS=1 npm run test:perf:production` 可增加 CPU 降速样本；这是模拟环境，不是真机测量。不得用 workspace ready、骨架或热切换数据替代这个完整耗时。
 
+队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执不会出现在输入区，刷新不重发，真实排队消息仍可取回编辑；带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px。设置 `HAPI_DSH_VISUAL_OUTPUT=/mnt/cache/data-cache/source-presentation` 时额外调用 webshot 输出桌面及手机截图，需人工查看产物后才能报告视觉通过。
+
 ## 门槛与来源
 
 | 项目 | 判定 |

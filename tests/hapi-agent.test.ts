@@ -104,6 +104,27 @@ async function mount(fixture: Fixture, directory: string, options: Partial<HapiA
   return { ctx, service, async close() { await service!.dispose(); await ctx.fiber.dispose() } }
 }
 
+test('checking an external observed receipt uses exact source facts and never resends unknown input', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-receipt-')), source = new Fixture()
+  source.add('claude')
+  source.rows.set('claude', [{ ...input('external'), invokedAt: null, deliveryState: 'indeterminate' }])
+  const app = await mount(source, directory)
+  try {
+    const agent = app.service.list()[0]!
+    assert.equal(agent.projection.delivery[0]?.state, 'indeterminate')
+    source.queue = { queuedLocalIds: [], dispatchingLocalIds: ['external'], invokedLocalMessages: [] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'dispatching')
+    source.queue = { queuedLocalIds: ['external'], invokedLocalMessages: [] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'queued')
+    source.queue = { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'another-message', invokedAt: 2000 }] }
+    assert.equal((await agent.checkDelivery('external'))?.state, 'queued')
+    source.queue = { queuedLocalIds: [], invokedLocalMessages: [{ localId: 'external', invokedAt: 2000 }] }
+    assert.equal(await agent.checkDelivery('external'), null)
+    assert.equal(agent.projection.delivery.length, 0)
+    assert.equal(source.sent.length, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('all existing non-native HAPI flavors enter real official Sessions with original ownership', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-')), source = new Fixture()
   for (const flavor of ['claude', 'codex', 'pi', 'cursor', 'qoder', 'dsh', 'grok', 'opencode', 'gemini', 'copilot', 'kimi', 'agy']) {

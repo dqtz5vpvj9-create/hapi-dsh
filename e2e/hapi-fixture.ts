@@ -432,7 +432,9 @@ export class HapiWireFixture {
                 this.emit({ type: 'message-received', sessionId: id, message: row }); return;
             }
             if (tail === 'messages/queued-state') {
-                send({ queuedLocalIds: fixture.rows.filter(row => row.invokedAt === null).map(row => row.localId),
+                send({ queuedLocalIds: fixture.rows.filter(row => row.invokedAt === null && !row.deliveryState).map(row => row.localId),
+                    dispatchingLocalIds: fixture.rows.filter(row => row.invokedAt === null && row.deliveryState === 'dispatching').map(row => row.localId),
+                    indeterminateLocalIds: fixture.rows.filter(row => row.invokedAt === null && row.deliveryState === 'indeterminate').map(row => row.localId),
                     invokedLocalMessages: fixture.rows.filter(row => row.invokedAt != null).map(row => ({ localId: row.localId, invokedAt: row.invokedAt })) }); return;
             }
             if (parts[3] === 'messages' && request.method === 'DELETE') {

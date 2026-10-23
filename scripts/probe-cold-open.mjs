@@ -22,7 +22,7 @@ await page.addInitScript(() => {
   function tick() {
     const visible = e => e && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0;
     if (!marks.workspace && document.querySelector('[data-hapi-workspace]')) marks.workspace = performance.now();
-    const pane = document.querySelector('.hapi-pane[data-focused="true"]') ?? document.querySelector('.hapi-pane:not([aria-hidden="true"])');
+    const pane = document.querySelector('.hapi-pane-focused') ?? document.querySelector('.hapi-pane:not([aria-hidden="true"])');
     const editor = pane?.querySelector('[data-composer-input][contenteditable="true"]');
     if (!marks.editor && visible(editor) && editor.getAttribute('aria-disabled') !== 'true') marks.editor = performance.now();
     const rows = pane?.querySelectorAll('[data-chat-node-key]') ?? [];
