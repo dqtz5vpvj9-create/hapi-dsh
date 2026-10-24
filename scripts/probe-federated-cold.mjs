@@ -10,6 +10,7 @@ await mkdir(output, { recursive: true });
 const latency = Number(process.env.HAPI_DSH_LATENCY_MS ?? 0);
 const mbps = Number(process.env.HAPI_DSH_DOWNLOAD_MBPS ?? 0);
 const runs = Number(process.env.HAPI_DSH_PROBE_RUNS ?? 2);
+const measureMemory = process.env.HAPI_DSH_PROBE_MEMORY === '1';
 const reads = new Set([
   'settings/describe', 'session/modelCatalog', 'session/list', 'session/page', 'session/projections',
   'credentials/describe', 'dynamicCordisRunner/inventory', 'cotTranslation/limits', 'agentPresets/list',
@@ -53,6 +54,15 @@ await page.routeWebSocket(() => true, route => {
 });
 const cdp = await context.newCDPSession(page);
 await cdp.send('Network.enable');
+const memorySample = async () => ({
+  ...await cdp.send('Runtime.getHeapUsage'),
+  ...await cdp.send('Memory.getDOMCounters'),
+  rendered: await page.evaluate(() => ({
+    elements: document.querySelectorAll('*').length,
+    panes: document.querySelectorAll('.hapi-pane').length,
+    chatNodes: document.querySelectorAll('[data-chat-node-key]').length,
+  })),
+});
 if (latency || mbps) await cdp.send('Network.emulateNetworkConditions', {
   offline: false, latency, downloadThroughput: mbps ? mbps * 1_000_000 / 8 : -1, uploadThroughput: -1,
 });
@@ -111,9 +121,18 @@ try {
       resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/machine\/[^/]+/, '/machine/[id]'),
         at: e.startTime, ms: e.duration, bytes: e.transferSize, encoded: e.encodedBodySize, decoded: e.decodedBodySize, responseStart: e.responseStart })),
     }));
-    report.runs.push({ mode: i ? 'cached reload' : 'fresh browser', ...result, failure });
+    let memory;
+    if (measureMemory && !failure) {
+      // Separate from opening timings. GC measures retention, not the normal
+      // peak, and must not run in an ordinary performance-only probe.
+      await page.waitForTimeout(2_000);
+      const natural = await memorySample();
+      await cdp.send('HeapProfiler.collectGarbage');
+      memory = { natural, afterGc: await memorySample() };
+    }
+    report.runs.push({ mode: i ? 'cached reload' : 'fresh browser', ...result, failure, memory });
     console.log(JSON.stringify({ run: i, body: result.body, editor: result.editor, title: result.title,
-      bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure,
+      bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure, memory,
       largest: [...result.resources].sort((a,b) => b.bytes-a.bytes).slice(0, 5),
       longestTasks: [...result.tasks].sort((a,b) => b.ms-a.ms).slice(0, 5) }));
   }

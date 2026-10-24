@@ -12,6 +12,7 @@ import type { NativeForkBoundary } from './control-types.ts'
 import { projectNotifySummaries, stripNotifySummaryFooter, type SourceNotifySummary } from '../hapi-agent/notify-summary.js'
 import { parseSourceCodexReview, type SourceCodexReviewRecord } from '../hapi-agent/codex-review.js'
 import './projection-state.js'
+import { independentStreamDelta } from '../shared/stream-text.js'
 
 interface Step {
   turn: number
@@ -332,7 +333,7 @@ export class NativeProjector {
       this.options.stream({ type: 'start', attemptId: stream.attemptId, revision: stream.revision, turn: step.turn, step: step.step })
       this.emitChunk(stream, { type: 'block-start', index: 0, blockType: row.reasoning ? 'reasoning' : 'text' })
     }
-    const text = projectedText.slice(stream.text.length)
+    const text = independentStreamDelta(projectedText, stream.text.length)
     if (text) this.emitChunk(stream, { type: row.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text })
     stream.text = projectedText; stream.rawText = row.text; stream.sourceRowId = row.rowId
   }

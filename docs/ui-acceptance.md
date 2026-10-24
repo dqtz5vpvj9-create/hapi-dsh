@@ -37,6 +37,8 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 ## 门槛与来源
 
+内存独立验证见 [内存分析](memory-breakdown.md)。`HAPI_DSH_PROBE_MEMORY=1 npm run test:perf:federated` 在打开计时结束后另采自然状态和 GC 后的 JS、backing storage、DOM 与监听器数据，普通性能运行不执行 GC。源流式留存回归运行 `node --import tsx --test tests/source-stream-retention.test.ts`，包含旧切片机制的负对照和真实两种 projector，不用一次短导航代替长期内存验收。
+
 | 项目 | 判定 |
 | --- | --- |
 | 静止补页锚点 | 每个采样帧偏移 ≤1 CSS px，原锚点不丢失；来自 HAPI 约定 |

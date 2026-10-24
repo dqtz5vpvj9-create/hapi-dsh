@@ -13,6 +13,7 @@ import { sourceToolProgressPayloadSchema, type SourceToolProgress, type SourceTo
 import { canonicalJson } from '../codex/native.js'
 import type { SourceCodexReviewRecord } from './codex-review.js'
 import './projection-state.js'
+import { independentStreamDelta } from '../shared/stream-text.js'
 
 interface Step { turn: number; step: number; open: boolean }
 interface SourceTool {
@@ -129,9 +130,9 @@ export class ObservedProjector {
       if (item.kind === 'assistant' && !item.live && this.live?.item.key === item.key) {
         const live = this.live, projectedText = item.reasoning ? item.text : stripNotifySummaryFooter(item.text)
         if (projectedText.startsWith(live.text)) {
-          const delta = projectedText.slice(live.text.length)
+          const delta = independentStreamDelta(projectedText, live.text.length)
           if (delta) this.chunk(live, { type: item.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text: delta })
-          live.item = item
+          live.text = projectedText; live.item = item
           this.flushLive()
           this.responseInTurn = true
           continue
@@ -273,7 +274,7 @@ export class ObservedProjector {
       this.options.stream({ type: 'start', attemptId: live.attemptId, revision: live.revision, turn: live.step.turn, step: live.step.step })
       this.chunk(live, { type: 'block-start', index: 0, blockType: item.reasoning ? 'reasoning' : 'text' })
     }
-    const delta = projectedText.slice(live.text.length)
+    const delta = independentStreamDelta(projectedText, live.text.length)
     if (delta) this.chunk(live, { type: item.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text: delta })
     live.text = projectedText; live.item = item
   }

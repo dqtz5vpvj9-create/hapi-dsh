@@ -4,8 +4,10 @@ import type { HapiMessage, HapiMessagesPage } from '../src/codex/contracts.ts'
 import type { NativeFixture } from './hapi-fixture.ts'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
 import { acknowledgePreviewNotice } from './preview-notice.ts'
+import { conversationReady, visualReview } from './visual-review.ts'
 
 test.setTimeout(180_000)
+test.use({ screenshot: 'off' })
 
 function complete(rows: readonly HapiMessage[]): HapiMessagesPage {
     return { messages: [...rows], page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
@@ -62,13 +64,15 @@ test.describe('source live/history continuity', () => {
                 let initialReading = false
                 fixture.readHistory = async () => { initialReading = true; await initialGate; return seed }
                 environment.hapi.emit({ type: 'session-added', sessionId: fixture.session.id })
+                // Discovery is on demand: the catalog must not eagerly load
+                // every source's history just because the sidebar lists it.
+                await page.locator('.hapi-session-open').filter({ hasText: title }).click()
                 await expect.poll(() => initialReading).toBe(true)
 
                 // SSE leads REST indexing. Its suffix must survive initial publication.
                 const initialLive = liveRows(fixture, 'during-attach', Date.now() + 10)
                 for (const message of initialLive) environment.hapi.emit({ type: 'message-received', sessionId: fixture.session.id, message })
                 release!(); release = undefined
-                await page.locator('.hapi-session-open').filter({ hasText: title }).click()
                 const pane = page.getByRole('region', { name: `Pane: ${title}`, exact: true })
                 await expect(pane.getByText('Answer during-attach survives source reconciliation.', { exact: true })).toHaveCount(1)
                 fixture.rows.push(...initialLive)
@@ -105,6 +109,11 @@ test.describe('source live/history continuity', () => {
                 expect(environment.hapi.sent.filter(item => item.sessionId === fixture.session.id)).toEqual([])
                 expect(environment.hapi.aborted).not.toContain(fixture.session.id)
                 expect(errors).toEqual([])
+                for (const viewport of ['1440x900', '390x844']) {
+                    const image = await visualReview(environment.launchUrl, `live-history-${engine}`, viewport,
+                        conversationReady(title, `if (!pane.textContent.includes('Answer during-refresh survives source reconciliation.')) return false;`))
+                    if (image) await info.attach(`visual-${viewport}`, { path: image, contentType: 'image/png' })
+                }
             } finally {
                 release?.()
                 await info.attach('live-history-browser-errors', { body: errors.join('\n'), contentType: 'text/plain' })
