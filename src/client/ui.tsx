@@ -74,7 +74,7 @@ function ActivityDot({ kind, pending, compacting, model, latest, t }: { kind: Ac
     </span>
 }
 
-export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'vertical' | 'add' | 'close' | 'zoom' | 'grid' | 'restore' | 'more' | 'search' | 'refresh' | 'sidebar' | 'help' | 'folder'; size?: number }) {
+export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'vertical' | 'add' | 'close' | 'zoom' | 'grid' | 'restore' | 'more' | 'search' | 'refresh' | 'sidebar' | 'help' | 'folder' | 'back'; size?: number }) {
     const paths = {
         horizontal: 'M3 3h18v18H3zM12 3v18', vertical: 'M3 3h18v18H3zM3 12h18',
         add: 'M12 5v14M5 12h14', close: 'm6 6 12 12M6 18 18 6', zoom: 'M8 3H3v5M16 3h5v5M21 16v5h-5M8 21H3v-5',
@@ -82,7 +82,7 @@ export function WorkspaceIcon({ kind, size = 16 }: { kind: 'horizontal' | 'verti
         more: 'M5 12h.01M12 12h.01M19 12h.01', search: 'M20 20l-5-5M17 10a7 7 0 1 1-14 0 7 7 0 0 1 14 0',
         refresh: 'M20 7a9 9 0 0 0-16 2M20 3v5h-5M4 17a9 9 0 0 0 16-2M4 21v-5h5',
         sidebar: 'M3 3h18v18H3zM9 3v18', help: 'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5M12 18h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
-        folder: 'M3 7V4h6l2 3h10v13H3zM3 10h18',
+        folder: 'M3 7V4h6l2 3h10v13H3zM3 10h18', back: 'm15 18-6-6 6-6',
     }
     return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind]}/></svg>
 }
@@ -209,7 +209,6 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
         <header className="hapi-pane-header" data-hapi-pane-header={pane.id}>
-            <span className="hapi-mobile-header-picker"><IconButton label={t('allChats')} icon="sidebar" onClick={controller.requestSessionPicker}/></span>
             <div className="hapi-pane-heading" data-hapi-pane-drag title={[title, location.machineName, summary?.cwd, t('paneDrag')].filter(Boolean).join('\n')} draggable={!hidden}
                 onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>
                 {summary && <ActivityDot {...activity} model={(nativeProjection(summary) ?? observedProjection(summary))?.model} t={t}/>}
@@ -469,7 +468,9 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
             })}
         </div>
         <footer className="hapi-statusbar">
-        {mobile && <nav className="hapi-mobile-pane-bar" aria-label={t('pane')}>
+        {mobile && <button type="button" className="hapi-icon-button hapi-mobile-back" title={t('backToConversations')} aria-label={t('backToConversations')}
+            onClick={controller.requestSessionPicker}><WorkspaceIcon kind="back"/></button>}
+        {mobile && panes(active.root).length > 1 && <nav className="hapi-mobile-pane-bar" aria-label={t('pane')}>
             <div className="hapi-pane-tabs" role="tablist" aria-label={t('pane')} ref={paneTabs}>
                 {panes(active.root).map((pane, index) => {
                     const paneName = paneTitle(pane, snapshot.catalog.byId, t('newPane'))
@@ -501,6 +502,10 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                         {paneCount > 1 && <span className="hapi-window-count" aria-label={t('paneCount', { n: paneCount })}>{paneCount}</span>}</button>
                 })}
             </div>
+            {/* Stable targets also survive independent Conversation roots changing viewport. */}
+            {layout.windows.flatMap(window => panes(window.root)).map(pane => <div key={pane.id}
+                className="hapi-pane-status-slot" data-hapi-pane-mobile-status={pane.id}
+                style={mobile && pane.id === activePane.id ? undefined : { display: 'none' }}/>) }
             <details className="hapi-menu hapi-pane-actions" data-hapi-pane-actions="">
                 <summary title={t('paneActions')} aria-label={t('paneActions')}><WorkspaceIcon kind="more"/></summary>
                 <div className="hapi-menu-content"><PaneMenuItems pane={activePane} window={active} controller={controller} t={t}/></div>
@@ -606,6 +611,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     const [sourceDialog, setSourceDialog] = useState<{ kind: 'rename' | 'export' | 'migration'; row: WorkspaceCatalogRow; source: WorkbenchSource } | null>(null)
     const language = document.documentElement.lang || 'en'
     const input = useRef<HTMLInputElement>(null)
+    const pickerBack = useRef<HTMLButtonElement>(null)
     const rows = useMemo(() => showRows ? snapshot.catalog.ids.map(id => snapshot.catalog.byId[id]).filter(row => row !== undefined) : [], [snapshot.catalog, showRows])
     const latestCompleted = useMemo(() => rows.filter(row => sessionActivity(row).kind === 'completed')
         .reduce<WorkspaceCatalogRow | undefined>((latest, row) => (sessionCompletedAt(row) ?? 0) > (sessionCompletedAt(latest) ?? 0) ? row : latest, undefined)?.id, [rows])
@@ -690,9 +696,10 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     useEffect(() => {
         if (!snapshot.pickingSession) return
         if (!mobile) revealSidebar.current()
-        setSearchExpanded(true)
+        setSearchExpanded(!mobile)
         const frame = requestAnimationFrame(() => {
-            input.current?.focus()
+            if (mobile) pickerBack.current?.focus({ preventScroll: true })
+            else input.current?.focus()
             if (!mobile && input.current) controller.closeSessionPicker()
         })
         return () => { cancelAnimationFrame(frame) }
@@ -749,7 +756,12 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                     {facts.sourceId && <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.sourceId!).catch(controller.report) }}>{t('copySourceId')}</button>}
                     {facts.source && <button role="menuitem" type="button" disabled={!facts.nativeId} title={facts.nativeId ?? t('nativeIdUnavailable')} onClick={() => { if (facts.nativeId) void navigator.clipboard.writeText(facts.nativeId).catch(controller.report) }}>{t('copyNativeId')}</button>}
                     <button role="menuitem" type="button" onClick={() => { void navigator.clipboard.writeText(facts.displayId).catch(controller.report) }}>{t(facts.source ? 'copyDisplayId' : 'copyId')}</button>
-                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined, filter === 'attention' ? pendingTarget(row) : undefined)} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
+                </>}>{handlers => <button {...handlers} type="button" className="hapi-session-open" aria-haspopup="menu" aria-current={isSelected ? 'page' : undefined} onClick={event => {
+                    const focused = controller.store.focusedPane().resource
+                    if (mobile && snapshot.pickingSession && !event.shiftKey && filter !== 'attention' && focused.kind === 'chat' && focused.sessionId === row.id) {
+                        controller.closeSessionPicker()
+                    } else controller.openSession(row.id, event.shiftKey ? 'horizontal' : undefined, filter === 'attention' ? pendingTarget(row) : undefined)
+                }} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
                     onPointerEnter={() => controller.preloadSession(row.id)} onFocus={() => controller.preloadSession(row.id)}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
                     <div className="hapi-session-title"><ActivityDot {...activity} model={(nativeProjection(row) ?? observedProjection(row))?.model} latest={row.id === latestCompleted} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
@@ -805,8 +817,10 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     }
     const body = <div className={`hapi-session-sidebar${mobile && snapshot.pickingSession ? ' hapi-session-picker' : ''}`}>
         <style>{compactDiscoveryStyles}</style>
-        <header><strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length + discoveredMatching.length} ${t('sessions')}`}>{tree.length + discoveredMatching.length}</span>
-            {snapshot.pickingSession && <button type="button" className="hapi-picker-back" onClick={controller.closeSessionPicker}>{t('backToWorkspace')}</button>}
+        <header>
+            {snapshot.pickingSession && <button ref={pickerBack} type="button" className="hapi-picker-back" title={t('backToWorkspace')} aria-label={t('backToWorkspace')}
+                onClick={controller.closeSessionPicker}><WorkspaceIcon kind="back"/></button>}
+            <strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length + discoveredMatching.length} ${t('sessions')}`}>{tree.length + discoveredMatching.length}</span>
             <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
             <IconButton label={t('sidebarOptions')} icon="more" onClick={() => setOptionsOpen(true)}/>
         </header>

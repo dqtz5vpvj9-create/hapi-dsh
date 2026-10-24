@@ -10,6 +10,7 @@ import { useLayoutEffect, useState } from 'react'
 import { useWorkspacePane } from './surface/pane-context.tsx'
 import { SourceQueue, sourceQueueStyles } from './source-queue.tsx'
 import { installSourceQueueOwnership } from './source-queue-ownership.ts'
+import { useNarrowViewport } from '../workspace/viewport.ts'
 
 type SourceDockProps = PropsRuntime<'conversation.input.dock'> & PropsLocale<'hapiWorkspace'>
 
@@ -26,10 +27,12 @@ export function installNativeActionDock(ctx: Context, native: NativeActionsApi, 
         const actions: NativeActionsApi = { ...native, ...(queued.actions ? { queuedEditing: queued.actions } : {}) }
         const projection = useProjection('hapi'), observed = useProjection('hapiObserved')
         const pane = useWorkspacePane(ctx)
+        const mobile = useNarrowViewport()
         const [statusTarget, setStatusTarget] = useState<HTMLElement | null>(null)
         useLayoutEffect(() => {
-            setStatusTarget(pane ? document.querySelector<HTMLElement>(`[data-hapi-pane-status="${CSS.escape(pane.paneId)}"]`) : null)
-        }, [pane?.paneId, sessionId])
+            const attribute = mobile ? 'data-hapi-pane-mobile-status' : 'data-hapi-pane-status'
+            setStatusTarget(pane ? document.querySelector<HTMLElement>(`[${attribute}="${CSS.escape(pane.paneId)}"]`) : null)
+        }, [pane?.paneId, sessionId, mobile])
         sourceView.useSourceState(sessionId, Boolean(projection || observed))
         if (!(projection || observed)) return null
         const scope = `.hapi-host-frame [data-conversation-session="${CSS.escape(sessionId)}"]`

@@ -40,7 +40,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         window.sessionStorage.removeItem(storageKey)
     } catch { /* A disabled browser store does not block conversation navigation. */ }
 
-    const waitFor = <T,>(read: () => T | undefined, signal: AbortSignal): Promise<T> => new Promise((resolve, reject) => {
+    const waitFor = <T,>(read: () => T | undefined, signal: AbortSignal, extraScopes: readonly HTMLElement[] = []): Promise<T> => new Promise((resolve, reject) => {
         const finish = (value?: T, error?: unknown): void => {
             observer.disconnect(); window.clearTimeout(timer); signal.removeEventListener('abort', abort)
             if (error) reject(error); else resolve(value!)
@@ -50,6 +50,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         const observer = new MutationObserver(check)
         const timer = window.setTimeout(() => finish(undefined, new Error('The conversation target is not visible yet. Retry after loading finishes.')), 5000)
         observer.observe(root.closest('.hapi-pane') ?? root, { childList: true, subtree: true, attributes: true })
+        for (const scope of extraScopes) observer.observe(scope, { childList: true, subtree: true, attributes: true })
         signal.addEventListener('abort', abort, { once: true })
         if (signal.aborted) abort(); else check()
     })
@@ -92,10 +93,14 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                 await service.revealSequence(reference.sessionId, located.seq, signal, root)
             } else if (target?.kind === 'approval' || target?.kind === 'delivery') {
                 const selector = target.kind === 'approval' ? '[data-hapi-request-id]' : '[data-hapi-delivery-id]'
-                const scope = target.kind === 'delivery' ? root.closest('.hapi-pane') ?? root : root
-                const row = await waitFor(() => [...scope.querySelectorAll<HTMLElement>(selector)]
-                    .find(element => target.kind === 'approval' ? element.dataset.hapiRequestId === target.requestId : element.dataset.hapiDeliveryId === target.localId), signal)
-                for (let ancestor = row.parentElement; ancestor && ancestor !== root; ancestor = ancestor.parentElement) {
+                // Mobile source receipts are portalled outside the pane. Only
+                // this occurrence's stable status seat belongs to its lookup.
+                const footer = target.kind === 'delivery' ? root.ownerDocument.querySelector<HTMLElement>(
+                    `.hapi-pane-status-slot[data-hapi-pane-mobile-status="${CSS.escape(navigation.paneId)}"]`) : null
+                const scopes = target.kind === 'delivery' ? [root.closest<HTMLElement>('.hapi-pane') ?? root, ...(footer ? [footer] : [])] : [root]
+                const row = await waitFor(() => scopes.flatMap(scope => [...scope.querySelectorAll<HTMLElement>(selector)])
+                    .find(element => target.kind === 'approval' ? element.dataset.hapiRequestId === target.requestId : element.dataset.hapiDeliveryId === target.localId), signal, footer ? [footer] : [])
+                for (let ancestor = row.parentElement; ancestor && !scopes.includes(ancestor); ancestor = ancestor.parentElement) {
                     if (ancestor.tagName === 'DETAILS') (ancestor as HTMLDetailsElement).open = true
                 }
                 row.scrollIntoView({ block: 'nearest' }); row.tabIndex = -1; row.focus({ preventScroll: true })

@@ -38,7 +38,7 @@ export function conversationReady(title: string, action = ''): string {
       return false;
     }
     if (!pane) {
-      document.querySelector('.hapi-mobile-header-picker button')?.click();
+      document.querySelector('.hapi-mobile-back')?.click();
       [...document.querySelectorAll('.hapi-session-open, .hapi-discovery-open')].find(b => b.textContent.includes(${JSON.stringify(title)}))?.click();
       return false;
     }

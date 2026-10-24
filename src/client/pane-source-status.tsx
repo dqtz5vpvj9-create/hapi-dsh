@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import type { WorkspaceTranslate } from './locales.ts'
 import { openDiagnostics, translate } from './diagnostics/index.ts'
 
-/** Source notices belong to the originating pane's title bar, outside the input. */
+/** Source notices stay in the originating pane's chrome, outside the input. */
 export function PaneSourceStatus({ target, error, children, t }: {
     target: HTMLElement | null; error: boolean; children: ReactNode; t: WorkspaceTranslate
 }) {

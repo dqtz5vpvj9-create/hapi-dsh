@@ -10,7 +10,7 @@ import { warmDirectory } from './warm-control.ts'
 
 // Explicit local-Chromium engineering budgets. Device/production results are separate.
 export const UI_BUDGETS = { warmBodyMs: 150, cachedBodyMs: 500, firstBodyMs: 1500, coldWorkspaceMs: 6000,
-  scrollP95Ms: 50, frameTimestampToleranceMs: 0.2, maxFrameMs: 200, anchorPx: 1, mobileComposerPx: 160, mobileHeaderPx: 52, mobileBottomPx: 52 }
+  scrollP95Ms: 50, frameTimestampToleranceMs: 0.2, maxFrameMs: 200, anchorPx: 1, mobileComposerPx: 160, mobileHeaderPx: 0, mobileBottomPx: 52 }
 interface Check { name: string; passed: boolean; elapsedMs: number; metrics?: unknown; error?: string }
 interface Opening { bodyMs: number; composerMs: number }
 const composer = (pane: Locator) => pane.locator('[data-composer-input][contenteditable="true"]')
@@ -432,7 +432,7 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       page.on('pageerror', error => errors.push(error.message))
       await installUiProbe(page); await session.admit(page)
       // Mobile picker is the public entry point; use its normal session button.
-      const picker = page.locator('.hapi-mobile-header-picker button')
+      const picker = page.locator('.hapi-mobile-back')
       if (await picker.isVisible()) await picker.click()
       await open(page, 'alpha', 'Native history alpha in the official DSH Conversation.')
       const pane = paneFor(page, 'alpha')
@@ -450,7 +450,7 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       expect(portrait.left).toBeLessThanOrEqual(2); expect(portrait.width).toBeGreaterThanOrEqual(width - 4)
       expect(portrait.overflow).toBeLessThanOrEqual(1)
       expect(portrait.composer).toBeLessThanOrEqual(UI_BUDGETS.mobileComposerPx)
-      expect(portrait.header).toBeLessThanOrEqual(UI_BUDGETS.mobileHeaderPx)
+      expect(portrait.header).toBe(UI_BUDGETS.mobileHeaderPx)
       expect(portrait.bottom).toBeLessThanOrEqual(UI_BUDGETS.mobileBottomPx)
       // Headless Chromium has no Android refresh spinner. Verify the effective
       // browser CSS contract rather than claiming a physical Chrome UI test.
@@ -458,6 +458,7 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       await page.setViewportSize({ width, height: 440 }); await expect(composer(pane)).toBeVisible()
       await page.setViewportSize({ width: 844, height: width }); await expect(composer(pane)).toHaveText('Mobile draft survives width changes')
       await page.setViewportSize({ width, height: 844 }); await expect(composer(pane)).toHaveText('Mobile draft survives width changes')
+      await expect(pane.locator('.hapi-pane-header')).toBeHidden()
       return { portrait, restored: await measure(), device: 'Chromium mobile emulation; viewport resize is not a physical soft keyboard' }
     })
   }

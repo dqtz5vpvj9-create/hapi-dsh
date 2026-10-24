@@ -273,23 +273,21 @@ html,body {overscroll-behavior-y:none}
  .hapi-session-sidebar>header>.hapi-icon-button {min-height:44px}
 }
 /* Mobile shell is one full-width conversation with one navigation strip. */
-.hapi-mobile-header-picker {display:none}
-@media(max-width:600px) {
+@media(max-width:640px) {
  [data-sidebar-collapsed]:has(.hapi-workspace-mobile):not([data-rightbar-fullscreen]) {grid-template-columns:0 minmax(0,1fr) 0!important}
  [data-sidebar-collapsed]:has(.hapi-workspace-mobile)>div:has(>[data-slot="sidebar"]) {visibility:hidden;overflow:hidden}
- .hapi-workspace-mobile .hapi-mobile-header-picker {display:flex;flex:none}
- .hapi-workspace-mobile .hapi-pane-header {flex-wrap:nowrap;min-height:44px;padding:0 4px;gap:0}
- .hapi-workspace-mobile .hapi-pane-heading {flex:1 1 0;min-width:0}
- .hapi-workspace-mobile .hapi-pane-toolbar {flex:none;flex-wrap:nowrap}
- .hapi-workspace-mobile .hapi-pane-toolbar>.hapi-icon-button:not(:nth-last-child(2)) {display:none}
- .hapi-workspace-mobile .hapi-mobile-header-picker button {width:44px;height:44px}
+ .hapi-workspace-mobile .hapi-pane-header {display:none}
  .hapi-workspace-mobile .hapi-statusbar {min-height:44px;gap:0;flex-wrap:nowrap;overflow:visible;padding:0 2px env(safe-area-inset-bottom,0px)}
  .hapi-workspace-mobile .hapi-mobile-pane-bar {border:0;padding:0;gap:0;min-width:0;max-width:44%;min-height:44px;background:transparent}
  .hapi-workspace-mobile .hapi-mobile-pane-bar>.hapi-pane-add,.hapi-workspace-mobile .hapi-mobile-pane-bar>.hapi-menu {display:none}
  .hapi-workspace-mobile .hapi-pane-tabs>button {min-width:44px;height:44px;padding:4px 8px}
  .hapi-workspace-mobile .hapi-window-tabs {flex:1 1 0;min-width:0;scrollbar-width:none}
  .hapi-workspace-mobile .hapi-window-tabs>button {max-width:160px;height:44px;padding:4px 8px}
- .hapi-workspace-mobile .hapi-statusbar>.hapi-icon-button {width:44px;height:44px}
+ .hapi-workspace-mobile .hapi-statusbar>.hapi-icon-button {width:44px;height:44px;flex:none}
+ .hapi-workspace-mobile .hapi-pane-actions {display:block;flex:none}
+ .hapi-workspace-mobile .hapi-pane-actions>summary,.hapi-workspace-mobile .hapi-pane-source-status>summary {width:44px;height:44px}
+ .hapi-workspace-mobile .hapi-statusbar .hapi-pane-source-details {position:fixed;left:8px;right:8px;top:auto;bottom:calc(48px + env(safe-area-inset-bottom,0px));width:auto}
+ .hapi-session-picker>header>.hapi-picker-back {display:grid;place-items:center;flex:none;margin-left:0;width:44px;height:44px;padding:0}
  .hapi-workspace-mobile .hapi-pane [data-composer-card] {border-radius:14px;gap:2px;padding:4px 6px}
  .hapi-workspace-mobile [data-composer-card] .uV2eYG_row {flex-wrap:nowrap!important;align-items:center!important;gap:2px;overflow:visible!important}
  .hapi-workspace-mobile [data-composer-card] .uV2eYG_trailing:not(.uV2eYG_trailingActive) {flex:1 1 0!important;min-width:0;align-items:center!important;gap:2px}

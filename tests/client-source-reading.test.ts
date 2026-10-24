@@ -79,7 +79,7 @@ function fixture(options: { scrollend?: boolean } = {}) {
     const dispose = bindPaneReading(ctx, root as unknown as HTMLElement, reference, navigation)
     const framesNow = () => { const current = [...frames.values()]; frames.clear(); for (const run of current) run(now) }
     return {
-        root, window, port, row, writes, loads, state, reading,
+        root, document, window, port, row, writes, loads, state, reading,
         async ready() { await microtasks(); root.emit('scroll', port); framesNow() },
         replace() { events.set({ revision: events.getSnapshot().revision + 1, change: { kind: 'replace' } }) },
         gesture(type: string, values: Record<string, unknown> = {}) { root.emit(type, row, values) },
@@ -236,4 +236,121 @@ test('a replacement tail cannot masquerade as deliberate tail navigation after t
     assert.deepEqual(f.loads, [50], 'the old history must still be recovered when replace removed it')
     f.showRow(true); await f.complete()
     assert.deepEqual(f.writes, [300])
+})
+
+/** DOM-boundary fixture for the real binding: mutation delivery only reaches
+ * explicitly observed seats, just as a footer mutation cannot reach a pane MO. */
+function statusFixture() {
+    const f = fixture()
+    const css = Object.getOwnPropertyDescriptor(globalThis, 'CSS')
+    Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } })
+    const observing = new Map<object, Map<object, MutationObserverInit>>()
+    const callbacks = new Map<object, () => void>()
+    Object.defineProperty(globalThis, 'MutationObserver', { configurable: true, value: class {
+        constructor(callback: () => void) { callbacks.set(this, callback) }
+        observe(target: object, options: MutationObserverInit) {
+            if (!observing.has(this)) observing.set(this, new Map())
+            observing.get(this)!.set(target, options)
+        }
+        disconnect() { observing.delete(this); callbacks.delete(this) }
+    } })
+    type TargetRow = { dataset: { hapiDeliveryId?: string; hapiRequestId?: string }; parentElement: object;
+        tabIndex: number; scrollIntoView: () => void; focus: () => void }
+    const select = (rows: TargetRow[], selector: string): TargetRow[] => rows.filter(row =>
+        selector === '[data-hapi-delivery-id]' ? row.dataset.hapiDeliveryId !== undefined : row.dataset.hapiRequestId !== undefined)
+    const rows: TargetRow[] = [], foreignRows: TargetRow[] = [], bodyRows: TargetRow[] = []
+    const footer = { tagName: 'DIV', querySelectorAll: (selector: string) => select(rows, selector) }
+    const foreignFooter = { tagName: 'DIV', querySelectorAll: (selector: string) => select(foreignRows, selector) }
+    const details = { tagName: 'DETAILS', parentElement: footer, open: false }
+    const innerDetails = { tagName: 'DETAILS', parentElement: details, open: false }
+    const queries: string[] = [], focused: TargetRow[] = [], scrolled: TargetRow[] = []
+    const queryRows = f.root.querySelectorAll
+    Object.assign(f.root, { querySelectorAll: (selector: string) => selector.includes('data-chat-anchor-key') ? queryRows(selector) : select(bodyRows, selector) })
+    Object.assign(f.document, { querySelector: (selector: string) => {
+        queries.push(selector)
+        return selector === '.hapi-pane-status-slot[data-hapi-pane-mobile-status="pane"]' ? footer : foreignFooter
+    } })
+    const mutate = async (target: object): Promise<void> => {
+        for (const [observer, targets] of observing) {
+            if (targets.has(target)) queueMicrotask(callbacks.get(observer)!)
+        }
+        await microtasks()
+    }
+    const makeRow = (dataset: TargetRow['dataset'], parentElement: object): TargetRow => {
+        const row = { dataset, parentElement, tabIndex: 0,
+            scrollIntoView: () => { scrolled.push(row) }, focus: () => { focused.push(row) } }
+        return row
+    }
+    return { ...f, footer, foreignFooter, details, innerDetails, queries, focused, scrolled,
+        targets: () => [...observing.values()].flatMap(targets => [...targets.keys()]),
+        makeRow,
+        async insert(row: TargetRow, destination: 'footer' | 'foreign' | 'body' = 'footer') {
+            ;(destination === 'footer' ? rows : destination === 'foreign' ? foreignRows : bodyRows).push(row)
+            await mutate(destination === 'footer' ? footer : destination === 'foreign' ? foreignFooter : f.root)
+        },
+        dispose() {
+            f.dispose()
+            if (css) Object.defineProperty(globalThis, 'CSS', css)
+            else Reflect.deleteProperty(globalThis, 'CSS')
+        },
+    }
+}
+
+test('delivery navigation observes its own footer and opens nested receipt details after asynchronous insertion', async t => {
+    const f = statusFixture(); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'delivery', localId: 'receipt' } })
+    await microtasks()
+    assert.equal(f.root.dataset.hapiReading, 'loading')
+    assert.deepEqual(f.targets(), [f.root, f.footer], 'only the originating pane and its exact footer seat are observed')
+    assert.deepEqual(f.queries, ['.hapi-pane-status-slot[data-hapi-pane-mobile-status="pane"]'])
+    const receipt = f.makeRow({ hapiDeliveryId: 'receipt' }, f.innerDetails)
+    await f.insert(receipt)
+    assert.equal(f.root.dataset.hapiReading, 'ready')
+    assert.equal(f.details.open, true); assert.equal(f.innerDetails.open, true)
+    assert.deepEqual(f.focused, [receipt]); assert.deepEqual(f.scrolled, [receipt])
+    assert.equal(receipt.tabIndex, -1)
+    assert.deepEqual(f.targets(), [], 'resolved waits release both observers')
+})
+
+test('a sibling pane receipt with the same delivery ID cannot satisfy or wake this pane navigation', async t => {
+    const f = statusFixture(); t.after(() => f.dispose()); await f.ready()
+    const foreign = f.makeRow({ hapiDeliveryId: 'shared-id' }, f.foreignFooter)
+    await f.insert(foreign, 'foreign')
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'delivery', localId: 'shared-id' } })
+    await microtasks()
+    assert.equal(f.root.dataset.hapiReading, 'loading')
+    assert.deepEqual(f.focused, [])
+    assert.ok(!f.targets().includes(f.foreignFooter))
+    const own = f.makeRow({ hapiDeliveryId: 'shared-id' }, f.details)
+    await f.insert(own)
+    assert.deepEqual(f.focused, [own])
+    assert.equal(f.root.dataset.hapiReading, 'ready')
+})
+
+test('approval navigation remains in the conversation body even when a footer has the same request ID', async t => {
+    const f = statusFixture(); t.after(() => f.dispose()); await f.ready()
+    await f.insert(f.makeRow({ hapiRequestId: 'approval' }, f.details))
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'approval', requestId: 'approval' } })
+    await microtasks()
+    assert.deepEqual(f.targets(), [f.root])
+    assert.deepEqual(f.queries, [], 'approval lookup never queries a footer')
+    assert.deepEqual(f.focused, [])
+    const request = f.makeRow({ hapiRequestId: 'approval' }, f.root)
+    await f.insert(request, 'body')
+    assert.deepEqual(f.focused, [request])
+    assert.equal(f.details.open, false)
+})
+
+test('hiding a pane cancels its footer wait and a late receipt cannot steal focus', async t => {
+    const f = statusFixture(); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'delivery', localId: 'receipt' } })
+    await microtasks()
+    f.state.set({ visible: false, focused: false }); await microtasks()
+    assert.deepEqual(f.targets(), [])
+    const receipt = f.makeRow({ hapiDeliveryId: 'receipt' }, f.details)
+    await f.insert(receipt)
+    assert.deepEqual(f.focused, [])
+    f.state.set({ visible: true, focused: true }); await microtasks()
+    assert.deepEqual(f.focused, [receipt], 'the retained explicit intent resumes when its own pane is visible again')
+    assert.equal(f.root.dataset.hapiReading, 'ready')
 })
