@@ -41,16 +41,24 @@ export async function syncDeferredStages(graph: WebBootGraph, options: {
 
 /** Complete the official roster only on explicit Settings demand.
  * This is a ClientEntries graph reconciliation, not another plugin runtime. */
-export function installDeferredPlugins(ctx: Context): () => void {
-    if (Reflect.get(globalThis, '__HAPI_DSH_STAGED_BOOT__') !== true) return () => {};
+export interface DeferredPluginHost {
+    /** A federated graph must fetch and preload through its own Host transport. */
+    loadGraph(signal: AbortSignal): Promise<WebBootGraph>;
+    preload(graph: WebBootGraph): Promise<void>;
+    signal: AbortSignal;
+}
+
+export function installDeferredPlugins(ctx: Context, host?: DeferredPluginHost): () => void {
+    if (!host && Reflect.get(globalThis, '__HAPI_DSH_STAGED_BOOT__') !== true) return () => {};
     let started = false;
     let frame = 0;
     let settingsRequested = false;
     let removeDemand = (): void => {};
     const lifetime = new AbortController();
+    const signal = host ? AbortSignal.any([lifetime.signal, host.signal]) : lifetime.signal;
     const preloaded = new Map<string, Promise<void>>();
     const preloadLinks = new Set<HTMLLinkElement>();
-    const preload = async (graph: WebBootGraph): Promise<void> => {
+    const preload = host?.preload ?? (async (graph: WebBootGraph): Promise<void> => {
         const current = new Map(ctx.modules.manifest.modules.map(row => [row.id, row.rev]));
         await Promise.all(graph.entries.map(row => {
             if (current.get(row.id) === row.rev) return;
@@ -63,16 +71,16 @@ export function installDeferredPlugins(ctx: Context): () => void {
                     // a factory, edits the module table or creates a provider.
                     link.rel = 'preload'; link.as = 'script'; link.href = row.url;
                     const finish = (error?: unknown): void => {
-                        lifetime.signal.removeEventListener('abort', abort);
+                        signal.removeEventListener('abort', abort);
                         link.onload = link.onerror = null;
                         if (error) reject(error); else resolve();
                     };
-                    const abort = (): void => finish(lifetime.signal.reason);
+                    const abort = (): void => finish(signal.reason);
                     link.onload = () => finish();
                     // Preload is a cache hint. Keep transport retry and error
                     // reporting with the official loader if that hint fails.
                     link.onerror = () => finish();
-                    lifetime.signal.addEventListener('abort', abort, { once: true });
+                    signal.addEventListener('abort', abort, { once: true });
                     preloadLinks.add(link);
                     document.head.append(link);
                 });
@@ -80,42 +88,45 @@ export function installDeferredPlugins(ctx: Context): () => void {
             }
             return pending;
         }));
-    };
+    });
     const idle = async (): Promise<void> => {
-        while (!lifetime.signal.aborted && !settingsRequested) {
+        while (!signal.aborted && !settingsRequested) {
             await new Promise(resolve => setTimeout(resolve, 50));
         }
-        lifetime.signal.throwIfAborted();
+        signal.throwIfAborted();
     };
     const start = (): void => {
-        if (started || lifetime.signal.aborted) return;
+        if (started || signal.aborted) return;
         started = true;
 
         frame = requestAnimationFrame(() => {
             frame = requestAnimationFrame(() => {
-                if (lifetime.signal.aborted) return;
+                if (signal.aborted) return;
                 void (async () => {
                     await idle();
                     performance.mark('hapi:deferred-plugins-start');
                     // A release may have changed while a slow client downloaded
                     // stage one. Reconcile the current authenticated Host graph.
-                    const response = await fetch('hapi-dsh/bootstrap', { signal: lifetime.signal, cache: 'no-store' });
-                    if (!response.ok) throw new Error(`Plugin graph HTTP ${response.status}`);
-                    const payload = await response.json() as { graph: WebBootGraph };
-                    if (lifetime.signal.aborted) return;
+                    const loadGraph = host?.loadGraph ?? (async () => {
+                        const response = await fetch('hapi-dsh/bootstrap', { signal, cache: 'no-store' });
+                        if (!response.ok) throw new Error(`Plugin graph HTTP ${response.status}`);
+                        return (await response.json() as { graph: WebBootGraph }).graph;
+                    });
+                    const graph = await loadGraph(signal);
+                    signal.throwIfAborted();
                     // Each cumulative stage retains existing official entries.
                     // Downloading does not own entry activation. Check reader
                     // activity again after each stage's resources have arrived.
-                    await syncDeferredStages(payload.graph, {
+                    await syncDeferredStages(graph, {
                         preload, sync: graph => ctx.modules.entries.sync(graph), idle,
                         requested: () => settingsRequested,
-                        signal: lifetime.signal,
+                        signal,
                     });
                     const failures = ctx.modules.entries.state.getSnapshot().failures;
                     if (failures.length) throw new Error(`Official plugin activation failed: ${failures.map(failure => failure.id).join(', ')}`);
                     performance.mark('hapi:deferred-plugins-ready');
                     removeDemand();
-                })().catch(error => { if (!lifetime.signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => {
+                })().catch(error => { if (!signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => {
                     for (const link of preloadLinks) link.remove();
                     preloadLinks.clear();
                 });

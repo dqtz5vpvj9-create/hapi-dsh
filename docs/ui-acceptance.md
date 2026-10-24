@@ -27,6 +27,10 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阅读期间账户包与 HMR 请求必须为零，真实正文和草稿仍可使用；通过原生入口打开 Settings 才请求账户包。下载期间关闭设置时只缓存资源，重新打开才激活，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
 
+远端 DSH 会话必须另测：`TMPDIR=/mnt/cache/data-cache npx playwright test e2e/federated-cold-boot.spec.ts` 启动真实官方 Hub 与配对 Runner，在冷浏览器恢复远端会话；要求首次正文与输入框不请求远端 Account/HMR，刷新后的远端插件传输字节为 0，草稿保留，每次连接只请求一次远端目录。另一用例用超过 20 条消息的远端会话，检查首次 follow 的窗口为 20、向前连续滚轮能通过官方分页找回最早消息、断线重连恢复官方完整窗口请求，以及草稿和重连后的实时消息仍保留。远端设置仍通过自身 Host 的认证传输加载完整插件图。不得用本地 HAPI 源会话或已启动的远端图热切换代替这个用例。
+
+生产远端探针：设置 `HAPI_DSH_PROBE_SESSION` 为既有 `hapi-remote:` 资源标识，运行 `HAPI_DSH_LATENCY_MS=120 HAPI_DSH_DOWNLOAD_MBPS=10 npm run test:perf:federated`。标识只在进程内用于选中目标，报告不记录它。探针在隔离浏览器内提供临时布局，HTTP 只放行列举的读取 RPC，WebSocket 只放行 `session/follow`、`session/control`、`workspace/follow` 与 `$events`（rc.3 的 `session/control` 仅发送状态快照和更新，不接收操作）；其余操作拒绝，不修改源会话或生产布局。原始时序、传输字节和长任务写入 `/mnt/cache/data-cache/hapi-dsh-federated-cold/report.json`。其网络参数只整形 HTTP；WebSocket 经过只读过滤，不能将结果称为用户线路或未经探针干预的精确端到端性能。
+
 队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执只在现有 `⋯ → 会话状态与回执` 中查询，不显示独立感叹号；检查后源端仍未确认时须给出反馈，刷新不重发，真实排队消息仍可取回编辑。带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px，并检查展开菜单的左右边界。固定 webshot 命令输出菜单关闭、展开及检查结果的截图；需实际查看产物后才能报告视觉通过。
 
 手机导航与栏位专项运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/mobile-chrome.spec.ts`。用例使用 pinned 官方 DSH Host、Conversation 和合成源会话，在 360/390px 触摸模拟下检查返回列表、草稿与 pane 身份保留、分屏切换和状态入口，并用 1440px 桌面检查独立标题栏仍然可用。截图由固定 `webshot` 命令重放对应状态；Agent 必须逐图打开并查看，才能报告视觉通过。该专项不发送真实消息，也未覆盖物理手机；命令和断言的存在不代表本轮已经通过。

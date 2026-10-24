@@ -54,6 +54,9 @@ import { createSessionWarmup } from './surface/session-warmup.ts'
 import { HostOpeningTiming, observePaneOpening } from './surface/pane-opening.ts'
 import { bindInitialHistory } from './seamless/index.ts'
 import { recordDiagnostic } from './diagnostics/index.ts'
+import { workspaceBootGraph } from '../shared/boot-graph.ts'
+import { installDeferredPlugins } from './deferred-plugins.ts'
+import { withOpeningHistory } from './session-opening-stream.ts'
 
 const PLATFORM_MODULES = [
     'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
@@ -238,9 +241,12 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         set(_current, property) { return property === 'title' },
     })
     const modulesExport = createGraphModules(documentFacade)
+    const openedHistories = new Set<string>()
     const socket = (input: string, protocols?: string | string[]): ConnectionWebSocket => {
-        const wrap = (socket: WebSocket): ConnectionWebSocket => initialCatalog
-            ? deferInitialWorkspaceStream(socket, initialCatalog, AbortSignal.any([signal, initialLifetime.signal])) : socket
+        const wrap = (socket: WebSocket): ConnectionWebSocket => {
+            const history = withOpeningHistory(socket, openedHistories)
+            return initialCatalog ? deferInitialWorkspaceStream(history, initialCatalog, AbortSignal.any([signal, initialLifetime.signal])) : history
+        }
         const upstream = new URL(input, baseUrl)
         if (host.id === 'local') {
             upstream.protocol = upstream.protocol === 'https:' || upstream.protocol === 'wss:' ? 'wss:' : 'ws:'
@@ -269,7 +275,10 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     })
     const fetchBundle = async (url: string): Promise<string> => {
         const started = performance.now()
-        const result = await hostFetch(url, { cache: 'no-cache' })
+        // Official artifact URLs carry their revision and the Host serves them
+        // immutable. Revalidation here redownloads every remote bundle because
+        // those responses have no ETag, even on an otherwise cached reload.
+        const result = await hostFetch(url)
         if (!result.ok) throw new Error(`${host.label}: plugin artifact returned HTTP ${result.status}`)
         const source = await result.text()
         recordDiagnostic({ source: 'performance', event: 'pane.opening', method: 'host.bundle.loaded',
@@ -300,7 +309,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     if (prefetchBundles) {
         void prefetchPaneArtifacts({
             // The loader initially requests published phase batches, not row
-            // fallbacks. Shared Hosts keep their full graph and all plugins.
+            // fallbacks. Optional Settings entries join only on demand.
             entries: boot.batches, baseUrl, artifacts: resources.artifacts,
             // Local Hosts can saturate the browser's connections; a paired Host
             // usually crosses the Hub reverse tunnel, where a smaller burst is
@@ -328,9 +337,11 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         ctx.reflect.provide('hapiWorkspaceUi', navigation)
     }
     let stopped = false
+    let stopDeferred = (): void => {}
     const stop = async (): Promise<void> => {
         if (stopped) return
         stopped = true
+        stopDeferred()
         initialLifetime.abort(); releaseInitialCatalog()
         input.reset(); stopCheckpoint?.(); unvisibility?.(); window.removeEventListener('blur', blur)
         keyboard.length = 0
@@ -352,6 +363,18 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
             if (error) throw new Error(`${host.label}: ${entry.options.name}: ${error.message}`)
         }
         if (!ctx.get('sessions') || !ctx.get('uiWorkspace') || !ctx.get('uiRenderer')) throw new Error(`${host.label}: official DSH Client services did not activate`)
+        if (sharedHost) stopDeferred = installDeferredPlugins(ctx, {
+            signal,
+            async loadGraph(requestSignal) {
+                const response = await hostFetch('hapi-dsh/bootstrap', { cache: 'no-store', signal: requestSignal })
+                if (!response.ok) throw new Error(`${host.label}: plugin graph HTTP ${response.status}`)
+                const payload = bootstrapSchema.parse(await response.json())
+                resources.payload = payload
+                return payload.graph as WebBootGraph
+            },
+            preload: graph => prefetchPaneArtifacts({ entries: graph.batches, baseUrl,
+                artifacts: resources.artifacts, concurrency: 6, load: fetchBundle }),
+        })
         return { ctx, stop, dispatch(event, capture) {
             const seen = capture ? captured : bubbled
             if (seen.has(event)) return
@@ -389,6 +412,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     let hostUiScope: ReturnType<Context['inject']> | undefined
     let unprovideHostUi: (() => void) | undefined
     let unhostChrome: (() => void) | undefined
+    let uninitialCatalog = (): void => {}
     let removeHost: (() => void) | undefined
     // Pane roots outlive their position in the workspace React tree. Moving a
     // pane, hiding a window, or visiting a primary Host plugin page must preserve
@@ -902,7 +926,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             const resources = await resourcesForHost()
             timing.mark('resources')
             if (shared) { catalogSurface.hidden = false; catalogSurface.style.display = 'contents'; catalogSurface.dataset.hapiSharedHost = host.id }
-            catalog = await bootGraph(root, host, resources, resources.payload.graph as WebBootGraph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, true, shared)
+            const graph = resources.payload.graph as WebBootGraph
+            catalog = await bootGraph(root, host, resources, shared ? workspaceBootGraph(graph) : graph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, true, shared)
             timing.mark('graph')
         }
         if (shared) {
@@ -956,12 +981,20 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             ...(shared ? { warmSession } : {}),
         })
         unsubscribeLayout = workspace.store.subscribe(reconcilePanes)
-        await catalog?.ctx.sessions.refresh()
-        timing.mark('catalog')
+        // The official connection generation owns the initial list pull. A
+        // refresh here races handleConnected(), which discards that in-flight
+        // pull and starts another full catalog scan on large remote Hosts.
+        const list = (catalog?.ctx ?? root).sessions.list
+        const catalogReady = (): void => {
+            if (list.getSnapshot().phase !== 'ready') return
+            timing.mark('catalog'); uninitialCatalog()
+        }
+        uninitialCatalog = list.subscribe(catalogReady)
+        catalogReady()
         let stopped = false
         return { async stop() {
             if (stopped) return
-            stopped = true; unsubscribeLayout?.(); removeHost?.()
+            stopped = true; unsubscribeLayout?.(); uninitialCatalog(); removeHost?.()
             await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
             activePanes.clear()
             cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
@@ -969,7 +1002,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         } }
     } catch (error) {
         timing.mark('failed')
-        unsubscribeLayout?.(); removeHost?.()
+        unsubscribeLayout?.(); uninitialCatalog(); removeHost?.()
         await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
         cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
         await catalog?.stop(); catalogSurface.remove(); parking.remove(); throw error
