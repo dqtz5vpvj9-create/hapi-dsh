@@ -16,7 +16,8 @@
 - 近顶部阈值 `min(clientHeight, 600)` px；`data-chat-following-tail` 存在（tail following）时不触发；正文选区或正文指针拖选视为读者固定。composer 保留焦点不阻断正文滚轮分页，但编辑器内的键盘输入不作为分页手势。
 - 单 surface 单飞；burst 上限 3 页 / 1200ms；跨 pane 聚合并发 2、启动 4 次 / 1000ms（超出丢弃、等下一次手势，不排队）。
 - 每个手势最多自动翻一页；开始前重新读取官方控件，`disabled`（= 正在加载）时绝不点击。
-- 成功判定不依赖按钮 re-enable：记录顶部锚点身份与行数，只有**顶行变化且行数增长**才算前进；超时或观察到按钮已可用但无 prepend 记为 `no-progress`；行数下降视为官方窗口 reset，直接重置状态且不做补偿。
+- 可信触摸打断官方分页锚时，如果更早按钮已经处于 loading，也观察该在途页。因此手动点击和官方预取同样能保留正在阅读的位置；观察过程不发请求，不占用或释放自动分页槽位，不增加自动页数。源失败仍由官方路径处理。
+- 成功判定不依赖按钮 re-enable：记录顶部锚点身份与行数，只有**顶行变化且行数增长**才算前进；自动请求超时或按钮已可用但无 prepend 记为 `no-progress`；只有行数下降且顶行身份改变才视为官方窗口 reset，直接重置状态且不做补偿。
 - 失败冷却 1s×失败次数（上限 4s）；连续 3 次失败 `suspended`，停止自动加载；手动翻页成功后自动恢复。`data-hapi-seamless` 取 `error | suspended | limit`，并通过 `hapi-dsh:seamless-history` CustomEvent 提供给诊断层（失败事件有节流，不会形成 click loop）。
 - 每 host+session 自动加载页数上限默认 20（可配置），到限后停止自动、保留手动按钮。官方 retained window 没有 trim API，手动翻页仍可无限增长；这是被显式接受的限制。
 

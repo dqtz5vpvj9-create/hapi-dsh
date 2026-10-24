@@ -35,7 +35,7 @@ test.beforeAll(async () => {
   warm.environment.hapi.emit({ type: 'session-added', sessionId: fixture.session.id })
 })
 test.afterAll(async () => { await warm?.close() })
-test.use({ screenshot: 'off' })
+test.use({ screenshot: 'off', trace: { mode: 'retain-on-failure', snapshots: process.env.HAPI_DSH_TOUCH_SNAPSHOTS === '1' } })
 
 async function frames(page: Page, pane: Locator, active: boolean): Promise<MotionFrame[]> {
   if (!active) return page.evaluate(() => {
@@ -75,7 +75,7 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
     }
     let requestedHead: { element: HTMLElement; key: string } | null = null
     const history = (event: Event) => {
-      const detail = (event as CustomEvent<{ type: string; detail: string | null }>).detail
+      const detail = (event as CustomEvent<{ type: string; detail: string | null; sessionPages: number }>).detail
       let structure: Record<string, unknown> = {}
       if (['requested', 'reset', 'committed', 'failed'].includes(detail.type)) {
         const column = port.querySelector('[data-chat-flow]:not([data-step-process-content])')
@@ -87,7 +87,7 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
           requestedHeadIndex: requestedHead ? rows.indexOf(requestedHead.element) : -1,
           requestedHeadRetained: !!requestedHead && !!column?.contains(requestedHead.element) && requestedHead.element.dataset.chatAnchorKey === requestedHead.key }
       }
-      record(detail.type, { detail: detail.detail, ...structure })
+      record(detail.type, { detail: detail.detail, sessionPages: detail.sessionPages, ...structure })
     }
     // Event-frequency, local ancestry only. A drag can start on a process
     // button, and a previous gesture's scrollend may arrive after touchstart.
@@ -114,16 +114,26 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
     let touching = false
     const start = () => { touching = true }
     const end = () => { touching = false }
+    // A recording can begin while the previous gesture still has inertia.
+    // Attribute direction only after the new gesture actually starts moving;
+    // keep every frame for stalls, blanks and anchor discontinuities.
+    const firstMove = (event: TouchEvent) => {
+      if (!event.isTrusted || probe.firstTrustedTouchMoveAt !== null) return
+      probe.firstTrustedTouchMoveAt = performance.now()
+      record('first-touchmove', { trusted: true })
+    }
     port.addEventListener('touchstart', start, { passive: true })
     port.addEventListener('touchend', end, { passive: true })
     port.addEventListener('touchcancel', end, { passive: true })
-    const probe = { active: true, frames: [] as MotionFrame[], longFrames, historyEvents, stop() {
+    port.addEventListener('touchmove', firstMove, { passive: true })
+    const probe = { active: true, frames: [] as MotionFrame[], longFrames, historyEvents, firstTrustedTouchMoveAt: null as number | null, stop() {
       intersections.disconnect(); changes.disconnect(); markerChanges.disconnect()
       if (longObserver) { collectLongFrames(longObserver.takeRecords()); longObserver.disconnect() }
       window.removeEventListener('hapi-dsh:seamless-history', history)
       for (const type of ['pointerdown', 'keydown', 'wheel']) window.removeEventListener(type, input, true)
       for (const type of ['touchstart', 'touchend', 'touchcancel', 'scrollend']) port.removeEventListener(type, input, true)
       port.removeEventListener('touchstart', start); port.removeEventListener('touchend', end); port.removeEventListener('touchcancel', end)
+      port.removeEventListener('touchmove', firstMove)
     } }
     Reflect.set(window, '__touchMotion', probe)
     let primed = false
@@ -178,12 +188,30 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
   return []
 }
 
-async function swipe(page: Page, cdp: CDPSession, pane: Locator, direction: 'earlier' | 'later', onMove?: () => void, fast = false) {
-  const port = await pane.locator('[data-conversation-scroll]').boundingBox()
+async function swipe(page: Page, cdp: CDPSession, pane: Locator, direction: 'earlier' | 'later', onMove?: () => void, fast = false, outerOnly = false) {
+  const scroller = pane.locator('[data-conversation-scroll]')
+  const port = await scroller.boundingBox()
   if (!port) throw new Error('No mobile transcript viewport')
-  const x = port.x + port.width * .55
+  const x = port.x + (outerOnly ? 6 : port.width * .55)
   const first = port.y + port.height * (direction === 'earlier' ? .25 : .75)
   const last = port.y + port.height * (direction === 'earlier' ? .75 : .25)
+  const route = outerOnly ? await scroller.evaluate((port, { x, y, direction }) => {
+    const target = port.ownerDocument.elementFromPoint(x, y)
+    let ancestor = target, innerScrollable = false, innerConsumes = false
+    while (ancestor && ancestor !== port && port.contains(ancestor)) {
+      if (ancestor instanceof HTMLElement && ancestor.scrollHeight > ancestor.clientHeight + 1
+        && /auto|scroll/.test(getComputedStyle(ancestor).overflowY)) {
+        innerScrollable = true
+        innerConsumes ||= direction === 'earlier' ? ancestor.scrollTop > 0 : ancestor.scrollTop < ancestor.scrollHeight - ancestor.clientHeight
+      }
+      ancestor = ancestor.parentElement
+    }
+    return { x, y, direction, inPort: !!target && port.contains(target), tag: target?.tagName, innerScrollable, innerConsumes }
+  }, { x, y: first, direction }) : undefined
+  if (route) {
+    expect(route.inPort, 'the outer gesture must start inside the chat viewport').toBe(true)
+    expect(route.innerConsumes, 'the outer gesture must not be consumed by nested tool output').toBe(false)
+  }
   const touch = (y: number) => [{ x, y, id: 1, radiusX: 5, radiusY: 5, force: 1 }]
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: touch(first) })
   const steps = fast ? 6 : 12
@@ -195,6 +223,7 @@ async function swipe(page: Page, cdp: CDPSession, pane: Locator, direction: 'ear
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   // Include native inertial frames after the finger leaves the screen.
   await page.waitForTimeout(400)
+  return route
 }
 
 /** Optional scheduling trace, kept separate from ordinary acceptance runs. */
@@ -202,6 +231,7 @@ async function traceMotion(cdp: CDPSession): Promise<() => Promise<string | unde
   if (process.env.HAPI_DSH_TOUCH_TRACE !== '1') return async () => undefined
   await cdp.send('Tracing.start', { transferMode: 'ReturnAsStream',
     categories: 'devtools.timeline,disabled-by-default-devtools.timeline,blink.user_timing,latencyInfo,cc,input,v8' })
+  await cdp.send('Runtime.evaluate', { expression: "performance.mark('hapi-touch-trace-start:' + performance.now())" })
   return async () => {
     const completed = new Promise<string>(resolve => cdp.once('Tracing.tracingComplete', event => resolve(event.stream!)))
     await cdp.send('Tracing.end')
@@ -220,7 +250,7 @@ async function traceMotion(cdp: CDPSession): Promise<() => Promise<string | unde
   }
 }
 
-function movement(samples: MotionFrame[], direction: 'earlier' | 'later') {
+function movement(samples: MotionFrame[], direction: 'earlier' | 'later', directionSince?: number) {
   let reverse = 0, largestStep = 0, total = 0, paired = 0
   const frames: number[] = []
   for (let i = 1; i < samples.length; i++) {
@@ -230,8 +260,10 @@ function movement(samples: MotionFrame[], direction: 'earlier' | 'later') {
     const next = previous && after.rows.find(row => row.key === previous.key)
     if (!previous || !next) continue
     const dy = next.top - previous.top
+    largestStep = Math.max(largestStep, Math.abs(dy))
+    if (directionSince !== undefined && before.at < directionSince) continue
     const signed = direction === 'earlier' ? dy : -dy
-    reverse = Math.max(reverse, -signed); largestStep = Math.max(largestStep, Math.abs(dy)); total += signed; paired++
+    reverse = Math.max(reverse, -signed); total += signed; paired++
   }
   return { reverse, largestStep, total, paired, maxFrameMs: Math.max(0, ...frames),
     blankFrames: samples.filter(row => row.rows.length === 0).length,
@@ -517,8 +549,10 @@ for (const mode of ['fling', 'held pause', 'process button'] as const) test(`mob
   }
 })
 
-for (const phase of ['held', 'released gap'] as const) test(`mobile earliest boundary ${phase}: continued loading-area gestures preserve the old first row`, async ({}, info) => {
+for (const phase of ['held', 'released gap', 'manual released gap', 'manual reverse'] as const) test(`mobile earliest boundary ${phase}: continued loading-area gestures preserve the old first row`, async ({}, info) => {
   test.setTimeout(120_000)
+  const manual = phase.startsWith('manual'), reverse = phase === 'manual reverse'
+  const direction = reverse ? 'later' : 'earlier'
   const page = await warm.page({ width: 360, height: 844 }, true)
   await warm.admit(page)
   await page.locator('.hapi-mobile-header-picker button').click()
@@ -531,8 +565,8 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
   await expect(older).toBeEnabled()
   await port.tap({ position: { x: 30, y: 100 } })
   await page.waitForTimeout(300)
-  await port.evaluate(element => { element.scrollTop = 400 })
-  await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(400)
+  await port.evaluate((element, top) => { element.scrollTop = top }, manual ? 0 : 400)
+  await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(manual ? 0 : 400)
   let requested = false, released = false, release!: () => void, requestDelayMs = 0
   const gate = new Promise<void>(resolve => { release = () => { released = true; resolve() } })
   await page.route('**/api/session/page', async route => {
@@ -551,15 +585,20 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
       offset, documentTop: offset + port.scrollTop, scrollTop: port.scrollTop, height: port.scrollHeight,
       controlDisabled: port.querySelector<HTMLButtonElement>('[data-chat-flow]:not([data-step-process-content]) > div > button')?.disabled }
   })
-  let before: BoundaryReading | undefined, after: BoundaryReading | undefined, samples: MotionFrame[] = []
+  let before: BoundaryReading | undefined, after: BoundaryReading | undefined, edge: BoundaryReading | undefined, samples: MotionFrame[] = []
+  let budgetBefore: number | undefined
   let recording = false, fingerHeld = false, primaryFailure: unknown
   try {
-    // The first completed gesture requests an older page; the route remains
-    // in flight while two more trusted gestures repeatedly reach the boundary.
-    await swipe(page, cdp, pane, 'earlier')
+    // Cover both automatic paging and a real tap on the official control: the
+    // latter does not create an automatic controller-owned pending request.
+    // Two more trusted gestures reach the boundary while that page is held.
+    if (manual) {
+      await frames(page, pane, true); recording = true
+      await older.tap()
+    } else await swipe(page, cdp, pane, 'earlier')
     await expect.poll(() => requested).toBe(true)
     await expect(older).toBeDisabled()
-    await frames(page, pane, true); recording = true
+    if (!recording) { await frames(page, pane, true); recording = true }
     await port.evaluate(port => {
       const row = [...port.querySelectorAll<HTMLElement>('[data-chat-flow]:not([data-step-process-content]) [data-chat-anchor-key]')]
         .find(row => !row.closest('[hidden]') && row.dataset.chatAnchorKey)
@@ -567,11 +606,11 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
       Reflect.set(window, '__earliestBoundary', { row, port, key: row.dataset.chatAnchorKey })
     })
     const box = (await port.boundingBox())!
-    const pan = async (x: number, y: number, end: boolean) => {
+    const pan = async (x: number, y: number, end: boolean, sign = 1) => {
       const points = (offset: number) => [{ x, y: y + offset, id: 1, radiusX: 5, radiusY: 5, force: 1 }]
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(0) }); fingerHeld = true
       for (let step = 1; step <= 6; step++) {
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(step * 20) })
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(sign * step * 20) })
         await page.waitForTimeout(12)
       }
       if (end) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); fingerHeld = false }
@@ -580,12 +619,23 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
     await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(0)
     await page.waitForTimeout(100)
     const loading = (await older.boundingBox())!
-    await pan(loading.x + loading.width / 2, loading.y + loading.height / 2, phase === 'released gap')
+    await pan(loading.x + loading.width / 2, loading.y + loading.height / 2, phase !== 'held')
     // Observe native scrollend if Chromium delivers it at the held boundary;
     // do not synthesize an event that the browser did not actually send.
     await page.waitForTimeout(250)
+    edge = await readBoundary()
+    expect(edge.scrollTop).toBe(0)
+    if (reverse) {
+      // The retained boundary bookmark must not erase a subsequent deliberate
+      // move toward newer messages while the same older request is in flight.
+      await pan(box.x + box.width * .55, box.y + box.height - 80, true, -1)
+      await page.waitForTimeout(250)
+    }
     before = await readBoundary()
-    expect(before.scrollTop).toBe(0)
+    if (reverse) {
+      expect(before.scrollTop, 'the reverse gesture must actually leave the oldest boundary').toBeGreaterThan(80)
+      expect(before.documentTop).toBe(edge.documentTop)
+    } else expect(before.scrollTop).toBe(0)
     expect(before.controlDisabled).toBe(true)
     release()
     await expect.poll(() => port.evaluate(element => element.scrollHeight)).toBeGreaterThan(before.height + 1000)
@@ -593,13 +643,25 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
     after = await readBoundary()
     samples = await frames(page, pane, false)
     const events = await page.evaluate(() => Reflect.get(window, '__touchMotion').historyEvents as Array<Record<string, unknown>>)
-    expect(events.filter(event => event.type === 'touchstart')).toHaveLength(2)
-    expect(events.filter(event => event.type === 'touchstart').at(-1)?.button, 'the final trusted drag must begin on the top loading control').toBe(true)
+    const touchStarts = events.filter(event => event.type === 'touchstart')
+    expect(touchStarts).toHaveLength((manual ? 3 : 2) + (reverse ? 1 : 0))
+    if (manual) {
+      expect(events.filter(event => event.type === 'requested'), 'the official manual request must not be mistaken for an automatic one').toHaveLength(0)
+      const observations = events.filter(event => event.type === 'observed' && event.detail === 'upstream-page')
+      expect(observations).toHaveLength(1)
+      budgetBefore = observations[0]?.sessionPages as number | undefined
+      expect(typeof budgetBefore, 'read the real budget when this existing upstream request is observed').toBe('number')
+      const commits = events.filter(event => event.type === 'committed')
+      expect(commits).toHaveLength(1)
+      expect(commits[0]?.detail).toBe('observed-page')
+      expect(commits[0]?.sessionPages, 'observing an existing manual request must not spend automatic-page budget').toBe(budgetBefore)
+    }
+    expect(touchStarts[manual ? 2 : 1]?.button, 'the boundary drag must begin on the top loading control').toBe(true)
     expect(after.retained, 'compare the same old first DOM row, not a newly visible replacement').toBe(true)
     expect(after.documentTop - before.documentTop, 'older content must actually be inserted before the retained row').toBeGreaterThan(1000)
     expect(Math.abs(after.offset - before.offset), 'a page arriving at the earliest boundary must continue from its bottom, not skip to its top').toBeLessThanOrEqual(2)
     expect(Math.abs((after.scrollTop - before.scrollTop) - (after.documentTop - before.documentTop))).toBeLessThanOrEqual(2)
-    expect(movement(samples, 'earlier').blankFrames).toBe(0)
+    expect(movement(samples, direction).blankFrames).toBe(0)
   } catch (error) {
     primaryFailure = error
     throw error
@@ -611,8 +673,8 @@ for (const phase of ['held', 'released gap'] as const) test(`mobile earliest bou
     }) : {}
     const directory = process.env.HAPI_DSH_VISUAL_DIR ?? '/mnt/cache/data-cache/hapi-dsh-visual-review'
     await mkdir(directory, { recursive: true })
-    const label = phase.replace(' ', '-'), path = `${directory}/touch-earliest-${label}-${Date.now()}.json`
-    await writeFile(path, JSON.stringify({ phase, requestDelayMs, before, after, samples, metrics: movement(samples, 'earlier'), ...diagnostics }))
+    const label = phase.replaceAll(' ', '-'), path = `${directory}/touch-earliest-${label}-${Date.now()}.json`
+    await writeFile(path, JSON.stringify({ phase, requestDelayMs, budgetBefore, edge, before, after, samples, metrics: movement(samples, direction), ...diagnostics }))
     await info.attach('earliest-boundary-motion', { path, contentType: 'application/json' })
     try {
       if (fingerHeld) await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
@@ -663,17 +725,20 @@ for (const width of [390, 360]) test(`mobile ${width}: repeated touch scrolling,
     try { await delay(width === 390 ? 80 : 600); await route.continue() }
     finally { inFlight-- }
   })
-  const recordings: { direction: string; frames: MotionFrame[]; metrics: ReturnType<typeof movement>; longFrames: unknown[]; historyEvents: unknown[] }[] = []
+  const recordings: { direction: string; directionSince: number; frames: MotionFrame[]; metrics: ReturnType<typeof movement>; longFrames: unknown[]; historyEvents: unknown[] }[] = []
   const live = beginUiLive(warm.environment.hapi, 'native-accept-history')
   let primaryFailure: unknown
   try {
     for (const direction of ['earlier', 'later'] as const) {
       await frames(page, pane, true)
       for (let i = 0; i < 4; i++) await swipe(page, cdp, pane, direction, () => live.update(`Touch regression live update ${direction} ${i}`), i % 2 === 1)
-      const samples = await frames(page, pane, false), result = movement(samples, direction)
+      const samples = await frames(page, pane, false)
+      const directionSince: number | null = await page.evaluate(() => Reflect.get(window, '__touchMotion').firstTrustedTouchMoveAt)
+      expect(directionSince, 'the direction must be established by a trusted touchmove').not.toBeNull()
+      const result = movement(samples, direction, directionSince!)
       const longFrames: unknown[] = await page.evaluate(() => Reflect.get(window, '__touchMotion').longFrames)
       const historyEvents: unknown[] = await page.evaluate(() => Reflect.get(window, '__touchMotion').historyEvents)
-      recordings.push({ direction, frames: samples, metrics: result, longFrames, historyEvents })
+      recordings.push({ direction, directionSince: directionSince!, frames: samples, metrics: result, longFrames, historyEvents })
       expect(result.paired).toBeGreaterThan(20)
       expect(result.total).toBeGreaterThan(100)
       expect(result.reverse, 'a held gesture must not jump against the finger').toBeLessThanOrEqual(2)
@@ -722,7 +787,7 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
   const pane = page.getByRole('region', { name: 'Pane: Native Codex touch-tools', exact: true })
   await expect(pane.getByText('Synthetic final answer 12.', { exact: false })).toBeVisible()
   const cdp = await page.context().newCDPSession(page)
-  const results: { direction: string; frames: MotionFrame[]; metrics: ReturnType<typeof movement>; longFrames: unknown[]; historyEvents: unknown[] }[] = []
+  const results: { direction: string; directionSince: number; frames: MotionFrame[]; metrics: ReturnType<typeof movement>; longFrames: unknown[]; historyEvents: unknown[]; outerRoutes: unknown[]; retainedAnchors: number }[] = []
   let stopTrace: (() => Promise<string | undefined>) | undefined
   try {
     // Reach history with a real gesture before tapping. Playwright's implicit
@@ -738,12 +803,19 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
     stopTrace = await traceMotion(cdp)
     for (const direction of ['earlier', 'later', 'earlier'] as const) {
       await frames(page, pane, true)
-      for (let i = 0; i < 5; i++) await swipe(page, cdp, pane, direction, undefined, true)
-      const samples = await frames(page, pane, false), metrics = movement(samples, direction)
+      const outerRoutes: unknown[] = []
+      for (let i = 0; i < 5; i++) outerRoutes.push(await swipe(page, cdp, pane, direction, undefined, true, true))
+      const samples = await frames(page, pane, false)
       const diagnostics = await page.evaluate(() => {
-        const probe = Reflect.get(window, '__touchMotion'); return { longFrames: probe.longFrames, historyEvents: probe.historyEvents }
+        const probe = Reflect.get(window, '__touchMotion'); return { longFrames: probe.longFrames, historyEvents: probe.historyEvents, directionSince: probe.firstTrustedTouchMoveAt as number | null }
       })
-      results.push({ direction, frames: samples, metrics, ...diagnostics })
+      expect(diagnostics.directionSince, 'the direction must be established by a trusted touchmove').not.toBeNull()
+      const metrics = movement(samples, direction, diagnostics.directionSince!)
+      const retainedAnchors = await pane.locator('[data-chat-flow]:not([data-step-process-content]) [data-chat-anchor-key]').count()
+      results.push({ direction, frames: samples, metrics, ...diagnostics, directionSince: diagnostics.directionSince!, outerRoutes, retainedAnchors })
+      const starts = (diagnostics.historyEvents as Array<Record<string, unknown>>).filter(event => event.type === 'touchstart')
+      expect(starts).toHaveLength(5)
+      expect(starts.every(event => event.inPort && !event.innerScrollable), 'every measured touch must reach outer history, not nested tool output').toBe(true)
       expect(metrics.total).toBeGreaterThan(100)
       expect(metrics.reverse).toBeLessThanOrEqual(2)
       expect(metrics.blankFrames).toBe(0)
@@ -751,6 +823,7 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
       expect(metrics.headerShift).toBeLessThanOrEqual(1)
       expect(metrics.maxFrameMs).toBeLessThan(200.2)
     }
+    expect(results.at(-1)?.retainedAnchors, 'exercise at least the 1260-anchor history that exposed the long-frame regression').toBeGreaterThanOrEqual(1260)
     expect(errors).toEqual([])
   } finally {
     const timeline = await stopTrace?.()

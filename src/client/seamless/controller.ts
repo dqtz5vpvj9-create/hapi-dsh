@@ -10,9 +10,9 @@
  * reimplementing the anchor owner: it watches the conversation scrollport for a
  * deliberate upward gesture near the top and clicks the official control. All
  * paging and rendering stay upstream. Normal paging anchors stay upstream too;
- * the sole exception is an in-flight automatic page interrupted by a new held
- * touch, after the official reader has released its anchor. One visible row
- * supplies a commit-time correction until finger release or outer scrollend.
+ * the sole exception is an in-flight page interrupted by a new held touch,
+ * after the official reader has released its anchor. One visible row supplies
+ * a commit-time correction during the drag or a gesture gap at the upper edge.
  * Touch paging waits for the outer scrollport to settle: the official button
  * retains a fixed reading anchor, which must not be acquired mid-drag/inertia.
  *
@@ -48,7 +48,7 @@ import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
 
 /** Diagnostics event emitted by one pane controller. */
 export interface SeamlessHistoryEvent {
-    readonly type: 'attached' | 'requested' | 'committed' | 'failed' | 'deferred' | 'recovered' | 'reset' | 'suspended'
+    readonly type: 'attached' | 'requested' | 'observed' | 'committed' | 'failed' | 'deferred' | 'recovered' | 'reset' | 'suspended'
     /** Workspace pane identity, when the pane element exposes one. */
     readonly paneId: string | null
     /** Official conversation session id currently rendered by the pane. */
@@ -142,8 +142,9 @@ interface SharedState {
     pointerTarget: Element | null
 }
 
-/** One in-flight automatic earlier-page request. */
+/** One in-flight earlier page, either requested here or observed upstream. */
 interface PendingLoad {
+    readonly origin: 'automatic' | 'observed'
     readonly identity: string
     readonly probe: ProgressProbe
     readonly startedAt: number
@@ -601,11 +602,14 @@ class ConversationHistoryController {
         // this new gesture. During a held drag Chromium also suspends native
         // scroll anchoring. Retain one current row for this pending page only.
         // A process-heading button is also a valid place to start a pan.
-        if (event.isTrusted && this.pending !== null && this.usable()
+        if (event.isTrusted && this.usable()
             && !isEditable(event.target)
             && !this.innerScrollConsumes(event.target, scroller, 'up')
             && !this.innerScrollConsumes(event.target, scroller, 'down')) {
-            this.interruptedAnchor = captureInterruptedPrepend(scroller)
+            // Manual paging and official prefetch use the same loading state.
+            // Observe an already-running page; never request or budget it here.
+            if (this.pending === null) this.observeEarlierPage()
+            if (this.pending !== null) this.interruptedAnchor = captureInterruptedPrepend(scroller)
         }
     }
 
@@ -742,6 +746,7 @@ class ConversationHistoryController {
 
     /** Evaluate policy and, when approved, click the official control once. */
     private requestEarlier(now: number): void {
+        if (this.pending !== null) return
         if (now < this.quietUntil) return
         // Ordinary motion inside the retained window needs no control search,
         // tail-marker scan or selection measurement. Inspect paging only near
@@ -790,7 +795,7 @@ class ConversationHistoryController {
             return
         }
         this.policy.requested(now)
-        this.pending = { identity, probe: this.probeOf(measured), startedAt: now }
+        this.pending = { origin: 'automatic', identity, probe: this.probeOf(measured), startedAt: now }
         this.awaitingRecovery = false
         this.recoveryProbe = null
         this.mark(null)
@@ -798,6 +803,18 @@ class ConversationHistoryController {
         this.observe(measured.column)
         this.setPendingTimers()
         try { control.click() } catch { this.settle('error', now) }
+    }
+
+    /** Watch an upstream page only when a reader gesture interrupts its anchor. */
+    private observeEarlierPage(): void {
+        const measured = this.measure()
+        if (measured === null || !measured.control?.disabled || measured.followingTail) return
+        const identity = this.identityOf(measured.content)
+        this.identity = identity
+        this.pending = { origin: 'observed', identity, probe: this.probeOf(measured), startedAt: this.now() }
+        this.observe(measured.column)
+        this.setPendingTimers()
+        this.emit('observed', 'upstream-page')
     }
 
     /** Install the pending-page poll and the hard timeout. */
@@ -818,7 +835,7 @@ class ConversationHistoryController {
         const pending = this.pending
         if (pending === null || this.disposed) return
         const now = this.now()
-        if (this.policy.expire(now)) { this.failPending('timeout', now); return }
+        if (pending.origin === 'automatic' && this.policy.expire(now)) { this.failPending('timeout', now); return }
         const measured = this.measure()
         if (measured === null) { this.settle('reset', now, 'view-unmounted'); return }
         if (!this.usable() || measured.followingTail) this.releaseInterruptedAnchor()
@@ -857,14 +874,16 @@ class ConversationHistoryController {
         this.interruptedAnchor = null
         this.pending = null
         this.clearPendingTimers()
-        this.policy.committed(now)
-        this.ledger.spend(pending.identity)
-        this.gate.release()
+        if (pending.origin === 'automatic') {
+            this.policy.committed(now)
+            this.ledger.spend(pending.identity)
+            this.gate.release()
+        } else this.policy.resume()
         this.awaitingRecovery = false
         this.recoveryProbe = null
         this.mark(null)
         this.observe(null)
-        this.emit('committed', null)
+        this.emit('committed', pending.origin === 'observed' ? 'observed-page' : null)
     }
 
     /** Record one failed page; automatic loading may suspend, the manual control stays. */
@@ -874,6 +893,12 @@ class ConversationHistoryController {
         if (pending === null) return
         this.pending = null
         this.clearPendingTimers()
+        if (pending.origin === 'observed') {
+            // The official request owns its failure UI. Observing it must not
+            // charge automatic backoff or release another pane's load slot.
+            this.observe(this.awaitingRecovery ? this.measure()?.column ?? null : null)
+            return
+        }
         this.policy.failed(now)
         this.gate.release()
         const suspended = this.policy.snapshot(now).suspended
@@ -888,10 +913,11 @@ class ConversationHistoryController {
     /** Record a reset/replace: cancel the generation and drop local budgets. */
     private settle(kind: 'error' | 'reset', now: number, detail = 'error'): void {
         this.releaseInterruptedAnchor()
-        if (this.pending === null) return
+        const pending = this.pending
+        if (pending === null) return
         this.pending = null
         this.clearPendingTimers()
-        this.gate.release()
+        if (pending.origin === 'automatic') this.gate.release()
         if (kind === 'reset') {
             this.policy.reset()
             this.mark(null)
@@ -901,7 +927,7 @@ class ConversationHistoryController {
             this.emit('reset', detail)
             return
         }
-        this.policy.failed(now)
+        if (pending.origin === 'automatic') this.policy.failed(now)
         const measured = this.measure()
         this.awaitingRecovery = true
         this.recoveryProbe = measured === null ? null : this.probeOf(measured)
@@ -927,10 +953,11 @@ class ConversationHistoryController {
     /** Cancel an in-flight request without counting it as a failure (session switch). */
     private cancelPending(detail: string): void {
         this.releaseInterruptedAnchor()
-        if (this.pending === null) return
+        const pending = this.pending
+        if (pending === null) return
         this.pending = null
         this.clearPendingTimers()
-        this.gate.release()
+        if (pending.origin === 'automatic') this.gate.release()
         this.observe(null)
         this.emit('reset', detail)
     }

@@ -5,10 +5,12 @@ import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules/client';
 import { deferredBootStages, independentBootBatches } from '../shared/boot-graph.ts';
 import { observeForegroundActivity } from './foreground-activity.ts';
 
-/** Give new reader input a turn between official graph reconciliations.
- * A stage already downloading may finish; the next stage waits for the reader.
+/** Download without activating entries, then give reader input a turn before
+ * official graph reconciliation. Network arrival must not activate a plugin
+ * in the middle of a gesture that began while its bundle was downloading.
  * Opening a panel deliberately asks for the complete official plugin roster. */
 export async function syncDeferredStages(graph: WebBootGraph, options: {
+    preload(graph: WebBootGraph): Promise<void>;
     sync(graph: WebBootGraph): Promise<void>;
     idle(): Promise<void>;
     requested(): boolean;
@@ -22,7 +24,15 @@ export async function syncDeferredStages(graph: WebBootGraph, options: {
         await options.idle();
         options.signal.throwIfAborted();
         const requested = options.requested();
-        await options.sync(requested ? independentBootBatches(graph) : stage);
+        const next = requested ? independentBootBatches(graph) : stage;
+        await options.preload(next);
+        // A gesture can arrive while the network is pending. Yield a task so
+        // its input events are seen before testing foreground ownership again.
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+        options.signal.throwIfAborted();
+        await options.idle();
+        options.signal.throwIfAborted();
+        await options.sync(next);
         options.signal.throwIfAborted();
         if (requested) return;
     }
@@ -36,6 +46,39 @@ export function installDeferredPlugins(ctx: Context): () => void {
     let frame = 0;
     let allowEmpty = false;
     const lifetime = new AbortController();
+    const preloaded = new Map<string, Promise<void>>();
+    const preloadLinks = new Set<HTMLLinkElement>();
+    const preload = async (graph: WebBootGraph): Promise<void> => {
+        const current = new Map(ctx.modules.manifest.modules.map(row => [row.id, row.rev]));
+        await Promise.all(graph.entries.map(row => {
+            if (current.get(row.id) === row.rev) return;
+            let pending = preloaded.get(row.url);
+            if (!pending) {
+                pending = new Promise<void>((resolve, reject) => {
+                    const link = document.createElement('link');
+                    // The official loader uses same-origin classic scripts.
+                    // Preload only warms that exact resource; it never executes
+                    // a factory, edits the module table or creates a provider.
+                    link.rel = 'preload'; link.as = 'script'; link.href = row.url;
+                    const finish = (error?: unknown): void => {
+                        lifetime.signal.removeEventListener('abort', abort);
+                        link.onload = link.onerror = null;
+                        if (error) reject(error); else resolve();
+                    };
+                    const abort = (): void => finish(lifetime.signal.reason);
+                    link.onload = () => finish();
+                    // Preload is a cache hint. Keep transport retry and error
+                    // reporting with the official loader if that hint fails.
+                    link.onerror = () => finish();
+                    lifetime.signal.addEventListener('abort', abort, { once: true });
+                    preloadLinks.add(link);
+                    document.head.append(link);
+                });
+                preloaded.set(row.url, pending);
+            }
+            return pending;
+        }));
+    };
     const activity = observeForegroundActivity(document);
     const idle = async (): Promise<void> => {
         while (!lifetime.signal.aborted && activity.busy() && ctx.layout.panelInfo.getSnapshot().activePanelId === null) {
@@ -63,17 +106,21 @@ export function installDeferredPlugins(ctx: Context): () => void {
                     const payload = await response.json() as { graph: WebBootGraph };
                     if (lifetime.signal.aborted) return;
                     // Each cumulative stage retains existing official entries.
-                    // Network arrival may finish the current stage during a
-                    // swipe, but cannot start the rest of the roster behind it.
+                    // Downloading does not own entry activation. Check reader
+                    // activity again after each stage's resources have arrived.
                     await syncDeferredStages(payload.graph, {
-                        sync: graph => ctx.modules.entries.sync(graph), idle,
+                        preload, sync: graph => ctx.modules.entries.sync(graph), idle,
                         requested: () => ctx.layout.panelInfo.getSnapshot().activePanelId !== null,
                         signal: lifetime.signal,
                     });
                     const failures = ctx.modules.entries.state.getSnapshot().failures;
                     if (failures.length) throw new Error(`Official plugin activation failed: ${failures.map(failure => failure.id).join(', ')}`);
                     performance.mark('hapi:deferred-plugins-ready');
-                })().catch(error => { if (!lifetime.signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => activity.dispose());
+                })().catch(error => { if (!lifetime.signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => {
+                    activity.dispose();
+                    for (const link of preloadLinks) link.remove();
+                    preloadLinks.clear();
+                });
             });
         });
     };
@@ -89,5 +136,9 @@ export function installDeferredPlugins(ctx: Context): () => void {
     // turns a slow conversation into a reason to compete with its download.
     const emptyWorkspace = setTimeout(() => { allowEmpty = true; ready(); }, 10_000);
     ready();
-    return () => { lifetime.abort(); activity.dispose(); observer.disconnect(); stopPanel(); clearTimeout(emptyWorkspace); cancelAnimationFrame(frame); };
+    return () => {
+        lifetime.abort(); activity.dispose(); observer.disconnect(); stopPanel(); clearTimeout(emptyWorkspace); cancelAnimationFrame(frame);
+        for (const link of preloadLinks) link.remove();
+        preloadLinks.clear();
+    };
 }

@@ -45,11 +45,20 @@ test('cold conversation does not wait for account assets; deferred activation yi
     const accountGate = new Promise<void>(resolve => { releaseAccount = resolve; });
     let accountRequested = false;
     let accountReceived = false;
+    let accountRequests = 0;
     let watchedEntries: string[] = [];
     const requestedEntries: string[] = [];
     const errors: string[] = [];
     const sockets: string[] = [];
     const panelRequests: string[] = [];
+    await page.addInitScript(() => {
+        Reflect.set(window, '__coldAccountScripts', 0);
+        document.addEventListener('load', event => {
+            if (event.target instanceof HTMLScriptElement && decodeURIComponent(event.target.src).includes('dsh-client-ui-settings-account')) {
+                Reflect.set(window, '__coldAccountScripts', Reflect.get(window, '__coldAccountScripts') + 1);
+            }
+        }, true);
+    });
     page.on('pageerror', error => errors.push(error.message));
     page.on('websocket', socket => sockets.push(new URL(socket.url()).pathname));
     page.on('request', request => {
@@ -61,6 +70,7 @@ test('cold conversation does not wait for account assets; deferred activation yi
     await page.route('**/plugins/**', async route => {
         if (decodeURIComponent(route.request().url()).includes('dsh-client-ui-settings-account')) {
             accountRequested = true;
+            accountRequests++;
             await accountGate;
         }
         await route.continue();
@@ -95,18 +105,22 @@ test('cold conversation does not wait for account assets; deferred activation yi
         await page.mouse.up();
         await expect.poll(() => accountRequested).toBe(true);
         // A new reader gesture begins after reconciliation already issued its
-        // first request. That in-flight dependency closure may finish, but the
-        // next optional stage must yield until this finger leaves the page.
+        // first request. Download may finish, but even this current plugin's
+        // script must not execute until the finger leaves the page.
         const cdp = await page.context().newCDPSession(page);
         await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 700, y: 300, id: 1 }] });
         releaseAccount();
         await expect.poll(() => accountReceived).toBe(true);
         await page.waitForTimeout(900);
+        expect(await page.evaluate(() => Reflect.get(window, '__coldAccountScripts')),
+            'a completed preload must not execute the current plugin during the gesture').toBe(0);
         expect(requestedEntries.filter(id => laterEntries.includes(id)), 'a gesture during one module load must pause later activation stages').toEqual([]);
         await expect(editor).toHaveAttribute('data-cold-editor', 'original');
         await expect(editor).toHaveText('Keep my draft through deferred plugin activation');
         await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
         await page.waitForFunction(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length > 0);
+        expect(await page.evaluate(() => Reflect.get(window, '__coldAccountScripts'))).toBe(1);
+        expect(accountRequests, 'official activation must reuse the resource already downloaded by preload').toBe(1);
         await expect(editor).toHaveAttribute('data-cold-editor', 'original');
         await expect(editor).toHaveText('Keep my draft through deferred plugin activation');
         expect(errors).toEqual([]);

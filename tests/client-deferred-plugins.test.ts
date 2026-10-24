@@ -22,7 +22,7 @@ test('reader input dispatched after an in-flight stage pauses the next stage', a
     const reachedIdle = deferred(), releaseReader = deferred(), calls: WebBootGraph[] = [];
     let busy = false;
     const work = syncDeferredStages(graph(), {
-        signal: new AbortController().signal, requested: () => false,
+        preload: async () => {}, signal: new AbortController().signal, requested: () => false,
         async sync(stage) {
             calls.push(stage);
             if (calls.length === 1) setTimeout(() => { busy = true; }, 0);
@@ -40,7 +40,7 @@ test('opening a panel during a stage requests the full roster at the next bounda
     const full = graph(), calls: WebBootGraph[] = [];
     let requested = false;
     await syncDeferredStages(full, {
-        signal: new AbortController().signal, requested: () => requested, idle: async () => {},
+        preload: async () => {}, signal: new AbortController().signal, requested: () => requested, idle: async () => {},
         async sync(stage) { calls.push(stage); requested = true; },
     });
     assert.equal(calls.length, 2);
@@ -50,7 +50,7 @@ test('opening a panel during a stage requests the full roster at the next bounda
 test('disposing after a stage leaves it installed and prevents subsequent reconciliation', async () => {
     const controller = new AbortController(), calls: WebBootGraph[] = [];
     const work = syncDeferredStages(graph(), {
-        signal: controller.signal, requested: () => false, idle: async () => {},
+        preload: async () => {}, signal: controller.signal, requested: () => false, idle: async () => {},
         async sync(stage) { calls.push(stage); controller.abort(new Error('disposed')); },
     });
     await assert.rejects(work, /disposed/);
@@ -60,8 +60,44 @@ test('disposing after a stage leaves it installed and prevents subsequent reconc
 test('a rejected official reconciliation ends the background task without starting another stage', async () => {
     let calls = 0;
     await assert.rejects(syncDeferredStages(graph(), {
-        signal: new AbortController().signal, requested: () => false, idle: async () => {},
+        preload: async () => {}, signal: new AbortController().signal, requested: () => false, idle: async () => {},
         async sync() { calls++; throw new Error('release unavailable'); },
     }), /release unavailable/);
     assert.equal(calls, 1);
+});
+
+
+test('a gesture started during download delays activation of that same stage', async () => {
+    const arrived = deferred(), releaseDownload = deferred(), blockedActivation = deferred(), releaseReader = deferred();
+    const downloads: WebBootGraph[] = [], activations: WebBootGraph[] = [];
+    let busy = false;
+    const work = syncDeferredStages(graph(), {
+        signal: new AbortController().signal, requested: () => false,
+        async preload(stage) {
+            downloads.push(stage);
+            if (downloads.length === 1) { arrived.resolve(); await releaseDownload.promise; }
+        },
+        async idle() { if (busy) { blockedActivation.resolve(); await releaseReader.promise; busy = false; } },
+        async sync(stage) { activations.push(stage); },
+    });
+    await arrived.promise;
+    busy = true; releaseDownload.resolve();
+    await blockedActivation.promise;
+    assert.equal(activations.length, 0, 'download completion cannot activate a plugin during the new gesture');
+    releaseReader.resolve(); await work;
+    assert.deepEqual(activations, downloads, 'every downloaded stage still reaches official activation');
+});
+
+test('disposing during download prevents activation when the resource arrives', async () => {
+    const arrived = deferred(), releaseDownload = deferred(), controller = new AbortController();
+    let activations = 0;
+    const work = syncDeferredStages(graph(), {
+        signal: controller.signal, requested: () => false, idle: async () => {},
+        async preload() { arrived.resolve(); await releaseDownload.promise; },
+        async sync() { activations++; },
+    });
+    await arrived.promise;
+    controller.abort(new Error('disposed')); releaseDownload.resolve();
+    await assert.rejects(work, /disposed/);
+    assert.equal(activations, 0);
 });
