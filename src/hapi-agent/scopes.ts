@@ -16,11 +16,24 @@ export interface ObservedScopeInfo extends ObservedScope {
   createdAt: number
   updatedAt: number
 }
-interface Fact {
-  rowId: string; createdAt: number; seq: number | null; data: Record<string, unknown>; kind: 'sdk' | 'agent-run'
+interface FactIdentity {
+  rowId: string; createdAt: number; seq: number | null
   uuid: string; parentUuid: string | null; direct: string | null; sidechain: boolean; prompt: string | null
 }
 interface Tool { rowId: string; id: string; prompt: string | null; label: string }
+interface SdkFact extends FactIdentity {
+  kind: 'sdk'; stringContent: boolean; tools: readonly Tool[]
+  results: readonly { id: string; reason: 'completed' | 'error'; error: string | null }[]
+  terminal: 'completed' | 'error' | null
+  label: string | null
+}
+interface AgentRunFact extends FactIdentity {
+  kind: 'agent-run'; type: 'agent-run-start' | 'agent-run-update' | 'agent-run-trace'
+  agentId: string | null; cardId: string | null; parentAgentId: string | null
+  label: string | null; status: string | null; activity: string | null; closing: boolean
+  eventId: string | null; error: string | null
+}
+type Fact = SdkFact | AgentRunFact
 export interface ObservedScopeCompletion {
   scopeId: string; parentToolCallId: string | null; key: string
   reason: 'completed' | 'error' | 'aborted'; error: string | null
@@ -40,15 +53,45 @@ function prompt(content: unknown): string | null {
 function fact(row: HapiMessage): Fact | undefined {
   const envelope = envelopeFor(row.content), content = record(envelope?.content), data = record(content?.data)
   if (envelope?.role !== 'agent' || !data) return
-  if (content?.type === 'output') return { rowId: row.id, createdAt: row.createdAt, seq: row.seq, data, kind: 'sdk',
-    uuid: string(data.uuid) ?? row.id, parentUuid: string(data.parentUuid), direct: string(data.parentToolUseId),
-    sidechain: data.isSidechain === true || typeof data.parentToolUseId === 'string',
-    prompt: data.type === 'user' ? prompt(record(data.message)?.content) : null }
-  if (['codex', 'event'].includes(String(content?.type)) && ['agent-run-start', 'agent-run-update', 'agent-run-trace'].includes(String(data.type))) {
+  const identity = { rowId: row.id, createdAt: row.createdAt, seq: row.seq }
+  const label = string(data.nickname ?? data.name ?? data.summary)
+  // Keep lineage, prompt matching and completion facts without owning the
+  // source message. Live child snapshots get fresh transport row IDs; raw
+  // data would retain every cumulative text after the Hub replaces its row.
+  if (content?.type === 'output') {
+    const messageContent = record(data.message)?.content, tools: Tool[] = [], results: SdkFact['results'][number][] = []
+    if (Array.isArray(messageContent)) for (const raw of messageContent) {
+      const block = record(raw), input = record(block?.input)
+      if (block?.type === 'tool_use' && string(block.id) && subagentTool(block.name)) {
+        tools.push({ rowId: row.id, id: String(block.id), prompt: string(input?.prompt),
+          label: string(input?.description) ?? string(input?.subagent_type) ?? String(block.name) })
+      }
+      const id = string(block?.tool_use_id)
+      if (block?.type === 'tool_result' && id) results.push({ id, reason: block.is_error === true ? 'error' : 'completed',
+        error: block.is_error === true ? prompt(block.content) ?? 'The source subagent tool failed' : null })
+    }
+    return { ...identity, kind: 'sdk', uuid: string(data.uuid) ?? row.id,
+      parentUuid: string(data.parentUuid), direct: string(data.parentToolUseId),
+      sidechain: data.isSidechain === true || typeof data.parentToolUseId === 'string',
+      prompt: data.type === 'user' ? prompt(messageContent) : null, stringContent: typeof messageContent === 'string',
+      tools, results, label, terminal: data.type === 'result' || data.type === 'system' && data.subtype === 'turn_duration'
+        ? data.is_error === true ? 'error' : 'completed' : null }
+  }
+  const type = data.type
+  if ((content?.type === 'codex' || content?.type === 'event')
+    && (type === 'agent-run-start' || type === 'agent-run-update' || type === 'agent-run-trace')) {
     const agent = string(data.agentId ?? data.agent_id), card = string(data.cardId ?? data.card_id)
     if (!agent && !card) return // An unidentified start is still visible as a source notice.
-    return { rowId: row.id, createdAt: row.createdAt, seq: row.seq, data, kind: 'agent-run', uuid: row.id,
-      parentUuid: null, direct: agent ?? card, sidechain: true, prompt: null }
+    const activity = string(data.activityKind ?? data.activity_kind), status = string(data.status)
+    return { ...identity, kind: 'agent-run', uuid: row.id, parentUuid: null, direct: agent ?? card, sidechain: true, prompt: null,
+      type, agentId: agent, cardId: card, parentAgentId: string(record(data.scope)?.parentThreadId ?? data.parentAgentId),
+      label, status, activity,
+      closing: activity === 'close_agent' || activity === 'closed'
+        || activity === 'canceled' && (data.activity === 'Closed' || data.statusText === 'Closed' || data.status_text === 'Closed')
+          && (record(record(data.result)?.previous_status) !== undefined || record(record(data.result)?.previousStatus) !== undefined),
+      eventId: string(data.id), error: string(data.error)
+        ?? (status === 'failed' || status === 'error' || status === 'notFound' || status === 'not_found'
+          ? string(data.summary) ?? 'The source agent reported an error' : null) }
   }
   return
 }
@@ -70,18 +113,12 @@ export class ObservedScopeIndex {
     const cardAgents = new Map<string, Set<string>>()
     for (const value of facts.values()) {
       if (value.kind === 'agent-run') {
-        const agent = string(value.data.agentId ?? value.data.agent_id), card = string(value.data.cardId ?? value.data.card_id)
+        const agent = value.agentId, card = value.cardId
         if (agent && card) { const set = cardAgents.get(card) ?? new Set(); set.add(agent); cardAgents.set(card, set) }
         continue
       }
       const known = byUuid.get(value.uuid) ?? []; known.push(value); byUuid.set(value.uuid, known)
-      const blocks = record(value.data.message)?.content
-      if (!Array.isArray(blocks)) continue
-      for (const raw of blocks) {
-        const block = record(raw), input = record(block?.input)
-        if (block?.type !== 'tool_use' || !string(block.id) || !subagentTool(block.name)) continue
-        const tool: Tool = { rowId: value.rowId, id: String(block.id), prompt: string(input?.prompt),
-          label: string(input?.description) ?? string(input?.subagent_type) ?? String(block.name) }
+      for (const tool of value.tools) {
         const same = tools.get(tool.id) ?? []; same.push(tool); tools.set(tool.id, same)
         if (tool.prompt !== null) { const samePrompt = prompts.get(tool.prompt) ?? []; samePrompt.push(tool); prompts.set(tool.prompt, samePrompt) }
       }
@@ -91,7 +128,7 @@ export class ObservedScopeIndex {
       const found = resolved.get(value.rowId); if (found) return found
       let scope: ObservedScope
       if (value.kind === 'agent-run') {
-        const agent = string(value.data.agentId ?? value.data.agent_id), card = string(value.data.cardId ?? value.data.card_id)
+        const agent = value.agentId, card = value.cardId
         const matches = card ? [...(cardAgents.get(card) ?? [])] : []
         const identity = agent ?? (matches.length === 1 ? matches[0]! : card!)
         scope = { scopeId: `run:${identity}`, parentToolCallId: null }
@@ -99,7 +136,7 @@ export class ObservedScopeIndex {
       else {
         const matching = value.prompt === null ? [] : prompts.get(value.prompt) ?? []
         const exact = new Map(matching.map(tool => [tool.id, tool]))
-        if (exact.size === 1 && (value.sidechain || typeof record(value.data.message)?.content === 'string')) {
+        if (exact.size === 1 && (value.sidechain || value.stringContent)) {
           const id = [...exact.keys()][0]!
           scope = { scopeId: `sdk-tool:${id}`, parentToolCallId: id }
         } else if (!value.sidechain) scope = root
@@ -132,25 +169,22 @@ export class ObservedScopeIndex {
       const call = scope.parentToolCallId ? tools.get(scope.parentToolCallId) : undefined
       const owners = new Set(call?.map(tool => resolved.get(tool.rowId)?.scopeId ?? null))
       const ownerScope = owners.size === 1 ? [...owners][0] ?? null : null
-      const sourceAgentId = value.kind === 'agent-run' ? string(value.data.agentId ?? value.data.agent_id) : null
-      const sourceParent = value.kind === 'agent-run' ? string(record(value.data.scope)?.parentThreadId ?? value.data.parentAgentId) : null
+      const sourceAgentId = value.kind === 'agent-run' ? value.agentId : null
+      const sourceParent = value.kind === 'agent-run' ? value.parentAgentId : null
       const previous = metadata.get(scope.scopeId)
       const parentScopeId = ownerScope ?? (sourceParent && [...resolved.values()].some(item => item.scopeId === `run:${sourceParent}`)
         ? `run:${sourceParent}` : previous?.parentScopeId ?? null)
       const info: ObservedScopeInfo = { ...scope, scopeId: scope.scopeId, kind: value.kind,
         parentScopeId: parentScopeId === scope.scopeId ? null : parentScopeId, sourceAgentId: sourceAgentId ?? previous?.sourceAgentId ?? null,
-        label: call?.length ? call[0]!.label : string(value.data.nickname ?? value.data.name ?? value.data.summary) ?? previous?.label ?? (value.kind === 'sdk' ? 'Source subagent' : sourceAgentId ?? 'Source agent'),
+        label: call?.length ? call[0]!.label : value.label ?? previous?.label ?? (value.kind === 'sdk' ? 'Source subagent' : sourceAgentId ?? 'Source agent'),
         status: previous?.status ?? 'observed', createdAt: previous?.createdAt ?? value.createdAt, updatedAt: value.createdAt }
-      if (value.kind === 'sdk' && (value.data.type === 'result' || value.data.type === 'system' && value.data.subtype === 'turn_duration')) {
-        info.status = value.data.is_error === true ? 'error' : 'completed'
+      if (value.kind === 'sdk' && value.terminal) {
+        info.status = value.terminal
       } else if (value.kind === 'agent-run') {
-        const status = value.data.status
-        const activity = string(value.data.activityKind ?? value.data.activity_kind)
+        const status = value.status, activity = value.activity
         const terminal = info.status === 'completed' || info.status === 'error' || info.status === 'aborted'
-        const closing = activity === 'close_agent' || activity === 'closed'
-          || activity === 'canceled' && (value.data.activity === 'Closed' || value.data.statusText === 'Closed' || value.data.status_text === 'Closed')
-            && (record(record(value.data.result)?.previous_status) !== undefined || record(record(value.data.result)?.previousStatus) !== undefined)
-        const nonterminal = status === 'running' || status === 'pending' || value.data.type === 'agent-run-start'
+        const closing = value.closing
+        const nonterminal = status === 'running' || status === 'pending' || value.type === 'agent-run-start'
         // Source wait/close cleanup does not undo an observed finished task.
         const ignored = terminal && ((nonterminal && (activity === 'wait_agent' || closing))
           || closing && status !== 'failed' && status !== 'error')
@@ -159,9 +193,9 @@ export class ObservedScopeIndex {
           else if (status === 'failed' || status === 'error' || status === 'notFound' || status === 'not_found') info.status = 'error'
           else if (status === 'cancelled' || status === 'canceled') info.status = 'aborted'
           else if (nonterminal) info.status = 'running'
-          if (value.data.type !== 'agent-run-trace' && ['completed', 'failed', 'error', 'notFound', 'not_found', 'cancelled', 'canceled'].includes(String(status))) {
-            complete(value, scope, `run-end:${scope.scopeId}:${string(value.data.id) ?? value.rowId}`,
-              info.status as ObservedScopeCompletion['reason'], string(value.data.error) ?? (info.status === 'error' ? string(value.data.summary) ?? 'The source agent reported an error' : null))
+          if (value.type !== 'agent-run-trace' && ['completed', 'failed', 'error', 'notFound', 'not_found', 'cancelled', 'canceled'].includes(String(status))) {
+            complete(value, scope, `run-end:${scope.scopeId}:${value.eventId ?? value.rowId}`,
+              info.status as ObservedScopeCompletion['reason'], value.error)
           }
         }
       }
@@ -171,15 +205,10 @@ export class ObservedScopeIndex {
     // ended, including SDK versions without a separate child result message.
     for (const value of ordered) {
       if (value.kind !== 'sdk') continue
-      const blocks = record(value.data.message)?.content
-      if (!Array.isArray(blocks)) continue
-      for (const raw of blocks) {
-        const block = record(raw), id = string(block?.tool_use_id)
-        if (block?.type !== 'tool_result' || !id || !tools.has(id)) continue
+      for (const { id, reason, error } of value.results) {
+        if (!tools.has(id)) continue
         const info = metadata.get(`sdk-tool:${id}`)
         if (!info || value.createdAt < info.createdAt) continue
-        const reason = block.is_error === true ? 'error' : 'completed'
-        const error = reason === 'error' ? prompt(block.content) ?? 'The source subagent tool failed' : null
         complete(value, info, `sdk-end:${id}:${value.rowId}`, reason, error)
         info.status = reason; info.updatedAt = Math.max(info.updatedAt, value.createdAt)
       }
