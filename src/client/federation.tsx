@@ -17,6 +17,9 @@ import { errorMessage, parseSessionResourceId, sessionResourceId, type Workspace
 import { panes, type PaneResource } from './model.ts'
 import { mountPaneNative } from './pane-native.ts'
 import { installRemotePane } from './remote-pane.tsx'
+import { deferInitialWorkspaceStream } from './initial-workspace-stream.ts'
+import type { ConnectionWebSocket } from '@deepseek-ai/dsh-client-connection/client'
+import { installEntrySessionNavigation } from './sidebar-navigation.ts'
 import { installPaneChrome } from './surface/chrome.ts'
 import { createPaneBootGate, shouldBootPane } from './surface/lazy-pane.ts'
 import { PANE_GRAPH_POLICY, projectPluginEvents } from './surface/pane-graph.ts'
@@ -59,10 +62,10 @@ const PLATFORM_MODULES = [
 ] as const
 const MODULES_ID = '@deepseek-ai/dsh-client-modules'
 const bootstrapSchema = z.object({
-    dshVersion: z.literal('0.2.1-rc.2'), graph: z.object({
+    dshVersion: z.literal('0.2.1-rc.3'), graph: z.object({
         rev: z.string(), entries: z.array(z.object({ id: z.string(), url: z.string(), rev: z.string() }).passthrough()),
         batches: z.array(z.object({ phase: z.enum(['bootstrap', 'application']), url: z.string(), rev: z.string(), entries: z.array(z.string()) })),
-        release: z.object({ version: z.literal('0.2.1-rc.2'), commit: z.string().optional() }).optional(),
+        release: z.object({ version: z.literal('0.2.1-rc.3'), commit: z.string().optional() }).optional(),
     }), globals: z.record(z.string(), z.json()),
 })
 type Bootstrap = z.infer<typeof bootstrapSchema>
@@ -151,10 +154,13 @@ async function refreshBootstrap(host: FederationHost, resources: HostResources, 
  * by the longest serial arrival chain. The loader still owns compilation
  * (`resources.compiled` is unchanged and one wrapper per Host URL).
  */
-async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false, prefetchBundles = false, sharedHost = false): Promise<GraphRuntime> {
+async function bootGraph(root: Context, host: FederationHost, resources: HostResources, boot: WebBootGraph, surface: HTMLElement, instanceId: string, signal: AbortSignal, navigation?: WorkspacePaneNavigation, pluginEvents = true, projectEvents = false, prefetchBundles = false, sharedHost = false, initialSession?: SessionId): Promise<GraphRuntime> {
     const origin = window.location.origin
     const baseUrl = new URL(host.basePath, origin).href
     const directFetch = transport(host, signal)
+    let releaseInitialCatalog = (): void => {}
+    const initialCatalog = initialSession ? new Promise<void>(resolve => { releaseInitialCatalog = resolve }) : undefined
+    const initialLifetime = new AbortController()
     const hostFetch: typeof fetch = (input, init) => isPluginEventsRequest(input, init, origin)
         ? (pluginEvents
             ? resources.events.response(AbortSignal.any([signal, ...(init?.signal ? [init.signal] : []), ...(input instanceof Request ? [input.signal] : [])]))
@@ -232,17 +238,19 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         set(_current, property) { return property === 'title' },
     })
     const modulesExport = createGraphModules(documentFacade)
-    const socket = (input: string, protocols?: string | string[]): WebSocket => {
+    const socket = (input: string, protocols?: string | string[]): ConnectionWebSocket => {
+        const wrap = (socket: WebSocket): ConnectionWebSocket => initialCatalog
+            ? deferInitialWorkspaceStream(socket, initialCatalog, AbortSignal.any([signal, initialLifetime.signal])) : socket
         const upstream = new URL(input, baseUrl)
         if (host.id === 'local') {
             upstream.protocol = upstream.protocol === 'https:' || upstream.protocol === 'wss:' ? 'wss:' : 'ws:'
-            return new WebSocket(upstream, protocols)
+            return wrap(new WebSocket(upstream, protocols))
         }
         const path = upstream.pathname.startsWith(host.basePath) ? `/${upstream.pathname.slice(host.basePath.length)}${upstream.search}` : `${upstream.pathname}${upstream.search}`
         const url = new URL('/hapi-dsh/socket', origin)
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
         url.searchParams.set('machine', host.id); url.searchParams.set('path', path)
-        return new WebSocket(url, protocols)
+        return wrap(new WebSocket(url, protocols))
     }
     const overrides: Record<PropertyKey, unknown> = {
         ...resources.payload.globals, __ModuleLoader__: target, __DSH_BOOT__: boot, __HAPI_DSH_PANE__: true,
@@ -307,6 +315,14 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     const modules: ClientModuleSystem = target.create({ boot,
         staticModules: { ...resources.staticModules, [GRAPH_STORE_MODULE]: createGraphStore(localStorageFacade) }, loadBundle })
     const ctx = new Context()
+    // An explicit pane already has a session. Bind it as soon as the public
+    // navigation service activates, before its catalog restoration chooses a
+    // workspace blank and potentially resets that unrelated blank's preset.
+    const initialNavigation = initialSession ? ctx.inject(['uiWorkspace', 'sessions'], async owner => {
+        await waitForCatalogSession(owner.sessions, initialSession, signal)
+        owner.uiWorkspace.openSession(initialSession)
+        releaseInitialCatalog()
+    }) : undefined
     if (navigation) {
         ctx.reflect.provide('hapiWorkspacePane', navigation)
         ctx.reflect.provide('hapiWorkspaceUi', navigation)
@@ -315,6 +331,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     const stop = async (): Promise<void> => {
         if (stopped) return
         stopped = true
+        initialLifetime.abort(); releaseInitialCatalog()
         input.reset(); stopCheckpoint?.(); unvisibility?.(); window.removeEventListener('blur', blur)
         keyboard.length = 0
         try { await ctx.fiber.dispose() } finally {
@@ -327,6 +344,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         await ctx.plugin(OfficialLoader)
         ctx.loader.internal = modules as never
         await modules.entries.start(ctx.loader, modules.manifest)
+        await initialNavigation
         await ctx.loader.await()
         signal.throwIfAborted()
         for (const entry of ctx.loader.entries()) {
@@ -617,6 +635,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let voiceScope: ReturnType<Context['inject']> | undefined
         let nativeDispose: (() => Promise<void>) | undefined
         let chromeDispose: (() => void) | undefined
+        let entryNavigationDispose: (() => Promise<void>) | undefined
         let generation = 0
         /** At most one boot attempt; success is a one-way latch, failure reopens it. */
         const boot = createPaneBootGate()
@@ -689,6 +708,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             try { await nativeDispose?.() } catch (error) { workspace.report(error) }
             nativeDispose = undefined
             chromeDispose?.(); chromeDispose = undefined
+            await entryNavigationDispose?.(); entryNavigationDispose = undefined
             await voiceScope?.dispose(); voiceScope = undefined
             reference?.release(); reference = undefined
             const graph = runtime; runtime = undefined
@@ -716,12 +736,24 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 // this plugin's own bundle are excluded, and the shared plugin-event
                 // stream is projected onto the same subset (graph syncs rewritten,
                 // rebuilds of excluded rows dropped).
-                const graph = await bootGraph(root, host, resources, PANE_GRAPH_POLICY.transform(resources.payload.graph as WebBootGraph), surface, paneId, activeSignal, navigation, true, true, true)
+                const graph = await bootGraph(root, host, resources, PANE_GRAPH_POLICY.transform(resources.payload.graph as WebBootGraph), surface, paneId, activeSignal, navigation, true, true, true, false, sourceId as SessionId)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) { await graph.stop(); return }
                 runtime = graph
                 // Window-level chrome is owned once by the primary graph. Empty
                 // shadows remove the official sidebar and leading seats from the pane.
                 chromeDispose = installPaneChrome(graph.ctx)
+                if (shared) {
+                    const navigationOwner = catalog?.ctx ?? root
+                    const disposeEntryNavigation = await installEntrySessionNavigation(graph.ctx, {
+                        startSession: (workspaceId, options) => {
+                            if (!navigationAllowed()) return
+                            workspace.store.focus(paneId)
+                            navigationOwner.uiWorkspace.startSession(workspaceId, options)
+                        },
+                    })
+                    if (disposed || currentGeneration !== generation || activeSignal.aborted) { await disposeEntryNavigation(); return }
+                    entryNavigationDispose = disposeEntryNavigation
+                }
                 // The pane graph excludes this plugin's own client bundle: the root
                 // graph installs the pane-only HAPI surfaces on this Context, so the
                 // ~4 MB bundle is evaluated once per page, not once per pane. The
@@ -744,7 +776,6 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     uninitialHistory = bindInitialHistory(surface, reference, navigation)
                 }
                 void reference.ready.catch(fail)
-                graph.ctx.uiWorkspace.openSession(sourceId as SessionId)
                 const shortcuts = graph.ctx.get('shortcuts')
                 if (shortcuts) unshortcut = installNewSessionShortcut(shortcuts, workspace.requestNewSession)
                 const integration = graph.ctx.get('hapiPaneNative')

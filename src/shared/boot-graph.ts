@@ -3,31 +3,15 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 
 const HMR = '@deepseek-ai/dsh-client-hmr';
 
-// These pages do not render a conversation. HMR joins the second stage too:
-// its initial full-graph frame would otherwise undo the initial roster before
-// the official boot kernel can mount the workspace.
+// Account owns a large authorization bundle. It and HMR (whose first frame
+// reconciles the full Host roster) load only after Settings is opened. All
+// other UI plugins register their locale/outlets before transcript mounting:
+// late global locale revisions otherwise re-render every retained outlet.
 const SECOND_STAGE = new Set([
     HMR,
     '@deepseek-ai/dsh-client-ui-settings-account',
-    '@deepseek-ai/dsh-client-ui-plugin-manager',
-    '@deepseek-ai/dsh-client-ui-sidebar-documentpreview',
-    '@deepseek-ai/dsh-client-ui-open-in-app',
-    '@deepseek-ai/dsh-client-ui-trajectory',
-    '@deepseek-ai/dsh-client-ui-schedule',
-    '@deepseek-ai/dsh-client-ui-agent-preset',
-    '@deepseek-ai/dsh-client-ui-cordis',
-    '@deepseek-ai/dsh-client-ui-settings-plugin-inventory',
-    '@deepseek-ai/dsh-client-ui-settings-subagent',
-    '@deepseek-ai/dsh-client-ui-message-feedback',
-    '@deepseek-ai/dsh-client-ui-settings-web-search',
-    '@deepseek-ai/dsh-client-ui-settings-plugins',
-    '@deepseek-ai/dsh-client-ui-settings-shell',
-    '@deepseek-ai/dsh-client-ui-settings-session-log',
-    '@deepseek-ai/dsh-client-ui-settings-agent-loop',
     '@deepseek-ai/dsh-client-product-analytics',
 ]);
-// Model settings also owns first-run welcome/credential onboarding, and the
-// Cordis runner receives transient inspect requests. Both stay in stage one.
 
 type BootEntry = WebBootGraph['entries'][number];
 function includeDependencies(rows: ReadonlyMap<string, BootEntry>, id: string, keep: Set<string>): void {

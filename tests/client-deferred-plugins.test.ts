@@ -5,7 +5,7 @@ import { syncDeferredStages } from '../src/client/deferred-plugins.ts';
 
 const modules = '@deepseek-ai/dsh-client-modules';
 const account = '@deepseek-ai/dsh-client-ui-settings-account';
-const schedule = '@deepseek-ai/dsh-client-ui-schedule';
+const schedule = '@deepseek-ai/dsh-client-product-analytics';
 const hmr = '@deepseek-ai/dsh-client-hmr';
 function graph(): WebBootGraph {
     return { rev: 'fixture', entries: [modules, 'hapi-dsh', account, schedule, hmr].map(id => ({ id, rev: id, url: `plugins/${id}?rev=fixture` })),

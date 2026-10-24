@@ -1,6 +1,8 @@
 # 常驻官方环境与快速验证
 
-这条开发路径保留一个 pinned DSH `0.2.1-rc.2` Host 和一个 Chromium 进程，使用明确的合成 HAPI wire fixture。它减少反复安装 profile、启动 Host、准备同一份目录的成本。浏览器仍执行官方 AppFrame、Conversation、SessionProvider、editor 和插件加载器；不会连接生产 Hub、执行真实 Codex 模型或改动用户会话。
+这条开发路径保留一个 pinned DSH `0.2.1-rc.3` Host 和一个 Chromium 进程，使用明确的合成 HAPI wire fixture。它减少反复安装 profile、启动 Host、准备同一份目录的成本。浏览器仍执行官方 AppFrame、Conversation、SessionProvider、editor 和插件加载器；不会连接生产 Hub、执行真实 Codex 模型或改动用户会话。
+
+当前版本的升级验收见 [rc.3 升级记录](dsh-rc3-upgrade.md)。本文下半部分的具体耗时与通过记录来自 rc.2 环境，保留为历史基线，不是 rc.3 的验收结果。升级依赖后应重建并重启合成 Host，不能用仍加载旧依赖的常驻进程验证新版本。
 
 ## 使用
 

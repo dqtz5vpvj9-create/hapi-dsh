@@ -1,4 +1,4 @@
-# 安装 HAPI DSH 0.1.1
+# 安装 HAPI DSH 0.1.2
 
 Windows、macOS 和 Linux 使用同一个 `.tgz` 包。先安装 Node.js 24 或更新版本（自带 npm），在终端执行 `node --version` 确认版本。安装依赖需要联网，不需要 Git、Bun、源码编译或单独安装 DSH。
 
@@ -6,14 +6,14 @@ Windows、macOS 和 Linux 使用同一个 `.tgz` 包。先安装 Node.js 24 或�
 
 ## 下载与安装
 
-取得 `hapi-dsh-0.1.1.tgz`，终端进入下载目录，执行：
+取得 `hapi-dsh-0.1.2.tgz`，终端进入下载目录，执行：
 
 ```text
-npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.1.tgz
+npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.2.tgz
 hapi-dsh --version
 ```
 
-应输出 `0.1.1`。pnpm 用于官方 DSH 插件管理，首次创建 profile 时也会联网下载依赖，请等待命令结束。
+应输出 `0.1.2`。pnpm 用于官方 DSH 插件管理，首次创建 profile 时也会联网下载依赖，请等待命令结束。
 
 Windows 可在命令提示符或 PowerShell 中运行；如果 PowerShell 拦截 `.ps1` 命令，使用 `npm.cmd` 和 `hapi-dsh.cmd`，无需修改系统执行策略。macOS/Linux 若全局 npm 目录无写权限，可使用自己的 Node 版本管理器，或采用下方的本地安装方式。
 
@@ -37,7 +37,7 @@ hapi-dsh start
 在一个准备长期保留的目录里执行（不要放在会自动清理的临时目录）：
 
 ```text
-npm install pnpm@11.28.5 ./hapi-dsh-0.1.1.tgz
+npm install pnpm@11.28.5 ./hapi-dsh-0.1.2.tgz
 npm exec -- hapi-dsh init --hapi-url http://127.0.0.1:3006
 npm exec -- hapi-dsh login
 npm exec -- hapi-dsh doctor

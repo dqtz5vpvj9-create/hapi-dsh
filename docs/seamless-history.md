@@ -8,7 +8,7 @@
 
 首次打开的预取目标不同：让上一轮进入已保留窗口，同时继续跟随最新输出。自动点击按钮会调用 `pauseFollowing()`，因此预取使用显式 `SessionReference.binding.session` 上的公开 `loadOlder()`，跳过按钮的导航动作。历史仍由官方 Session 加载、合并和渲染；本插件不写 `scrollTop`、不移动焦点，也不读取或修改 composer 草稿。首次预取的浏览器行为验证属于本轮新增验收，不能沿用此前手势路径的通过记录。
 
-这是明确的 DOM 兼容边界：依赖官方 `[data-conversation-scroll]`、`[data-chat-flow]`、`[data-chat-following-tail]`、列内直系按钮结构，以及 `data-pane-id` / `data-hapi-pane-visible` / `data-conversation-session`。pinned `0.2.1-rc.2` 的结构变化时，所有 helper 找不到即惰性降级为官方手动按钮，不报错、不阻塞界面。
+这是明确的 DOM 兼容边界：依赖官方 `[data-conversation-scroll]`、`[data-chat-flow]`、`[data-chat-following-tail]`、列内直系按钮结构，以及 `data-pane-id` / `data-hapi-pane-visible` / `data-conversation-session`。当前固定版本升级为 `0.2.1-rc.3`；这些结构及手势行为需要按 [rc.3 升级记录](dsh-rc3-upgrade.md) 重新验证。结构变化导致 helper 找不到控件时，自动路径惰性降级为官方手动按钮，不报错、不阻塞界面。
 
 ## 向上浏览的手势策略
 
@@ -27,7 +27,7 @@
 
 - 完成条件是最近两轮均已有 `turn/start` 和原始输入，或官方 `hasMore` 已为 false。没有更早历史的短会话不增加请求。
 - 2026-10-22 性能修正：初始补页恢复为最多两页；窗口已有 1500 个协议事件时也停止预取，避免工具密集的长 Turn 持续占用渲染。达到预算标为 `limited`，向上阅读、手动翻页和精确定位仍可继续加载。
-- 每个 Session generation 最多发起 **2 页**初始预取。pinned `0.2.1-rc.2` 的官方 `loadOlder()` 每页最多读取 **500 条 append-origin user/assistant message**；`turn/start`、步骤、工具等协议事件不按此消息上限逐条计数。官方页还尝试满足至少 50 条消息、跨越两个 Turn starts，500 条上限或历史耗尽优先结束该页。
+- 每个 Session generation 最多发起 **2 页**初始预取。此前核对的 `0.2.1-rc.2` 官方 `loadOlder()` 每页最多读取 **500 条 append-origin user/assistant message**；`turn/start`、步骤、工具等协议事件不按此消息上限逐条计数。该版本的官方页还尝试满足至少 50 条消息、跨越两个 Turn starts，500 条上限或历史耗尽优先结束该页。这组上游分页语义保留为 rc.2 记录，不能直接当作 rc.3 已核实的行为。
 - 两个 pane 绑定同一个 Session face 时共用初始预取计划。官方 `loadingOlder` 继续承担同一 Session 的单飞；预取与手势路径还共用 `shared.ts` 中的跨 pane gate 和 host+session ledger。全页聚合上限仍为并发 2、每秒启动 4 次；成功向前扩展的自动页都计入默认 20 页上限。聚合并发不足时，初始预取可在槽位释放后继续；手势请求仍等待读者的下一次手势。
 - 每页完成后检查事件窗口头部是否向更早的 seq 前进。只有 live 追加、没有更早内容时不能算成功补页；失败或无进展停止初始自动尝试，不形成后台重试循环。手动按钮和既有手势分页仍然可用。
 - 窗格内发生滚轮、指针、触摸或键盘输入后，不再继续初始预取。已发出的共享读取正常完成，不取消其他 pane 的请求，也不打断源执行。
@@ -38,6 +38,8 @@ surface 上的 `data-hapi-initial-history` 为诊断标记，值为 `waiting | l
 这一路径只读取 **DSH Host 已有的 journal 页面**。如果 Host 的 200 条 tail seed 尚未完成源历史 backfill，那么缺失内容还不在该 journal 内，公开 `loadOlder()` 无法提前取出。后台回填及 display generation 替换的完成时间仍是独立边界，见 [live-history.md](live-history.md)。
 
 ## 集成与验证
+
+以下通过数量和位移测量记录于 rc.2 阶段，尚不能作为 rc.3 升级通过的证据。升级后还需覆盖触边继续拖动、手动加载后再次触摸、抬手间隙到页和在途惯性等手机回归。
 
 - 页面级安装一次：`src/client/index.ts` 在 `installWorkspace` 的 disposers 段调用 `installSeamlessHistory(document, …)`，覆盖 local 与 remote Host pane。初始预取在 `surface/session-view.tsx` 的共享视图和 `federation.tsx` 的兼容 chat 视图上绑定显式 reference，并在释放前清理。
 - 本轮定向单测：`tests/client-seamless-history.test.ts` **36/36 通过**，新增可见性/open 条件、两页上限、真实 Turn 计数、失败不重试、读者接管及聚合释放通知。`tests/client-one-graph-session-view.test.ts` **5/5 通过**，保留官方 SlotRegistry 生命周期验证，并覆盖订阅清理及已关闭 reference 不污染存活视图。Session/DOM 部分明确是协议夹具，不作为真实浏览器集成证据。

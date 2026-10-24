@@ -38,7 +38,7 @@ export interface OfficialChatAssembler {
 }
 
 function browserModule(name: string): Record<string, unknown> {
-    assert.equal((require(`${name}/package.json`) as { version: string }).version, '0.2.1-rc.2')
+    assert.equal((require(`${name}/package.json`) as { version: string }).version, '0.2.1-rc.3')
     let registration: { id: string; factory(resolve: (id: string) => unknown): Record<string, unknown> } | undefined
     new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({
         __ModuleLoader__: { load(value: typeof registration) { registration = value } },

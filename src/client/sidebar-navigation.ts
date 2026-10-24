@@ -14,10 +14,22 @@ const SIDEBAR = '@deepseek-ai/dsh-client-ui-sidebar'
  * Entry.update() rebinds the official plugin through the normal Loader lifecycle.
  */
 export async function installSidebarNavigation(ctx: Context, controller: Pick<WorkspaceController, 'requestNewSession'>): Promise<() => Promise<void>> {
-    const entry = [...ctx.loader.entries()].find(candidate => candidate.options.name === SIDEBAR)
-    if (!entry) throw new Error('The official DSH sidebar plugin is not present in the Client graph')
+    return installNavigation(ctx, SIDEBAR, { startSession: () => controller.requestNewSession() })
+}
+
+/** Plugin creation uses the Host's shared official draft owner, including append/preset semantics. */
+export async function installEntrySessionNavigation(ctx: Context, navigation: Pick<UiWorkspace, 'startSession'>): Promise<() => Promise<void>> {
+    return installNavigation(ctx, '@deepseek-ai/dsh-client-ui-entry-customization', navigation, true)
+}
+
+async function installNavigation(ctx: Context, pluginName: string, adapter: Pick<UiWorkspace, 'startSession'>, optional = false): Promise<() => Promise<void>> {
+    const entry = [...ctx.loader.entries()].find(candidate => candidate.options.name === pluginName)
+    // A profile may disable the optional More menus. Files and other pane
+    // resources still work; there is no navigation capability to adapt then.
+    if (!entry && optional) return async () => {}
+    if (!entry) throw new Error(`The official DSH navigation plugin ${pluginName} is not present in the Client graph`)
     const original = entry.context.get('uiWorkspace') as UiWorkspace | undefined
-    if (!original) throw new Error('The official sidebar navigation capability is not available')
+    if (!original) throw new Error(`The official navigation capability for ${pluginName} is not available`)
     const priorIsolation = entry.options.isolate?.uiWorkspace
     const label = `hapi-dsh:sidebar:${randomId()}`
     const restore = async (): Promise<void> => {
@@ -40,9 +52,6 @@ export async function installSidebarNavigation(ctx: Context, controller: Pick<Wo
         // for. Do not proxy or inherit the original Service: Cordis traces its
         // prototype methods by descriptor, which would bypass a Proxy get trap
         // and call the original startSession despite the adaptation.
-        const adapter: Pick<UiWorkspace, 'startSession'> = {
-            startSession: () => controller.requestNewSession(),
-        }
         // Give the provider its own fiber in this realm. Providing from the
         // outer fiber would announce activation in that fiber's original realm
         // and leave the isolated sidebar dependency pending.

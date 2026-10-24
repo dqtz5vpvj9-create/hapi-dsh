@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { createContext, useContext, useLayoutEffect, useSyncExternalStore } from 'react'
+import { createContext, useContext, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
@@ -62,6 +62,15 @@ export function installRemotePane(ctx: Context, options: {
             if (error !== next) { error = next; changed() }
         },
     }
+    // Official plugin actions can open a main panel without using our Host
+    // tools selector. Follow their public navigation so a Guide/resource pane
+    // reveals that panel instead of keeping its main region CSS-hidden.
+    disposers.push(ctx.layout.panelInfo.subscribe(() => {
+        const panelId = ctx.layout.panelInfo.getSnapshot().activePanelId
+        if (!state.target || !panelId || state.target.type === 'panel' && state.target.panelId === panelId) return
+        const panel = ctx.slots.entriesOfSlot('sidebar.panellist').find(entry => entry.options.id === panelId)
+        bridge.navigated({ type: 'panel', panelId }, resolveSlotLabel(panel?.options.label) ?? panelId)
+    }))
     // The official settings owner renders its launcher inside the (CSS-hidden)
     // official sidebar. Moving that one button into the pane utility cluster
     // keeps the modal, sections, permissions and plugin contributions owned by
@@ -111,11 +120,6 @@ export function installRemotePane(ctx: Context, options: {
         // Navigation/tool failures stay visible instead of being swallowed by the
         // compact cluster (upstream hotfix behaviour).
         const visibleError = useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => error)
-        useLayoutEffect(() => {
-            if (pane.target?.type === 'panel') {
-                try { ctx.layout.selectPanel(pane.target.panelId as MainPanelId) } catch (reason) { bridge.failed(reason) }
-            } else if (pane.target) ctx.layout.selectPanel(null)
-        }, [pane.target?.type, pane.target?.type === 'panel' ? pane.target.panelId : null])
         return <Reference.Provider value={reference}>
             <div className={`hapi-remote-shell${pane.target && pane.target.type !== 'panel' && pane.target.type !== 'conversation' ? ' hapi-plugin-view-shell' : ''}`} data-hapi-view-visible={pane.visible}
                 onKeyDownCapture={event => options.keyboard?.capture(event.nativeEvent)} onKeyDown={event => options.keyboard?.bubble(event.nativeEvent)}>
@@ -169,7 +173,18 @@ export function installRemotePane(ctx: Context, options: {
         },
         renderView(reference, next) {
             if (disposed) throw new Error('The DSH pane renderer is disposed')
-            if (JSON.stringify(state) !== JSON.stringify(next)) { state = next; publish() }
+            const changed = JSON.stringify(state) !== JSON.stringify(next)
+            state = next
+            // Select the saved public panel before mounting the official root.
+            // A layout effect is too late: the transient Conversation has
+            // already mounted its editor and can focus a background pane.
+            if (next.target) {
+                const panelId = next.target.type === 'panel' ? next.target.panelId as MainPanelId : null
+                if (ctx.layout.panelInfo.getSnapshot().activePanelId !== panelId) {
+                    try { ctx.layout.selectPanel(panelId) } catch (reason) { bridge.failed(reason) }
+                }
+            }
+            if (changed) publish()
             return <Shell reference={reference}/>
         },
         dispose() {

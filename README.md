@@ -10,10 +10,10 @@
 
 ## 快速安装（Windows / macOS / Linux）
 
-同学使用预构建包即可，无需克隆或编译源码。安装 Node.js 24+，取得 `hapi-dsh-0.1.1.tgz` 后执行：
+同学使用预构建包即可，无需克隆或编译源码。安装 Node.js 24+，取得 `hapi-dsh-0.1.2.tgz` 后执行：
 
 ```text
-npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.1.tgz
+npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.2.tgz
 hapi-dsh init --hapi-url http://127.0.0.1:3006
 hapi-dsh login
 hapi-dsh doctor
@@ -42,12 +42,14 @@ hapi-dsh start
 | --- | --- |
 | Node.js | 24 或更新版本；CI 固定 24.19.0 |
 | pnpm | 11.28.5；官方 DSH 插件管理器要求 `pnpm` 位于 `PATH` |
-| 官方 DSH | `@deepseek-ai/dsh@0.2.1-rc.2`，主机和 Runner 必须一致 |
-| DSH 对照源码 | [`687f282e8625c6b8d11ff58211a90524be2e4317`](https://github.com/deepseek-ai/deepseek-harness/tree/687f282e8625c6b8d11ff58211a90524be2e4317) |
+| 官方 DSH | `@deepseek-ai/dsh@0.2.1-rc.3`，主机和 Runner 必须一致 |
+| DSH 对照源码 | [`1f81c047fc48fa190a683e469daa699857e9afe8`](https://github.com/deepseek-ai/deepseek-harness/tree/1f81c047fc48fa190a683e469daa699857e9afe8) |
 | HAPI 原生桥 | [`dqtz5vpvj9-create/hapi@55166cf8d87814ccfb383b538a8e8c55283bed81`](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81) |
 | 构建 HAPI 时需要 | Bun 1.4.0；运行本插件本身不需要 Bun |
 
 所有直接 npm 依赖及锁文件均固定版本。不要把公开 npm 上同名 HAPI 的版本号当作上述原生桥源码版本。
+
+`0.1.2` 已适配 DSH rc.3，并在本地 Host、Linux Runner 和 Windows Runner 上完成升级。安装、浏览器与性能验收结果见 [rc.3 升级记录](docs/dsh-rc3-upgrade.md)。
 
 ## 从源码开始
 
@@ -84,12 +86,12 @@ npm run check
 node scripts/distribution-pack.mjs
 ```
 
-将生成的 `artifacts/hapi-dsh-0.1.1.tgz` 、`artifacts/INSTALL.md` 和 `artifacts/SHA256SUMS` 一起分发。接收方在同一目录校验并安装：
+将生成的 `artifacts/hapi-dsh-0.1.2.tgz` 、`artifacts/INSTALL.md` 和 `artifacts/SHA256SUMS` 一起分发。接收方在同一目录校验并安装：
 
 ```bash
 sha256sum -c SHA256SUMS
 npm install --global pnpm@11.28.5
-npm install --global ./hapi-dsh-0.1.1.tgz
+npm install --global ./hapi-dsh-0.1.2.tgz
 hapi-dsh --help
 ```
 

@@ -1,9 +1,10 @@
+import { useEffect } from 'react';
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-client-modules/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
 import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules/client';
 import { deferredBootStages, independentBootBatches } from '../shared/boot-graph.ts';
-import { observeForegroundActivity } from './foreground-activity.ts';
 
 /** Download without activating entries, then give reader input a turn before
  * official graph reconciliation. Network arrival must not activate a plugin
@@ -38,13 +39,14 @@ export async function syncDeferredStages(graph: WebBootGraph, options: {
     }
 }
 
-/** Resume the full official roster after the first useful conversation paint.
+/** Complete the official roster only on explicit Settings demand.
  * This is a ClientEntries graph reconciliation, not another plugin runtime. */
 export function installDeferredPlugins(ctx: Context): () => void {
     if (Reflect.get(globalThis, '__HAPI_DSH_STAGED_BOOT__') !== true) return () => {};
     let started = false;
     let frame = 0;
-    let allowEmpty = false;
+    let settingsRequested = false;
+    let removeDemand = (): void => {};
     const lifetime = new AbortController();
     const preloaded = new Map<string, Promise<void>>();
     const preloadLinks = new Set<HTMLLinkElement>();
@@ -79,9 +81,8 @@ export function installDeferredPlugins(ctx: Context): () => void {
             return pending;
         }));
     };
-    const activity = observeForegroundActivity(document);
     const idle = async (): Promise<void> => {
-        while (!lifetime.signal.aborted && activity.busy() && ctx.layout.panelInfo.getSnapshot().activePanelId === null) {
+        while (!lifetime.signal.aborted && !settingsRequested) {
             await new Promise(resolve => setTimeout(resolve, 50));
         }
         lifetime.signal.throwIfAborted();
@@ -89,10 +90,7 @@ export function installDeferredPlugins(ctx: Context): () => void {
     const start = (): void => {
         if (started || lifetime.signal.aborted) return;
         started = true;
-        observer.disconnect();
-        clearTimeout(emptyWorkspace);
-        stopPanel();
-        activity.defer();
+
         frame = requestAnimationFrame(() => {
             frame = requestAnimationFrame(() => {
                 if (lifetime.signal.aborted) return;
@@ -110,34 +108,38 @@ export function installDeferredPlugins(ctx: Context): () => void {
                     // activity again after each stage's resources have arrived.
                     await syncDeferredStages(payload.graph, {
                         preload, sync: graph => ctx.modules.entries.sync(graph), idle,
-                        requested: () => ctx.layout.panelInfo.getSnapshot().activePanelId !== null,
+                        requested: () => settingsRequested,
                         signal: lifetime.signal,
                     });
                     const failures = ctx.modules.entries.state.getSnapshot().failures;
                     if (failures.length) throw new Error(`Official plugin activation failed: ${failures.map(failure => failure.id).join(', ')}`);
                     performance.mark('hapi:deferred-plugins-ready');
+                    removeDemand();
                 })().catch(error => { if (!lifetime.signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => {
-                    activity.dispose();
                     for (const link of preloadLinks) link.remove();
                     preloadLinks.clear();
                 });
             });
         });
     };
-    const ready = (): void => {
-        const focused = [...document.querySelectorAll<HTMLElement>('.hapi-pane-focused')].find(pane => pane.getClientRects().length > 0);
-        if (focused?.querySelector('[data-hapi-pane-opening="ready"]')
-            || allowEmpty && focused?.dataset.hapiPaneState === 'empty') start();
+    // The official Settings shell mounts its action outlet only while open.
+    // This observes explicit Settings demand through the public slot contract;
+    // the native trigger, keyboard shortcut and Account menu stay unchanged.
+    const SettingsDemand = () => {
+        useEffect(() => {
+            settingsRequested = true; start();
+            return () => { settingsRequested = false; };
+        }, []);
+        return null;
     };
-    const observer = new MutationObserver(ready);
-    observer.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-hapi-pane-opening', 'data-hapi-pane-state', 'class'] });
-    const stopPanel = ctx.layout.panelInfo.subscribe(() => { if (ctx.layout.panelInfo.getSnapshot().activePanelId !== null) start(); });
-    // An empty workspace still gets its complete plugin menu. This never
-    // turns a slow conversation into a reason to compete with its download.
-    const emptyWorkspace = setTimeout(() => { allowEmpty = true; ready(); }, 10_000);
-    ready();
+    removeDemand = ctx.slots.inject('settings.action', () => ctx.slots.register({
+        name: 'settings.action', id: 'hapi-account-demand',
+    }, SettingsDemand));
+    // This mark covers the initial conversation roster only. Account and HMR
+    // remain explicitly on demand; deferred-plugins-ready still means full sync.
+    performance.mark('hapi:conversation-plugins-ready');
     return () => {
-        lifetime.abort(); activity.dispose(); observer.disconnect(); stopPanel(); clearTimeout(emptyWorkspace); cancelAnimationFrame(frame);
+        lifetime.abort(); removeDemand(); cancelAnimationFrame(frame);
         for (const link of preloadLinks) link.remove();
         preloadLinks.clear();
     };

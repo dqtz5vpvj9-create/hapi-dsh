@@ -15,6 +15,8 @@ const account = '@deepseek-ai/dsh-client-ui-settings-account';
 const hmr = '@deepseek-ai/dsh-client-hmr';
 const models = '@deepseek-ai/dsh-client-ui-settings-models';
 const cordisRunner = '@deepseek-ai/dsh-cordis-client-runner';
+const entryCustomization = '@deepseek-ai/dsh-client-ui-entry-customization';
+const pluginManager = '@deepseek-ai/dsh-client-ui-plugin-manager';
 const require = createRequire(import.meta.url);
 function graph(): WebBootGraph {
     return { rev: 'fixture', entries: [modules, 'hapi-dsh', account, hmr].map(id => ({ id, rev: id, url: `plugins/${id}/client.js?rev=fixture` })),
@@ -70,8 +72,9 @@ function officialGraph(): WebBootGraph {
             if (dependency.startsWith('@deepseek-ai/dsh-')) include(dependency.replace(/\/client$/, ''));
         }
     };
-    for (const id of [modules, 'hapi-dsh', account, models, cordisRunner, '@deepseek-ai/dsh-client-ui-cordis',
-        '@deepseek-ai/dsh-client-ui-model-selection', '@deepseek-ai/dsh-client-ui-attachment']) include(id);
+    for (const id of [modules, 'hapi-dsh', account, models, cordisRunner, entryCustomization, '@deepseek-ai/dsh-client-ui-cordis',
+        '@deepseek-ai/dsh-client-ui-model-selection', '@deepseek-ai/dsh-client-ui-attachment',
+        '@deepseek-ai/dsh-client-ui-open-in-app', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview']) include(id);
     return { rev: 'pinned', entries: [...entries.values()], batches: [
         { phase: 'bootstrap', url: 'plugins/bootstrap.js', rev: 'pinned', entries: [modules] },
         { phase: 'application', url: 'plugins/full.js', rev: 'pinned', entries: [...entries.keys()].filter(id => id !== modules) },
@@ -82,10 +85,11 @@ test('pinned graph retains first-run onboarding, composer and live Cordis dispat
     const full = officialGraph(), first = workspaceBootGraph(full);
     const kept = new Set(first.entries.map(row => row.id));
     assert.ok(!kept.has(account));
-    assert.ok(!kept.has('@deepseek-ai/dsh-client-ui-cordis'));
+    assert.ok(kept.has('@deepseek-ai/dsh-client-ui-cordis'));
     for (const id of [models, cordisRunner, '@deepseek-ai/dsh-client-ui-model-selection',
         '@deepseek-ai/dsh-api-session-controller', '@deepseek-ai/dsh-client-ui-conversation',
-        '@deepseek-ai/dsh-client-ui-attachment', '@deepseek-ai/dsh-client-ui-trajectory']) assert.ok(kept.has(id), id);
+        '@deepseek-ai/dsh-client-ui-attachment', '@deepseek-ai/dsh-client-ui-trajectory',
+        '@deepseek-ai/dsh-client-ui-open-in-app', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview']) assert.ok(kept.has(id), id);
     const resumed = independentBootBatches(full);
     assert.equal(resumed.entries, full.entries);
     assert.ok(resumed.entries.some(row => row.id === models));
@@ -99,8 +103,26 @@ test('a plugin requiring the actual account settings slot keeps its official dep
     assert.ok(workspaceBootGraph(full).entries.some(row => row.id === account));
 });
 
+test('official More menus and locale providers are ready before conversation mounting', () => {
+    const full = officialGraph(), first = workspaceBootGraph(full);
+    for (const id of [entryCustomization, pluginManager]) {
+        assert.ok(first.entries.some(row => row.id === id), `${id} is ready without waiting for account activation`);
+    }
+    assert.ok(!first.entries.some(row => row.id === account));
+    assert.ok(!first.entries.some(row => row.id === hmr));
+    assert.doesNotThrow(() => parseBootManifest(first));
+});
+
+test('an explicit first-stage consumer retains the official More menus and plugin manager together', () => {
+    const full = officialGraph();
+    full.entries.push({ id: 'fixture-entry-menu-extension', rev: 'fixture', url: 'plugins/entry-menu.js', inject: [entryCustomization] });
+    const ids = new Set(workspaceBootGraph(full).entries.map(row => row.id));
+    assert.ok(ids.has(entryCustomization));
+    assert.ok(ids.has(pluginManager));
+});
+
 test('deferred stages retain original entries and add one optional closure before HMR', () => {
-    const full = graph(), manager = '@deepseek-ai/dsh-client-ui-plugin-manager';
+    const full = graph(), manager = '@deepseek-ai/dsh-client-product-analytics';
     full.entries.push({ id: manager, rev: 'manager-rev', url: 'plugins/manager.js' });
     const stages = deferredBootStages(full);
     assert.deepEqual(stages.map(stage => stage.entries.map(row => row.id)), [
@@ -122,7 +144,7 @@ test('deferred stages retain original entries and add one optional closure befor
 });
 
 test('a deferred dependency cycle loads together and client subpath externals remain closed', () => {
-    const full = graph(), manager = '@deepseek-ai/dsh-client-ui-plugin-manager';
+    const full = graph(), manager = '@deepseek-ai/dsh-client-product-analytics';
     full.entries[2]!.external = [`${manager}/client`];
     full.entries.push({ id: manager, rev: 'manager-rev', url: 'plugins/manager.js', inject: [account] });
     const stages = deferredBootStages(full);
@@ -132,7 +154,7 @@ test('a deferred dependency cycle loads together and client subpath externals re
 });
 
 test('optional HMR consumers wait for the final graph without losing their dependency', () => {
-    const full = graph(), manager = '@deepseek-ai/dsh-client-ui-plugin-manager';
+    const full = graph(), manager = '@deepseek-ai/dsh-client-product-analytics';
     full.entries[2]!.inject = [hmr];
     full.entries.push({ id: manager, rev: 'manager-rev', url: 'plugins/manager.js' });
     const stages = deferredBootStages(full);

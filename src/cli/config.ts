@@ -7,7 +7,7 @@ import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
 
-export const DSH_VERSION = '0.2.1-rc.2';
+export const DSH_VERSION = '0.2.1-rc.3';
 export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
 export const CONFIG_VERSION = 1;
 

@@ -62,7 +62,7 @@ test('shared Host restores 13 pane identities, binds visible windows lazily and 
         const activeTranscriptMs = Date.now() - started
         // Account/plugin packages finish after the first real transcript. They
         // are not additional per-pane graphs caused by switching windows.
-        await page.waitForFunction(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length > 0)
+        await page.waitForFunction(() => performance.getEntriesByName('hapi:conversation-plugins-ready').length > 0)
         const startupRequests = requests
         const first = page.locator('[data-pane-id="shared-pane-alpha"]')
         const composer = first.getByRole('textbox', { name: /Message or run a task/ })

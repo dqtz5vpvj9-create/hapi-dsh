@@ -25,7 +25,7 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 弱网导航使用 `HAPI_DSH_LATENCY_MS=150 HAPI_DSH_DOWNLOAD_MBPS=1.6 HAPI_DSH_UPLOAD_MBPS=0.75 npm run test:perf:production`。这些是 CDP 的 HTTP 整形参数，不能冒充用户实际线路或 WebSocket 的端到端限速。报告区分 HTTP 编码/解码字节、WebSocket 解码字节、压缩协商、资源完成时间和首屏三个里程碑。探针对 RPC 使用只读许可表，阻止页面自动新建 Session 或保存布局，记录被阻止的路径和次数；不会用假成功回包掩盖这些行为。
 
-`TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阻断账户设置包的下载，仍须打开真实正文并编辑草稿；恢复下载后，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
+`TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阅读期间账户包与 HMR 请求必须为零，真实正文和草稿仍可使用；通过原生入口打开 Settings 才请求账户包。下载期间关闭设置时只缓存资源，重新打开才激活，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
 
 队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执只在现有 `⋯ → 会话状态与回执` 中查询，不显示独立感叹号；检查后源端仍未确认时须给出反馈，刷新不重发，真实排队消息仍可取回编辑。带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px，并检查展开菜单的左右边界。固定 webshot 命令输出菜单关闭、展开及检查结果的截图；需实际查看产物后才能报告视觉通过。
 
@@ -84,3 +84,5 @@ GitHub CI 的完整浏览器套件包含这些触摸断言并上传 JSON。CI �
 浏览器执行 pinned 官方 DSH Conversation、SessionProvider、编辑器和插件加载器；HAPI wire 和执行结果为合成 fixture，不调用真实模型。发送、队列、审批、断线等测试只操作该隔离环境。生产探针只读取既有会话及页面状态；报告只存时序、计数和脱敏错误，不存正文、凭据或私有会话身份。
 
 单次通过只说明对应环境与样本通过。最终交付同时给出源码版本、客户端构建时间、Host/浏览器启动次数、运行次数、失败项和未覆盖范围。内存窗口长期有界、跨设备通知、真实远端冷启动等，必须有各自证据，不能从短流程推断。
+
+DSH rc.3 的展开工具历史回归连续记录三个滑动方向、方向之间的间隔和结束后的静置。不要在每个方向结束时停止帧采样，否则插件加载造成的长任务会漏记。首次 649.9ms 失败和完整诊断保留；修复及实际测量见 [rc.3 升级记录](dsh-rc3-upgrade.md)。

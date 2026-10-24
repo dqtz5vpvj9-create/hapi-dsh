@@ -37,14 +37,14 @@ project. DeepSeek Harness is licensed under the MIT License.
 
 Copyright (c) 2026 DeepSeek
 Source: https://github.com/deepseek-ai/deepseek-harness
-Version: 0.2.1-rc.2
-Source reference: 687f282e8625c6b8d11ff58211a90524be2e4317
+Version: 0.2.1-rc.3
+Source reference: 1f81c047fc48fa190a683e469daa699857e9afe8
 The unmodified upstream license is included in docs/licenses/DSH-MIT.txt.
 
 Federated Client store runtime
 ------------------------------
 The browser artifact also bundles the unmodified official
-@deepseek-ai/dsh-client-store 0.2.1-rc.2 source with its unchanged store-engine
+@deepseek-ai/dsh-client-store 0.2.1-rc.3 source with its unchanged store-engine
 dependencies. Each Client graph evaluates that factory with its own browser
 storage capability; no upstream implementation is patched.
 

@@ -1,4 +1,4 @@
-/** Opt-in integration: unchanged npm DSH 0.2.1-rc.2, official profile CLI, and the real Runner plugin. */
+/** Opt-in integration: unchanged npm DSH 0.2.1-rc.3, official profile CLI, and the real Runner plugin. */
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';

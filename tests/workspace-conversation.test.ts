@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import { SlotCore, type PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConversationMatch, ConversationNodeContext, ConversationStartMatch } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { installRemotePane } from '../src/client/remote-pane.tsx'
@@ -27,7 +28,13 @@ test('pane composition preserves the original main/header ownership and third-pa
     } }, (_props: PropsRenderSlots<'conversation.session.header.actions' | 'conversation.session.header.utilities' | 'conversation.session.header.corner' | 'conversation.session.header.lineage'>) => null)
     const originalMain = core.entriesOfSlot('main')[0], originalRoot = core.entriesOfSlot('main.conversation')[0]
     const originalHeader = core.entriesOfSlot('conversation.header')[0]
-    const ctx = { slots: {
+    let panelSubscriptions = 0
+    let activePanelId: string | null = null
+    const selections: Array<string | null> = []
+    const ctx = { layout: { selectPanel: (id: string | null) => { activePanelId = id; selections.push(id) }, panelInfo: { getSnapshot: () => ({ activePanelId }), subscribe: () => {
+        panelSubscriptions++
+        return () => { panelSubscriptions-- }
+    } } }, slots: {
         register: core.register.bind(core), entriesOfSlot: core.entriesOfSlot.bind(core), subscribe: core.subscribe.bind(core),
         inject: (_key: string, callback: () => () => void) => callback(),
     }, locale: { subscribe: () => () => {} },
@@ -36,6 +43,12 @@ test('pane composition preserves the original main/header ownership and third-pa
     inject: () => ({ dispose() {} }),
     } as unknown as Context
     const pane = installRemotePane(ctx, { localeInstalled: true })
+    assert.equal(panelSubscriptions, 1)
+    const reference = {} as SessionReference
+    pane.renderView(reference, { target: { type: 'panel', panelId: 'plugins' }, visible: true, focused: false })
+    assert.deepEqual(selections, ['plugins'], 'select the saved panel before React mounts the official root')
+    pane.renderView(reference, { target: { type: 'panel', panelId: 'plugins' }, visible: true, focused: true })
+    assert.deepEqual(selections, ['plugins'], 'focus changes do not repeat panel navigation')
     assert.equal(core.entriesOfSlot('main')[0], originalMain)
     assert.equal(core.entriesOfSlot('main.conversation')[0], originalRoot)
     assert.equal(core.entriesOfSlot('conversation.header')[0], originalHeader)
@@ -44,6 +57,7 @@ test('pane composition preserves the original main/header ownership and third-pa
     core.register({ name: 'conversation.session.header.utilities', id: 'third-party-test' }, Empty)
     const utility = core.entriesOfSlot('conversation.session.header.utilities')[0]
     pane.dispose(); pane.dispose()
+    assert.equal(panelSubscriptions, 0)
     assert.equal(core.entriesOfSlot('main')[0], originalMain)
     assert.equal(core.entriesOfSlot('main.conversation')[0], originalRoot)
     assert.equal(core.entriesOfSlot('conversation.header')[0], originalHeader)

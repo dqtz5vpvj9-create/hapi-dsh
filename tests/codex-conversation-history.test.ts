@@ -40,7 +40,7 @@ interface AssemblerConstructor {
  */
 function officialAssembler(): AssemblerConstructor {
   const manifest = require('@deepseek-ai/dsh-client-ui-conversation/package.json') as { version: string }
-  assert.equal(manifest.version, '0.2.1-rc.2')
+  assert.equal(manifest.version, '0.2.1-rc.3')
   let registration: { id: string; factory: (resolve: (id: string) => unknown) => Record<string, unknown> } | undefined
   const source = readFileSync(require.resolve('@deepseek-ai/dsh-client-ui-conversation/client'), 'utf8')
   new Function('window', source)({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })

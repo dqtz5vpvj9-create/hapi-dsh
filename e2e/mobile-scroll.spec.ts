@@ -59,11 +59,19 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
       for (const entry of entries) longFrames.push({ at: entry.startTime, duration: entry.duration,
         blocking: Reflect.get(entry, 'blockingDuration'), renderStart: Reflect.get(entry, 'renderStart'),
         styleAndLayoutStart: Reflect.get(entry, 'styleAndLayoutStart'),
-        scripts: ((Reflect.get(entry, 'scripts') ?? []) as Array<Record<string, unknown>>).map(script => ({
-          duration: script.duration, forcedLayout: script.forcedStyleAndLayoutDuration,
-          function: script.sourceFunctionName, invoker: script.invokerType,
-          source: typeof script.sourceURL === 'string' && script.sourceURL ? new URL(script.sourceURL, location.href).pathname : '',
-        })) })
+        scripts: ((Reflect.get(entry, 'scripts') ?? []) as Array<Record<string, unknown>>).map(script => {
+          const url = typeof script.sourceURL === 'string' && script.sourceURL ? new URL(script.sourceURL, location.href) : null
+          // The official combo URL identifies code in its query. Keep only
+          // known package resource names, never tokens or arbitrary query data.
+          const packages = url?.pathname.endsWith('/plugins/')
+            ? [...new Set(url.search.match(/@deepseek-ai\/[a-z0-9_-]+\/client\.js/g) ?? [])] : []
+          return {
+            duration: script.duration, forcedLayout: script.forcedStyleAndLayoutDuration,
+            function: script.sourceFunctionName, invoker: script.invoker, invokerType: script.invokerType,
+            sourceCharPosition: script.sourceCharPosition,
+            source: url ? url.pathname + (packages.length ? `?${packages.join(',')}` : '') : '',
+          }
+        }) })
     }
     const longObserver = PerformanceObserver.supportedEntryTypes.includes('long-animation-frame')
       ? new PerformanceObserver(list => collectLongFrames(list.getEntries())) : null
@@ -782,6 +790,13 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
   test.setTimeout(120_000)
   const page = await warm.page({ width: 390, height: 844 }, true)
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+  const optionalRequests: string[] = []
+  page.on('request', request => {
+    const url = new URL(request.url())
+    if (url.pathname.endsWith('/plugins/')) for (const id of ['dsh-client-ui-settings-account', 'dsh-client-hmr']) {
+      if (decodeURIComponent(url.search).includes(`${id}/client.js`)) optionalRequests.push(id)
+    }
+  })
   await warm.admit(page)
   await page.locator('.hapi-mobile-back').click()
   await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex touch-tools' }).click()
@@ -790,6 +805,9 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
   const cdp = await page.context().newCDPSession(page)
   const results: { direction: string; directionSince: number; frames: MotionFrame[]; metrics: ReturnType<typeof movement>; longFrames: unknown[]; historyEvents: unknown[]; outerRoutes: unknown[]; retainedAnchors: number }[] = []
   let stopTrace: (() => Promise<string | undefined>) | undefined
+  let sampling = false
+  let interactionEnd: number | undefined
+  let completeMotion: Record<string, unknown> | undefined
   try {
     // Reach history with a real gesture before tapping. Playwright's implicit
     // programmatic scroll does not take ownership from the initial tail landing.
@@ -802,14 +820,25 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
     await expect(command).toHaveAttribute('aria-expanded', 'true')
     await expect(pane.getByText('Synthetic output: retained text must stay in place during a touch gesture.', { exact: false }).last()).toBeVisible()
     stopTrace = await traceMotion(cdp)
+    // Keep one sampler alive across direction boundaries and deferred startup.
+    // Stopping it between directions used to hide plugin-load long tasks.
+    await frames(page, pane, true)
+    sampling = true
     for (const direction of ['earlier', 'later', 'earlier'] as const) {
-      await frames(page, pane, true)
+      const begin = await page.evaluate(() => {
+        const probe = Reflect.get(window, '__touchMotion')
+        probe.firstTrustedTouchMoveAt = null
+        return { frames: probe.frames.length, longFrames: probe.longFrames.length, historyEvents: probe.historyEvents.length }
+      })
       const outerRoutes: unknown[] = []
       for (let i = 0; i < 5; i++) outerRoutes.push(await swipe(page, cdp, pane, direction, undefined, true, true))
-      const samples = await frames(page, pane, false)
-      const diagnostics = await page.evaluate(() => {
-        const probe = Reflect.get(window, '__touchMotion'); return { longFrames: probe.longFrames, historyEvents: probe.historyEvents, directionSince: probe.firstTrustedTouchMoveAt as number | null }
-      })
+      const samples: MotionFrame[] = await page.evaluate(begin => Reflect.get(window, '__touchMotion').frames.slice(begin.frames), begin)
+      const diagnostics = await page.evaluate(begin => {
+        const probe = Reflect.get(window, '__touchMotion')
+        return { longFrames: probe.longFrames.slice(begin.longFrames), historyEvents: probe.historyEvents.slice(begin.historyEvents), directionSince: probe.firstTrustedTouchMoveAt as number | null,
+          deferredPlugins: performance.getEntriesByType('mark').filter(entry => entry.name.startsWith('hapi:deferred-plugins-') || entry.name === 'hapi:conversation-plugins-ready')
+            .map(entry => ({ name: entry.name, at: entry.startTime })) }
+      }, begin)
       expect(diagnostics.directionSince, 'the direction must be established by a trusted touchmove').not.toBeNull()
       const metrics = movement(samples, direction, diagnostics.directionSince!)
       const retainedAnchors = await pane.locator('[data-chat-flow]:not([data-step-process-content]) [data-chat-anchor-key]').count()
@@ -823,17 +852,42 @@ test('mobile expanded tool history: continuous swipes keep visible content and t
       expect(metrics.composerShift).toBeLessThanOrEqual(1)
       expect(metrics.headerShift).toBeLessThanOrEqual(1)
       expect(samples.every(frame => frame.headerHeight === 0), 'expanded tools must not bring back the mobile pane header').toBe(true)
-      expect(metrics.maxFrameMs).toBeLessThan(200.2)
+      expect.soft(metrics.maxFrameMs).toBeLessThan(200.2)
     }
+    interactionEnd = await page.evaluate(() => performance.now())
+    await page.waitForFunction(() => performance.getEntriesByName('hapi:conversation-plugins-ready').length > 0, undefined, { timeout: 30_000 })
+    // Full sampling continues through a quiet interval longer than the former
+    // background trigger. Account/HMR must stay unloaded until Settings demand.
+    await page.waitForTimeout(1500)
+    expect(optionalRequests).toEqual([])
+    expect(await page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-start').length)).toBe(0)
+    const completeFrames = await frames(page, pane, false)
+    sampling = false
+    completeMotion = await page.evaluate(() => {
+      const probe = Reflect.get(window, '__touchMotion')
+      return { frames: probe.frames, longFrames: probe.longFrames, historyEvents: probe.historyEvents,
+        deferredPlugins: performance.getEntriesByType('mark').filter(entry => entry.name.startsWith('hapi:deferred-plugins-') || entry.name === 'hapi:conversation-plugins-ready')
+          .map(entry => ({ name: entry.name, at: entry.startTime })) }
+    })
+    expect(movement(completeFrames, 'earlier').maxFrameMs, 'all frames, including direction gaps and deferred activation, meet the existing budget').toBeLessThan(200.2)
     expect(results.at(-1)?.retainedAnchors, 'exercise at least the 1260-anchor history that exposed the long-frame regression').toBeGreaterThanOrEqual(1260)
     expect(errors).toEqual([])
   } finally {
+    if (sampling) {
+      await frames(page, pane, false)
+      completeMotion = await page.evaluate(() => {
+        const probe = Reflect.get(window, '__touchMotion')
+        return { frames: probe.frames, longFrames: probe.longFrames, historyEvents: probe.historyEvents,
+          deferredPlugins: performance.getEntriesByType('mark').filter(entry => entry.name.startsWith('hapi:deferred-plugins-') || entry.name === 'hapi:conversation-plugins-ready')
+            .map(entry => ({ name: entry.name, at: entry.startTime })) }
+      })
+    }
     const timeline = await stopTrace?.()
     if (timeline) await info.attach('touch-scheduling-diagnostic', { path: timeline, contentType: 'application/json' })
     const directory = process.env.HAPI_DSH_VISUAL_DIR ?? '/mnt/cache/data-cache/hapi-dsh-visual-review'
     await mkdir(directory, { recursive: true })
     const path = `${directory}/touch-tools-${Date.now()}.json`
-    await writeFile(path, JSON.stringify({ results, errors }))
+    await writeFile(path, JSON.stringify({ results, interactionEnd, completeMotion, optionalRequests, errors }))
     await info.attach('expanded-tool-motion', { path, contentType: 'application/json' })
     await page.close()
     const action = `if (!window.__turnOpened) {

@@ -1,6 +1,6 @@
 /** Reproducible source identity embedded in both Host and browser artifacts. */
 declare const __HAPI_DSH_BUILD_ID__: string;
 export const HAPI_DSH_BUILD_ID = typeof __HAPI_DSH_BUILD_ID__ === 'string' ? __HAPI_DSH_BUILD_ID__ : 'development';
-export const HAPI_DSH_VERSION = '0.1.0';
-export const DSH_VERSION = '0.2.1-rc.2';
+export const HAPI_DSH_VERSION = '0.1.2';
+export const DSH_VERSION = '0.2.1-rc.3';
 export const HAPI_SOURCE_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';

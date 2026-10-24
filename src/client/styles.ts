@@ -258,7 +258,10 @@ html,body {overscroll-behavior-y:none}
 /* Compact the official sidebar shell without replacing its plugin slots. */
 [data-slot="sidebar"]:has(.hapi-session-sidebar) [data-window-drag] {min-height:36px;height:36px;padding-top:0;padding-bottom:0;margin-bottom:0}
 [data-slot="sidebar"]:has(.hapi-session-sidebar) nav {display:flex;flex-direction:row;gap:4px;padding-top:0;padding-bottom:4px;margin-top:0;margin-bottom:0}
-[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>button {flex:1;min-width:0;min-height:32px;height:32px;padding:4px 8px;font-size:12px}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>button {flex:1 1 auto;width:auto;min-width:0;min-height:32px;height:32px;padding:4px;gap:6px;font-size:12px}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>[class*="moreAnchor"] {flex:0 0 32px;min-width:0}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>[class*="moreAnchor"] button {width:32px;min-height:32px;height:32px;padding:4px;justify-content:center}
+[data-slot="sidebar"]:has(.hapi-session-sidebar) nav>[class*="moreAnchor"] [class*="panelTitle"] {display:none}
 [data-slot="sidebar"]:has(.hapi-session-sidebar) button:has([class*="newSessionLabelMask"]) {height:34px;min-height:34px;margin-top:2px;margin-bottom:4px}
 .hapi-session-sidebar>header {padding-bottom:2px;min-height:28px}
 .hapi-session-sidebar>header>button:last-child {margin-left:0}

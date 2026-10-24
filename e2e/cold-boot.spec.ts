@@ -2,8 +2,6 @@ import { test, expect } from '@playwright/test';
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts';
 import { acknowledgePreviewNotice } from './preview-notice.ts';
 import { visualReview, conversationReady } from './visual-review.ts';
-import { deferredBootStages } from '../src/shared/boot-graph.ts';
-import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules';
 
 test.use({ screenshot: 'off', hasTouch: true });
 
@@ -38,38 +36,29 @@ test('repeat navigation reuses versioned official shell assets from the browser 
     } finally { await environment.close(); }
 });
 
-test('cold conversation does not wait for account assets; deferred activation yields to the reader without remounting the editor', async ({ page }, info) => {
+test('cold conversation keeps account assets on demand; opening native Settings loads them without losing the draft', async ({ page }, info) => {
     let environment: OfficialEnvironment | undefined;
     let primaryFailure: unknown;
     let releaseAccount!: () => void;
     const accountGate = new Promise<void>(resolve => { releaseAccount = resolve; });
-    let accountRequested = false;
-    let accountReceived = false;
     let accountRequests = 0;
-    let watchedEntries: string[] = [];
-    const requestedEntries: string[] = [];
-    const errors: string[] = [];
-    const sockets: string[] = [];
-    const panelRequests: string[] = [];
+    let hmrRequests = 0;
     await page.addInitScript(() => {
-        Reflect.set(window, '__coldAccountScripts', 0);
+        Reflect.set(window, '__coldAccountLoads', 0);
         document.addEventListener('load', event => {
             if (event.target instanceof HTMLScriptElement && decodeURIComponent(event.target.src).includes('dsh-client-ui-settings-account')) {
-                Reflect.set(window, '__coldAccountScripts', Reflect.get(window, '__coldAccountScripts') + 1);
+                Reflect.set(window, '__coldAccountLoads', Reflect.get(window, '__coldAccountLoads') + 1);
             }
         }, true);
     });
+    const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
-    page.on('websocket', socket => sockets.push(new URL(socket.url()).pathname));
     page.on('request', request => {
         const url = decodeURIComponent(request.url());
-        if (/client\.(native-panels|session-panels|administration)\.js/.test(url)) panelRequests.push(url);
-        for (const id of watchedEntries) if (url.includes(id)) requestedEntries.push(id);
+        if (url.includes('dsh-client-hmr/client.js')) hmrRequests++;
     });
-    page.on('response', response => { if (decodeURIComponent(response.url()).includes('dsh-client-ui-settings-account')) accountReceived = true; });
     await page.route('**/plugins/**', async route => {
-        if (decodeURIComponent(route.request().url()).includes('dsh-client-ui-settings-account')) {
-            accountRequested = true;
+        if (decodeURIComponent(route.request().url()).includes('dsh-client-ui-settings-account/client.js')) {
             accountRequests++;
             await accountGate;
         }
@@ -80,67 +69,49 @@ test('cold conversation does not wait for account assets; deferred activation yi
         await page.goto(environment.launchUrl);
         await acknowledgePreviewNotice(page, environment);
         await page.locator('.hapi-session-open, .hapi-discovery-open').filter({ hasText: 'Native Codex alpha' }).click();
-        // Hold while the selected conversation is still opening; awaiting
-        // several locator round trips can let the optional work start first.
-        await page.mouse.move(700, 300);
-        await page.mouse.down();
         const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
         const editor = pane.locator('[data-composer-input][contenteditable="true"]');
         await expect(pane.locator('[data-chat-node-key]').first()).toBeVisible();
         await expect(editor).toBeVisible();
-        // An intentionally stalled optional plugin cannot gate real chat.
-        await editor.fill('Keep my draft through deferred plugin activation');
+        await editor.fill('Keep my draft through explicit account activation');
         await editor.evaluate(element => { element.setAttribute('data-cold-editor', 'original'); });
-        await page.waitForTimeout(900);
-        expect(accountRequested, 'optional plugin evaluation must yield to a held reader gesture').toBe(false);
-        const bootstrap = await page.request.get(`${environment.origin}/hapi-dsh/bootstrap`);
-        const { graph } = await bootstrap.json() as { graph: WebBootGraph };
-        const stages = deferredBootStages(graph);
-        const accountStage = stages.find(stage => stage.entries.some(entry => entry.id === '@deepseek-ai/dsh-client-ui-settings-account'));
-        expect(accountStage, 'the account plugin must have a deferred activation stage').toBeDefined();
-        const allowed = new Set(accountStage!.entries.map(entry => entry.id));
-        const laterEntries = graph.entries.filter(entry => !allowed.has(entry.id)).map(entry => entry.id);
-        expect(laterEntries.length, 'the fixture must include stages after the held account request').toBeGreaterThan(0);
-        watchedEntries = graph.entries.map(entry => entry.id);
-        await page.mouse.up();
-        await expect.poll(() => accountRequested).toBe(true);
-        // A new reader gesture begins after reconciliation already issued its
-        // first request. Download may finish, but even this current plugin's
-        // script must not execute until the finger leaves the page.
-        const cdp = await page.context().newCDPSession(page);
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 700, y: 300, id: 1 }] });
+        await page.waitForFunction(() => performance.getEntriesByName('hapi:conversation-plugins-ready').length > 0);
+        // Surpass the old 600 ms quiet-reader trigger. Neither account nor HMR
+        // may bring late global locale updates back into a resting transcript.
+        await page.waitForTimeout(1500);
+        expect(accountRequests).toBe(0);
+        expect(hmrRequests).toBe(0);
+        expect(await page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length)).toBe(0);
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        const settings = page.locator('[data-shortcut-modal="settings"]');
+        await expect(settings).toBeVisible();
+        await expect.poll(() => accountRequests).toBe(1);
+        await expect(editor).toHaveAttribute('data-cold-editor', 'original');
+        await expect(editor).toHaveText('Keep my draft through explicit account activation');
+        await page.keyboard.press('Escape');
+        await expect(settings).not.toBeVisible();
         releaseAccount();
-        await expect.poll(() => accountReceived).toBe(true);
-        await page.waitForTimeout(900);
-        expect(await page.evaluate(() => Reflect.get(window, '__coldAccountScripts')),
-            'a completed preload must not execute the current plugin during the gesture').toBe(0);
-        expect(requestedEntries.filter(id => laterEntries.includes(id)), 'a gesture during one module load must pause later activation stages').toEqual([]);
-        await expect(editor).toHaveAttribute('data-cold-editor', 'original');
-        await expect(editor).toHaveText('Keep my draft through deferred plugin activation');
-        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await page.waitForTimeout(1000);
+        expect(await page.evaluate(() => Reflect.get(window, '__coldAccountLoads')),
+            'closing Settings while its download is pending must not activate Account over the reader').toBe(0);
+        await page.getByRole('button', { name: 'Settings', exact: true }).click();
+        await expect(settings).toBeVisible();
         await page.waitForFunction(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length > 0);
-        expect(await page.evaluate(() => Reflect.get(window, '__coldAccountScripts'))).toBe(1);
-        expect(accountRequests, 'official activation must reuse the resource already downloaded by preload').toBe(1);
+        expect(accountRequests, 'official activation reuses its preloaded account bundle').toBe(1);
+        await page.keyboard.press('Escape');
+        await expect(settings).not.toBeVisible();
+        await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+        await expect(page.getByRole('menuitem', { name: 'Sign in', exact: true })).toBeVisible();
+        await page.keyboard.press('Escape');
         await expect(editor).toHaveAttribute('data-cold-editor', 'original');
-        await expect(editor).toHaveText('Keep my draft through deferred plugin activation');
+        await expect(editor).toHaveText('Keep my draft through explicit account activation');
         expect(errors).toEqual([]);
-        expect(sockets).toContain('/hapi-dsh/remote.mux');
-        expect(sockets).not.toContain('/api/remote.mux');
-        // The ready mark is only emitted after the official per-entry failure
-        // inventory is empty, not merely after the sync promise resolves.
-        expect(await page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length)).toBe(1);
-        expect(panelRequests).toEqual([]);
         expect(environment.hapi.sent).toHaveLength(0);
-    } catch (error) {
-        primaryFailure = error;
-        throw error;
-    } finally {
+    } catch (error) { primaryFailure = error; throw error; }
+    finally {
         releaseAccount();
         try {
-            if (!page.isClosed()) {
-                await page.unrouteAll({ behavior: 'wait' });
-                await page.close();
-            }
+            if (!page.isClosed()) { await page.unrouteAll({ behavior: 'wait' }); await page.close(); }
             if (environment) for (const viewport of ['1440x900', '390x844']) {
                 const path = await visualReview(environment.launchUrl, 'cold-conversation', viewport, conversationReady('Native Codex alpha'));
                 if (path) await info.attach(`visual-${viewport}`, { path, contentType: 'image/png' });

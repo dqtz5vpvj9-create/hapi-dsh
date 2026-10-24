@@ -26,7 +26,7 @@ function useSummaryPreference(coordinator: SourceSummaryCoordinator, api: Summar
 const cssString = (value: string): string => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r\f]/g, '\\a ')}"`
 
 /**
- * Compatibility point pinned to DSH 0.2.1-rc.2's MessageIconActions DOM.
+ * Compatibility point pinned to DSH 0.2.1-rc.3's MessageIconActions DOM.
  * The upstream Copy has no independent public slot. A completed source turn
  * with our own closing-copy marker hides only that first built-in Copy button.
  * Every other official/plugin action and all ordinary DSH turns stay untouched.

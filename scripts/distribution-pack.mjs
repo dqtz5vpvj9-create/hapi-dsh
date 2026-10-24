@@ -4,7 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const manifest = JSON.parse(await readFile('package.json', 'utf8'));
-if (manifest.name !== 'hapi-dsh' || manifest.dependencies?.['@deepseek-ai/dsh'] !== '0.2.1-rc.2') {
+if (manifest.name !== 'hapi-dsh' || manifest.dependencies?.['@deepseek-ai/dsh'] !== '0.2.1-rc.3') {
     throw new Error('Run distribution packaging from the pinned hapi-dsh repository');
 }
 const runner = JSON.parse(await readFile('dist/runner/package.json', 'utf8'));
