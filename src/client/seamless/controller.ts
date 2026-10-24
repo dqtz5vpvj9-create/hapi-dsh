@@ -10,9 +10,9 @@
  * reimplementing the anchor owner: it watches the conversation scrollport for a
  * deliberate upward gesture near the top and clicks the official control. All
  * paging and rendering stay upstream. Normal paging anchors stay upstream too;
- * the sole exception is an in-flight page interrupted by a new held touch,
+ * the sole exception is an in-flight page interrupted by a new reader gesture,
  * after the official reader has released its anchor. One visible row supplies
- * a commit-time correction during the drag or a gesture gap at the upper edge.
+ * a commit-time correction during motion or a gesture gap at the upper edge.
  * Touch paging waits for the outer scrollport to settle: the official button
  * retains a fixed reading anchor, which must not be acquired mid-drag/inertia.
  *
@@ -584,6 +584,18 @@ class ConversationHistoryController {
         const target = event.target
         if (!(target instanceof Element) || !scroller.contains(target)) return
         if (this.innerScrollConsumes(target, scroller, intent)) return
+        if (event.isTrusted) {
+            // Wheel input also releases the official paging anchor. At zero
+            // another upward wheel may produce no scroll/scrollend at all,
+            // leaving an in-flight prepend with no reading-position owner.
+            // Cover manual pages too, without issuing or budgeting a new load.
+            if (this.pending === null
+                && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)) this.observeEarlierPage()
+            if (this.pending !== null) {
+                this.interruptedAnchor = captureInterruptedPrepend(scroller)
+                if (intent === 'up') this.interruptedAnchor?.retainAtUpperEdge()
+            }
+        }
         this.input(intent, this.now())
     }
 
@@ -662,7 +674,12 @@ class ConversationHistoryController {
 
     private readonly onScrollEnd = (event: Event): void => {
         if (!(event.target instanceof HTMLElement) || !event.target.matches(SCROLLER_SELECTOR)) return
-        this.releaseInterruptedAnchor()
+        // A desktop wheel burst can finish at zero while its page is still
+        // loading. Preserve that seam across the next burst, as touchend does
+        // for a finger stopped at the boundary. Normal motion returns upstream.
+        if (this.touchMotion || this.pending === null || !this.interruptedAnchor?.retainAtUpperEdge()) {
+            this.releaseInterruptedAnchor()
+        }
         if (!this.touchMotion) return
         this.touchScrolling = false
         // Let the official handler commit its last reading sample first.
