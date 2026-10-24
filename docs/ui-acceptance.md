@@ -27,7 +27,7 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阻断账户设置包的下载，仍须打开真实正文并编辑草稿；恢复下载后，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
 
-队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执不会出现在输入区，刷新不重发，真实排队消息仍可取回编辑；带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px。设置 `HAPI_DSH_VISUAL_OUTPUT=/mnt/cache/data-cache/source-presentation` 时额外调用 webshot 输出桌面及手机截图，需人工查看产物后才能报告视觉通过。
+队列与命令呈现回归可单独运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/source-presentation.spec.ts`。两个用例共用一个官方 Host，使用与生产字段一致的合成源记录：五条 `indeterminate` 回执只在现有 `⋯ → 会话状态与回执` 中查询，不显示独立感叹号；检查后源端仍未确认时须给出反馈，刷新不重发，真实排队消息仍可取回编辑。带 `command_actions` 的 shell 调用显示简短标题，展开保留命令、输出和真实退出码。覆盖桌面、390px 和 360px，并检查展开菜单的左右边界。固定 webshot 命令输出菜单关闭、展开及检查结果的截图；需实际查看产物后才能报告视觉通过。
 
 手机导航与栏位专项运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/mobile-chrome.spec.ts`。用例使用 pinned 官方 DSH Host、Conversation 和合成源会话，在 360/390px 触摸模拟下检查返回列表、草稿与 pane 身份保留、分屏切换和状态入口，并用 1440px 桌面检查独立标题栏仍然可用。截图由固定 `webshot` 命令重放对应状态；Agent 必须逐图打开并查看，才能报告视觉通过。该专项不发送真实消息，也未覆盖物理手机；命令和断言的存在不代表本轮已经通过。
 
@@ -53,7 +53,7 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 底栏最左侧保留“返回会话列表”（`Back to conversations`）按钮。它打开现有会话选择器，保留当前 pane、会话身份和输入草稿；返回同一会话时不能重建或清空它们。打开列表不自动聚焦搜索框，避免仅查看会话列表就触发软键盘。模拟测试检查焦点归属，实体手机软键盘的实际弹出行为仍须单独验收。
 
-源连接、投递恢复等状态入口在手机上放入底栏，跟随当前 pane 切换，不能留在已隐藏的标题栏，也不能显示另一 pane 的恢复操作。桌面状态入口继续位于对应 pane 的标题栏。正文、输入框与底栏不得横向溢出或相互遮挡。
+源连接、投递恢复等信息通过现有 `⋯ → 会话状态与回执` 查询，不另设常驻感叹号。手机使用底栏菜单，跟随当前 pane 切换；桌面使用对应 pane 标题栏的菜单。入口不能留在手机已隐藏的标题栏，也不能显示另一 pane 的恢复操作。显式定位回执须同时展开外层菜单和内层回执。未确认的记录保留源端真实状态，不能因为空闲、刷新或隐藏入口而被当作成功、重发或丢弃。正文、输入框、底栏与展开菜单不得横向溢出或相互遮挡。
 
 ## 连续触摸与视觉复查
 

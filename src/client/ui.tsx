@@ -215,7 +215,6 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
                 <span>{readableTitle(title, t, 200)}</span>
             </div>
             <div className="hapi-pane-toolbar" role="group" aria-label={t('paneActions')}>
-                <div className="hapi-pane-status-slot" data-hapi-pane-status={pane.id}/>
                 <IconButton label={t('newPane')} icon="add" onClick={() => { controller.store.focus(pane.id); controller.store.split('horizontal'); controller.requestSessionPicker() }}/>
                 <IconButton label={t(zoomed ? 'unzoom' : 'zoom')} icon="zoom" pressed={zoomed}
                     onClick={() => { controller.store.focus(pane.id); controller.store.toggleZoom() }}/>
@@ -273,6 +272,7 @@ function PaneMenuItems({ pane, window, controller, t }: { pane: PaneNode; window
 
 function PaneMenu({ pane, window, controller, t }: { pane: PaneNode; window: WorkspaceWindow; controller: WorkspaceController; t: WorkspaceTranslate }) {
     return <details className="hapi-menu hapi-pane-menu"><summary title={t('actions')} aria-label={t('actions')}><WorkspaceIcon kind="more"/></summary><div className="hapi-menu-content">
+        <div className="hapi-pane-status-slot" data-hapi-pane-status={pane.id}/>
         <PaneMenuItems pane={pane} window={window} controller={controller} t={t}/>
     </div></details>
 }
@@ -502,13 +502,15 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                         {paneCount > 1 && <span className="hapi-window-count" aria-label={t('paneCount', { n: paneCount })}>{paneCount}</span>}</button>
                 })}
             </div>
-            {/* Stable targets also survive independent Conversation roots changing viewport. */}
-            {layout.windows.flatMap(window => panes(window.root)).map(pane => <div key={pane.id}
-                className="hapi-pane-status-slot" data-hapi-pane-mobile-status={pane.id}
-                style={mobile && pane.id === activePane.id ? undefined : { display: 'none' }}/>) }
             <details className="hapi-menu hapi-pane-actions" data-hapi-pane-actions="">
                 <summary title={t('paneActions')} aria-label={t('paneActions')}><WorkspaceIcon kind="more"/></summary>
-                <div className="hapi-menu-content"><PaneMenuItems pane={activePane} window={active} controller={controller} t={t}/></div>
+                <div className="hapi-menu-content">
+                    {/* Stable targets also survive independent Conversation roots changing viewport. */}
+                    {layout.windows.flatMap(window => panes(window.root)).map(pane => <div key={pane.id}
+                        className="hapi-pane-status-slot" data-hapi-pane-mobile-status={pane.id}
+                        style={mobile && pane.id === activePane.id ? undefined : { display: 'none' }}/>) }
+                    <PaneMenuItems pane={activePane} window={active} controller={controller} t={t}/>
+                </div>
             </details>
             <IconButton label={t('newWindow')} icon="add" onClick={() => action(() => { controller.store.createWindow(); controller.requestSessionPicker() })}/>
             <button type="button" className={`hapi-prefix${prefix ? ' hapi-prefix-active' : ''}`} onClick={() => setHelp(true)}>{t(prefix ? 'prefixReady' : 'prefix')}</button>

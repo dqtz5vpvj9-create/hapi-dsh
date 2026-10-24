@@ -259,7 +259,10 @@ function statusFixture() {
     const select = (rows: TargetRow[], selector: string): TargetRow[] => rows.filter(row =>
         selector === '[data-hapi-delivery-id]' ? row.dataset.hapiDeliveryId !== undefined : row.dataset.hapiRequestId !== undefined)
     const rows: TargetRow[] = [], foreignRows: TargetRow[] = [], bodyRows: TargetRow[] = []
-    const footer = { tagName: 'DIV', querySelectorAll: (selector: string) => select(rows, selector) }
+    const outerDetails = { tagName: 'DETAILS', parentElement: null, open: false }
+    const menuContent = { tagName: 'DIV', parentElement: outerDetails }
+    const footer = { tagName: 'DIV', parentElement: menuContent, querySelectorAll: (selector: string) => select(rows, selector),
+        closest: (selector: string) => selector === '.hapi-pane-actions' ? outerDetails : null }
     const foreignFooter = { tagName: 'DIV', querySelectorAll: (selector: string) => select(foreignRows, selector) }
     const details = { tagName: 'DETAILS', parentElement: footer, open: false }
     const innerDetails = { tagName: 'DETAILS', parentElement: details, open: false }
@@ -281,7 +284,7 @@ function statusFixture() {
             scrollIntoView: () => { scrolled.push(row) }, focus: () => { focused.push(row) } }
         return row
     }
-    return { ...f, footer, foreignFooter, details, innerDetails, queries, focused, scrolled,
+    return { ...f, footer, foreignFooter, outerDetails, details, innerDetails, queries, focused, scrolled,
         targets: () => [...observing.values()].flatMap(targets => [...targets.keys()]),
         makeRow,
         async insert(row: TargetRow, destination: 'footer' | 'foreign' | 'body' = 'footer') {
@@ -296,7 +299,7 @@ function statusFixture() {
     }
 }
 
-test('delivery navigation observes its own footer and opens nested receipt details after asynchronous insertion', async t => {
+test('delivery navigation observes its own footer and opens the outer pane menu and receipt details after asynchronous insertion', async t => {
     const f = statusFixture(); t.after(() => f.dispose()); await f.ready()
     f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'delivery', localId: 'receipt' } })
     await microtasks()
@@ -306,6 +309,7 @@ test('delivery navigation observes its own footer and opens nested receipt detai
     const receipt = f.makeRow({ hapiDeliveryId: 'receipt' }, f.innerDetails)
     await f.insert(receipt)
     assert.equal(f.root.dataset.hapiReading, 'ready')
+    assert.equal(f.outerDetails.open, true, 'the menu surrounding the footer seat must reveal the receipt')
     assert.equal(f.details.open, true); assert.equal(f.innerDetails.open, true)
     assert.deepEqual(f.focused, [receipt]); assert.deepEqual(f.scrolled, [receipt])
     assert.equal(receipt.tabIndex, -1)
@@ -338,6 +342,7 @@ test('approval navigation remains in the conversation body even when a footer ha
     const request = f.makeRow({ hapiRequestId: 'approval' }, f.root)
     await f.insert(request, 'body')
     assert.deepEqual(f.focused, [request])
+    assert.equal(f.outerDetails.open, false)
     assert.equal(f.details.open, false)
 })
 

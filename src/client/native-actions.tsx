@@ -166,6 +166,7 @@ function NativeDelivery({ sessionId, delivery, api, disabled, recoveryDisabled, 
         void action.run(() => api[kind](sessionId, delivery.localId), false)
     }
     const resultStatus: unknown = state.result && typeof state.result === 'object' ? Reflect.get(state.result, 'status') : undefined
+    const checkedState: unknown = state.result && typeof state.result === 'object' ? Reflect.get(state.result, 'state') : undefined
     return <section className="hapi-native-delivery" data-delivery-state={delivery.state} data-hapi-delivery-id={delivery.localId} aria-busy={state.busy}>
         <div className="hapi-delivery-heading"><span className="hapi-ellipsis">{delivery.text}</span><span className="hapi-state">{deliveryStatusText(delivery.state, t)}</span></div>
         <div className="hapi-button-row">
@@ -180,6 +181,9 @@ function NativeDelivery({ sessionId, delivery, api, disabled, recoveryDisabled, 
                 <button type="button" disabled={state.busy} onClick={() => recover('discard')}>{translate(t, 'Discard', '丢弃')}</button></>}
             {delivery.state === 'dispatching' && <span>{t('awaitingConfirmation')}</span>}
             {typeof resultStatus === 'string' && <output>{resultStatus}</output>}
+            {!state.busy && checkedState === 'indeterminate' && delivery.state === 'indeterminate' && <output data-hapi-delivery-check-result="">
+                {translate(t, 'Checked: the source has not confirmed delivery.', '已检查，源端仍未确认投递结果。')}
+            </output>}
         </div>
         {(state.error || delivery.error) && <p className="hapi-error" role="alert">{state.error ?? delivery.error}</p>}
     </section>
@@ -214,7 +218,7 @@ export function ObservedActions({ sessionId, projection, api, t, statusTarget = 
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('sourceStatus')}>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} stateKey={nativeRequestStateKey(projection)} request={request} api={api} disabled={projection.readOnly} t={t}/>)}
-        {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error) || deliveries.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
+        {hasStatus && <PaneSourceStatus target={statusTarget} t={t}>
         {(() => {
             const admission = composerAdmission({ readOnly: projection.readOnly, readOnlyReason: projection.readOnlyReason })
             return admission && <p className="hapi-composer-admission" role="status" data-hapi-composer-admission={admission.resume ? 'resume' : 'read-only'}>{t(admission.key)}</p>
@@ -265,7 +269,7 @@ export function NativeActions({ sessionId, projection, api, t, statusTarget = nu
     if (!hasActionable) return null
     return <aside className="hapi-native" aria-label={t('nativeStatus')}>
         {projection.pendingRequests.map(request => <NativeRequest key={request.requestId} sessionId={sessionId} stateKey={nativeRequestStateKey(projection)} request={request} api={api} disabled={disabled} t={t}/>)}
-        {hasStatus && <PaneSourceStatus target={statusTarget} error={Boolean(projection.error || resumeError) || delivery.some(row => row.state === 'rejected' || row.state === 'indeterminate')} t={t}>
+        {hasStatus && <PaneSourceStatus target={statusTarget} t={t}>
         <CapacityRecoveryStatus execution={projection.execution} stop={api.stop ? () => api.stop!(sessionId) : undefined} t={t}/>
         {/* A disconnected Codex source is not read-only: sending queues a durable
             turn and Resume reconnects the native session. */}

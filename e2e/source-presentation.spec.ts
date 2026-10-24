@@ -4,6 +4,7 @@ import { promisify } from 'node:util'
 import { execFile } from 'node:child_process'
 import { startOfficialEnvironment, type OfficialEnvironment } from './official-runtime.ts'
 import { acknowledgePreviewNotice } from './preview-notice.ts'
+import { conversationReady, visualReview } from './visual-review.ts'
 import type { HapiMessage } from '../src/codex/contracts.ts'
 
 const composerName = 'Message or run a task, / commands, @ files or sessions'
@@ -42,28 +43,64 @@ test.describe('source receipts and official command presentation', () => {
   })
   test.afterAll(async () => { await environment?.close() })
 
-  test('unknown receipts stay outside the dock across reload; real queue editing still works', async ({ page }) => {
+  test('unknown receipts stay in the existing menu across reload; real queue editing still works', async ({ page }, info) => {
+    test.setTimeout(150_000)
     await page.goto(environment.launchUrl)
     await acknowledgePreviewNotice(page, environment)
     await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex presentation' }).click()
     const pane = page.getByRole('region', { name: 'Pane: Native Codex presentation', exact: true })
     const composer = pane.getByRole('textbox', { name: composerName, exact: true })
     await expect(composer).toBeVisible()
-    const status = pane.locator('.hapi-pane-source-status')
-    await expect(status.locator('[data-delivery-state="indeterminate"]')).toHaveCount(5)
-    await expect(pane.locator('.hapi-source-queue')).toHaveCount(0)
-    await status.locator(':scope > summary').click()
-    await expect(status.getByRole('button', { name: 'Check source result', exact: true })).toHaveCount(5)
-    await expect(status.getByRole('button', { name: 'Steer now', exact: true })).toHaveCount(0)
-    await status.getByRole('button', { name: 'Check source result', exact: true }).first().click()
-    await expect(status.locator('[data-delivery-state="indeterminate"]').first()).toHaveAttribute('aria-busy', 'false')
-    await expect(status.getByRole('alert')).toHaveCount(0)
-    await page.reload()
-    await expect(composer).toBeVisible()
-    await expect(status.locator('[data-delivery-state="indeterminate"]')).toHaveCount(5)
-    await expect(pane.locator('.hapi-source-queue')).toHaveCount(0)
-    expect(environment.hapi.sent).toHaveLength(0)
-    expect(environment.hapi.cancelled).toHaveLength(0)
+    for (const width of [1440, 390, 360]) {
+      await page.setViewportSize({ width, height: 844 })
+      const menu = width <= 640 ? page.locator('.hapi-statusbar > .hapi-pane-actions') : pane.locator('.hapi-pane-header .hapi-pane-menu')
+      const status = menu.locator('.hapi-pane-source-status')
+      await expect(status.locator('[data-delivery-state="indeterminate"]')).toHaveCount(5)
+      await expect(page.locator('.hapi-pane-source-status:visible')).toHaveCount(0)
+      await expect(pane.locator('.hapi-source-queue')).toHaveCount(0)
+      await expect(page.locator('.hapi-persistence-saved')).toBeVisible()
+      const quiet = await visualReview(environment.launchUrl, `source-receipts-quiet-${width}`, `${width}x844`,
+        conversationReady('Native Codex presentation'))
+      if (quiet) await info.attach(`quiet-${width}`, { path: quiet, contentType: 'image/png' })
+      await menu.locator(':scope > summary').click()
+      await expect(status.locator(':scope > summary')).toHaveAccessibleName('Source status and receipts')
+      await expect(status.locator(':scope > summary svg')).toHaveCount(0)
+      await status.locator(':scope > summary').click()
+      await expect(status.getByRole('button', { name: 'Check source result', exact: true })).toHaveCount(5)
+      await expect(status.getByRole('button', { name: 'Steer now', exact: true })).toHaveCount(0)
+      await status.getByRole('button', { name: 'Check source result', exact: true }).first().click()
+      const firstReceipt = status.locator('[data-delivery-state="indeterminate"]').first()
+      await expect(firstReceipt).toHaveAttribute('aria-busy', 'false')
+      await expect(firstReceipt.locator('[data-hapi-delivery-check-result]')).toContainText(/still unknown|has not confirmed/i)
+      await expect(status.getByRole('alert')).toHaveCount(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBeLessThanOrEqual(1)
+      const menuBox = (await menu.locator(':scope > .hapi-menu-content').boundingBox())!
+      expect(menuBox.x, 'the menu must not clip past the left edge on a narrow phone').toBeGreaterThanOrEqual(0)
+      expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(width)
+      const expanded = await visualReview(environment.launchUrl, `source-receipts-expanded-${width}`, `${width}x844`,
+        conversationReady('Native Codex presentation', `
+          const menu = innerWidth <= 640 ? document.querySelector('.hapi-statusbar > .hapi-pane-actions') : pane.querySelector('.hapi-pane-header .hapi-pane-menu');
+          if (!menu?.open) { menu?.querySelector(':scope > summary')?.click(); return false; }
+          const status = menu.querySelector('.hapi-pane-source-status');
+          if (!status?.open) { status?.querySelector(':scope > summary')?.click(); return false; }
+          if (status.querySelectorAll('[data-delivery-state="indeterminate"]').length !== 5) return false;
+          const receipt = status.querySelector('[data-delivery-state="indeterminate"]');
+          if (!receipt.querySelector('[data-hapi-delivery-check-result]')) {
+            if (receipt.getAttribute('aria-busy') !== 'true') [...receipt.querySelectorAll('button')].find(button => button.textContent === 'Check source result')?.click();
+            return false;
+          }
+        `))
+      if (expanded) await info.attach(`expanded-${width}`, { path: expanded, contentType: 'image/png' })
+      await menu.locator(':scope > summary').click()
+      await expect(page.locator('.hapi-pane-source-status:visible')).toHaveCount(0)
+      await page.reload()
+      await expect(composer).toBeVisible()
+      await expect(status.locator('[data-delivery-state="indeterminate"]')).toHaveCount(5)
+      await expect(page.locator('.hapi-pane-source-status:visible')).toHaveCount(0)
+      await expect(pane.locator('.hapi-source-queue')).toHaveCount(0)
+      expect(environment.hapi.sent).toHaveLength(0)
+      expect(environment.hapi.cancelled).toHaveLength(0)
+    }
 
     await composer.fill('A real source queue entry')
     await pane.getByRole('button', { name: 'Send message', exact: true }).click()
@@ -74,7 +111,7 @@ test.describe('source receipts and official command presentation', () => {
     await expect(queue).toHaveCount(0)
     expect(environment.hapi.sent).toHaveLength(1)
     expect(environment.hapi.cancelled).toHaveLength(1)
-    await expect(status.locator('[data-delivery-state="indeterminate"]')).toHaveCount(5)
+    await expect(page.locator('.hapi-pane-source-status [data-delivery-state="indeterminate"]')).toHaveCount(5)
   })
 
   test('official compact rows show source action summaries and preserve expanded output on desktop and mobile', async ({ page }) => {

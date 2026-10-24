@@ -45,6 +45,14 @@ async function ready(page: Page, name: 'alpha' | 'beta'): Promise<void> {
     await expect(draft(region)).toBeVisible()
 }
 
+async function openSourceStatus(menu: Locator, status: Locator, touch = true): Promise<void> {
+    const click = async (locator: Locator) => touch ? locator.tap() : locator.click()
+    if (await menu.getAttribute('open') === null) await click(menu.locator(':scope > summary'))
+    await expect(status.locator(':scope > summary')).toHaveAccessibleName('Source status and receipts')
+    await expect(status.locator(':scope > summary svg')).toHaveCount(0)
+    if (await status.getAttribute('open') === null) await click(status.locator(':scope > summary'))
+}
+
 async function choose(page: Page, name: 'alpha' | 'beta'): Promise<void> {
     await pickerIdle(page)
     await picker(page).locator('.hapi-session-open').filter({ hasText: `Native Codex ${name}` }).tap()
@@ -109,6 +117,8 @@ function screenshotReady(name: 'alpha' | 'beta', showPicker = false, showStatus 
             return false;
         }
         if (${showStatus}) {
+            const menu = document.querySelector('.hapi-statusbar > .hapi-pane-actions');
+            if (!menu?.open) { menu?.querySelector(':scope > summary')?.click(); return false; }
             const slot = document.querySelector('[data-hapi-pane-mobile-status="' + pane.dataset.paneId + '"]');
             const status = slot?.querySelector('.hapi-pane-source-status');
             if (!status) return false;
@@ -207,8 +217,10 @@ for (const width of [360, 390]) {
                     fixture.session.metadataVersion++
                     environment.hapi.emit({ type: 'session-updated', sessionId: fixture.session.id })
                     const betaId = await pane(page, 'beta').getAttribute('data-pane-id')
-                    const status = page.locator(`.hapi-statusbar [data-hapi-pane-mobile-status="${betaId}"] .hapi-pane-source-status`)
-                    await status.locator('summary').tap()
+                    const status = actions.locator(`[data-hapi-pane-mobile-status="${betaId}"] .hapi-pane-source-status`)
+                    if (await actions.getAttribute('open') !== null) await actions.locator(':scope > summary').tap()
+                    await expect(status).toBeHidden()
+                    await openSourceStatus(actions, status)
                     await expect(status.getByRole('button', { name: 'Resume native session', exact: true })).toBeVisible()
                     await expect(status.locator('[data-hapi-composer-admission="resume"]')).toBeVisible()
                     await tabs.nth(0).tap()
@@ -216,21 +228,26 @@ for (const width of [360, 390]) {
                     await expect(page.locator('.hapi-statusbar .hapi-pane-source-status:visible')).toHaveCount(0)
                     await tabs.nth(1).tap()
                     await ready(page, 'beta')
-                    await status.locator('summary').tap()
+                    await openSourceStatus(actions, status)
                     await expect(status.getByRole('button', { name: 'Resume native session', exact: true })).toBeVisible()
+                    await actions.locator(':scope > summary').tap()
                     await page.setViewportSize({ width: 1440, height: 844 })
-                    const desktopStatus = pane(page, 'beta').locator('.hapi-pane-header .hapi-pane-source-status')
-                    await expect(desktopStatus).toBeVisible()
+                    const desktopMenu = pane(page, 'beta').locator('.hapi-pane-header .hapi-pane-menu')
+                    const desktopStatus = desktopMenu.locator('.hapi-pane-source-status')
+                    await expect(desktopStatus).toBeHidden()
                     await expect(page.locator('.hapi-pane-source-status')).toHaveCount(1)
                     await expect(pane(page, 'beta').locator('.hapi-pane-header')).toBeVisible()
-                    await desktopStatus.locator('summary').click()
+                    await openSourceStatus(desktopMenu, desktopStatus, false)
                     await expect(desktopStatus.getByRole('button', { name: 'Resume native session', exact: true })).toBeVisible()
+                    await desktopMenu.locator(':scope > summary').click()
                     await page.setViewportSize({ width, height: 844 })
-                    await expect(status).toBeVisible()
+                    await expect(status).toBeHidden()
                     await expect(page.locator('.hapi-pane-source-status')).toHaveCount(1)
                     await expect(pane(page, 'beta').locator('.hapi-pane-header')).toBeHidden()
-                    await status.locator('summary').tap()
+                    await openSourceStatus(actions, status)
                     await expect(status.getByRole('button', { name: 'Resume native session', exact: true })).toBeVisible()
+                    await actions.locator(':scope > summary').tap()
+                    await expect(page.locator('.hapi-pane-source-status:visible')).toHaveCount(0)
                     await compact(page, 'beta', 2, width)
                 }
                 await capture(environment, info, `mobile-chrome-split-${width}`, width, screenshotReady('beta', false, width === 390))

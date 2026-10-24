@@ -382,14 +382,19 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       expect(session.environment.hapi.sent.length).toBe(sent + 1)
       await expect(alpha.locator('[data-slot="conversation.input.dock"] .hapi-queued-edit-recovery')).toHaveCount(0)
       // A successful edit may already be acknowledged. Any retained recovery
-      // receipt must belong to this pane's header, never to the input dock.
+      // receipt must live behind this pane's existing menu, never in the input
+      // dock or in another persistent status button.
       const recovery = alpha.locator('.hapi-queued-edit-recovery')
       if (await recovery.count()) {
         expect(await recovery.evaluateAll(rows => rows.every(row => row.closest('.hapi-pane-header') !== null))).toBe(true)
-        const status = alpha.locator('.hapi-pane-header .hapi-pane-source-status')
+        const menu = alpha.locator('.hapi-pane-header .hapi-pane-menu')
+        const status = menu.locator('.hapi-pane-source-status')
+        await expect(status).toBeHidden()
+        await menu.locator(':scope > summary').click()
         await status.locator(':scope > summary').click()
         await expect(recovery).toBeVisible()
-        await status.locator(':scope > summary').click()
+        await menu.locator(':scope > summary').click()
+        await expect(status).toBeHidden()
       }
     })
     await check(`${prefix}: ordinary DSH body and editor`, async () => {

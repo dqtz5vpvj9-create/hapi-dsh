@@ -100,8 +100,13 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                 const scopes = target.kind === 'delivery' ? [root.closest<HTMLElement>('.hapi-pane') ?? root, ...(footer ? [footer] : [])] : [root]
                 const row = await waitFor(() => scopes.flatMap(scope => [...scope.querySelectorAll<HTMLElement>(selector)])
                     .find(element => target.kind === 'approval' ? element.dataset.hapiRequestId === target.requestId : element.dataset.hapiDeliveryId === target.localId), signal, footer ? [footer] : [])
-                for (let ancestor = row.parentElement; ancestor && !scopes.includes(ancestor); ancestor = ancestor.parentElement) {
+                // The footer seat now lives inside the pane actions menu. Keep
+                // lookup/observation scoped to that seat, but reveal its outer
+                // disclosure too so explicit receipt navigation is visible.
+                const boundaries = scopes.map(scope => scope === footer ? scope.closest<HTMLElement>('.hapi-pane-actions') ?? scope : scope)
+                for (let ancestor = row.parentElement; ancestor; ancestor = ancestor.parentElement) {
                     if (ancestor.tagName === 'DETAILS') (ancestor as HTMLDetailsElement).open = true
+                    if (boundaries.includes(ancestor)) break
                 }
                 row.scrollIntoView({ block: 'nearest' }); row.tabIndex = -1; row.focus({ preventScroll: true })
             } else if (reload) {
