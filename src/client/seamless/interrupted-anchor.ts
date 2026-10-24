@@ -28,10 +28,13 @@ export function planInterruptedPrepend(
     })
 }
 
-/** One DOM element, retained only until this prepend or the outer scrollend. */
+/** One DOM element, retained until this prepend or reader ownership changes. */
 export class InterruptedPrependAnchor {
     private before: MovingAnchorReading
     private released = false
+    private upperEdge = false
+
+    get waitingAtUpperEdge(): boolean { return this.upperEdge && !this.released }
 
     constructor(private readonly row: HTMLElement, readonly port: HTMLElement, reading: AnchorReading) {
         this.before = { anchor: reading, scrollTop: port.scrollTop }
@@ -46,8 +49,23 @@ export class InterruptedPrependAnchor {
         return reading?.key === this.before.anchor.key ? reading : null
     }
 
+    /**
+     * A pan against scrollTop=0 may produce no scrollend for the official
+     * paging owner to reacquire its anchor. Keep this row across the gap
+     * between gestures, while returning CSS anchoring to the browser.
+     */
+    retainAtUpperEdge(): boolean {
+        const current = this.reading()
+        if (current === null || this.port.scrollTop > 1) return false
+        this.before = { anchor: current, scrollTop: this.port.scrollTop }
+        this.upperEdge = true
+        this.port.removeAttribute(INTERRUPTED_PREPEND_ATTRIBUTE)
+        return true
+    }
+
     /** Non-prepend mutations (streaming/tool expansion) establish a new base. */
     refresh(): void {
+        if (this.upperEdge && this.port.scrollTop > 1) { this.release(); return }
         const current = this.reading()
         if (current === null) { this.release(); return }
         this.before = { anchor: current, scrollTop: this.port.scrollTop }
@@ -55,6 +73,9 @@ export class InterruptedPrependAnchor {
 
     /** Called once, only after the pending request proves an older head commit. */
     commit(): void {
+        // Native anchoring or a later reader movement has already left the
+        // boundary. Never replace that motion with a script scroll write.
+        if (this.upperEdge && this.port.scrollTop > 1) { this.release(); return }
         const correction = planInterruptedPrepend(this.before, this.reading(), {
             scrollTop: this.port.scrollTop,
             scrollHeight: this.port.scrollHeight,

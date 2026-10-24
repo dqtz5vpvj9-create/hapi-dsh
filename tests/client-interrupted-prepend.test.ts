@@ -75,6 +75,38 @@ test('finger release returns the following prepend to native inertia without a s
     assert.equal(f.writes(), 0)
 })
 
+test('a released gesture at zero retains the page seam without owning CSS anchoring', () => {
+    const f = fixture()
+    f.move(0)
+    assert.equal(f.owner.retainAtUpperEdge(), true)
+    assert.equal(f.owner.waitingAtUpperEdge, true)
+    assert.equal(f.attributes.has(INTERRUPTED_PREPEND_ATTRIBUTE), false)
+    f.prepend()
+    f.owner.commit()
+    assert.equal(f.port.scrollTop, 1840)
+    assert.equal(f.writes(), 1)
+    assert.equal(f.owner.waitingAtUpperEdge, false)
+})
+
+test('a boundary gap does not overwrite native compensation or motion away from zero', () => {
+    for (const top of [1840, 80]) {
+        const f = fixture()
+        f.move(0)
+        assert.equal(f.owner.retainAtUpperEdge(), true)
+        f.prepend()
+        f.move(top)
+        f.owner.commit()
+        assert.equal(f.port.scrollTop, top)
+        assert.equal(f.writes(), 0)
+    }
+})
+
+test('a mid-list release cannot retain a boundary anchor', () => {
+    const f = fixture()
+    assert.equal(f.owner.retainAtUpperEdge(), false)
+    assert.equal(f.owner.waitingAtUpperEdge, false)
+})
+
 test('source replacement discards the old DOM anchor and never restores stale position', () => {
     const f = fixture()
     f.row.isConnected = false

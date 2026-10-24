@@ -600,8 +600,7 @@ class ConversationHistoryController {
         // The official capture listener has relinquished its paging anchor for
         // this new gesture. During a held drag Chromium also suspends native
         // scroll anchoring. Retain one current row for this pending page only.
-        // A process-heading button is also a valid place to start a pan. Its
-        // click happens after touchend, which has already released this owner.
+        // A process-heading button is also a valid place to start a pan.
         if (event.isTrusted && this.pending !== null && this.usable()
             && !isEditable(event.target)
             && !this.innerScrollConsumes(event.target, scroller, 'up')
@@ -631,9 +630,11 @@ class ConversationHistoryController {
 
     /** The finger leaving is not the end of native momentum scrolling. */
     private readonly onTouchEnd = (event: TouchEvent): void => {
-        // Native anchoring works during inertia and preserves its velocity.
-        // Never replace that path with a script scrollTop write after release.
-        this.releaseInterruptedAnchor()
+        // Native anchoring owns normal inertia. The exception is an earlier
+        // pan blocked at zero: it may emit no scrollend to reacquire the
+        // official paging anchor, even though the older page is still pending.
+        if (event.type === 'touchcancel' || !this.touchWantsEarlier || this.pending === null
+            || !this.interruptedAnchor?.retainAtUpperEdge()) this.releaseInterruptedAnchor()
         this.touchY = null
         this.touchActive = false
         if (event.type === 'touchcancel') {
@@ -687,12 +688,17 @@ class ConversationHistoryController {
         this.ensureSession()
         if (!this.touchMotion) return
         const requested = this.touchWantsEarlier
-        this.cancelTouchPaging()
+        if (!this.interruptedAnchor?.waitingAtUpperEdge) this.releaseInterruptedAnchor()
+        this.resetTouchPaging()
         if (requested && this.usable()) this.requestEarlier(this.now())
     }
 
     private cancelTouchPaging(): void {
         this.releaseInterruptedAnchor()
+        this.resetTouchPaging()
+    }
+
+    private resetTouchPaging(): void {
         if (this.touchSettleTimer !== undefined) clearTimeout(this.touchSettleTimer)
         if (this.touchEndFrame !== undefined) this.frame.cancelAnimationFrame(this.touchEndFrame)
         this.touchSettleTimer = undefined

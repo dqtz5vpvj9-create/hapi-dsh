@@ -517,6 +517,115 @@ for (const mode of ['fling', 'held pause', 'process button'] as const) test(`mob
   }
 })
 
+for (const phase of ['held', 'released gap'] as const) test(`mobile earliest boundary ${phase}: continued loading-area gestures preserve the old first row`, async ({}, info) => {
+  test.setTimeout(120_000)
+  const page = await warm.page({ width: 360, height: 844 }, true)
+  await warm.admit(page)
+  await page.locator('.hapi-mobile-header-picker button').click()
+  await page.locator('.hapi-session-open').filter({ hasText: 'Native Codex accept-history' }).click()
+  const pane = page.getByRole('region', { name: 'Pane: Native Codex accept-history', exact: true })
+  await expect(pane.getByText('Synthetic final answer 180.', { exact: false })).toBeVisible()
+  const port = pane.locator('[data-conversation-scroll]'), cdp = await page.context().newCDPSession(page)
+  const older = pane.locator('[data-chat-flow]:not([data-step-process-content]) > div > button').first()
+  await swipe(page, cdp, pane, 'earlier')
+  await expect(older).toBeEnabled()
+  await port.tap({ position: { x: 30, y: 100 } })
+  await page.waitForTimeout(300)
+  await port.evaluate(element => { element.scrollTop = 400 })
+  await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(400)
+  let requested = false, released = false, release!: () => void, requestDelayMs = 0
+  const gate = new Promise<void>(resolve => { release = () => { released = true; resolve() } })
+  await page.route('**/api/session/page', async route => {
+    if (!route.request().postData()?.includes('"beforeSeq"') || requested) return route.continue()
+    requested = true
+    const at = Date.now()
+    await Promise.all([delay(600), gate])
+    requestDelayMs = Date.now() - at
+    await route.continue()
+  })
+  type BoundaryReading = { key: string; retained: boolean; offset: number; documentTop: number; scrollTop: number; height: number; controlDisabled: boolean | undefined }
+  const readBoundary = () => page.evaluate(() => {
+    const { row, port, key } = Reflect.get(window, '__earliestBoundary') as { row: HTMLElement; port: HTMLElement; key: string }
+    const offset = row.getBoundingClientRect().top - port.getBoundingClientRect().top
+    return { key, retained: row.isConnected && port.contains(row) && row.dataset.chatAnchorKey === key,
+      offset, documentTop: offset + port.scrollTop, scrollTop: port.scrollTop, height: port.scrollHeight,
+      controlDisabled: port.querySelector<HTMLButtonElement>('[data-chat-flow]:not([data-step-process-content]) > div > button')?.disabled }
+  })
+  let before: BoundaryReading | undefined, after: BoundaryReading | undefined, samples: MotionFrame[] = []
+  let recording = false, fingerHeld = false, primaryFailure: unknown
+  try {
+    // The first completed gesture requests an older page; the route remains
+    // in flight while two more trusted gestures repeatedly reach the boundary.
+    await swipe(page, cdp, pane, 'earlier')
+    await expect.poll(() => requested).toBe(true)
+    await expect(older).toBeDisabled()
+    await frames(page, pane, true); recording = true
+    await port.evaluate(port => {
+      const row = [...port.querySelectorAll<HTMLElement>('[data-chat-flow]:not([data-step-process-content]) [data-chat-anchor-key]')]
+        .find(row => !row.closest('[hidden]') && row.dataset.chatAnchorKey)
+      if (!row) throw new Error('The retained history needs an identifiable first row')
+      Reflect.set(window, '__earliestBoundary', { row, port, key: row.dataset.chatAnchorKey })
+    })
+    const box = (await port.boundingBox())!
+    const pan = async (x: number, y: number, end: boolean) => {
+      const points = (offset: number) => [{ x, y: y + offset, id: 1, radiusX: 5, radiusY: 5, force: 1 }]
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(0) }); fingerHeld = true
+      for (let step = 1; step <= 6; step++) {
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(step * 20) })
+        await page.waitForTimeout(12)
+      }
+      if (end) { await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); fingerHeld = false }
+    }
+    await pan(box.x + box.width * .55, box.y + 70, true)
+    await expect.poll(() => port.evaluate(element => element.scrollTop)).toBe(0)
+    await page.waitForTimeout(100)
+    const loading = (await older.boundingBox())!
+    await pan(loading.x + loading.width / 2, loading.y + loading.height / 2, phase === 'released gap')
+    // Observe native scrollend if Chromium delivers it at the held boundary;
+    // do not synthesize an event that the browser did not actually send.
+    await page.waitForTimeout(250)
+    before = await readBoundary()
+    expect(before.scrollTop).toBe(0)
+    expect(before.controlDisabled).toBe(true)
+    release()
+    await expect.poll(() => port.evaluate(element => element.scrollHeight)).toBeGreaterThan(before.height + 1000)
+    await page.waitForTimeout(80)
+    after = await readBoundary()
+    samples = await frames(page, pane, false)
+    const events = await page.evaluate(() => Reflect.get(window, '__touchMotion').historyEvents as Array<Record<string, unknown>>)
+    expect(events.filter(event => event.type === 'touchstart')).toHaveLength(2)
+    expect(events.filter(event => event.type === 'touchstart').at(-1)?.button, 'the final trusted drag must begin on the top loading control').toBe(true)
+    expect(after.retained, 'compare the same old first DOM row, not a newly visible replacement').toBe(true)
+    expect(after.documentTop - before.documentTop, 'older content must actually be inserted before the retained row').toBeGreaterThan(1000)
+    expect(Math.abs(after.offset - before.offset), 'a page arriving at the earliest boundary must continue from its bottom, not skip to its top').toBeLessThanOrEqual(2)
+    expect(Math.abs((after.scrollTop - before.scrollTop) - (after.documentTop - before.documentTop))).toBeLessThanOrEqual(2)
+    expect(movement(samples, 'earlier').blankFrames).toBe(0)
+  } catch (error) {
+    primaryFailure = error
+    throw error
+  } finally {
+    if (!released) release()
+    if (recording && !samples.length && !page.isClosed()) samples = await frames(page, pane, false)
+    const diagnostics = recording && !page.isClosed() ? await page.evaluate(() => {
+      const probe = Reflect.get(window, '__touchMotion'); return { historyEvents: probe.historyEvents, longFrames: probe.longFrames }
+    }) : {}
+    const directory = process.env.HAPI_DSH_VISUAL_DIR ?? '/mnt/cache/data-cache/hapi-dsh-visual-review'
+    await mkdir(directory, { recursive: true })
+    const label = phase.replace(' ', '-'), path = `${directory}/touch-earliest-${label}-${Date.now()}.json`
+    await writeFile(path, JSON.stringify({ phase, requestDelayMs, before, after, samples, metrics: movement(samples, 'earlier'), ...diagnostics }))
+    await info.attach('earliest-boundary-motion', { path, contentType: 'application/json' })
+    try {
+      if (fingerHeld) await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      await page.unrouteAll({ behavior: 'wait' }); await page.close()
+      const shot = await visualReview(warm.environment.launchUrl, `mobile-earliest-${label}`, '360x844', conversationReady('Native Codex accept-history'))
+      if (shot) await info.attach('earliest-boundary-visual', { path: shot, contentType: 'image/png' })
+    } catch (error) {
+      if (!primaryFailure) throw error
+      await info.attach('earliest-boundary-cleanup-error', { body: String(error), contentType: 'text/plain' })
+    }
+  }
+})
+
 for (const width of [390, 360]) test(`mobile ${width}: repeated touch scrolling, delayed prepend, streaming and inertia stay continuous`, async ({}, info) => {
   test.setTimeout(150_000)
   const page = await warm.page({ width, height: 844 }, true)
