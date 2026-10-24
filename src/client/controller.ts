@@ -6,6 +6,7 @@ import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/clie
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ReactNode } from 'react'
 import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type PaneResource, type SplitAxis, type WorkspaceState } from './model.ts'
+import { rebaseWorkspace, WorkspaceRebaseConflictError } from '../workspace/rebase.ts'
 import { SidebarState } from '../workspace/sidebar-state.ts'
 import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../workspace/legacy.ts'
 import { bindingFailureState, invalidPaneAddressState, paneOpenState, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
@@ -169,6 +170,7 @@ export interface WorkspaceSnapshot {
     readonly notice: string | null
     readonly persistence: 'local' | 'saving' | 'saved' | 'failed'
     readonly conflict: WorkspaceState | null
+    readonly hasLayoutRecovery: boolean
     readonly creation: 'choose' | 'dsh' | 'codex' | 'source' | null
     readonly creationContext: WorkspaceCreationContext | null
     readonly pickingSession: boolean
@@ -313,6 +315,11 @@ export class WorkspaceController {
     private navigationRevision = 0
     private saving = false
     private remoteLoaded = false
+    private remoteLoading = false
+    private applyingRemote = false
+    private confirmedLayout: WorkspaceState | undefined
+    private recoveryLayout: WorkspaceState | undefined
+    private readonly initialLayout: WorkspaceState
     private queuedSave: WorkspaceState | undefined
     private readonly restoredLocal: boolean
     private sharedSignature: string
@@ -338,7 +345,12 @@ export class WorkspaceController {
         let restored = false
         try {
             const raw = options.storage?.getItem(options.storageKey)
-            if (raw) { state = parseWorkspaceState(JSON.parse(raw)); restored = true }
+            if (raw) {
+                const saved = JSON.parse(raw)
+                state = parseWorkspaceState(saved); restored = true
+                if (saved.syncBase) this.confirmedLayout = parseWorkspaceState(saved.syncBase)
+                if (saved.layoutRecovery) this.recoveryLayout = parseWorkspaceState(saved.layoutRecovery)
+            }
         } catch (error) {
             notice = `Workspace restore failed: ${errorMessage(error)}`
         }
@@ -366,7 +378,7 @@ export class WorkspaceController {
         this.snapshot = {
             layout: this.store.getSnapshot(), catalog: this.aggregateCatalog(),
             catalogDiscovery: this.discovery.snapshot(options.sessions.list.getSnapshot().phase === 'ready'),
-            leases: new Map(), notice, persistence: 'local', conflict: null,
+            leases: new Map(), notice, persistence: 'local', conflict: null, hasLayoutRecovery: Boolean(this.recoveryLayout),
             creation: null, creationContext: null, pickingSession: false, machines: [], nativePanel: null,
         }
         this.hostMainIds.set('local', this.selectedMain('local'))
@@ -381,6 +393,7 @@ export class WorkspaceController {
         const selected = this.hostMainIds.get('local')
         if (!restored && selected) this.openCatalogSession('local', selected)
         else this.syncNavigation()
+        this.initialLayout = this.store.getSnapshot()
         if (options.persistence) void this.loadRemote()
         else { this.remoteLoaded = true; this.openPendingSource() }
     }
@@ -807,10 +820,9 @@ export class WorkspaceController {
         this.reconcileLeases()
         this.syncNavigation()
         this.reading.retain(new Set(state.windows.flatMap(window => panes(window.root).map(pane => pane.id))))
-        try { this.options.storage?.setItem(this.options.storageKey, JSON.stringify(state)) }
-        catch (error) { this.publish({ notice: `Workspace save failed: ${errorMessage(error)}`, persistence: 'failed' }) }
+        this.saveLocal()
         const signature = sharedWorkspaceSignature(state)
-        if (this.options.persistence && signature !== this.sharedSignature) {
+        if (!this.applyingRemote && this.options.persistence && signature !== this.sharedSignature) {
             this.queuedSave = sharedWorkspaceState(state)
             if (this.remoteLoaded) void this.flushRemote()
         }
@@ -1271,37 +1283,100 @@ export class WorkspaceController {
         }
     }
 
+    /** Layout and its last confirmed baseline are one atomic browser write. */
+    private saveLocal(): void {
+        try {
+            this.options.storage?.setItem(this.options.storageKey, JSON.stringify({ ...this.store.getSnapshot(),
+                ...(this.confirmedLayout ? { syncBase: this.confirmedLayout } : {}),
+                ...(this.recoveryLayout ? { layoutRecovery: this.recoveryLayout } : {}),
+            }))
+        } catch (error) { this.publish({ notice: `Workspace save failed: ${errorMessage(error)}`, persistence: 'failed' }) }
+    }
+
+    private bindLayout(state: WorkspaceState): WorkspaceState {
+        return bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
+    }
+
+    /** Receiving shared state must not create another shared write. */
+    private replaceFromServer(state: WorkspaceState): boolean {
+        this.applyingRemote = true
+        try { this.store.replace(state) } finally { this.applyingRemote = false }
+        // An open dirty editor may veto removal. Keep its view and the pending
+        // layout choice accessible instead of marking an unapplied state saved.
+        return sharedWorkspaceSignature(this.store.getSnapshot()) === sharedWorkspaceSignature(state)
+    }
+
+    private retainLayoutRecovery(state: WorkspaceState): void {
+        this.recoveryLayout = state
+        this.publish({ hasLayoutRecovery: true })
+        this.saveLocal()
+    }
+
+    private receiveLayout(remote: WorkspaceState, base: WorkspaceState): boolean {
+        const current = this.store.getSnapshot(), bound = this.bindLayout(remote)
+        let merged: WorkspaceState
+        try { merged = rebaseWorkspace(this.bindLayout(base), current, bound) }
+        catch (error) {
+            if (!(error instanceof WorkspaceRebaseConflictError)) throw error
+            this.publish({ conflict: remote, persistence: 'failed', notice: null })
+            return false
+        }
+        if (!this.replaceFromServer(merged)) {
+            this.publish({ conflict: remote, persistence: 'failed', notice: null })
+            return false
+        }
+        this.confirmedLayout = remote
+        this.queuedSave = sharedWorkspaceSignature(merged) === sharedWorkspaceSignature(bound)
+            ? undefined : sharedWorkspaceState(merged)
+        this.publish({ conflict: null, persistence: this.queuedSave ? 'local' : 'saved', notice: null })
+        this.saveLocal()
+        return true
+    }
+
     private async loadRemote(): Promise<void> {
+        if (this.remoteLoading || this.disposed) return
+        this.remoteLoading = true
         const initialRevision = this.store.getSnapshot().revision
         try {
             const loaded = await this.options.persistence!.load(this.lifetime.signal)
             if (this.disposed) return
             if (loaded !== null) {
-                const restored = bindSourceResources(parseWorkspaceState(loaded), this.snapshot.catalog.byId, this.sourceBindingScope())
-                if (!this.restoredLocal && this.store.getSnapshot().revision === initialRevision) this.store.replace(keepLocalView(restored, this.store.getSnapshot()))
-                else if (sharedWorkspaceSignature(restored) !== sharedWorkspaceSignature(this.store.getSnapshot())) {
-                    this.queuedSave = sharedWorkspaceState(this.store.getSnapshot())
-                    this.publish({ conflict: restored, persistence: 'failed', notice: 'The saved server layout differs from this browser. Choose which layout to keep.' })
+                const remote = parseWorkspaceState(loaded)
+                // Older builds saved no acknowledged baseline. Preserve that
+                // browser layout once, then use the server without asking on
+                // every open. Changes made during this GET still replay below.
+                if (!this.confirmedLayout && this.restoredLocal
+                    && sharedWorkspaceSignature(this.bindLayout(this.initialLayout)) !== sharedWorkspaceSignature(this.bindLayout(remote))) {
+                    this.retainLayoutRecovery(this.initialLayout)
                 }
-            } else if (!this.restoredLocal && this.options.legacy && this.store.getSnapshot().revision === initialRevision) {
-                const legacy = await this.options.legacy(this.lifetime.signal)
-                if (!this.disposed && this.store.getSnapshot().revision === initialRevision) {
-                    const migrated = importLegacyWorkspace(legacy, this.snapshot.catalog.byId, this.sourceBindingScope())
-                    if (migrated) this.store.replace(migrated)
+                this.receiveLayout(remote, this.confirmedLayout ?? this.initialLayout)
+            } else {
+                this.confirmedLayout ??= this.initialLayout
+                if (!this.restoredLocal && this.options.legacy && this.store.getSnapshot().revision === initialRevision) {
+                    const legacy = await this.options.legacy(this.lifetime.signal)
+                    if (this.disposed) return
+                    if (this.store.getSnapshot().revision === initialRevision) {
+                        const migrated = importLegacyWorkspace(legacy, this.snapshot.catalog.byId, this.sourceBindingScope())
+                        if (migrated) this.store.replace(migrated)
+                    }
                 }
+                this.queuedSave = sharedWorkspaceState(this.store.getSnapshot())
+                this.saveLocal()
             }
+            this.remoteLoaded = true
         } catch (error) {
             if (!this.disposed) this.publish({ notice: `Workspace sync failed: ${errorMessage(error)}`, persistence: 'failed' })
         } finally {
-            this.remoteLoaded = true
+            this.remoteLoading = false
             this.openPendingSource()
-            if (this.queuedSave && !this.disposed) void this.flushRemote()
+            if (this.remoteLoaded && this.queuedSave && !this.disposed) void this.flushRemote()
         }
     }
 
     private async flushRemote(): Promise<void> {
         if (this.saving || this.disposed || !this.options.persistence || this.snapshot.conflict) return
         this.saving = true
+        let rebases = 0
         try {
             while (this.queuedSave && !this.disposed) {
                 const state = this.queuedSave
@@ -1309,27 +1384,58 @@ export class WorkspaceController {
                 this.publish({ persistence: 'saving' })
                 try {
                     await this.options.persistence.save(state, this.lifetime.signal)
-                    this.publish({ persistence: 'saved' })
+                    if (this.disposed) return
+                    this.confirmedLayout = state
+                    this.saveLocal()
+                    this.publish({ persistence: 'saved', notice: null })
                 } catch (error) {
+                    if (this.disposed) return
                     const latest: unknown = error && typeof error === 'object' && Reflect.get(error, 'name') === 'WorkspaceConflictError' ? Reflect.get(error, 'latest') : null
-                    this.publish({ notice: `Workspace sync failed: ${errorMessage(error)}`, persistence: 'failed', conflict: latest === null ? null : parseWorkspaceState(latest) })
-                    // Preserve the latest geometry. A retry is explicit; no busy loop.
                     this.queuedSave ??= state
+                    if (latest !== null) {
+                        const remote = parseWorkspaceState(latest)
+                        if (!this.receiveLayout(remote, this.confirmedLayout ?? this.initialLayout)) return
+                        // Normal races rebase immediately. Continuous concurrent
+                        // edits stop after three attempts; the pending edit stays
+                        // durable and can be retried from the layout menu.
+                        if (++rebases < 3 || !this.queuedSave) continue
+                    }
+                    this.publish({ notice: `Workspace sync failed: ${errorMessage(error)}`, persistence: 'failed' })
                     return
                 }
             }
         } finally { this.saving = false }
     }
 
-    retryPersistence = (): void => { if (this.remoteLoaded) void this.flushRemote() }
+    retryPersistence = (): void => {
+        if (this.remoteLoaded) void this.flushRemote()
+        else void this.loadRemote()
+    }
+
+    restoreLayoutRecovery = (): void => {
+        const recovered = this.recoveryLayout
+        if (!recovered) return
+        const current = this.store.getSnapshot()
+        this.store.replace(keepLocalView(this.bindLayout(recovered), current))
+        if (sharedWorkspaceSignature(this.store.getSnapshot()) === sharedWorkspaceSignature(this.bindLayout(recovered))) {
+            this.recoveryLayout = undefined
+            this.publish({ hasLayoutRecovery: false })
+            this.saveLocal()
+        }
+    }
 
     resolveConflict(choice: 'local' | 'server'): void {
         const server = this.snapshot.conflict
-        this.publish({ conflict: null, notice: null })
-        if (choice === 'server' && server) {
+        if (!server) return
+        if (choice === 'server') {
+            this.retainLayoutRecovery(this.store.getSnapshot())
+            if (!this.replaceFromServer(keepLocalView(this.bindLayout(server), this.store.getSnapshot()))) return
             this.queuedSave = undefined
-            this.store.replace(keepLocalView(server, this.store.getSnapshot()))
-        } else void this.flushRemote()
+        } else this.queuedSave = sharedWorkspaceState(this.store.getSnapshot())
+        this.confirmedLayout = server
+        this.publish({ conflict: null, notice: null, persistence: this.queuedSave ? 'local' : 'saved' })
+        this.saveLocal()
+        if (this.queuedSave) void this.flushRemote()
     }
 
     dispose(): void {

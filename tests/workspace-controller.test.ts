@@ -5,7 +5,9 @@ import type { SessionBinding, SessionListState, SessionReference, SessionSummary
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { filterSessions, parseSessionResourceId, sessionCreationContext, sessionLocation, sessionResourceId, WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
-import { initialWorkspace, panes, type PaneResource } from '../src/client/model.ts'
+import { initialWorkspace, panes, WorkspaceStore, type PaneResource, type WorkspaceState } from '../src/client/model.ts'
+import { WorkspaceConflictError } from '../src/client/persistence.ts'
+import { sharedWorkspaceSignature, sharedWorkspaceState } from '../src/workspace/legacy.ts'
 import { sessionFolder } from '../src/workspace/presentation.ts'
 import { createWorkspaceNotifications } from '../src/workspace/notifications.ts'
 
@@ -819,5 +821,214 @@ test('large hidden history can release only its own unguarded view and reopens o
     assert.equal(source.actions.length, 0)
     controller.store.selectWindow(originalWindow)
     assert.notEqual(controller.getSnapshot().leases.get(pane)?.reference, reference)
+    controller.dispose(); source.disposeMain()
+})
+
+/** Independent browser transports against one CAS store, without native I/O. */
+function sharedLayoutFixture() {
+    let id = 0
+    const layout = new WorkspaceStore(initialWorkspace(() => `shared-${++id}`), () => `shared-${++id}`)
+    layout.renameWindow(layout.active().id, 'Alpha')
+    layout.createWindow('Beta')
+    let state = sharedWorkspaceState(layout.getSnapshot()), revision = 1
+    const writes: WorkspaceState[] = []
+    const client = () => {
+        let expected = 0
+        return {
+            load: async () => { expected = revision; return state },
+            save: async (next: WorkspaceState) => {
+                if (expected !== revision) { expected = revision; throw new WorkspaceConflictError(state) }
+                state = next; expected = ++revision; writes.push(next)
+            },
+        }
+    }
+    return { state: () => state, revision: () => revision, writes, client }
+}
+
+test('fresh and cached browser restores do not echo geometry or ask clean browsers to resolve differences', async () => {
+    const server = sharedLayoutFixture(), desktop = fixture(), mobile = fixture()
+    const a = new WorkspaceController({ ...desktop.options, persistence: server.client() })
+    const b = new WorkspaceController({ ...mobile.options, persistence: server.client() })
+    await turn()
+    assert.equal(server.writes.length, 0)
+    b.store.selectWindow(b.store.getSnapshot().windows[1]!.id)
+    const localSelection = b.store.getSnapshot().activeWindowId
+    a.store.renameWindow(a.store.getSnapshot().windows[0]!.id, 'Desktop edit')
+    await turn(); b.dispose(); mobile.disposeMain()
+    const reopened = new WorkspaceController({ ...mobile.options, persistence: server.client() })
+    await turn()
+    assert.equal(reopened.store.getSnapshot().windows[0]!.name, 'Desktop edit')
+    assert.equal(reopened.store.getSnapshot().activeWindowId, localSelection)
+    assert.equal(reopened.getSnapshot().notice, null)
+    assert.equal(reopened.getSnapshot().conflict, null)
+    assert.equal(server.writes.length, 1, 'only the deliberate desktop edit writes')
+    assert.equal(JSON.parse(mobile.memory.get('workspace-test')!).syncBase.windows[0].name, 'Desktop edit')
+    reopened.dispose(); a.dispose(); desktop.disposeMain(); mobile.disposeMain()
+})
+
+test('an older browser cache is backed up once and follows the server without a recurring banner', async () => {
+    const server = sharedLayoutFixture(), source = fixture()
+    const cached = structuredClone(server.state())
+    cached.windows[0]!.name = 'Old browser arrangement'
+    source.memory.set('workspace-test', JSON.stringify(cached))
+    let controller = new WorkspaceController({ ...source.options, persistence: server.client() })
+    await turn()
+    assert.equal(controller.store.getSnapshot().windows[0]!.name, 'Alpha')
+    assert.equal(controller.getSnapshot().hasLayoutRecovery, true)
+    assert.equal(controller.getSnapshot().conflict, null)
+    assert.equal(controller.getSnapshot().notice, null)
+    assert.equal(JSON.parse(source.memory.get('workspace-test')!).layoutRecovery.windows[0].name, 'Old browser arrangement')
+    controller.dispose(); source.disposeMain()
+    controller = new WorkspaceController({ ...source.options, persistence: server.client() })
+    await turn()
+    assert.equal(controller.getSnapshot().notice, null)
+    assert.equal(server.writes.length, 0)
+    controller.restoreLayoutRecovery(); await turn()
+    assert.equal(server.state().windows[0]!.name, 'Old browser arrangement')
+    assert.equal(controller.getSnapshot().hasLayoutRecovery, false)
+    controller.dispose(); source.disposeMain()
+})
+
+test('offline edits survive reload and rebase onto independent changes from another browser', async () => {
+    const server = sharedLayoutFixture(), mobile = fixture(), desktop = fixture()
+    let offline = false
+    const transport = server.client()
+    const a = new WorkspaceController({ ...mobile.options, persistence: { ...transport, save: async state => {
+        if (offline) throw new Error('Offline')
+        return transport.save(state)
+    } } })
+    const b = new WorkspaceController({ ...desktop.options, persistence: server.client() })
+    await turn()
+    offline = true
+    a.store.renameWindow(a.store.getSnapshot().windows[1]!.id, 'Mobile edit')
+    b.store.renameWindow(b.store.getSnapshot().windows[0]!.id, 'Desktop edit')
+    await turn()
+    assert.equal(a.getSnapshot().persistence, 'failed')
+    a.dispose(); mobile.disposeMain()
+    const resumed = new WorkspaceController({ ...mobile.options, persistence: server.client() })
+    await turn()
+    assert.deepEqual(server.state().windows.map(window => window.name), ['Desktop edit', 'Mobile edit'])
+    assert.equal(resumed.getSnapshot().conflict, null)
+    assert.equal(resumed.getSnapshot().notice, null)
+    assert.equal(server.writes.length, 2)
+    resumed.dispose(); b.dispose(); mobile.disposeMain(); desktop.disposeMain()
+})
+
+test('CAS conflict replays only local edits and does not overwrite a remote rename', async () => {
+    const server = sharedLayoutFixture(), desktop = fixture(), mobile = fixture()
+    const a = new WorkspaceController({ ...desktop.options, persistence: server.client() })
+    const b = new WorkspaceController({ ...mobile.options, persistence: server.client() })
+    await turn()
+    a.store.renameWindow(a.store.getSnapshot().windows[0]!.id, 'Desktop edit')
+    await turn()
+    b.store.renameWindow(b.store.getSnapshot().windows[1]!.id, 'Mobile edit')
+    await turn()
+    assert.deepEqual(server.state().windows.map(window => window.name), ['Desktop edit', 'Mobile edit'])
+    assert.equal(b.getSnapshot().conflict, null)
+    assert.equal(server.writes.length, 2)
+    a.dispose(); b.dispose(); desktop.disposeMain(); mobile.disposeMain()
+})
+
+test('a save acknowledgement cannot erase an edit made while that save was in flight', async () => {
+    const server = sharedLayoutFixture(), source = fixture(), transport = server.client()
+    let finish!: () => void, saves = 0
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    const controller = new WorkspaceController({ ...source.options, persistence: { ...transport, save: async state => {
+        if (++saves === 1) await gate
+        return transport.save(state)
+    } } })
+    await turn()
+    const [a, b] = controller.store.getSnapshot().windows
+    controller.store.renameWindow(a!.id, 'First edit')
+    controller.store.renameWindow(b!.id, 'Second edit')
+    finish(); await turn()
+    assert.deepEqual(server.state().windows.map(window => window.name), ['First edit', 'Second edit'])
+    const saved = JSON.parse(source.memory.get('workspace-test')!)
+    assert.equal(sharedWorkspaceSignature(saved.syncBase), sharedWorkspaceSignature(server.state()))
+    assert.equal(server.writes.length, 2)
+    controller.dispose(); source.disposeMain()
+})
+
+test('a local edit during the first GET is replayed onto the remote layout', async () => {
+    const server = sharedLayoutFixture(), source = fixture(), transport = server.client()
+    const base = server.state()
+    source.memory.set('workspace-test', JSON.stringify({ ...base, syncBase: base }))
+    let finish!: () => void
+    const gate = new Promise<void>(resolve => { finish = resolve })
+    const controller = new WorkspaceController({ ...source.options, persistence: { ...transport,
+        load: async () => { await gate; return transport.load() },
+    } })
+    controller.store.renameWindow(base.windows[1]!.id, 'Edited while loading')
+    finish(); await turn()
+    assert.deepEqual(server.state().windows.map(window => window.name), ['Alpha', 'Edited while loading'])
+    assert.equal(server.writes.length, 1)
+    controller.dispose(); source.disposeMain()
+})
+
+test('retrying a failed initial read reloads the server before saving pending edits', async () => {
+    const server = sharedLayoutFixture(), source = fixture(), transport = server.client()
+    const base = server.state()
+    source.memory.set('workspace-test', JSON.stringify({ ...base, syncBase: base }))
+    let reads = 0
+    const controller = new WorkspaceController({ ...source.options, persistence: { ...transport,
+        load: async () => { if (++reads === 1) throw new Error('Offline'); return transport.load() },
+    } })
+    await turn()
+    controller.store.renameWindow(base.windows[1]!.id, 'Offline edit')
+    assert.equal(server.writes.length, 0)
+    controller.retryPersistence(); await turn()
+    assert.equal(reads, 2)
+    assert.equal(server.state().windows[1]!.name, 'Offline edit')
+    assert.equal(controller.getSnapshot().notice, null)
+    controller.dispose(); source.disposeMain()
+})
+
+test('remote layout removal respects dirty pane guards and accepting the server does not echo it', async () => {
+    const server = sharedLayoutFixture(), source = fixture()
+    const base = structuredClone(server.state())
+    base.windows[0]!.root = { type: 'pane', id: 'guarded-pane', resource: { kind: 'chat', sessionId: 'editing' } }
+    source.add('editing')
+    source.memory.set('workspace-test', JSON.stringify({ ...base, syncBase: base }))
+    const controller = new WorkspaceController({ ...source.options, persistence: server.client() })
+    const release = controller.registerPaneCloseGuard('guarded-pane', () => false)
+    await turn()
+    assert.equal(controller.store.getSnapshot().windows[0]!.root.id, 'guarded-pane')
+    assert.ok(controller.getSnapshot().conflict)
+    assert.equal(controller.getSnapshot().notice, null, 'recovery controls live in the menu, not a recurring top banner')
+    controller.resolveConflict('server')
+    assert.equal(controller.store.getSnapshot().windows[0]!.root.id, 'guarded-pane')
+    release(); controller.resolveConflict('server'); await turn()
+    assert.equal(sharedWorkspaceSignature(controller.store.getSnapshot()), sharedWorkspaceSignature(server.state()))
+    assert.equal(controller.getSnapshot().conflict, null)
+    assert.equal(controller.getSnapshot().hasLayoutRecovery, true)
+    assert.equal(server.writes.length, 0)
+    controller.dispose(); source.disposeMain()
+})
+
+test('the official initial session selection is not replayed as a new local window on fresh restore', async () => {
+    const server = sharedLayoutFixture(), source = fixture()
+    source.add('official-selected')
+    source.navigation.openSession('official-selected' as SessionId)
+    const controller = new WorkspaceController({ ...source.options, persistence: server.client() })
+    await turn()
+    assert.equal(sharedWorkspaceSignature(controller.store.getSnapshot()), sharedWorkspaceSignature(server.state()))
+    assert.equal(controller.getSnapshot().conflict, null)
+    assert.equal(server.writes.length, 0)
+    controller.dispose(); source.disposeMain()
+})
+
+test('accepting a conflicting server layout backs up the layout being replaced, even with an older backup', async () => {
+    const server = sharedLayoutFixture(), source = fixture()
+    const base = structuredClone(server.state()), local = structuredClone(base), oldBackup = structuredClone(base)
+    local.windows[0]!.name = 'Current local edit'; oldBackup.windows[0]!.name = 'Much older backup'
+    source.memory.set('workspace-test', JSON.stringify({ ...local, syncBase: base, layoutRecovery: oldBackup }))
+    const remote = structuredClone(base); remote.windows.splice(0, 1)
+    remote.activeWindowId = remote.windows[0]!.id
+    const controller = new WorkspaceController({ ...source.options, persistence: { load: async () => remote, save: async () => {} } })
+    await turn()
+    assert.ok(controller.getSnapshot().conflict)
+    controller.resolveConflict('server')
+    assert.equal(JSON.parse(source.memory.get('workspace-test')!).layoutRecovery.windows[0].name, 'Current local edit')
+    assert.equal(controller.getSnapshot().conflict, null)
     controller.dispose(); source.disposeMain()
 })

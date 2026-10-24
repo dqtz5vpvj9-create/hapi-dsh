@@ -263,6 +263,12 @@ function PaneMenuItems({ pane, window, controller, t }: { pane: PaneNode; window
         {layout.windows.filter(other => other.id !== window.id).map(other => <button type="button" key={other.id} onClick={() => controller.store.movePane(pane.id, other.id)}>{t('moveTo')} · {windowAlias(other, layout.windows.indexOf(other) + 1)}</button>)}
         <button type="button" onClick={() => controller.store.movePaneToNewWindow(pane.id)}>{t('moveToNewWindow')}</button>
         <button type="button" onClick={() => controller.store.closePane(pane.id)}>{t('closePane')}</button>
+        {controller.getSnapshot().conflict ? <>
+            <span className="hapi-layout-sync-help">{t('layoutConflict')}</span>
+            <button type="button" onClick={() => controller.resolveConflict('local')}>{t('keepLocal')}</button>
+            <button type="button" onClick={() => controller.resolveConflict('server')}>{t('useServer')}</button>
+        </> : controller.getSnapshot().persistence === 'failed' && <button type="button" onClick={controller.retryPersistence}>{t('retryLayoutSync')}</button>}
+        {controller.getSnapshot().hasLayoutRecovery && <button type="button" onClick={controller.restoreLayoutRecovery}>{t('restoreBrowserLayout')}</button>}
     </>
 }
 
@@ -315,7 +321,6 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         }))
         const measure = (): void => {
             if (!windowMenuRef.current) return
-            windowMenuRef.current.style.visibility = 'hidden'
             setWindowMenuStyle(sidebarMenuPosition(windowMenu.point, { width: windowMenuRef.current.offsetWidth, height: windowMenuRef.current.offsetHeight }, {
                 left: viewport?.offsetLeft ?? 0, top: viewport?.offsetTop ?? 0,
                 width: viewport?.width ?? window.innerWidth, height: viewport?.height ?? window.innerHeight,
