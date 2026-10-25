@@ -31,7 +31,7 @@
 | 候选完整构建（warm restart 调用 `scripts/build.mjs`） | exit 0，build id `8ac857…`；dist 身份见日志 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/warm-restart.log`、`build-identity.log`；早先 `final-build.log` 为同源中间构建 |
 | `e2e/native-cold-opening.spec.ts` | 8 passed，36.8s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/native-cold-opening-final.log` |
 | `e2e/cold-boot.spec.ts` | 4 passed，51.3s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/cold-boot-final.log` |
-| `e2e/display-lifecycle.spec.ts` | 1 passed，26.9s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/display-lifecycle-final2.log` |
+| `e2e/display-lifecycle.spec.ts` | 1 passed，26.7s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/display-lifecycle-final2.log` |
 | 专项组合（live-history、desktop-history-scroll、mobile-scroll、mobile-chrome、source-presentation、federated-cold-boot） | 23 passed，5.6m，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/specialized-final.log` |
 | 通用 UI acceptance（1 轮） | 22 checks pass，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/ui-acceptance.log`；报告 `/mnt/cache/data-cache/hapi-dsh-warm-ffc33f041b32/accept-1792897407806.json` |
 | 5 轮性能 acceptance | 86 checks pass，5 轮，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/ui-perf2.log`；报告 `/mnt/cache/data-cache/hapi-dsh-warm-ffc33f041b32/perf-1792897751574.json` |
