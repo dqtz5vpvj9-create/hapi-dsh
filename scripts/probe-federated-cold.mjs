@@ -50,6 +50,7 @@ const reads = new Set([
   'permissionPresets/catalog', 'hapi/workspaceGet', 'hapi/catalog', 'hapi/sourceAdministration',
   'hapi/sourceReadStates', 'hapi/sourceQueuedEdits', 'hapi/nativeSettings', 'hapi/sourceSummarySettings',
   'hapi/sourceReadingAnchor', 'hapi/sourceLocateMessage',
+  'hapi/sourceHistoryOutline', 'hapi/sourceHistoryWindowPage',
   'hapi/nativePlan', 'commands/list', 'skills/list',
   'llm/listProviders', 'llm/listConfigurableProviders',
 ]);

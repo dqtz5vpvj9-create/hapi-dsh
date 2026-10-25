@@ -65,6 +65,7 @@ const readRpcs = new Set([
   '/api/hapi/sourceNotificationSettings', '/api/hapi/sourceAdministration', '/api/hapi/sourceReadStates',
   '/api/hapi/sourceQueuedEdits', '/api/hapi/nativeSettings', '/api/hapi/sourceSummarySettings',
   '/api/hapi/sourceReadingAnchor', '/api/hapi/sourceLocateMessage',
+  '/api/hapi/sourceHistoryOutline', '/api/hapi/sourceHistoryWindowPage',
   '/api/hapi/nativePlan', '/api/commands/list', '/api/skills/list',
   '/api/llm/listProviders', '/api/llm/listConfigurableProviders',
 ]);
