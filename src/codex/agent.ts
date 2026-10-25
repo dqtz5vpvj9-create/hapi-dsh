@@ -56,6 +56,8 @@ export interface NativeCodexOptions {
   assertSourceCurrent?: () => void
   /** Opt-in until client draft/attachment/scroll transfer across reseeds is verified. */
   fastHistorySeed?: boolean
+  /** The service already merged these rows with its live journal. */
+  initialRowsMerged?: boolean
 }
 
 /** The original-source facts a delivery needs before it may dispatch. */
@@ -335,7 +337,7 @@ export class NativeCodexAgent implements Agent {
           agent.historyReadFault = true
           agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
         }
-      } else {
+      } else if (options.initialRowsMerged !== true) {
         rows = agent.historyJournal.merge(rows, checkpoint)
       }
       agent.projector.beginHistorySeed()
@@ -636,12 +638,13 @@ export class NativeCodexAgent implements Agent {
         // Forget live rows from the removed epoch before taking a new read;
         // otherwise the receive journal could resurrect a deleted message.
         if (this.historyEpoch !== undefined && this.historyEpoch !== snapshot.epoch) { this.invalidateHistoryEpoch(); return }
-        let merged = this.historyJournal.merge(rows, checkpoint)
-        try { await this.applyRows(merged, true, checkpoint) } catch (error) {
+        const merged = this.historyJournal.merge(rows, checkpoint)
+        try { await this.applyRows(merged, true, checkpoint, true) } catch (error) {
           if (error instanceof NativeHistoryChangedError && this.config.onHistoryChanged) {
             // Capture arrivals during content preparation as well. A changed
             // generation aborts this seed instead of resurrecting old rows.
-            merged = this.historyJournal.merge(rows, checkpoint)
+            // The same merged array still owns the authoritative source prefix;
+            // the service adds only the post-checkpoint journal suffix.
             await this.config.onHistoryChanged(this, merged, checkpoint, snapshot.epoch)
             return
           }
@@ -705,11 +708,11 @@ export class NativeCodexAgent implements Agent {
     }
   }
 
-  private applyRows(messages: readonly HapiMessage[], authoritative = false, checkpoint = this.historyJournal.checkpoint()): Promise<void> {
+  private applyRows(messages: readonly HapiMessage[], authoritative = false, checkpoint = this.historyJournal.checkpoint(), merged = false): Promise<void> {
     const work = this.rowWork.then(async () => {
       if (this.disposed) return
       this.historyJournal.assertCurrent(checkpoint)
-      const rows = authoritative ? this.historyJournal.merge(messages, checkpoint, !this.historyStale) : messages
+      const rows = merged ? messages : authoritative ? this.historyJournal.merge(messages, checkpoint, !this.historyStale) : messages
       if (!this.initializing && authoritative && this.historyOrder.needsReseed(rows)) {
         throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
       }

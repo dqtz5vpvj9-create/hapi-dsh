@@ -52,6 +52,7 @@ import { browserValue } from './browser-value.ts'
 import { createGraphModules, graphStyleQueries } from './graph-document.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
+import { createDisplayLeaseRegistry } from './surface/display-leases.ts'
 import { HostOpeningTiming, observePaneOpening } from './surface/pane-opening.ts'
 import { bindInitialHistory } from './seamless/index.ts'
 import { recordDiagnostic } from './diagnostics/index.ts'
@@ -398,6 +399,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     // bootstrap only when a compatibility plugin-view graph actually needs it.
     let resourcesPromise: Promise<HostResources> | undefined
     const resourcesForHost = (): Promise<HostResources> => resourcesPromise ??= loadHostResources(root, host, signal)
+    let hostApi = root.remote.hapi
+    const displayLeases = createDisplayLeaseRegistry({
+        sourceDisplayLease: request => hostApi.sourceDisplayLease(request),
+    }, error => workspace.report(error))
     const catalogSurface = document.createElement('div')
     catalogSurface.hidden = true; catalogSurface.dataset.hapiCatalogHost = host.id
     document.body.append(catalogSurface)
@@ -510,6 +515,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         parking.append(surface)
         const ui = sharedUi.createScope()
         const resourceId = sessionResourceId(host.id, sourceId)
+        const leaseSource = resource.sourceSessionId ?? workspace.getSnapshot().catalog.byId[sourceId]?.sourceSessionId
+        if (leaseSource) displayLeases.remember(sourceId,
+            { hubId: resource.sourceHubId ?? host.id, sourceSessionId: leaseSource })
         const lifetime = new AbortController()
         const activeSignal = AbortSignal.any([signal, lifetime.signal])
         let presentation = { focused: initial.focused, visible: initial.visible !== false }
@@ -581,6 +589,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 try {
                     await waitForCatalogSession(context.sessions, sourceId as SessionId, activeSignal)
                     if (disposed || retired || activeSignal.aborted) return
+                    displayLeases.retain(sourceId)
                     reference = context.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
                     historySubscriptions.push(reference.binding.eventSource.subscribe(scheduleHistoryRelease), reference.binding.session.subscribe(scheduleHistoryRelease))
                     void reference.ready.then(binding => { referenceReady = true; opening?.referenceReady(binding.session.getSnapshot().blank) }, () => opening?.stop('error'))
@@ -634,6 +643,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             try {
                 await view?.dispose(); view = undefined
                 reference?.release(); reference = undefined
+                displayLeases.release(sourceId)
                 await ui.dispose()
             } finally { listeners.clear(); surface.remove(); allPanes.delete(result) }
         })
@@ -708,6 +718,9 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             subscribe(listener: () => void) { menuListeners.add(listener); return () => { menuListeners.delete(listener) } },
         }
         const resourceId = sessionResourceId(host.id, sourceId)
+        const leaseSource = resource.sourceSessionId ?? workspace.getSnapshot().catalog.byId[sourceId]?.sourceSessionId
+        if (leaseSource) displayLeases.remember(sourceId,
+            { hubId: resource.sourceHubId ?? host.id, sourceSessionId: leaseSource })
         const ui = sharedUi.createScope()
         const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
             .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
@@ -770,6 +783,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             await entryNavigationDispose?.(); entryNavigationDispose = undefined
             await voiceScope?.dispose(); voiceScope = undefined
             reference?.release(); reference = undefined
+            displayLeases.release(sourceId)
             const graph = runtime; runtime = undefined
             await graph?.stop()
         }
@@ -830,6 +844,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 // graph already lists this session.
                 await waitForCatalogSession(graph.ctx.sessions, sourceId as SessionId, activeSignal)
                 if (disposed || currentGeneration !== generation || activeSignal.aborted) return
+                displayLeases.retain(sourceId)
                 reference = graph.ctx.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
                 if (resource.kind === 'chat' || resource.kind === 'view' && resource.target.type === 'conversation') {
                     uninitialHistory = bindInitialHistory(surface, reference, navigation)
@@ -986,12 +1001,14 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             if (shared) { catalogSurface.hidden = false; catalogSurface.style.display = 'contents'; catalogSurface.dataset.hapiSharedHost = host.id }
             const graph = resources.payload.graph as WebBootGraph
             catalog = await bootGraph(root, host, resources, shared ? workspaceBootGraph(graph) : graph, catalogSurface, shared ? 'shared' : 'catalog', signal, undefined, true, false, true, shared)
+            hostApi = catalog.ctx.remote?.hapi ?? root.remote.hapi
             timing.mark('graph')
         }
         if (shared) {
             const context = catalog?.ctx ?? root
             sessionViews = installSessionViewHost(context)
-            warmup = createSessionWarmup(context.sessions, { prepare: reference => { context.uiConversation.binding(reference.binding) } })
+            warmup = createSessionWarmup(context.sessions, { prepare: reference => { context.uiConversation.binding(reference.binding) },
+                lease: { acquire: id => displayLeases.retain(id), release: id => displayLeases.release(id) } })
             unwarmup = context.sessions.list.subscribe(warmRecent)
             // No speculative histories at Host startup. Each online Host used
             // to open five, competing with the selected pane on cold reload.
@@ -1087,14 +1104,14 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             stopped = true; unsubscribeLayout?.(); uninitialCatalog(); removeHost?.()
             await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
             activePanes.clear()
-            cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
+            cancelWarmStart(); unwarmup?.(); warmup?.dispose(); displayLeases.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
             await catalog?.stop(); catalogSurface.remove(); parking.remove()
         } }
     } catch (error) {
         timing.mark('failed')
         unsubscribeLayout?.(); uninitialCatalog(); removeHost?.()
         await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
-        cancelWarmStart(); unwarmup?.(); warmup?.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
+        cancelWarmStart(); unwarmup?.(); warmup?.dispose(); displayLeases.dispose(); sessionViews?.dispose(); hostRenderer?.unmount(); await hostUiScope?.dispose(); unhostChrome?.(); unprovideHostUi?.()
         await catalog?.stop(); catalogSurface.remove(); parking.remove(); throw error
     }
 }

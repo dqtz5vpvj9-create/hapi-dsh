@@ -191,3 +191,29 @@ test('synchronous catalog reentry during eviction cannot repeatedly release a re
     } finally { warmup.dispose() }
     assert.ok(f.refs.every(ref => ref.releases === 1))
 })
+
+test('warmup mirrors its exact public reference lifetime onto the display lease', async () => {
+    const f = fixture(), events: string[] = []
+    const warmup = createSessionWarmup(f.sessions, { lease: {
+        acquire: id => events.push(`acquire:${id}`), release: id => events.push(`release:${id}`),
+    } })
+    warmup.update(ids('a', 'b'))
+    assert.deepEqual(events, ['acquire:a', 'acquire:b'])
+    f.refs[0]!.resolve(); f.refs[1]!.resolve(); await tick()
+    warmup.update(ids('a'))
+    assert.deepEqual(events, ['acquire:a', 'acquire:b', 'release:b'])
+    warmup.dispose()
+    assert.deepEqual(events, ['acquire:a', 'acquire:b', 'release:b', 'release:a'])
+    assert.ok(f.refs.every(ref => ref.releases === 1))
+})
+
+test('a failed warm retain releases the lease it acquired', async () => {
+    const sessions: Pick<ISessions, 'retain'> = { retain() { throw new Error('catalog unavailable') } }
+    const events: string[] = []
+    const warmup = createSessionWarmup(sessions, { lease: {
+        acquire: id => events.push(`acquire:${id}`), release: id => events.push(`release:${id}`),
+    }, onError: () => {} })
+    warmup.update(ids('a'))
+    assert.deepEqual(events, ['acquire:a', 'release:a'])
+    warmup.dispose()
+})

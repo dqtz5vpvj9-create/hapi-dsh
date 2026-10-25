@@ -86,12 +86,12 @@ export async function readNativeHistoryTail(transport: HapiTransport, sessionId:
  * Falling back to "read whatever is there now" would publish rows the source
  * has already removed; callers keep their previous cache instead.
  */
-async function readPass(transport: HapiTransport, sessionId: string): Promise<Pass> {
+async function readPass(transport: HapiTransport, sessionId: string, yieldEveryPages = 8): Promise<Pass> {
   const first = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true })
   const epoch = first.page.epoch
   const snapshotHeadAt = first.page.snapshotHeadAt, snapshotHeadSeq = first.page.snapshotHeadSeq
   const rows: HapiMessage[] = [...first.messages]
-  let page = first
+  let page = first, pagesRead = 1
   while (page.page.hasMore) {
     const at = page.page.nextBeforeAt, seq = page.page.nextBeforeSeq
     if (at === null || seq === null) return { rows, complete: false }
@@ -102,7 +102,13 @@ async function readPass(transport: HapiTransport, sessionId: string): Promise<Pa
       if (nextAt === null || nextSeq === null) return { rows, complete: false }
       if (!isBefore({ at: nextAt, seq: nextSeq }, { at, seq })) return { rows, complete: false }
     }
-    rows.push(...page.messages)
+    rows.push(...page.messages); pagesRead++
+    // Archive pagination is network/CPU work, not an interactive priority.
+    // Yield after a small bounded slice so input, live suffixes and the
+    // already-published latest page are not starved by a long backfill.
+    if (yieldEveryPages > 0 && pagesRead % yieldEveryPages === 0) {
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
+    }
   }
   // Final validation: re-issue a cursor page under the same epoch. HAPI only
   // reports a stale snapshot when a cursor is supplied, so anchor the check on
@@ -134,9 +140,9 @@ export async function readNativeHistory(transport: HapiTransport, sessionId: str
   return (await readNativeHistorySnapshot(transport, sessionId)).rows
 }
 
-export async function readNativeHistorySnapshot(transport: HapiTransport, sessionId: string): Promise<{ rows: HapiMessage[]; epoch: number }> {
+export async function readNativeHistorySnapshot(transport: HapiTransport, sessionId: string, options: { yieldEveryPages?: number } = {}): Promise<{ rows: HapiMessage[]; epoch: number }> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const pass = await readPass(transport, sessionId)
+    const pass = await readPass(transport, sessionId, options.yieldEveryPages)
     if (pass.complete) return { rows: uniqueNewestFirst(pass.rows), epoch: pass.epoch! }
   }
   throw new Error('Native history changed repeatedly during pagination; refresh when the source snapshot is available')

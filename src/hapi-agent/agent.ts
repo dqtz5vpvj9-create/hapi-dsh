@@ -51,6 +51,8 @@ export interface HapiObservedOptions extends ObservedContentOptions {
   assertSourceCurrent?: () => void
   /** Opt-in until client draft/attachment/scroll transfer across reseeds is verified. */
   fastHistorySeed?: boolean
+  /** The service already merged these rows with its live journal. */
+  initialRowsMerged?: boolean
 }
 
 class ObservedInbox implements Inbox {
@@ -216,7 +218,7 @@ export class HapiObservedAgent implements Agent {
           agent.historyReadFault = true
           agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
         }
-      } else {
+      } else if (config.initialRowsMerged !== true) {
         rows = agent.historyJournal.merge(rows, checkpoint)
       }
       agent.projector.beginHistorySeed(); await agent.applyRows(rows, true, checkpoint)
@@ -446,13 +448,16 @@ export class HapiObservedAgent implements Agent {
           rows = await readNativeHistory(this.transport, this.bound.hapiSessionId)
           if (this.disposed) return
           rows = this.historyJournal.merge(rows, checkpoint)
-          await this.applyRows(rows, true, checkpoint)
+          await this.applyRows(rows, true, checkpoint, true)
         }
         await this.dshChildren.refresh(history)
       } catch (error) {
         if (error instanceof NativeHistoryChangedError && this.config.onHistoryChanged) {
           checkpoint ??= this.historyJournal.checkpoint()
-          const replacement = this.historyJournal.merge(rows ?? await readNativeHistory(this.transport, this.bound.hapiSessionId), checkpoint)
+          // `rows` below is already merged on this path; only a read that was
+          // never merged (the error happened before assignment) needs the
+          // journal overlay here.
+          const replacement = rows ?? this.historyJournal.merge(await readNativeHistory(this.transport, this.bound.hapiSessionId), checkpoint)
           await this.config.onHistoryChanged(this, replacement, checkpoint); return
         }
         throw error
@@ -494,11 +499,11 @@ export class HapiObservedAgent implements Agent {
     const selectionKey = JSON.stringify(selection)
     if (selectionKey !== this.lastSelection) { this.session.append('model/selection', selection); this.lastSelection = selectionKey }
   }
-  private applyRows(rows: readonly HapiMessage[], authoritative = false, checkpoint = this.historyJournal.checkpoint()): Promise<void> {
+  private applyRows(rows: readonly HapiMessage[], authoritative = false, checkpoint = this.historyJournal.checkpoint(), prepared = false): Promise<void> {
     const work = this.rowWork.then(async () => {
       if (this.disposed) return
       this.historyJournal.assertCurrent(checkpoint)
-      const merged = authoritative ? this.historyJournal.merge(rows, checkpoint, !this.historyStale) : rows
+      const merged = prepared ? rows : authoritative ? this.historyJournal.merge(rows, checkpoint, !this.historyStale) : rows
       if (!this.initializing && authoritative && this.historyOrder.needsReseed(merged)) {
         throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
       }

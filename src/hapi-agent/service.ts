@@ -15,6 +15,7 @@ import { HistoryReadInvalidatedError, SourceHistoryJournal, type HistoryCheckpoi
 import { SourceHistoryLifetimes } from '../codex/history-lifecycle.js'
 import { SourceHistorySync } from '../codex/history-sync.js'
 import { SourceEventQueue, replacesCumulativeSnapshot, sourceEventBytes, type QueuedSourceEvent } from '../codex/event-queue.js'
+import { DISPLAY_LEASE_TTL_MS, DISPLAY_RELEASE_GRACE_MS, DisplayLeases } from '../codex/display-leases.js'
 
 export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'displayRevision' | 'onHistoryChanged'> {
   /** Source discovery is independent of materializing display histories. */
@@ -23,6 +24,8 @@ export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'disp
   onError?: (error: Error, sourceSessionId?: string) => void
   /** A deployment may prefer an already federated official DSH Host for that same source. */
   includeSession?: (source: HapiSession) => boolean
+  displayLeaseTtlMs?: number
+  displayReleaseGraceMs?: number
 }
 
 export class HapiAgentService {
@@ -43,6 +46,12 @@ export class HapiAgentService {
   private started = false
   private disposed = false
   private catalogRefresh: Promise<void> | undefined
+  private readonly leases = new DisplayLeases()
+  private readonly releasing = new Map<string, Promise<void>>()
+  private readonly releaseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly suspended = new Set<string>()
+  private readonly leased = new Set<string>()
+  private readonly leaseSweep: ReturnType<typeof setInterval>
   constructor(readonly ctx: Context, readonly transport: HapiObservedTransport, readonly options: HapiAgentServiceOptions) {
     mkdirSync(options.stateDirectory, { recursive: true, mode: 0o700 })
     this.revisionFile = join(options.stateDirectory, `${observedSessionId(transport.hubId, 'revisions')}.json`)
@@ -50,6 +59,8 @@ export class HapiAgentService {
       const values = z.record(z.string(), z.number().int().nonnegative()).parse(JSON.parse(readFileSync(this.revisionFile, 'utf8')))
       for (const [key, value] of Object.entries(values)) this.revisions.set(key, value)
     } catch (error) { if (record(error)?.code !== 'ENOENT') throw error }
+    this.leaseSweep = setInterval(() => { void this.expireDisplayLeases() }, 30_000)
+    this.leaseSweep.unref?.()
   }
   async start(): Promise<void> {
     if (this.started) return
@@ -62,6 +73,82 @@ export class HapiAgentService {
   list(): readonly HapiObservedAgent[] { return [...this.agents.values()] }
   get(id: string): HapiObservedAgent | undefined { return this.list().find(agent => agent.id === id || agent.logicalSessionId === id) }
   byHapiSession(id: string): HapiObservedAgent | undefined { return this.agents.get(id) }
+
+  /** A browser reference lease; it neither attaches nor starts source execution. */
+  async acquireDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<void> {
+    if (this.disposed) return
+    await this.releasing.get(sourceId)
+    this.clearReleaseTimer(sourceId)
+    this.leases.acquire(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
+    this.leased.add(sourceId)
+    this.suspended.delete(sourceId)
+  }
+  async renewDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<void> {
+    if (this.disposed) return
+    await this.releasing.get(sourceId)
+    this.leases.renew(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
+  }
+  async releaseDisplayLease(sourceId: string, leaseId: string): Promise<boolean> {
+    if (this.disposed) return true
+    const empty = this.leases.release(sourceId, leaseId)
+    if (!empty) return false
+    this.scheduleDisplayRelease(sourceId)
+    return !this.agents.has(sourceId)
+  }
+  /** Retire one lightweight display after the final live reference is gone. */
+  async releaseDisplay(sourceId: string): Promise<boolean> {
+    if (this.disposed || this.leases.has(sourceId)) return false
+    if (!this.agents.has(sourceId) || this.attaching.has(sourceId)) return false
+    this.suspended.add(sourceId)
+    const queue = this.work.get(sourceId)
+    const task = (async () => {
+      const retire = async (): Promise<boolean> => {
+        if (this.disposed || this.leases.has(sourceId) || this.attaching.has(sourceId)) {
+          if (!this.leases.has(sourceId)) this.suspended.delete(sourceId)
+          return false
+        }
+        const current = this.agents.get(sourceId)
+        if (!current) { this.suspended.delete(sourceId); return false }
+        this.agents.delete(sourceId); this.errors.delete(sourceId)
+        await current.dispose()
+        this.advanceRevision(sourceId)
+        this.historyJournals.delete(sourceId)
+        this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
+        this.pendingResets.delete(sourceId)
+        this.suspended.delete(sourceId)
+        this.leased.delete(sourceId)
+        return true
+      }
+      const retired = queue ? await queue.run(retire) : await retire()
+      if (this.work.get(sourceId) === queue) this.work.delete(sourceId)
+      return retired
+    })()
+    const tracked = task.then(() => undefined, () => undefined)
+    this.releasing.set(sourceId, tracked)
+    try { return await task }
+    finally { if (this.releasing.get(sourceId) === tracked) this.releasing.delete(sourceId) }
+  }
+  async expireDisplayLeases(): Promise<string[]> {
+    const expired = this.leases.expire()
+    for (const sourceId of expired) this.scheduleDisplayRelease(sourceId)
+    return expired
+  }
+  private scheduleDisplayRelease(sourceId: string): void {
+    if (!this.leased.has(sourceId)) return
+    if (this.disposed || this.leases.has(sourceId) || this.releaseTimers.has(sourceId)) return
+    const grace = this.options.displayReleaseGraceMs ?? DISPLAY_RELEASE_GRACE_MS
+    const timer = setTimeout(() => {
+      this.releaseTimers.delete(sourceId)
+      void this.releaseDisplay(sourceId).catch(error => this.report(error, sourceId))
+    }, grace)
+    timer.unref?.()
+    this.releaseTimers.set(sourceId, timer)
+  }
+  private clearReleaseTimer(sourceId: string): void {
+    const timer = this.releaseTimers.get(sourceId)
+    if (!timer) return
+    clearTimeout(timer); this.releaseTimers.delete(sourceId)
+  }
   /** Exact current child display only; no root aliases or cross-parent fallback. */
   dshChild(sessionId: string) { return this.list().flatMap(agent => agent.dshChild(sessionId) ?? []).find(child => child.id === sessionId) }
   /** Detach an observation after the source confirms deletion; never stops its Runner. */
@@ -74,6 +161,8 @@ export class HapiAgentService {
   failures(): ReadonlyMap<string, string> { return this.errors }
   /** View admission needs current identity, not another complete archive scan. */
   async openSource(sourceId: string): Promise<HapiObservedAgent | undefined> {
+    const releasing = this.releasing.get(sourceId)
+    if (releasing) await releasing
     const existing = this.agents.get(sourceId)
     if (!existing) return this.attach(sourceId)
     const source = await this.transport.getSession(sourceId)
@@ -102,6 +191,8 @@ export class HapiAgentService {
   async attach(sourceId: string): Promise<HapiObservedAgent | undefined> {
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined
+    const releasing = this.releasing.get(sourceId)
+    if (releasing) await releasing
     const existing = this.agents.get(sourceId)
     if (existing) return existing
     const pending = this.attaching.get(sourceId)
@@ -122,6 +213,7 @@ export class HapiAgentService {
       this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
       agent.startHistorySync()
       await this.announceReset(sourceId, agent.id)
+      if (!this.leases.has(sourceId)) this.scheduleDisplayRelease(sourceId)
       return agent
     })()
     this.attaching.set(sourceId, task)
@@ -162,7 +254,8 @@ export class HapiAgentService {
       const journal = this.historyFor(sourceId)
       journal.capture({ type: 'messages-invalidated', sessionId: sourceId })
       const checkpoint = journal.checkpoint()
-      await this.replaceDisplay(existing, await readNativeHistory(this.transport, sourceId), source, checkpoint)
+      const rows = journal.merge(await readNativeHistory(this.transport, sourceId), checkpoint)
+      await this.replaceDisplay(existing, rows, source, checkpoint)
     } else await existing.refresh(true)
     this.errors.delete(sourceId); return this.agents.get(sourceId)
   }
@@ -177,7 +270,8 @@ export class HapiAgentService {
       displayRevision: this.revisions.get(logical) ?? 0,
       historyJournal: this.historyFor(source.id), ...(checkpoint ? { historyCheckpoint: checkpoint } : {}),
       assertSourceCurrent: () => { if (this.disposed) throw new HistoryReadInvalidatedError(); this.lifetimes.assertCurrent(source.id, version) },
-      onHistoryChanged: (agent, snapshot, checkpoint) => this.replaceDisplay(agent, snapshot, undefined, checkpoint) }, rows)
+      onHistoryChanged: (agent, snapshot, checkpoint) => this.replaceDisplay(agent, snapshot, undefined, checkpoint),
+      ...(rows ? { initialRowsMerged: true } : {}) }, rows)
   }
   private async replaceDisplay(previous: HapiObservedAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint()): Promise<void> {
     const sourceId = previous.binding.hapiSessionId
@@ -254,13 +348,21 @@ export class HapiAgentService {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       for (const journal of this.historyJournals.values()) journal.capture(event)
-      const pressure = [...this.agents.values()].map(agent => this.queue(agent.binding.hapiSessionId, event)).filter(Boolean)
+      const pressure = [...this.agents.values()].filter(agent => !this.suspended.has(agent.binding.hapiSessionId))
+        .map(agent => this.queue(agent.binding.hapiSessionId, event)).filter(Boolean)
       if (event.data?.status === 'connected') void this.refreshCatalog().catch(error => this.report(error))
       if (pressure.length) return Promise.all(pressure).then(() => {})
     } else { this.capture(event); return this.queue(event.sessionId, event) }
   }
   private capture(event: Exclude<HapiEvent, { type: 'toast' | 'connection-changed' }>): void {
     const id = event.sessionId
+    if (event.type === 'session-removed') {
+      this.leases.drop(id)
+      this.leased.delete(id)
+      this.clearReleaseTimer(id)
+      this.suspended.delete(id)
+    }
+    if (this.suspended.has(id) && event.type !== 'session-removed') return
     if (event.type === 'session-added') this.lifetimes.revive(id)
     if (event.type === 'session-added' || event.type === 'session-updated') this.excluded.delete(id)
     if (!this.excluded.has(id) && (this.options.discovery !== 'on-demand' || this.historyJournals.has(id))) this.historyFor(id).capture(event)
@@ -272,6 +374,7 @@ export class HapiAgentService {
   }
 
   private queue(sourceId: string, event: HapiEvent): void | Promise<void> {
+    if (this.suspended.has(sourceId)) return
     if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
     return this.queueForSource(sourceId).enqueue({ event, version: this.lifetimes.version(sourceId),
       checkpoint: this.historyJournals.get(sourceId)?.checkpoint(),
@@ -321,6 +424,9 @@ export class HapiAgentService {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true; this.unsubscribe?.()
+    clearInterval(this.leaseSweep); this.leases.clear()
+    for (const timer of this.releaseTimers.values()) clearTimeout(timer)
+    this.releaseTimers.clear()
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
     await Promise.allSettled([...this.attaching.values(), ...[...this.work.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])

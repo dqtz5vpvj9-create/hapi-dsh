@@ -107,6 +107,8 @@ export interface NativeAnswerRequest { sessionId: string; requestId: string; ans
 export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceCompanionApi, LegacyTerminalApi, LegacyTerminalTextApi, SourceVoiceApi, SourceNotificationsApi {
     catalog(): Promise<RemoteResult<HapiCatalog>>;
     sourceSessionResolve(request: { hubId: string; sourceSessionId: string }): Promise<RemoteResult<{ hubId: string; sourceSessionId: string; sessionId: string }>>;
+    /** Exact browser reference lease; release only retires this Host display. */
+    sourceDisplayLease(request: { hubId: string; sourceSessionId: string; leaseId: string; action: 'acquire' | 'renew' | 'release'; ttlMs?: number }): Promise<RemoteResult<{ released: boolean }>>;
     machineOptions(request: { machineId: string }): Promise<RemoteResult<MachineOptions>>;
     sourceMachineOptions(request: SourceMachineOptionsRequest): Promise<RemoteResult<SourceMachineOptions>>;
     sourceMachineDirectory(request: SourceDirectoryRequest): Promise<RemoteResult<SourceDirectory>>;
@@ -158,6 +160,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteMap {
         'hapi/catalog': HapiRemoteApi['catalog'];
         'hapi/sourceSessionResolve': HapiRemoteApi['sourceSessionResolve'];
+        'hapi/sourceDisplayLease': HapiRemoteApi['sourceDisplayLease'];
         'hapi/machineOptions': HapiRemoteApi['machineOptions'];
         'hapi/sourceMachineOptions': HapiRemoteApi['sourceMachineOptions'];
         'hapi/sourceMachineDirectory': HapiRemoteApi['sourceMachineDirectory'];
@@ -287,6 +290,8 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     ...nativeLibraryInputs, ...workbenchInputs, ...sessionExtrasInputs, ...sourceInitialTaskInputs, ...sourceHistoryInputs, ...sourceAdminInputs, ...sourceCompanionInputs, ...legacyTerminalInputs, ...legacyTerminalTextInputs, ...voiceInputs, ...notificationInputs,
     machineOptions: z.strictObject({ machineId: id }),
     sourceSessionResolve: z.strictObject({ hubId: id, sourceSessionId: id }),
+    sourceDisplayLease: z.strictObject({ hubId: id, sourceSessionId: id, leaseId: id,
+        action: z.enum(['acquire', 'renew', 'release']), ttlMs: z.number().int().positive().max(86_400_000).optional() }),
     sourceMachineOptions: sourceMachineOptionsRequestSchema,
     sourceMachineDirectory: sourceDirectoryRequestSchema, sourceMachinePaths: sourcePathsRequestSchema,
     sourceSessionTools: sessionRequest, sourceOperation: sourceOperationSchema, sourceOperationRead: sourceOperationReadSchema,
@@ -339,6 +344,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
         models: z.array(z.object({ id, name: z.string(), reasoningEfforts: z.array(z.string()) })), warnings: z.array(z.string()),
     }),
     sourceSessionResolve: z.strictObject({ hubId: id, sourceSessionId: id, sessionId: id }),
+    sourceDisplayLease: z.object({ released: z.boolean() }),
     createSession: sessionRequest, resumeSession: sessionRequest,
     sourceMachineOptions: sourceMachineOptionsSchema,
     sourceMachineDirectory: sourceDirectorySchema, sourceMachinePaths: sourcePathsSchema,

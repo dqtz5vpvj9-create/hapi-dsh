@@ -38,6 +38,7 @@ import { NativeControl } from './hapi/native-control.ts';
 import { NativeCreation } from './hapi/native-creation.ts';
 import { SourceCreation } from './hapi/source-creation.ts';
 import { SourceLifecycle } from './hapi/source-lifecycle.ts';
+import type { DisplayLeaseView } from './codex/display-leases.ts';
 import { SourceInitialTasks } from './hapi/source-initial-task.ts';
 import { SourceHistory } from './hapi/source-history.ts';
 import { SourceAdministrationService } from './hapi/source-admin.ts';
@@ -239,6 +240,25 @@ export class HapiController extends TypertRemoteService {
     }
 
     sourceSessionResolve(request: OriginalSessionRequest) { return this.sourceCall(() => this.sourceResolver.resolve(request)); }
+    /**
+     * Browser-owned reference leases are the only signal that retires an
+     * unviewed Host display. They never attach a source or start execution.
+     */
+    sourceDisplayLease(request: DisplayLeaseView) {
+        return this.sourceCall(async () => {
+            if (request.hubId !== this.options.client.hubId) {
+                throw new HapiRequestError('This Host is connected to a different original HAPI Hub.', 'rejected', 409, 'source_hub_mismatch')
+            }
+            const services = [this.options.codex, this.options.observed]
+            for (const service of services) {
+                if (request.action === 'acquire') await service.acquireDisplayLease(request.sourceSessionId, request.leaseId, request.ttlMs)
+                else if (request.action === 'renew') await service.renewDisplayLease(request.sourceSessionId, request.leaseId, request.ttlMs)
+                else await service.releaseDisplayLease(request.sourceSessionId, request.leaseId)
+            }
+            return { released: !this.options.codex.byHapiSession(request.sourceSessionId)
+                && !this.options.observed.byHapiSession(request.sourceSessionId) }
+        })
+    }
 
     sourceMachineOptions(request: SourceMachineOptionsRequest) { return sourceMachineOptions(this.options.client, request); }
     sourceMachineDirectory(request: SourceDirectoryRequest) { return this.sourceCall(() => sourceDirectory(this.options.client, request)); }

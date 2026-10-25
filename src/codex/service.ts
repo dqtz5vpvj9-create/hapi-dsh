@@ -14,6 +14,7 @@ import { HistoryReadInvalidatedError, SourceHistoryJournal, type HistoryCheckpoi
 import { SourceHistoryLifetimes } from './history-lifecycle.js'
 import { SourceHistorySync } from './history-sync.js'
 import { SourceEventQueue, replacesCumulativeSnapshot, sourceEventBytes, type QueuedSourceEvent } from './event-queue.js'
+import { DISPLAY_LEASE_TTL_MS, DISPLAY_RELEASE_GRACE_MS, DisplayLeases } from './display-leases.js'
 
 export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRevision' | 'onHistoryChanged'> {
   /** The unified source catalog already lists unopened sessions. Materialize
@@ -21,6 +22,9 @@ export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRe
   discovery?: 'eager' | 'on-demand'
   onDisplayReset?: (oldDisplayId: SessionId, newDisplayId: SessionId) => void | Promise<void>
   onError?: (error: Error, sourceSessionId?: string) => void
+  /** Browser reference leases; absent leases keep the old retain-until-removal behavior. */
+  displayLeaseTtlMs?: number
+  displayReleaseGraceMs?: number
 }
 
 /** One unmodified DSH host can catalogue native Codex sessions from a HAPI Hub. */
@@ -42,6 +46,12 @@ export class CodexService {
   private disposed = false
   private started = false
   private readonly errors = new Map<string, string>()
+  private readonly leases = new DisplayLeases()
+  private readonly releasing = new Map<string, Promise<void>>()
+  private readonly releaseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly suspended = new Set<string>()
+  private readonly leased = new Set<string>()
+  private readonly leaseSweep: ReturnType<typeof setInterval>
 
   constructor(readonly ctx: Context, readonly transport: HapiTransport, readonly options: CodexServiceOptions) {
     mkdirSync(options.stateDirectory, { recursive: true, mode: 0o700 })
@@ -51,6 +61,8 @@ export class CodexService {
       const revisions = z.record(z.string(), z.number().int().nonnegative()).parse(JSON.parse(readFileSync(this.revisionFile, 'utf8')))
       for (const [key, revision] of Object.entries(revisions)) this.revisions.set(key, revision)
     } catch (error) { if (record(error)?.code !== 'ENOENT') throw error }
+    this.leaseSweep = setInterval(() => { void this.expireDisplayLeases() }, 30_000)
+    this.leaseSweep.unref?.()
   }
 
   async start(): Promise<void> {
@@ -68,11 +80,92 @@ export class CodexService {
     return this.list().find(agent => agent.id === sessionId || agent.logicalSessionId === sessionId)
   }
   byHapiSession(sessionId: string): NativeCodexAgent | undefined { return this.agents.get(sessionId) }
+
+  /** A browser reference lease; it neither attaches nor starts source execution. */
+  async acquireDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<void> {
+    if (this.disposed) return
+    await this.releasing.get(sourceId)
+    this.clearReleaseTimer(sourceId)
+    this.leases.acquire(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
+    this.leased.add(sourceId)
+    this.suspended.delete(sourceId)
+  }
+  async renewDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<void> {
+    if (this.disposed) return
+    await this.releasing.get(sourceId)
+    this.leases.renew(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
+  }
+  async releaseDisplayLease(sourceId: string, leaseId: string): Promise<boolean> {
+    if (this.disposed) return true
+    const empty = this.leases.release(sourceId, leaseId)
+    if (!empty) return false
+    this.scheduleDisplayRelease(sourceId)
+    return !this.agents.has(sourceId)
+  }
+  /** Retire one lightweight display after the final live reference is gone. */
+  async releaseDisplay(sourceId: string): Promise<boolean> {
+    if (this.disposed || this.leases.has(sourceId)) return false
+    if (!this.agents.has(sourceId) || this.attaching.has(sourceId)) return false
+    this.suspended.add(sourceId)
+    const queue = this.eventWork.get(sourceId)
+    const task = (async () => {
+      const retire = async (): Promise<boolean> => {
+        if (this.disposed || this.leases.has(sourceId) || this.attaching.has(sourceId)) {
+          if (!this.leases.has(sourceId)) this.suspended.delete(sourceId)
+          return false
+        }
+        const current = this.agents.get(sourceId)
+        if (!current) { this.suspended.delete(sourceId); return false }
+        this.agents.delete(sourceId); this.errors.delete(sourceId)
+        await current.dispose()
+        // A future open is a new official Session generation, never a reused
+        // event namespace or an old browser-draft owner.
+        this.advanceRevision(sourceId)
+        this.historyJournals.delete(sourceId)
+        this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
+        this.pendingResets.delete(sourceId)
+        this.suspended.delete(sourceId)
+        this.leased.delete(sourceId)
+        return true
+      }
+      const retired = queue ? await queue.run(retire) : await retire()
+      if (this.eventWork.get(sourceId) === queue) this.eventWork.delete(sourceId)
+      return retired
+    })()
+    const tracked = task.then(() => undefined, () => undefined)
+    this.releasing.set(sourceId, tracked)
+    try { return await task }
+    finally { if (this.releasing.get(sourceId) === tracked) this.releasing.delete(sourceId) }
+  }
+  /** Testable expiry path for a browser that vanished without releasing. */
+  async expireDisplayLeases(): Promise<string[]> {
+    const expired = this.leases.expire()
+    for (const sourceId of expired) this.scheduleDisplayRelease(sourceId)
+    return expired
+  }
+  private scheduleDisplayRelease(sourceId: string): void {
+    if (!this.leased.has(sourceId)) return
+    if (this.disposed || this.leases.has(sourceId) || this.releaseTimers.has(sourceId)) return
+    const grace = this.options.displayReleaseGraceMs ?? DISPLAY_RELEASE_GRACE_MS
+    const timer = setTimeout(() => {
+      this.releaseTimers.delete(sourceId)
+      void this.releaseDisplay(sourceId).catch(error => this.report(error, sourceId))
+    }, grace)
+    timer.unref?.()
+    this.releaseTimers.set(sourceId, timer)
+  }
+  private clearReleaseTimer(sourceId: string): void {
+    const timer = this.releaseTimers.get(sourceId)
+    if (!timer) return
+    clearTimeout(timer); this.releaseTimers.delete(sourceId)
+  }
   failures(): ReadonlyMap<string, string> { return this.errors }
 
   /** Opening an existing view verifies its owner without re-reading the archive.
    * Lifecycle changes still enter the serialized generation replacement path. */
   async openSource(sourceId: string): Promise<NativeCodexAgent | undefined> {
+    const releasing = this.releasing.get(sourceId)
+    if (releasing) await releasing
     const existing = this.agents.get(sourceId)
     if (!existing) return this.attach(sourceId)
     const source = await this.transport.getSession(sourceId)
@@ -114,7 +207,7 @@ export class CodexService {
         journal.capture({ type: 'messages-invalidated', sessionId: sourceId })
         const checkpoint = journal.checkpoint()
         const snapshot = await readNativeHistorySnapshot(this.transport, sourceId)
-        await this.replaceDisplay(existing, snapshot.rows, source, checkpoint, snapshot.epoch)
+        await this.replaceDisplay(existing, this.historyFor(sourceId).merge(snapshot.rows, checkpoint), source, checkpoint, snapshot.epoch)
       } else await existing.refresh(true)
       this.errors.delete(sourceId)
       return this.agents.get(sourceId)
@@ -147,6 +240,8 @@ export class CodexService {
   async attach(sourceId: string): Promise<NativeCodexAgent | undefined> {
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined
+    const releasing = this.releasing.get(sourceId)
+    if (releasing) await releasing
     const existing = this.agents.get(sourceId)
     if (existing) return existing
     const pending = this.attaching.get(sourceId)
@@ -167,6 +262,8 @@ export class CodexService {
       this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
       agent.startHistorySync()
       await this.announceReset(sourceId, agent.id)
+      // A lease may have been released while this attach was in flight.
+      if (!this.leases.has(sourceId)) this.scheduleDisplayRelease(sourceId)
       return agent
     })()
     this.attaching.set(sourceId, task)
@@ -199,6 +296,7 @@ export class CodexService {
       ...(this.options.importArtifact ? { importArtifact: this.options.importArtifact } : {}),
       ...(this.options.resumeSession ? { resumeSession: this.options.resumeSession } : {}),
       onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.replaceDisplay(agent, snapshot, undefined, checkpoint, epoch),
+      ...(rows ? { initialRowsMerged: true } : {}),
     }, rows)
   }
 
@@ -277,7 +375,8 @@ export class CodexService {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       for (const journal of this.historyJournals.values()) journal.capture(event)
-      const pressure = [...this.agents.values()].map(agent => this.queueFor(agent.binding.hapiSessionId, event)).filter(Boolean)
+      const pressure = [...this.agents.values()].filter(agent => !this.suspended.has(agent.binding.hapiSessionId))
+        .map(agent => this.queueFor(agent.binding.hapiSessionId, event)).filter(Boolean)
       if (event.data?.status === 'connected') void this.refreshCatalog().catch(error => this.report(error))
       if (pressure.length) return Promise.all(pressure).then(() => {})
       return
@@ -288,6 +387,13 @@ export class CodexService {
 
   private capture(event: Exclude<HapiEvent, { type: 'toast' | 'connection-changed' }>): void {
     const id = event.sessionId
+    if (event.type === 'session-removed') {
+      this.leases.drop(id)
+      this.leased.delete(id)
+      this.clearReleaseTimer(id)
+      this.suspended.delete(id)
+    }
+    if (this.suspended.has(id) && event.type !== 'session-removed') return
     if (event.type === 'session-added') this.lifetimes.revive(id)
     if (event.type === 'session-added' || event.type === 'session-updated') this.excluded.delete(id)
     if (!this.excluded.has(id) && (this.options.discovery !== 'on-demand' || this.historyJournals.has(id))) this.historyFor(id).capture(event)
@@ -299,6 +405,7 @@ export class CodexService {
   }
 
   private queueFor(sourceId: string, event: HapiEvent): void | Promise<void> {
+    if (this.suspended.has(sourceId)) return
     if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
     return this.queueForSource(sourceId).enqueue({ event, version: this.lifetimes.version(sourceId),
       checkpoint: this.historyJournals.get(sourceId)?.checkpoint(),
@@ -348,6 +455,9 @@ export class CodexService {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    clearInterval(this.leaseSweep); this.leases.clear()
+    for (const timer of this.releaseTimers.values()) clearTimeout(timer)
+    this.releaseTimers.clear()
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
     this.unsubscribe?.()

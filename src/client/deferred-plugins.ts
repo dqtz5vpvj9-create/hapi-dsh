@@ -131,7 +131,10 @@ export function installDeferredPlugins(ctx: Context, host?: DeferredPluginHost):
                         // Retry only on another explicit Settings demand. The
                         // official entries.sync reconciles failed entries even
                         // at the same revision; it owns module invalidation.
+                        // The mark is the bounded, browser-visible failure fact;
+                        // ctx.logger remains in its in-process buffer.
                         started = false;
+                        performance.mark('hapi:deferred-plugins-failed');
                         ctx.logger.error('Deferred official plugins failed to load', error);
                     }
                 }).finally(() => {

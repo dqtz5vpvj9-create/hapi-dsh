@@ -10,6 +10,7 @@ interface WarmEntry {
     readonly id: SessionId
     phase: 'queued' | 'opening' | 'ready' | 'failed' | 'uncached'
     abort?: AbortController | undefined
+    leased?: boolean | undefined
     reference?: SessionReference | undefined
     unwatch?: (() => void) | undefined
 }
@@ -42,6 +43,8 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
     onError?: (error: unknown, sessionId: SessionId) => void
     /** Materialize only public, session-bound caches; never mount editor DOM. */
     prepare?: (reference: SessionReference) => void
+    /** Mirror this helper's exact reference lifetime onto the Host display lease. */
+    lease?: { acquire(id: SessionId): void; release(id: SessionId): void } | undefined
 } = {}): {
     update(recent: readonly SessionId[]): void
     getSnapshot(): SessionWarmupSnapshot
@@ -60,6 +63,7 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
         entry.abort?.abort(); entry.abort = undefined
         const reference = entry.reference; entry.reference = undefined
         reference?.release()
+        if (entry.leased) { entry.leased = false; options.lease?.release(entry.id) }
     }
     const pump = (): void => {
         if (disposed || pumping) return
@@ -70,11 +74,13 @@ export function createSessionWarmup(sessions: Pick<ISessions, 'retain'>, options
                 if ([...entries.values()].filter(value => value.phase === 'opening').length >= concurrency) break
                 entry.phase = 'opening'; entry.abort = new AbortController()
                 try {
+                    options.lease?.acquire(entry.id); entry.leased = true
                     const reference = sessions.retain(entry.id, { source: 'hapiWarmup', signal: entry.abort.signal })
                     // retain may synchronously publish catalog ownership and
                     // cause the Host to replace its warm candidates.
                     if (disposed || entries.get(entry.id) !== entry) {
-                        reference.release(); void reference.ready.catch(() => {}); continue
+                        reference.release(); options.lease?.release(entry.id); entry.leased = false
+                        void reference.ready.catch(() => {}); continue
                     }
                     entry.reference = reference
                     void reference.ready.then(() => {

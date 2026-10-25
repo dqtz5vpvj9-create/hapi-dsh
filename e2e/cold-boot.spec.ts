@@ -132,11 +132,7 @@ for (const failure of ['bootstrap', 'account-script'] as const) {
         let blockedRequests = 0;
         let releaseRetry!: () => void;
         const retryGate = new Promise<void>(resolve => { releaseRetry = resolve; });
-        const failures: string[] = [];
         const errors: string[] = [];
-        page.on('console', message => {
-            if (message.text().includes('Deferred official plugins failed to load')) failures.push(message.text());
-        });
         page.on('pageerror', error => errors.push(error.message));
         try {
             environment = await startOfficialEnvironment();
@@ -168,11 +164,23 @@ for (const failure of ['bootstrap', 'account-script'] as const) {
                 } else await route.continue();
             });
             const settings = page.locator('[data-shortcut-modal="settings"]');
-            const open = () => page.getByRole('button', { name: 'Settings', exact: true }).click();
+            // Before the Account bundle is installed the launcher itself is a
+            // Settings button; after a successful retry the signed-out sidebar
+            // exposes Settings through the Account menu. Both are real official
+            // surfaces, so exercise whichever one this shell currently owns.
+            const open = async (): Promise<void> => {
+                const direct = page.getByRole('button', { name: 'Settings', exact: true });
+                if (await direct.isVisible().catch(() => false)) { await direct.click(); return; }
+                await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+                await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
+            };
             const readyCount = () => page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length);
+            // The Host logger is an in-process buffer; a performance mark is the
+            // browser-visible fact for the failed official loader attempt.
+            const failedCount = () => page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-failed').length);
             await open();
             await expect(settings).toBeVisible();
-            await expect.poll(() => failures.length).toBe(1);
+            await expect.poll(failedCount).toBe(1);
             expect(blockedRequests).toBeGreaterThan(0);
             expect(bootstrapRequests).toBe(1);
             expect(await readyCount()).toBe(0);
@@ -196,7 +204,7 @@ for (const failure of ['bootstrap', 'account-script'] as const) {
             releaseRetry();
             await expect.poll(readyCount).toBe(1);
             expect(bootstrapRequests).toBe(2);
-            expect(failures).toHaveLength(1);
+            expect(await failedCount()).toBe(1);
             await page.keyboard.press('Escape');
             await expect(settings).not.toBeVisible();
             await page.getByRole('button', { name: 'Account menu', exact: true }).click();
