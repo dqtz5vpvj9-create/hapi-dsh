@@ -25,7 +25,7 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 弱网导航使用 `HAPI_DSH_LATENCY_MS=150 HAPI_DSH_DOWNLOAD_MBPS=1.6 HAPI_DSH_UPLOAD_MBPS=0.75 npm run test:perf:production`。这些是 CDP 的 HTTP 整形参数，不能冒充用户实际线路或 WebSocket 的端到端限速。报告区分 HTTP 编码/解码字节、WebSocket 解码字节、压缩协商、资源完成时间和首屏三个里程碑。探针对 RPC 使用只读许可表，阻止页面自动新建 Session 或保存布局，记录被阻止的路径和次数；不会用假成功回包掩盖这些行为。
 
-冷启动还必须验证内容新鲜度，不能把旧正文当作打开完成。运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/native-cold-opening.spec.ts --workers=1`：保留旧浏览器布局和源历史缓存、重启隔离的官方 Host，再分别阻塞元数据、最新页和完整归档。最新正文与可用输入框必须在归档被阻塞时出现；放行归档后继续逐帧观察，已知标题不得退回占位名或内部 ID，已出现的最新正文不得消失。测试包含 390px 和 1440px，并用负对照证明最终恢复正常也不能掩盖中途退化。该测试操作合成源，不能称为生产网络验收。
+冷启动还必须验证内容新鲜度，不能把旧正文当作打开完成。运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/native-cold-opening.spec.ts --workers=1`：保留旧浏览器布局和源历史缓存、重启隔离的官方 Host，再分别阻塞元数据、最新页和完整归档。最新正文与可用输入框必须在归档被阻塞时出现；放行归档后继续逐帧观察，已知标题不得退回占位名或内部 ID，已出现的最新正文不得消失。测试分别覆盖 Native Codex 与 observed Claude 的 390px 和 1440px，归档放行后观察至少 5 秒，并用负对照证明最终恢复正常也不能掩盖中途退化。该测试操作合成源，不能称为生产网络验收。
 
 两类生产打开探针现在均须提供从源端独立取得的 `HAPI_DSH_EXPECTED_TITLE` 和 `HAPI_DSH_EXPECTED_TEXT`；后者应是当前视口应出现的最新正文片段。缺少任一项时，新鲜度或标题身份标为未验证，不能报打开验收通过。采样从应用初始化前开始，首次成功后仍观察至少 5 秒；可用 `HAPI_DSH_OBSERVE_MS` 延长。探针只读，不自动物化尚未建立的源显示会话；被此限制挡住时须如实报告。实现、旧版失败与测量边界见 [冷打开新鲜度](cold-opening-freshness.md)。
 

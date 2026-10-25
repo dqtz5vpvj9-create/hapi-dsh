@@ -127,4 +127,4 @@ Checkpoint `a8bf4af` 后提交 `d6193fd` 增加浏览器引用租约：官方 `S
 
 历史缓存现在最多保留 8 MiB 连续最新 tail 并标记 `complete:false`；单个超大最新 row 完整保留。归档读取每 8 页让出事件循环，`refresh`/`replaceDisplay` 不再重复整数组 merge。上述改动减少重复序列化和整数组复制，但**没有**消除 `readPass` 对整个归档 raw rows 的保留，也没有全 Host 显示缓存的字节预算；`SourceHistorySync` 的 slot 数是并发数，不是字节数。因此本条仍是部分修复，不能写成全局内存有界。
 
-15 分钟持续压力（6 源 × 2,000 行，3,005 个 open/release cycle）exit 0：每 cycle 后 agents=0，work/journals/releasing/timers/leased/suspended 均归零，revisions 固定 6，官方 session store 为 0；GC 后 heap 30.30→48.95MiB，RSS 158.15→164.28MiB，最后 5 分钟仍 +1.33MiB，不能宣称严格平台。单次 20,000 行全归档 3.28s、peak RSS 226.1MiB，归档后 GC 留存 +84.1MiB，release 后 +10.9MiB。详细 JSON 与口径见[修复结果](dsh-repair-result-2026-10-24.md)第 6 节；它是合成 Host/源，不是生产进程或用户网络。
+父线程重新分离原始压力记录：第一轮 193 个 cycle 未完成；第二轮 900.3s、2,812 个 cycle，GC heap 28.957→46.677 MiB，RSS 151.875→156.668 MiB。原报告误合并为 3,005 次，并将十进制 MB 写为 MiB，现已更正。第二轮与全量单测有短暂重叠，未保持连续活动源、未逐条核对实时投递，因此持续生命周期 spec 尚未完整通过。单次 20,000 行归档的采样最大 RSS 为 215.668 MiB，但结束后观测到 415.930 MiB，定时采样不是全流程峰值；GC 留存增加在释放前/后为 80.203/10.386 MiB。详见[修复结果](dsh-repair-result-2026-10-24.md)第 6 节及[父线程验收](parent-acceptance-2026-10-24.md)。

@@ -108,3 +108,7 @@ Checkpoint `a8bf4af` 之后的修复已提交为 `d6193fd`。在候选构建 `8a
 此前记录的两条 Settings 重试用例在本轮第一次运行失败：503 已真实发生（trace network 证据），但测试监听的是浏览器 console，而 `ctx.logger` 只写进程内 buffer；account-script 用例还错误假设账户插件加载后侧栏仍有独立 Settings 按钮。测试改为读取 `hapi:deferred-plugins-failed` performance mark，并在 signed-out 状态通过官方 Account menu → Settings menuitem 打开；最终 4/4 通过。原始失败日志保留。
 
 仍为 `UNVERIFIED`/`FAIL` 的条目：30 秒换代超时的浏览器注入、完整归档的单源 raw-row 峰值与全局字节预算、生产长期 OOM、物理手机和用户网络。详见[修复结果](dsh-repair-result-2026-10-24.md)。
+
+## 父线程最终补充验收
+
+在 `0ab4480` 之后，父线程修正实际 RPC 取消和关闭竞态，并补充 observed 冷打开、归档放行后五秒观察。最终候选 `93bad0337eea735f9f129240f1294c829106598b1d98fbd7937bf33ddf23ab0c` 上，四条 Native/observed × 390/1440px 官方 Host 用例与六条观察器控制共 10/10 通过；另一个生命周期用例通过。四张最终冷打开 webshot 均由父线程实际查看。详细范围、失败负对照与未解决项见 [父线程验收](parent-acceptance-2026-10-24.md)。

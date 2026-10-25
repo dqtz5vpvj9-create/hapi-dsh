@@ -15,23 +15,26 @@ function gate(): { promise: Promise<void>; release(): void } {
     const promise = new Promise<void>(resolve => { release = resolve })
     return { promise, release }
 }
-test.describe('native document opening preserves freshness and title throughout startup', () => {
+test.describe('native and observed document opening preserve freshness and title throughout startup', () => {
     let environment: OfficialEnvironment
     test.beforeAll(async () => { environment = await startOfficialEnvironment() })
     test.afterAll(async () => { await environment?.close() })
-    for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
-        test(`delayed source metadata and history cannot make stale ${viewport.width}px content look ready`, async ({ page }, info) => {
+    for (const engine of ['codex', 'claude'] as const) for (const viewport of [{ width: 390, height: 844 }, { width: 1440, height: 900 }]) {
+        test(`${engine}: delayed source metadata and history cannot make stale ${viewport.width}px content look ready`, async ({ page }, info) => {
             await page.setViewportSize(viewport)
             const errors: string[] = []
             page.on('pageerror', error => errors.push(error.message))
             const metadataGate = gate(), historyGate = gate(), archiveGate = gate()
-            const key = `cold-opening-${viewport.width}`
-            const fixture = environment.hapi.add(key, 'Synthetic cold-opening source', 'machine-alpha')
+            const native = engine === 'codex'
+            const key = `cold-opening-${engine}-${viewport.width}`
+            const fixture = native ? environment.hapi.add(key, 'Synthetic cold-opening source', 'machine-alpha')
+                : environment.hapi.addObserved('claude', key)
             const title = fixture.session.metadata!.name!
-            const staleText = `Native history ${key} in the official DSH Conversation.`
+            const staleText = native ? `Native history ${key} in the official DSH Conversation.`
+                : 'Original claude answer in the official DSH Conversation.'
             const latestText = `Latest source tail ${key}; all prior history has been reconciled.`
             const draftText = `Unsent draft during generation handoff ${key}`
-            const originalThread = fixture.session.metadata!.codexSessionId
+            const originalThread = native ? fixture.session.metadata!.codexSessionId : fixture.session.metadata!.claudeSessionId
             let metadataReads = 0, historyReads = 0, archiveReads = 0, archiveReleased = false
             let sampling = false
             let sourceReleasedAt: number | undefined
@@ -79,14 +82,16 @@ test.describe('native document opening preserves freshness and title throughout 
                 fixture.rows.push(
                     { id: `${key}-latest-input`, localId: `${key}-latest-input`, seq, createdAt: at, invokedAt: at,
                         content: { role: 'user', content: { type: 'text', text: `New source question ${key}` },
-                            meta: { nativeExecution: { ...nativeExecution, itemId: 'input' } } } },
-                    { id: `${key}-latest-answer`, localId: `${key}-latest-answer`, seq: seq + 1, createdAt: at + 1,
-                        content: { role: 'agent', content: { type: 'codex', data: { type: 'message', id: `${key}-latest-answer`,
-                            message: latestText, streamSnapshot: true, nativeExecution: { ...nativeExecution, itemId: 'answer' } } } } },
+                            ...(native ? { meta: { nativeExecution: { ...nativeExecution, itemId: 'input' } } } : {}) } },
+                    { id: `${key}-latest-answer`, localId: native ? `${key}-latest-answer` : null, seq: seq + 1, createdAt: at + 1,
+                        content: { role: 'agent', content: native ? { type: 'codex', data: { type: 'message', id: `${key}-latest-answer`,
+                            message: latestText, streamSnapshot: true, nativeExecution: { ...nativeExecution, itemId: 'answer' } } }
+                            : { type: 'output', data: { type: 'assistant', uuid: `${key}-latest-answer`,
+                                message: { model: 'sonnet', content: [{ type: 'text', text: latestText }] } } } } },
                     { id: `${key}-latest-terminal`, localId: null, seq: seq + 2, createdAt: at + 2,
-                        content: { role: 'agent', content: { type: 'codex', data: { type: 'native-turn', nativeExecution: {
+                        content: { role: 'agent', content: native ? { type: 'codex', data: { type: 'native-turn', nativeExecution: {
                             ...nativeExecution, turn: { status: 'completed', started: true, ended: true },
-                        } } } } },
+                        } } } : { type: 'event', data: { type: 'ready' } } } },
                 )
                 fixture.session.updatedAt = at + 2
                 fixture.session.metadataVersion++
@@ -120,7 +125,7 @@ test.describe('native document opening preserves freshness and title throughout 
                 const composer = pane.locator('[data-composer-input][contenteditable="true"]:visible')
                 await composer.fill(draftText)
                 await expect(composer).toHaveText(draftText)
-                const image = await visualReview(environment.launchUrl, 'native-cold-latest-before-archive',
+                const image = await visualReview(environment.launchUrl, `${native ? 'native' : 'observed'}-cold-latest-before-archive`,
                     `${viewport.width}x${viewport.height}`, conversationReady(title,
                         `if (!pane.textContent.includes(${JSON.stringify(latestText)})) return false;`))
                 if (image) await info.attach('latest-body-while-archive-blocked', { path: image, contentType: 'image/png' })
@@ -129,14 +134,14 @@ test.describe('native document opening preserves freshness and title throughout 
                 archiveGate.release()
                 // Keep observing after first success; late catalog replacement
                 // or source replay must not erase the title or fresh suffix.
-                await page.waitForTimeout(2000)
+                await page.waitForTimeout(5000)
                 await page.waitForFunction(() => window.__hapiColdOpening.current?.ready
-                    && window.__hapiColdOpening.current.stableForMs >= 2000, undefined, { timeout: 3000 })
+                    && window.__hapiColdOpening.current.stableForMs >= 5000, undefined, { timeout: 6000 })
                 const result = await readColdOpeningProbe(page, true)
                 expect(result.states[0]?.reason).toBe('navigation')
                 expect(result.first.latest).not.toBeNull()
                 expect(result.first.latest! - sourceReleasedAt).toBeLessThan(3000)
-                expect(result.current?.stableForMs).toBeGreaterThanOrEqual(2000)
+                expect(result.current?.stableForMs).toBeGreaterThanOrEqual(5000)
                 expect(coldOpeningIssues(result), JSON.stringify({ titles: result.titles, states: result.states })).toEqual([])
                 // Retained predecessors may still exist, but only the active
                 // visible generation may accept input, and its draft must live
@@ -152,18 +157,18 @@ test.describe('native document opening preserves freshness and title throughout 
                     return Boolean(hit && (hit === editor || editor.contains(hit)))
                 }).map(editor => editor.textContent))
                 expect(usableDrafts, 'one usable successor composer must retain the unsent draft').toEqual([draftText])
-                expect(fixture.session.metadata!.codexSessionId).toBe(originalThread)
+                expect(native ? fixture.session.metadata!.codexSessionId : fixture.session.metadata!.claudeSessionId).toBe(originalThread)
                 expect(environment.hapi.sent.filter(row => row.sessionId === fixture.session.id)).toEqual([])
                 expect(environment.hapi.aborted).not.toContain(fixture.session.id)
                 expect(errors).toEqual([])
             } finally {
                 try {
                     if (sampling && !page.isClosed()) {
-                        const timeline = JSON.stringify({ sourceReleasedAt, metadataReads, historyReads, archiveReads, archiveReleased, errors,
+                        const timeline = JSON.stringify({ engine, sourceReleasedAt, metadataReads, historyReads, archiveReads, archiveReleased, errors,
                             trace: await readColdOpeningProbe(page, true) }, null, 2)
                         const directory = process.env.HAPI_DSH_VISUAL_DIR ?? '/mnt/cache/data-cache/hapi-dsh-visual-review'
                         await mkdir(directory, { recursive: true })
-                        const path = join(directory, `native-cold-opening-${viewport.width}-timeline.json`)
+                        const path = join(directory, `${native ? 'native' : 'observed'}-cold-opening-${viewport.width}-timeline.json`)
                         await writeFile(path, timeline)
                         await info.attach('navigation-through-stable-latest-body', { path, contentType: 'application/json' })
                     }

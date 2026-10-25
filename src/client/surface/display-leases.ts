@@ -33,10 +33,15 @@ const RETRY_BASE_MS = 1_000
 const RETRY_MAX_MS = 30_000
 const RPC_TIMEOUT_MS = 15_000
 
-const timeout = <T>(promise: Promise<T>, ms: number): Promise<T> => new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The source display lease request did not settle in time')), ms)
-    promise.then(value => { clearTimeout(timer); resolve(value) }, error => { clearTimeout(timer); reject(error) })
-})
+/** Await transport settlement, not a detached Promise.race. Official RPC
+ * cancellation aborts its request; an adapter that ignores cancellation stays
+ * single-flight until it settles instead of accumulating abandoned requests. */
+const timeout = async <T>(operation: (signal: AbortSignal) => Promise<T>, ms: number): Promise<T> => {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('The source display lease request did not settle in time')), ms)
+    try { return await operation(controller.signal) }
+    finally { clearTimeout(timer) }
+}
 
 class DisplayLease {
     private refs = 0
@@ -109,7 +114,7 @@ class DisplayLease {
                         this.scheduleRetry()
                     }
                 }
-            } while (this.dirty && (this.refs > 0 || !this.disposed))
+            } while (this.dirty)
         })()
         this.pumpTask = task
         void task.finally(() => { if (this.pumpTask === task) this.pumpTask = undefined }).catch(() => {})
@@ -119,7 +124,7 @@ class DisplayLease {
     private async step(): Promise<void> {
         if (this.refs === 0) {
             if (this.acquired || this.everAcquired) await this.send('release')
-            this.acquired = false; this.lost = false
+            this.acquired = false; this.lost = false; this.everAcquired = false
             return
         }
         if (!this.acquired || this.lost) await this.acquire()
@@ -129,6 +134,9 @@ class DisplayLease {
     private async acquire(): Promise<void> {
         const leaseId = this.leaseId
         const hadLease = this.everAcquired
+        // A close may race an acquire whose acknowledgement is lost. Remember
+        // the attempt so the queued close still sends its idempotent release.
+        this.everAcquired = true
         const result = await this.send('acquire')
         if (this.leaseId !== leaseId || this.refs === 0 || this.disposed) return
         this.acquired = true
@@ -165,10 +173,10 @@ class DisplayLease {
 
     private async send(action: 'acquire' | 'renew' | 'release') {
         const leaseId = this.leaseId
-        const result = await timeout(this.api.sourceDisplayLease({
+        const result = await timeout(signal => this.api.sourceDisplayLease({
             hubId: this.identity.hubId, sourceSessionId: this.identity.sourceSessionId,
             leaseId, action, ttlMs: this.options.leaseTtlMs ?? LEASE_TTL_MS,
-        }), this.options.rpcTimeoutMs ?? RPC_TIMEOUT_MS)
+        }, signal), this.options.rpcTimeoutMs ?? RPC_TIMEOUT_MS)
         if (!result.ok) throw result.error
         if (action === 'release') { this.acquired = false; this.lost = false }
         return result.value
@@ -178,9 +186,9 @@ class DisplayLease {
         if (this.disposed || this.refs === 0 || this.recovery || !this.api.sourceSessionResolve) return
         const token = ++this.recoveryToken
         const work = (async () => {
-            const result = await timeout(this.api.sourceSessionResolve!({
+            const result = await timeout(signal => this.api.sourceSessionResolve!({
                 hubId: this.identity.hubId, sourceSessionId: this.identity.sourceSessionId,
-            }), this.options.rpcTimeoutMs ?? RPC_TIMEOUT_MS)
+            }, signal), this.options.rpcTimeoutMs ?? RPC_TIMEOUT_MS)
             if (!result.ok) throw result.error
             if (token !== this.recoveryToken || this.disposed || this.refs === 0) return
             if (result.value.hubId !== this.identity.hubId || result.value.sourceSessionId !== this.identity.sourceSessionId) {

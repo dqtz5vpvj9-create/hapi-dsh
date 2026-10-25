@@ -76,7 +76,7 @@ deferred-plugins 失败释放 started，成功和进行中仍去重。cold-boot.
 | 视觉 | 每次关键操作后的 webshot 图实际逐张看，列出内容/输入框/底栏/工具/弹层问题及修复 | 截图命令 exit0 就写已检查 |
 | 来源审计 | manifest 69 项在报告中逐一出现；模型归属只用实际编辑调用+model metadata | Git 作者当模型；未找到本地记录就算 GPT PRO |
 
-至少执行：完整 npm run typecheck、npm test、npm run build；native-cold-opening 全 8 项、cold-boot（含两条 retry）、live-history、desktop-history-scroll、mobile-scroll、mobile-chrome、source-presentation、federated-cold-boot 及既有通用 UI acceptance。若文件名不同先用 rg --files 定位，不省略场景。构建和测试均使用同一候选版本，输出实际 exit code。
+至少执行：完整 npm run typecheck、npm test、npm run build；native-cold-opening 全部用例（父线程补充后为 10 项）、cold-boot（含两条 retry）、live-history、desktop-history-scroll、mobile-scroll、mobile-chrome、source-presentation、federated-cold-boot 及既有通用 UI acceptance。若文件名不同先用 rg --files 定位，不省略场景。构建和测试均使用同一候选版本，输出实际 exit code。
 
 ## 既有证据与已知未通过，不能篡改
 
@@ -85,7 +85,7 @@ deferred-plugins 失败释放 started，成功和进行中仍去重。cold-boot.
 - `/mnt/cache/data-cache/hapi-dsh-event-queue-*.log`：前述队列/服务/类型结果；读取具体文件不要只引用通配名。
 - `/mnt/cache/data-cache/hapi-dsh-audit-cold.log`：2 条 Host 用例和 5 条控制通过，中文 fixture 当时因 data URL 无 charset 失败；修复后 observer-final.log 六控制通过。不能把这两轮写成一次 8/8。
 - `/mnt/cache/data-cache/hapi-dsh-audit-ui.log`：手机四路径通过，混跑的中文控制失败；四边界逐帧 max drift 0px，四图父线程已查看。
-- `/mnt/cache/data-cache/hapi-dsh-private-tail-replay-localized/summary.json`：保存的真实 26 行尾页隔离回放，桌面/手机 click→ready 624.9/540.6ms，navigation→ready 3438.3/3021.4ms，最长任务 222/185ms。它不包含完整归档、不是用户网络，222ms 仍超过滚动最大帧间隔门槛，不能因此宣布全部性能达标。
+- `/mnt/cache/data-cache/hapi-dsh-private-tail-replay-localized/summary.json`：保存的真实 26 行尾页隔离回放，桌面/手机 click→ready 624.9/540.6ms，navigation→ready 3438.3/3021.4ms，最长任务 222/185ms。它不包含完整归档、不是用户网络，启动仍有 222ms 长任务，不能宣称所有主线程任务低于 200ms；滚动帧间隔须另测。
 - 私有输入 `/mnt/cache/data-cache/hapi-dsh-current-tail.private.json`、脚本 `hapi-dsh-private-tail-replay.mts` 不得提交。可在隔离环境用于复现，但公开产物只能是匿名时序/计数。
 - 生产当前版本须父线程重新确认；checkpoint 不代表部署。旧生产已有过 4GiB OOM，不能以重启后基线或 HTTP 200 关闭该问题。
 

@@ -401,8 +401,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     const resourcesForHost = (): Promise<HostResources> => resourcesPromise ??= loadHostResources(root, host, signal)
     let hostApi = root.remote.hapi
     const displayLeases = createDisplayLeaseRegistry({
-        sourceDisplayLease: request => hostApi.sourceDisplayLease(request),
-        sourceSessionResolve: request => hostApi.sourceSessionResolve(request),
+        sourceDisplayLease: (request, signal) => hostApi.sourceDisplayLease(request, signal),
+        sourceSessionResolve: (request, signal) => hostApi.sourceSessionResolve(request, signal),
     }, error => workspace.report(error), {
         // After a lost/expired lease creates a new Host display generation,
         // re-read the normal Host catalogs so the Controller rebinds the visible

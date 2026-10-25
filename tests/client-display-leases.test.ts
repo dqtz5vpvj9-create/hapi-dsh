@@ -166,7 +166,7 @@ test('recovery cannot revive a display released while its resolver is in flight'
   } finally { h.registry.dispose() }
 })
 
-test('a hung lease RPC keeps at most one in-flight request and a bounded retry cadence', async () => {
+test('foreground notifications coalesce while a lease RPC remains pending', async () => {
   let calls = 0
   const registry = createDisplayLeaseRegistry({
     sourceDisplayLease: async () => { calls++; return new Promise(() => {}) },
@@ -174,8 +174,10 @@ test('a hung lease RPC keeps at most one in-flight request and a bounded retry c
   try {
     registry.remember('display', { hubId: 'hub', sourceSessionId: 'source' })
     registry.retain('display')
-    await new Promise(resolve => setTimeout(resolve, 140))
-    assert.ok(calls >= 2, 'the timeout must schedule a retry')
-    assert.ok(calls <= 5, `heartbeat retries must not form an unbounded chain (saw ${calls})`)
+    for (let i = 0; i < 5; i++) {
+      registry.resume()
+      await new Promise(resolve => setTimeout(resolve, 30))
+    }
+    assert.equal(calls, 1, 'timeout cannot bypass the unresolved transport')
   } finally { registry.dispose() }
 })

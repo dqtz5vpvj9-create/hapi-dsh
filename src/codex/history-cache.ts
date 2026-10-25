@@ -12,13 +12,21 @@ export const MAX_HISTORY_CACHE_BYTES = 8 * 1024 * 1024
 /** Keep a contiguous newest tail under a byte budget; one oversized newest row
  * is preserved whole because replacing it with a truncated row would be wrong. */
 export function newestWithin(rows: readonly HapiMessage[], maxBytes: number, maxRows = Number.POSITIVE_INFINITY): HapiMessage[] {
-  let bytes = 0, start = rows.length
+  let bytes = 2, start = rows.length // JSON array brackets
   while (start > 0 && rows.length - start < maxRows) {
-    const size = JSON.stringify(rows[start - 1]).length + 1
+    const size = Buffer.byteLength(JSON.stringify(rows[start - 1]), 'utf8') + Number(start < rows.length)
     if (bytes + size > maxBytes && start < rows.length) break
     bytes += size; start--
   }
   return rows.slice(start)
+}
+
+function cacheTail(rows: readonly HapiMessage[], maxBytes: number, epoch?: number, maxRows?: number): HapiMessage[] {
+  // Reserve the exact compact JSON envelope. false is one byte longer than
+  // true, so a complete snapshot also fits. newestWithin accounts for [].
+  const envelopeBytes = Buffer.byteLength(JSON.stringify({ version: 1, complete: false, rows: [],
+    ...(epoch === undefined ? {} : { epoch }) }), 'utf8') - 2
+  return newestWithin(rows, maxBytes - envelopeBytes, maxRows)
 }
 
 const cacheSchema = z.object({ version: z.literal(1), complete: z.boolean().optional(), epoch: z.number().optional(), rows: z.array(z.object({
@@ -55,7 +63,7 @@ export class NativeHistoryCache {
     // Both files are disposable. When an archive exceeds the byte budget the
     // newest tail remains useful for a stale fallback, while dropping older
     // cached rows is safe because the source remains authoritative.
-    const bounded = newestWithin(rows, maxBytes), truncated = bounded.length !== rows.length
+    const bounded = cacheTail(rows, maxBytes, epoch), truncated = bounded.length !== rows.length
     writeDurableJson(this.filename, { version: 1, complete: complete && !truncated, rows: bounded, ...(epoch === undefined ? {} : { epoch }) })
     this.writeOpening(bounded, complete && !truncated, epoch, maxBytes)
   }
@@ -63,7 +71,7 @@ export class NativeHistoryCache {
     // A startup view reads a small file, not the full archive followed by a
     // slice. Both are disposable, identity-scoped caches; source epoch checks
     // and reconciliation remain authoritative if the process stops between writes.
-    const opening = newestWithin(rows, maxBytes, 200)
+    const opening = cacheTail(rows, maxBytes, epoch, 200)
     writeDurableJson(this.openingFile, { version: 1, complete: complete && rows.length === opening.length,
       rows: opening, ...(epoch === undefined ? {} : { epoch }) })
   }

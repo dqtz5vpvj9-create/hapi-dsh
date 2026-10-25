@@ -1,6 +1,6 @@
 # DSH 接手修复与独立验收结果（2026-10-24）
 
-状态：本轮可执行修复已完成并提交；仍是合成源、本机 Chromium、隔离 Host 的验收，不是生产部署，也不是长期生产 OOM 的证明。逐项结论见“验收矩阵”，无法满足的条目明确标为 `FAIL` 或 `UNVERIFIED`。
+状态：这是 DSH 的阶段交付，经父线程核验后已纠正下列统计与覆盖范围，尚未整体放行。父线程复现了后台租约失效，并修正 UTF-8 缓存预算；后续验收见 [父线程验收记录](parent-acceptance-2026-10-24.md)。原运行的通过数保留，但不能冒充后续版本、生产或长期 OOM 验收。
 
 - 审计基线：`6d540ca58d7b1b84cdcbe4ab7faeeda416a2bc20` 的 69 个可达提交（66 主线、3 备份独有）；交接 checkpoint：`a8bf4aff1b00cb5fc8241cac702d263421240555`。
 - 本轮代码提交：`d6193fd`（父提交 `a8bf4af`，未 amend/rebase/push）；文档与验收测试提交：`d1e3f92`；最终 HEAD 以 `git log -1` 为准。
@@ -12,7 +12,7 @@
 
 | spec 场景 | 结论 | 本轮观察与证据 | 禁止替代的复核 |
 | --- | --- | --- | --- |
-| A. Native 与 observed 冷打开 | **PASS（合成源）** | `e2e/native-cold-opening.spec.ts` 最终 8/8：2 条真实 Host 用例（390px/1440px）+ 6 条 observer 负控。旧缓存先显示、最新页放行前最新正文与可用编辑器已出现，`archiveReleased=false`；归档放行后继续观察 >=2s，标题/正文不回退，唯一可操作 composer 保留草稿。 | 未用“看到任意正文”、骨架、热切换或最终 DOM 代替；网络门分别控制 metadata/history/archive；源为合成记录。 |
+| A. Native 冷打开（原交付） | **PASS（Native 合成源）；observed 浏览器待补** | `e2e/native-cold-opening.spec.ts` 最终 8/8：2 条真实 Host 用例（390px/1440px）+ 6 条 observer 负控。先持久化旧缓存，再重启 Host；最新页放行后、完整归档仍被阻塞时，最新正文与可用编辑器已出现，`archiveReleased=false`；归档放行后继续观察 >=2s，标题/正文不回退，唯一可操作 composer 保留草稿。 | 未用“看到任意正文”、骨架、热切换或最终 DOM 代替；网络门分别控制 metadata/history/archive；源为合成记录。 |
 | B. 显示代切换与标题 | **PASS（覆盖路径）** | generation-handoff 单测、observer 负控（透明待切换、inert predecessor、屏幕外 marker、回退）与最终冷打开 8/8 通过；旧正文保持可读且 inert，新正文/输入框/reading 就绪后才提交；标题未被 Untitled/内部 ID 覆盖。 | 30 秒超时路径只在单元/控制夹具覆盖，未在浏览器真实注入 30s 超时；未用 opacity/屏幕外 DOM 判 ready。 |
 | C. 草稿所有权 | **PASS（含旧负控）** | 既有 `hapi-dsh-draft-owner-negative.log` 的 2 项旧实现失败保留；positive 14 项保留；本轮 `display-lifecycle` 在 Host 显示退役/重开后仍保留未发送草稿；全量单测通过。 | 未把“同一 Composer 两个 pane”当成不同代对象；未放宽断言。 |
 | D. 设置插件失败重试 | **PASS** | `e2e/cold-boot.spec.ts` 最终 4/4，其中 bootstrap 503、Account script 503 两条同 rev 真实官方 loader 失败→关闭→重开恢复；失败无 ready、无后台重试、进行中重开不重复请求、成功后不重复加载、输入节点/草稿保留且不发送。 | 未 mock loader 成功；首次两条失败已保留：`cold-boot.log`/`cold-boot2.log`；原因是测试监听 `ctx.logger` 的内存缓冲，不是浏览器 console；改为浏览器可见 performance mark 后通过。 |
@@ -27,7 +27,7 @@
 | 检查 | 结果 | 原始日志 |
 | --- | --- | --- |
 | `npm run typecheck` | exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/final-typecheck.log` |
-| `npm test`（最终代码） | 1229 tests，1228 pass，1 skip，0 fail，62.8s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/final-unit2.log` |
+| `npm test`（DSH 首次交付代码） | 1229 tests，1228 pass，1 skip，0 fail，62.8s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/final-unit2.log` |
 | 候选完整构建（warm restart 调用 `scripts/build.mjs`） | exit 0，build id `8ac857…`；dist 身份见日志 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/warm-restart.log`、`build-identity.log`；早先 `final-build.log` 为同源中间构建 |
 | `e2e/native-cold-opening.spec.ts` | 8 passed，36.8s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/native-cold-opening-final.log` |
 | `e2e/cold-boot.spec.ts` | 4 passed，51.3s，exit 0 | `/mnt/cache/data-cache/dsh-repair-2026-10-24/logs/cold-boot-final.log` |
@@ -66,7 +66,7 @@ rsync -rc --delete --exclude node_modules --exclude dist --exclude test-results 
 
 ### 3.1 冷打开
 
-最终 `native-cold-opening` 的 2 条真实 Host 用例都先显示旧缓存正文，然后在归档仍被阻塞时显示最新源尾页和可编辑 composer；`archiveReleased` 在断言时为 `false`。最新正文出现后继续采样，最终状态要求至少 750ms/2000ms 稳定，且没有 transient title、旧正文消失或第二个可操作 composer。6 条 observer 控制分别拒绝：标题/新鲜度回退、屏幕外 latest marker、Untitled pane、隐藏 predecessor、透明 staged successor、同一可见视图重挂载未刷新 range；这些负控证明测试不是只看最终 DOM。
+原交付的 2 条真实 Host 用例均为 Native Codex，先建立旧缓存再重启 Host；源最新页放行后，在完整归档仍被阻塞时显示最新源尾页和可编辑 composer；`archiveReleased` 在断言时为 `false`。最新正文出现后继续采样，最终状态要求至少 750ms/2000ms 稳定，且没有 transient title、旧正文消失或第二个可操作 composer。6 条 observer 控制分别拒绝：标题/新鲜度回退、屏幕外 latest marker、Untitled pane、隐藏 predecessor、透明 staged successor、同一可见视图重挂载未刷新 range；这些负控证明测试不是只看最终 DOM。
 
 截图（均已查看）：
 
@@ -105,7 +105,7 @@ rsync -rc --delete --exclude node_modules --exclude dist --exclude test-results 
 
 - 预算 `128` 项 / `8 MiB`，`pending.items` 含 active 项；单个超大项独占运行，不截断。
 - 仅同 Hub/source session、同 thread/turn/item、同生命周期 epoch、同元数据、`localId=null` 的相邻未执行累计前缀可合并；终态、回执、工具、生命周期、审批和未知 provider 走有序非丢弃路径。
-- 等待者不额外形成无界 Promise 链：服务队列的 admission 受同一预算和 `progress` 唤醒控制；`dispose()` 会拒绝排队项并唤醒等待者。
+- 在生产 SSE 等待 enqueue 返回值、同源显式检查去重的前提下，生产者数量受限；不能推导为任意并发调用 offer 都有界。队列预算统计已入队/活动 payload 的估计量，不等于瞬时 JS 堆；`dispose()` 会拒绝排队项并唤醒等待者。
 - 真实 service fixture（native/observed）验证：累计快照合并、屏障顺序、128 项背压、取消/失败/重连/权威补齐，以及队列 drain 后只触发一次 resync。
 - 传输层测试验证 `HapiClient` 在 `publish` 返回 pressure 时真正 await 本地消费者，心跳等待期间不误判断线；关闭时 abort。
 
@@ -130,18 +130,20 @@ rsync -rc --delete --exclude node_modules --exclude dist --exclude test-results 
 - 分页 yield 改善交互让出，但不降低单源全归档的总保留量；异步/Worker 没有使用，因为本轮没有证明它会降低主线程阻塞或总内存。
 - 因此本 spec 的“建立明确显示缓存和在途归档字节预算”判 **FAIL**，不是“部分通过”。1b 的 scope 索引字节问题仍按既有报告为线性身份增长，未在本轮新增全局预算。
 
-## 6. 生命周期与持续压力
+## 6. 生命周期与持续压力（父线程按原始记录更正）
 
-15 分钟隔离持续压力完成，exit 0，原始 JSON 为 `json/stress-15m.jsonl`：
+同一个 `stress-15m.jsonl` 追加了两轮运行，不能合并：
 
-- 语料：6 个合成 observed 源 × 2,000 行 × 约 1.6 KiB/行；其中一个源每 100ms 追加一次实时事件；循环执行“acquire lease → openSource → settled（全归档）→ release lease → releaseDisplay”。
-- 时间：2026-10-25 03:19:37–03:39:42 UTC，900.3s；3,005 个 cycle，2,813 次 resolved，0 rejected，0 unhandledRejection，无重启。
-- 自然/GC 分开记录：baseline（首轮归档后）自然 heap 37.18 MiB、GC 后 30.30 MiB、RSS 158.15 MiB、external 2.91 MiB；final 自然 heap 48.996 MiB、GC 后 48.945 MiB、RSS 164.28 MiB、external 2.88 MiB。
-- 每分钟 GC 后 heap：首分钟 30.2–44.9 MiB，之后约 0.25–0.35 MiB/min 缓慢上升；最后 5 分钟 47.65→48.98 MiB（+1.33 MiB），最后 2 分钟 47.90→48.97 MiB（+1.07 MiB），没有严格持平。RSS 在 03:31 后基本停在 163.7–164.3 MiB。
-- 每个 cycle 后 `agents=0`；3 分钟诊断运行中 `work/journals/releasing/timers/leased/suspended` 均为 0，`revisions` 固定 6，官方 `sessions.store` 为 0。因此已确认的服务/队列/显示持有 map 没有随曾访问源数量增长；但 GC 后 heap 仍有小幅正斜率，不能据此宣称已进入严格预算平台。
-- 该实验覆盖此前约 14.4 分钟 OOM 时间窗，但使用合成 Host/源、没有真实模型/网络/生产正文；不能证明生产长期 OOM 已消失。
+- 第一轮从 03:19:37.273 到 03:20:38.869 UTC，仅 193 个 cycle，没有 final/closed，属于未完成样本。
+- 第二轮从 03:24:41.852 到 03:39:42.172 UTC，900.3s，**2,812 个 cycle**；resolved=2,813 包含循环前一次 warm open，rejected=0。原报告的 3,005 是将两轮 cycle 相加，原 baseline 也取错为第一轮。
+- 第二轮 GC heap 为 **28.957→46.677 MiB**，RSS **151.875→156.668 MiB**。最后 5 分钟从首个 elapsed>=600000 的 GC 样本到 final 增加 **1.237 MiB**。所有 MiB 均除以 1,048,576；原报告把十进制 MB 标成了 MiB。
+- 该轮与 `final-unit2` 短暂并行，违反本 spec 的串行约定，不能称为完全隔离性能实验。保留原数据，不选取其中较好区间冒充新的一轮。
+- 语料为 6 个 observed 源，循环逐个 open/release，每 cycle 后 agents=0；实时事件每 100ms 轮流发向六个源。没有始终保持一个可见活动源，也没有逐条实时投递断言或关闭释放失败的负对照，因此**未完整通过持续生命周期 spec**。原始 fixture 还不断追加源行，其内存与产品显示数据共处一个进程，增长不能全归因于产品。
+- 另外 3 分钟诊断运行的 map/store 计数只归该诊断运行，不倒算为 15 分钟每个 cycle 都测量过所有 map。
 
-单次 20,000 行（约 32 MiB 源 JSON）全归档峰值（`json/archive-peak.json`）：101 次分页读取，3.28s；采样 peak heap 81.3 MiB，peak RSS 226.1 MiB；归档完成后 GC 后留存比 baseline 高 84.1 MiB；release 后 GC 后仅高 10.9 MiB（自然 RSS 436.1 MiB，V8 未归还页）。这证明释放有效，也量化了本条 5.2 的 FAIL：全归档期间仍有一次完整 raw rows/投影/序列化并存。
+这轮说明合成服务在反复关闭重开下运行了 15 分钟，不能证明生产长期 OOM 或全局字节预算。父线程重算结果保存于 `json/parent-audit.json`，原始文件不改动。
+
+单次 20,000 行归档记录了 101 次读取、3.28s。`archive-peak.json` 的采样最大 heap/RSS 换算为 **77.513/215.668 MiB**；归档完成后 GC 留存比 baseline 增加 **80.203 MiB**，release 后增加 **10.386 MiB**，release 后自然 RSS 为 **415.930 MiB**。后者已经大于所谓 peak RSS，说明定时采样漏掉了同步阶段，前面的值只能称为**采样最大值/整体峰值下界**，不能称全流程峰值。该样本支持释放减少留存，但不支持峰值已受限。
 
 ## 7. 视觉检查（逐张）
 
@@ -245,7 +247,7 @@ rsync -rc --delete --exclude node_modules --exclude dist --exclude test-results 
 ## 9. 失败、未验证与剩余边界
 
 1. **全归档字节预算 FAIL**：见 5.2；没有证明单源全归档峰值已消除，也没有全 Host 显示缓存字节上限。
-2. **生产长期 OOM UNVERIFIED**：15 分钟合成压力只覆盖约 14.4 分钟时间窗，不是生产 Host、不是用户会话、不是生产网络；不能据此关闭 4 GiB OOM 问题。
+2. **生产长期 OOM UNVERIFIED**：完整压力运行约 900 秒，但缺少常驻活动源和释放失败负对照，还与全量单测重叠；不是生产 Host、用户会话或生产网络，不能据此关闭 4 GiB OOM 问题。
 3. **物理手机/真实网络 UNVERIFIED**：360/390px 是 Chromium 触摸/视口模拟；物理软键盘、真实粗指针、Chrome 下拉刷新、用户网络均未测。
 4. **30 秒换代超时浏览器注入 UNVERIFIED**：单元/observer 控制覆盖失败收敛，但本轮没有在真实浏览器强制 30s 超时并核对 timer/observer/RAF 清理。
 5. **页面崩溃/reload 租约清理**：依赖 5 分钟 TTL；正常 reload 旧租约可存活最多一个 TTL，期间阻止 Host 退役。没有 pagehide 释放，以避免与新页 acquire 竞争。
