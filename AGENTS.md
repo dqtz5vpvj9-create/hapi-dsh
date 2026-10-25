@@ -23,6 +23,11 @@ Build a distributable DSH plugin composition with one cross-machine session side
 - 仅改前端时使用客户端发布流程，保留 Host 和原生执行。性能测试串行运行；复用测试环境，避免每个用例重新安装依赖、启动 Host。
 - 使用合成会话进行发送、审批、弱网等破坏性测试；生产探针保持只读。保留已有认证、数据安全和发布约束。
 
+## Complete conversation contract (user correction, 2026-10-24)
+
+- 打开目标以当前 HAPI 架构和用户本次真实长会话为基准，执行 `docs/dsh-repair-spec-2026-10-24.md`。第一次目标画面就具备正文、输入、历史滚动、阅读导航和实时能力；正常补页/同步在同一会话中完成。
+- 打开只有完整可用这一个成功条件。先显示但无法操作、随后不可用、最后才完整的路径直接失败；首次正文、最终恢复、其他会话通过均不能代替本目标验收。现有观察器仍有漏判，新增断言实际执行前不得声称已覆盖。
+
 ## Collaboration responsibilities
 
 - Work only in the files assigned to your task; coordinate shared contracts with the root agent.

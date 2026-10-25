@@ -1,5 +1,7 @@
 # Cold opening must show current source content
 
+> Superseded acceptance contract (2026-10-24): [the HAPI architecture spec](dsh-repair-spec-2026-10-24.md) requires a fully interactive conversation on its first presentation and throughout normal paging/synchronization. The inert predecessor and archive-driven display replacement described below are historical repairs, not an acceptable target architecture. Existing tests miss temporary editor unavailability and do not prove history/navigation usability. Their local passes do not establish production usability.
+
 The opening measurement covers navigation through a readable, current source
 tail and a usable composer. Seeing any transcript text is only first paint.
 It is not evidence that the selected conversation has caught up.
