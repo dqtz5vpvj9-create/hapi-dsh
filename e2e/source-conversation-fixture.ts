@@ -29,24 +29,90 @@ export function nativeIndexedHistory(threadId: string, turns = 180, steps = 25):
     return rows
 }
 
-/** Activate an actual bounded wire fixture instead of returning all rows for limit=200. */
-export function useBoundedSourceHistory(fixture: NativeFixture): { readonly requests: string[] } {
+interface SourcePosition { at: number; seq: number }
+function sourcePosition(row: HapiMessage): SourcePosition {
+    return { at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 }
+}
+function compareSourcePosition(left: SourcePosition, right: SourcePosition): number {
+    return left.at - right.at || left.seq - right.seq
+}
+function sourceCursor(url: URL, atKey: string, seqKey: string): SourcePosition | null {
+    const at = url.searchParams.get(atKey), seq = url.searchParams.get(seqKey)
+    if (at === null || seq === null) return null
+    return { at: Number(at), seq: Number(seq) }
+}
+function boundedSourcePage(direction: 'latest' | 'before' | 'after', selected: HapiMessage[], limit: number,
+    epoch: number, reset: boolean, cursors: { before: SourcePosition | null; after: SourcePosition | null;
+        snapshotHead: SourcePosition | null }, hasMore: boolean): HapiMessagesPage {
+    return { messages: structuredClone(selected), page: {
+        direction, limit, epoch, reset,
+        nextBeforeAt: cursors.before?.at ?? null, nextBeforeSeq: cursors.before?.seq ?? null,
+        nextAfterAt: cursors.after?.at ?? null, nextAfterSeq: cursors.after?.seq ?? null,
+        snapshotHeadAt: cursors.snapshotHead?.at ?? null, snapshotHeadSeq: cursors.snapshotHead?.seq ?? null,
+        hasMore,
+    } }
+}
+
+/** Activate an actual bounded wire fixture instead of returning all rows for limit=200.
+ * Supports strict before/after/until positions and stale-epoch reset. The current
+ * epoch is shared with the outline/context routes through fixture.sourceWindow. */
+export interface BoundedSourceHistory {
+    readonly requests: string[]
+    /** Current wire epoch; mutate to simulate a real source reset. */
+    epoch: number
+}
+export function useBoundedSourceHistory(fixture: NativeFixture): BoundedSourceHistory {
     const requests: string[] = []
+    fixture.sourceWindow ??= { epoch: 1, complete: true }
     fixture.readHistory = url => {
         requests.push(url.search)
-        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? 50)))
-        const beforeSeq = url.searchParams.get('beforeSeq'), beforeAt = url.searchParams.get('beforeAt')
-        const all = fixture.rows.filter(row => beforeSeq === null || beforeAt === null
-            || (row.invokedAt ?? row.createdAt) < Number(beforeAt)
-            || (row.invokedAt ?? row.createdAt) === Number(beforeAt) && row.seq! < Number(beforeSeq))
-        const selected = all.slice(-limit), first = selected[0], last = selected.at(-1), head = fixture.rows.at(-1)
-        const value: HapiMessagesPage = { messages: structuredClone(selected), page: {
-            direction: beforeSeq === null ? 'latest' : 'before', limit, epoch: 1, reset: false,
-            nextBeforeAt: first ? first.invokedAt ?? first.createdAt : null, nextBeforeSeq: first?.seq ?? null,
-            nextAfterAt: last ? last.invokedAt ?? last.createdAt : null, nextAfterSeq: last?.seq ?? null,
-            snapshotHeadAt: head ? head.invokedAt ?? head.createdAt : null, snapshotHeadSeq: head?.seq ?? null, hasMore: all.length > selected.length,
-        } }
-        return value
+        const limitValue = Number(url.searchParams.get('limit') ?? 50)
+        const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(200, Math.trunc(limitValue))) : 50
+        const epochText = url.searchParams.get('epoch')
+        const requestedEpoch = epochText === null ? undefined : Number(epochText)
+        const reset = requestedEpoch !== undefined && Number.isInteger(requestedEpoch)
+            && requestedEpoch !== fixture.sourceWindow!.epoch
+        const ordered = [...fixture.rows].sort((left, right) => compareSourcePosition(sourcePosition(left), sourcePosition(right)))
+        const head = ordered.at(-1), headPosition = head ? sourcePosition(head) : null
+        const before = sourceCursor(url, 'beforeAt', 'beforeSeq')
+        const after = sourceCursor(url, 'afterAt', 'afterSeq')
+        const until = sourceCursor(url, 'untilAt', 'untilSeq')
+        if (reset) {
+            const selected = ordered.slice(-limit), first = selected[0]
+            return boundedSourcePage('latest', selected, limit, fixture.sourceWindow!.epoch, true, {
+                before: first ? sourcePosition(first) : null, after: null, snapshotHead: headPosition,
+            }, ordered.length > selected.length)
+        }
+        if (after !== null) {
+            const snapshotHead = until !== null && headPosition !== null && compareSourcePosition(until, headPosition) <= 0
+                ? until : headPosition
+            if (snapshotHead === null || compareSourcePosition(snapshotHead, after) <= 0) {
+                return boundedSourcePage('after', [], limit, fixture.sourceWindow!.epoch, false, {
+                    before: null, after, snapshotHead,
+                }, false)
+            }
+            const newer = ordered.filter(row => {
+                const position = sourcePosition(row)
+                return compareSourcePosition(position, after) > 0
+                    && compareSourcePosition(position, snapshotHead) <= 0
+            })
+            const selected = newer.slice(0, limit), last = selected.at(-1)
+            return boundedSourcePage('after', selected, limit, fixture.sourceWindow!.epoch, false, {
+                before: null, after: last ? sourcePosition(last) : snapshotHead, snapshotHead,
+            }, last !== undefined && compareSourcePosition(sourcePosition(last), snapshotHead) < 0)
+        }
+        if (before !== null) {
+            const older = ordered.filter(row => compareSourcePosition(sourcePosition(row), before) < 0)
+            const selected = older.slice(-limit), first = selected[0]
+            return boundedSourcePage('before', selected, limit, fixture.sourceWindow!.epoch, false, {
+                before: first ? sourcePosition(first) : null, after: null, snapshotHead: headPosition,
+            }, older.length > selected.length)
+        }
+        const pool = until === null ? ordered : ordered.filter(row => compareSourcePosition(sourcePosition(row), until) <= 0)
+        const selected = pool.slice(-limit), first = selected[0]
+        return boundedSourcePage('latest', selected, limit, fixture.sourceWindow!.epoch, false, {
+            before: first ? sourcePosition(first) : null, after: null, snapshotHead: headPosition,
+        }, pool.length > selected.length)
     }
-    return { requests }
+    return { requests, get epoch() { return fixture.sourceWindow!.epoch }, set epoch(value: number) { fixture.sourceWindow!.epoch = value } }
 }

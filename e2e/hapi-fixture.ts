@@ -23,6 +23,16 @@ export interface NativeFixture {
     readSession?: () => HapiSession | Promise<HapiSession>
     /** Explicit per-session history page override (remote hotfix hook). */
     readHistory?: (url: URL) => HapiMessagesPage | Promise<HapiMessagesPage>
+    /** Shared source-window state used by outline/context and the bounded history helper. */
+    sourceWindow?: SourceWindowFixtureState
+}
+export interface SourceWindowFixtureState {
+    /** Current authoritative source epoch for outline/context/messages. */
+    epoch: number
+    /** Outline coverage flags; defaults are complete=true, indexing=false, unreadable=false. */
+    complete?: boolean
+    indexing?: boolean
+    unreadable?: boolean
 }
 /** Opt-in bounded Hub-faithful history paging for one fixture session. */
 export interface HistoryPaging {
@@ -35,6 +45,45 @@ export interface ObservedFixtureOptions {
     /** Replace the default seed rows before the session is announced. */
     rows?: HapiMessage[]
     paging?: HistoryPaging
+}
+
+const OUTLINE_LABEL_MAX = 96
+interface SourcePosition { at: number; seq: number }
+function sourcePosition(row: HapiMessage): SourcePosition {
+    return { at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 }
+}
+function compareSourcePosition(left: SourcePosition, right: SourcePosition): number {
+    return left.at - right.at || left.seq - right.seq
+}
+/** HAPI's sparse outline label: eligible invoked user text only, normalized,
+ * truncated to 96 chars. It is never a generated body or a full transcript. */
+function sourceOutlineLabel(row: HapiMessage): string | null {
+    if (row.invokedAt === null || row.invokedAt === undefined) return null
+    const envelope = row.content as { role?: unknown; content?: unknown } | null
+    if (!envelope || envelope.role !== 'user') return null
+    const body = envelope.content
+    const text = typeof body === 'string' ? body
+        : body !== null && typeof body === 'object' && (body as { type?: unknown }).type === 'text'
+            && typeof (body as { text?: unknown }).text === 'string'
+            ? (body as { text: string }).text : null
+    if (text === null) return null
+    const normalized = text.replace(/\s+/g, ' ').trim()
+    const label = normalized || 'Empty message'
+    return label.length <= OUTLINE_LABEL_MAX ? label
+        : `${label.slice(0, OUTLINE_LABEL_MAX - 3).trimEnd()}...`
+}
+function boundedInteger(value: string | null, fallback: number, min: number, max: number): number | null {
+    if (value === null) return fallback
+    const parsed = Number(value)
+    return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : null
+}
+function cursorPosition(url: URL, atKey: string, seqKey: string): SourcePosition | null | undefined {
+    const at = url.searchParams.get(atKey), seq = url.searchParams.get(seqKey)
+    if (at === null && seq === null) return null
+    if (at === null || seq === null) return undefined
+    const parsed = { at: Number(at), seq: Number(seq) }
+    return Number.isInteger(parsed.at) && parsed.at >= 0
+        && Number.isInteger(parsed.seq) && parsed.seq >= 1 ? parsed : undefined
 }
 
 export class HapiWireFixture {
@@ -228,6 +277,84 @@ export class HapiWireFixture {
         this.disconnectEvents(); this.voice.close(); await this.workbench.close(); this.server.closeAllConnections();
         await new Promise<void>(resolve => this.server.close(() => resolve()));
     }
+    /** Current epoch shared by the source-window routes. Explicit readHistory
+     * paging (useBoundedSourceHistory) owns its own state; otherwise the
+     * existing HistoryPaging epoch remains the authority. */
+    private sourceEpoch(fixture: NativeFixture): number {
+        if (fixture.readHistory !== undefined && fixture.sourceWindow !== undefined) return fixture.sourceWindow.epoch;
+        return this.historyPaging.get(fixture.session.id)?.epoch ?? fixture.sourceWindow?.epoch ?? 1;
+    }
+    /** Sparse, bounded HAPI outline: eligible invoked user anchors only. */
+    private sourceOutlinePage(fixture: NativeFixture, url: URL): { status: number; value: unknown } {
+        const limit = boundedInteger(url.searchParams.get('limit'), 40, 1, 100);
+        if (limit === null) return { status: 400, value: { error: 'Invalid query', issues: ['limit'] } };
+        const before = cursorPosition(url, 'beforeAt', 'beforeSeq');
+        if (before === undefined) return { status: 400, value: { error: 'Invalid query', issues: ['beforeAt/beforeSeq'] } };
+        const epochText = url.searchParams.get('epoch');
+        const epoch = epochText === null ? undefined : Number(epochText);
+        if (epoch !== undefined && (!Number.isInteger(epoch) || epoch < 0)) {
+            return { status: 400, value: { error: 'Invalid query', issues: ['epoch'] } };
+        }
+        if (before !== null && epoch === undefined) {
+            return { status: 400, value: { error: 'Invalid query', issues: ['epoch'] } };
+        }
+        const current = this.sourceEpoch(fixture);
+        const reset = epoch !== undefined && epoch !== current;
+        const entries = fixture.rows.flatMap(row => {
+            const label = sourceOutlineLabel(row);
+            if (label === null) return [];
+            const at = sourcePosition(row);
+            return [{ messageId: row.id, label, at: at.at, seq: at.seq, createdAt: row.createdAt }];
+        }).sort((left, right) => right.at - left.at || right.seq - left.seq);
+        const filtered = reset || before === null ? entries
+            : entries.filter(entry => entry.at < before.at || entry.at === before.at && entry.seq < before.seq);
+        const pageEntries = reset ? [] : filtered.slice(0, limit);
+        const hasMore = !reset && filtered.length > pageEntries.length;
+        const last = pageEntries.at(-1);
+        const headSeq = fixture.rows.reduce((max, row) => Math.max(max, row.seq ?? 0), 0);
+        const unreadable = fixture.sourceWindow?.unreadable ?? false;
+        return { status: 200, value: { entries: pageEntries, page: {
+            epoch: current, reset, hasMore,
+            beforeCursor: hasMore && last ? { at: last.at, seq: last.seq } : null,
+            scannedThrough: headSeq, headSeq,
+            complete: (fixture.sourceWindow?.complete ?? true) && !unreadable,
+            unreadable, indexing: fixture.sourceWindow?.indexing ?? false,
+        } } };
+    }
+    /** Bounded context around one exact source message id. */
+    private sourceContextPage(fixture: NativeFixture, messageId: string, url: URL): { status: number; value: unknown } {
+        const radius = boundedInteger(url.searchParams.get('radius'), 50, 1, 99);
+        if (radius === null) return { status: 400, value: { error: 'Invalid query', issues: ['radius'] } };
+        const epochText = url.searchParams.get('epoch');
+        const epoch = epochText === null ? undefined : Number(epochText);
+        if (epoch !== undefined && (!Number.isInteger(epoch) || epoch < 0)) {
+            return { status: 400, value: { error: 'Invalid query', issues: ['epoch'] } };
+        }
+        const anchorRow = fixture.rows.find(row => row.id === messageId);
+        if (!anchorRow) return { status: 404, value: { error: 'Message not found' } };
+        const ordered = [...fixture.rows].sort((left, right) => compareSourcePosition(sourcePosition(left), sourcePosition(right)));
+        const anchorPosition = sourcePosition(anchorRow);
+        const beforeAll = ordered.filter(row => compareSourcePosition(sourcePosition(row), anchorPosition) < 0);
+        const afterAll = ordered.filter(row => compareSourcePosition(sourcePosition(row), anchorPosition) > 0);
+        const beforeCandidates = beforeAll.slice(-(radius + 1));
+        const afterCandidates = afterAll.slice(0, radius + 1);
+        const before = beforeCandidates.slice(-radius);
+        const after = afterCandidates.slice(0, radius);
+        const newest = ordered.at(-1);
+        const current = this.sourceEpoch(fixture);
+        return { status: 200, value: {
+            anchor: { messageId: anchorRow.id, position: anchorPosition },
+            messages: structuredClone([...before, anchorRow, ...after]),
+            page: {
+                epoch: current, reset: epoch !== undefined && epoch !== current,
+                beforeCursor: before.length ? sourcePosition(before[0]!) : anchorPosition,
+                afterCursor: after.length ? sourcePosition(after[after.length - 1]!) : anchorPosition,
+                hasMoreBefore: beforeCandidates.length > radius,
+                hasMoreAfter: afterCandidates.length > radius,
+                snapshotHead: newest ? sourcePosition(newest) : anchorPosition,
+            },
+        } };
+    }
     /** Hub-faithful bounded page: cursor positions, snapshot head, and a reset signal
      * when the caller pins a stale epoch. */
     private historyPage(fixture: NativeFixture, paging: HistoryPaging, url: URL) {
@@ -235,37 +362,61 @@ export class HapiWireFixture {
         const index = this.historyPageCounts.get(id) ?? 0;
         this.historyPageCounts.set(id, index + 1);
         paging.onPage?.(index, paging);
-        const position = (row: HapiMessage) => ({ at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 });
-        const ordered = [...fixture.rows].sort((left, right) => {
-            const a = position(left), b = position(right);
-            return a.at - b.at || a.seq - b.seq;
-        });
-        const newest = ordered.at(-1);
-        const epoch = Number(url.searchParams.get('epoch') ?? Number.NaN);
-        const reset = Number.isFinite(epoch) && epoch !== paging.epoch;
-        const limit = Math.min(Number(url.searchParams.get('limit') ?? 200) || 200, paging.pageSize ?? 200);
-        const beforeAt = url.searchParams.get('beforeAt'), beforeSeq = url.searchParams.get('beforeSeq');
-        const untilAt = url.searchParams.get('untilAt'), untilSeq = url.searchParams.get('untilSeq');
-        let pool = ordered;
-        if (untilAt !== null && untilSeq !== null) {
-            const until = { at: Number(untilAt), seq: Number(untilSeq) };
-            pool = ordered.filter(row => { const at = position(row); return at.at < until.at || at.at === until.at && at.seq <= until.seq });
-        }
+        const ordered = [...fixture.rows].sort((left, right) => compareSourcePosition(sourcePosition(left), sourcePosition(right)));
+        const newest = ordered.at(-1), newestPosition = newest ? sourcePosition(newest) : null;
+        const epochText = url.searchParams.get('epoch');
+        const epoch = epochText === null ? undefined : Number(epochText);
+        const reset = epoch !== undefined && Number.isInteger(epoch) && epoch !== paging.epoch;
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get('limit') ?? 200) || 200, paging.pageSize ?? 200));
+        const before = cursorPosition(url, 'beforeAt', 'beforeSeq') ?? null;
+        const after = cursorPosition(url, 'afterAt', 'afterSeq') ?? null;
+        const until = cursorPosition(url, 'untilAt', 'untilSeq') ?? null;
         let selected: HapiMessage[];
-        let available: number;
-        if (!reset && beforeAt !== null && beforeSeq !== null) {
-            const before = { at: Number(beforeAt), seq: Number(beforeSeq) };
-            const older = pool.filter(row => { const at = position(row); return at.at < before.at || at.at === before.at && at.seq < before.seq });
-            selected = older.slice(-limit); available = older.length;
+        let direction: 'latest' | 'before' | 'after' = 'latest';
+        let nextBefore: SourcePosition | null = null;
+        let nextAfter: SourcePosition | null = null;
+        let snapshotHead = newestPosition;
+        let hasMore: boolean;
+        if (!reset && after !== null) {
+            snapshotHead = until !== null && newestPosition !== null && compareSourcePosition(until, newestPosition) <= 0
+                ? until : newestPosition;
+            direction = 'after';
+            if (snapshotHead === null || compareSourcePosition(snapshotHead, after) <= 0) {
+                selected = [];
+                nextAfter = after;
+                hasMore = false;
+            } else {
+                const snapshot = snapshotHead;
+                const newer = ordered.filter(row => {
+                    const position = sourcePosition(row);
+                    return compareSourcePosition(position, after) > 0
+                        && compareSourcePosition(position, snapshot) <= 0;
+                });
+                selected = newer.slice(0, limit);
+                const last = selected.at(-1);
+                nextAfter = last ? sourcePosition(last) : snapshot;
+                hasMore = last !== undefined && compareSourcePosition(sourcePosition(last), snapshot) < 0;
+            }
+        } else if (!reset && before !== null) {
+            const older = ordered.filter(row => compareSourcePosition(sourcePosition(row), before) < 0);
+            selected = older.slice(-limit);
+            direction = 'before';
+            const first = selected[0];
+            nextBefore = first ? sourcePosition(first) : null;
+            hasMore = older.length > selected.length;
         } else {
-            selected = pool.slice(-limit); available = pool.length;
+            selected = (reset ? ordered : until === null ? ordered : ordered.filter(row =>
+                compareSourcePosition(sourcePosition(row), until) <= 0)).slice(-limit);
+            const first = selected[0];
+            nextBefore = first ? sourcePosition(first) : null;
+            hasMore = !reset && (until === null ? ordered.length : ordered.filter(row =>
+                compareSourcePosition(sourcePosition(row), until) <= 0).length) > selected.length;
         }
-        const oldest = selected[0];
-        return { messages: selected, page: { direction: beforeAt === null ? 'latest' : 'before', limit, epoch: paging.epoch, reset,
-            nextBeforeSeq: oldest?.seq ?? null, nextBeforeAt: oldest ? position(oldest).at : null,
-            nextAfterSeq: null, nextAfterAt: null,
-            snapshotHeadSeq: newest?.seq ?? null, snapshotHeadAt: newest ? position(newest).at : null,
-            hasMore: !reset && available > selected.length } };
+        return { messages: selected, page: { direction, limit, epoch: paging.epoch, reset,
+            nextBeforeSeq: nextBefore?.seq ?? null, nextBeforeAt: nextBefore?.at ?? null,
+            nextAfterSeq: nextAfter?.seq ?? null, nextAfterAt: nextAfter?.at ?? null,
+            snapshotHeadSeq: snapshotHead?.seq ?? null, snapshotHeadAt: snapshotHead?.at ?? null,
+            hasMore } };
     }
     private async handle(request: import('node:http').IncomingMessage, response: ServerResponse): Promise<void> {
         const url = new URL(request.url ?? '/', 'http://fixture');
@@ -338,6 +489,12 @@ export class HapiWireFixture {
             const fixture = this.require(parts[2]);
             const id = fixture.session.id;
             const tail = parts.slice(3).join('/');
+            if (request.method === 'GET' && tail === 'messages/outline') {
+                const result = this.sourceOutlinePage(fixture, url); send(result.value, result.status); return;
+            }
+            if (request.method === 'GET' && parts.length === 6 && parts[3] === 'messages' && parts[5] === 'context') {
+                const result = this.sourceContextPage(fixture, parts[4]!, url); send(result.value, result.status); return;
+            }
             if (this.dshChildren.handle(this, fixture.session, tail, url, request, response, body)) return;
             if (this.artifacts.handle(fixture.session, tail, url, request, response, body)) return;
             if (this.workbench.handle(fixture.session, tail, url, request, response, body)) return;

@@ -20,4 +20,6 @@ Private raw logs are in `/mnt/cache/data-cache/hapi-dsh-parent-sampler-20261025-
 
 ## Remaining acceptance
 
+The source-history fixture now implements bounded outline and message-context reads, forward paging, snapshot limits and epoch reset. The previous outline handler returned an unbounded result, and forward requests fell through to the latest page. Four loopback HTTP contract tests passed after the parent applied the fixture changes. These tests validate the test service; they do not establish product acceptance.
+
 The revised real-Host opening suites and production probes have **not** passed on the new product implementation. Source-wide navigation, first usable paint, long-turn pagination, closing-window cancellation, natural live updates, paired HAPI performance and retained memory still require validation. A passing sampler control proves that its injected defect is detected; it does not establish product usability.
