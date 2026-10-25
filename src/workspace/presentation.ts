@@ -56,10 +56,10 @@ export function windowAlias(window: WorkspaceWindow, position: number): string {
     return window.autoName === true || /^(?:Window|窗口)\s*\d+$/.test(window.name) ? `W${position}` : window.name
 }
 
-export function paneTitle(pane: PaneNode, rows: Readonly<Record<string, WorkspaceCatalogRow>>, empty: string): string {
+export function paneTitle(pane: PaneNode, rows: Readonly<Record<string, WorkspaceCatalogRow>>, empty: string, sourcePaneTitles: Readonly<Record<string, string>> = {}): string {
     const resource = pane.resource
     if (resource.kind === 'empty') return empty
-    const session = rows[resource.sessionId]?.displayTitle ?? resource.sourceSessionId ?? resource.sessionId
+    const session = sourcePaneTitles[pane.id] ?? rows[resource.sessionId]?.displayTitle ?? resource.sourceSessionId ?? resource.sessionId
     if (resource.kind === 'document') return resource.title ?? documentName(resource.document)
     if (resource.kind === 'terminal') return resource.title ?? (resource.target?.type === 'conversation' ? session
         : resource.target ? dshPaneTitle(resource.target) : `Terminal · ${session}`)
@@ -67,9 +67,9 @@ export function paneTitle(pane: PaneNode, rows: Readonly<Record<string, Workspac
     return session
 }
 
-export function windowTitle(window: WorkspaceWindow, focusedId: string | undefined, rows: Readonly<Record<string, WorkspaceCatalogRow>>, empty: string): string {
+export function windowTitle(window: WorkspaceWindow, focusedId: string | undefined, rows: Readonly<Record<string, WorkspaceCatalogRow>>, empty: string, sourcePaneTitles: Readonly<Record<string, string>> = {}): string {
     const available = panes(window.root)
-    return paneTitle(available.find(pane => pane.id === focusedId) ?? available[0]!, rows, empty)
+    return paneTitle(available.find(pane => pane.id === focusedId) ?? available[0]!, rows, empty, sourcePaneTitles)
 }
 
 export function windowActivity(window: WorkspaceWindow, rows: Readonly<Record<string, WorkspaceCatalogRow>>): ActivityKind {

@@ -1,3 +1,4 @@
+import { sameSourceGeneration, canReuseGenerationSurface, replacementReady, stageGenerationSurface, revealGenerationSurface } from './surface/generation-handoff.ts'
 import { RecentViews } from './surface/recent-views.ts'
 /** Official DSH Client graphs, isolated by Host and editable pane. */
 import { Context } from '@deepseek-ai/cordis'
@@ -419,11 +420,25 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     // its editor, dialogs, Client Context, and SessionReference. The layout owns
     // these roots; component unmount only parks their DOM.
     type Resource = Exclude<PaneResource, { kind: 'empty' }>
-    interface PaneRuntime { sourceId: string; shared?: boolean; surface: HTMLDivElement; update(resource: Resource, options: WorkspaceRenderOptions): void; activate(): void; park?(): boolean; stop(force?: boolean): Promise<void> }
+    interface PaneRuntime {
+        sourceId: string; resource: Resource; shared?: boolean; surface: HTMLDivElement
+        update(resource: Resource, options: WorkspaceRenderOptions): void
+        activate(): void; park?(): boolean; stop(force?: boolean): Promise<void>
+        suspend?(): void; isSuspended?(): boolean; ready?(): boolean
+        previous?: PaneRuntime | undefined
+        cancelHandoff?: (() => void) | undefined
+        restoreFocus?: boolean | undefined
+    }
     const activePanes = new Map<string, PaneRuntime>()
     const allPanes = new Set<PaneRuntime>()
     const recentViews = new RecentViews<PaneRuntime>(2, entry => { void entry.stop().catch(workspace.report) })
+    const clearHandoff = (entry: PaneRuntime): void => {
+        entry.cancelHandoff?.(); entry.cancelHandoff = undefined
+        if (entry.previous) { void entry.previous.stop().catch(workspace.report); entry.previous = undefined }
+        if (entry.surface.dataset.hapiHandoff === 'preparing') revealGenerationSurface(entry.surface)
+    }
     const parkPane = (paneId: string, entry: PaneRuntime): void => {
+        clearHandoff(entry)
         if (entry.park?.()) recentViews.park(paneId, entry.sourceId, entry)
         else void entry.stop().catch(workspace.report)
     }
@@ -485,7 +500,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             })
         })
     }
-    const createSessionPane = (paneId: string, sourceId: string, initial: WorkspaceRenderOptions): PaneRuntime => {
+    const createSessionPane = (paneId: string, sourceId: string, resource: Resource, initial: WorkspaceRenderOptions): PaneRuntime => {
         const context = catalog?.ctx ?? root
         const surface = document.createElement('div')
         surface.className = 'hapi-remote-pane hapi-shared-pane'
@@ -502,7 +517,8 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         let reference: SessionReference | undefined
         let view: SessionViewHandle | undefined
         let opening: ReturnType<typeof observePaneOpening> | undefined
-        let starting = false, disposed = false, retired = false
+        let starting = false, disposed = false, retired = false, suspended = false
+        let referenceReady = false
         let historyTimer: ReturnType<typeof setTimeout> | undefined
         const historySubscriptions: Array<() => void> = []
         const scheduleHistoryRelease = (): void => {
@@ -567,7 +583,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                     if (disposed || retired || activeSignal.aborted) return
                     reference = context.sessions.retain(sourceId as SessionId, { source: 'hapiWorkspace' })
                     historySubscriptions.push(reference.binding.eventSource.subscribe(scheduleHistoryRelease), reference.binding.session.subscribe(scheduleHistoryRelease))
-                    void reference.ready.then(binding => opening?.referenceReady(binding.session.getSnapshot().blank), () => opening?.stop('error'))
+                    void reference.ready.then(binding => { referenceReady = true; opening?.referenceReady(binding.session.getSnapshot().blank) }, () => opening?.stop('error'))
                     renderHostRoot?.()
                     view = sessionViews!.mount({ paneId, instanceId: `${paneId}:${++sharedViewSequence}`, reference, target: surface, navigation,
                         onReady: () => {
@@ -588,9 +604,10 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 } finally { starting = false }
             })()
         }
-        const update = (_resource: Resource, options: WorkspaceRenderOptions): void => {
+        const update = (resource: Resource, options: WorkspaceRenderOptions): void => {
             if (retired || disposed) return
-            const next = { focused: options.focused, visible: options.visible !== false }
+            if (resource.sessionId === resourceId) result.resource = resource
+            const next = { focused: options.focused && !suspended && surface.dataset.hapiHandoff !== 'preparing', visible: options.visible !== false }
             if (!next.visible) opening?.stop('hidden')
             surface.dataset.hapiFocused = String(next.focused); surface.dataset.hapiVisible = String(next.visible)
             if (presentation.focused !== next.focused || presentation.visible !== next.visible) {
@@ -602,6 +619,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             if (!next.visible) scheduleHistoryRelease()
         }
         const retention = createPaneRetention(() => {
+            clearHandoff(result)
             opening?.stop()
             retired = true; presentation = { focused: false, visible: false }
             for (const listener of listeners) listener()
@@ -619,18 +637,35 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
                 await ui.dispose()
             } finally { listeners.clear(); surface.remove(); allPanes.delete(result) }
         })
-        const result: PaneRuntime = { sourceId, shared: true, surface, activate, update, stop: retention.stop,
+        const result: PaneRuntime = { sourceId, resource, shared: true, surface, activate, update, stop: retention.stop,
+            isSuspended: () => suspended,
+            suspend: () => {
+                if (suspended) return
+                const active = surface.ownerDocument.activeElement
+                result.restoreFocus = Boolean(active && surface.contains(active) && active.closest('[data-composer-input]'))
+                view?.suspendReading(); suspended = true; surface.inert = true
+                surface.dataset.hapiHandoff = 'previous'
+                presentation = { ...presentation, focused: false }; for (const listener of listeners) listener()
+            },
+            ready: () => {
+                const session = reference?.binding.session.getSnapshot()
+                const editor = surface.querySelector<HTMLElement>('[data-composer-input]')
+                const content = surface.querySelector<HTMLElement>('[data-chat-node-key]')
+                return replacementReady({ referenceReady, open: session?.openState === 'open', blank: session?.blank === true,
+                    editor: Boolean(editor && editor.getBoundingClientRect().height > 0),
+                    content: Boolean(content && content.getBoundingClientRect().height > 0), reading: surface.dataset.hapiReading })
+            },
             park: () => {
                 // Bound retained histories as well as view count. No hidden
                 // cold open or source execution is initiated by this cache.
-                if (!view || !reference || disposed || retired || reference.binding.eventSource.getSnapshot().entries.length > 1500) return false
+                if (!view || !reference || disposed || retired || suspended || reference.binding.eventSource.getSnapshot().entries.length > 1500) return false
                 update({ kind: 'chat', sessionId: resourceId }, { ...initial, focused: false, visible: false })
                 parking.append(surface)
                 void ui.stopOwnedVoice().catch(workspace.report)
                 return true
             } }
         allPanes.add(result)
-        update({ kind: 'chat', sessionId: resourceId }, initial)
+        update(resource, initial)
         return result
     }
     const createPane = (paneId: string, sourceId: string, resource: Resource, initial: WorkspaceRenderOptions): PaneRuntime => {
@@ -875,7 +910,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             try { await release(); await ui.dispose().catch(workspace.report) }
             finally { allPanes.delete(result) }
         })
-        const result: PaneRuntime = { sourceId, surface, activate, update(resource, options) {
+        const result: PaneRuntime = { sourceId, resource, surface, activate, update(resource, options) {
             if (retired) return
             currentResource = resource
             const nextMenuTarget = options.toolsTarget ?? null
@@ -895,30 +930,53 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         if (shouldBootPane(initial, false)) activate()
         return result
     }
+    const resourceForPane = (paneId: string): Resource | undefined => {
+        const resource = workspace.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)?.resource
+        return resource?.kind === 'empty' ? undefined : resource
+    }
     const getPane = (paneId: string, sourceId: string, resource: Resource, options: WorkspaceRenderOptions): PaneRuntime => {
         const current = activePanes.get(paneId)
-        if (current?.sourceId === sourceId && Boolean(current.shared) === sharedConversation(resource)) { current.update(resource, options); return current }
-        if (current) parkPane(paneId, current)
+        if (current?.sourceId === sourceId && Boolean(current.shared) === sharedConversation(resource)) {
+            if (!canReuseGenerationSurface(sessionResourceId(host.id, current.sourceId), resource.sessionId, current.isSuspended?.() === true)) {
+                activePanes.delete(paneId); clearHandoff(current)
+                void current.stop().catch(workspace.report)
+                return getPane(paneId, sourceId, resource, options)
+            }
+            if (sameSourceGeneration(current.resource, resource)) current.suspend?.()
+            current.update(resource, options); return current
+        }
+        const predecessor = current?.previous ?? current
+        const replace = Boolean(predecessor?.shared && sharedConversation(resource)
+            && sameSourceGeneration(predecessor.resource, resource) && options.visible !== false)
+        if (current) {
+            if (replace) {
+                current.cancelHandoff?.(); current.cancelHandoff = undefined; current.previous = undefined
+                if (current !== predecessor) void current.stop().catch(workspace.report)
+                predecessor!.suspend?.()
+            } else parkPane(paneId, current)
+        }
         const cached = sharedConversation(resource) ? recentViews.take(paneId, sourceId) : undefined
-        const next = cached ?? (sharedConversation(resource) ? createSessionPane(paneId, sourceId, options) : createPane(paneId, sourceId, resource, options))
+        const next = cached ?? (sharedConversation(resource) ? createSessionPane(paneId, sourceId, resource, options) : createPane(paneId, sourceId, resource, options))
         if (cached) cached.update(resource, options)
+        if (replace) next.previous = predecessor
         activePanes.set(paneId, next)
         return next
     }
     const reconcilePanes = (): void => {
-        const desired = new Map<string, string>()
+        const desired = new Map<string, Resource>()
         for (const window of workspace.store.getSnapshot().windows) for (const pane of panes(window.root)) {
             if (pane.resource.kind === 'empty') continue
             try {
                 const source = parseSessionResourceId(pane.resource.sessionId)
-                if (source.hostId === host.id) desired.set(pane.id, source.sessionId)
+                if (source.hostId === host.id) desired.set(pane.id, pane.resource)
             } catch { /* The controller presents malformed saved addresses. */ }
         }
         recentViews.prune(new Set(desired.keys()))
-        for (const [paneId, entry] of activePanes) if (desired.get(paneId) !== entry.sourceId) {
+        for (const [paneId, entry] of activePanes) if (desired.get(paneId)?.sessionId !== sessionResourceId(host.id, entry.sourceId)) {
+            if (entry.shared && sameSourceGeneration(entry.resource, desired.get(paneId))) { entry.suspend?.(); continue }
             activePanes.delete(paneId)
             if (desired.has(paneId)) parkPane(paneId, entry)
-            else void entry.stop()
+            else { clearHandoff(entry); void entry.stop() }
         }
     }
     try {
@@ -960,19 +1018,51 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         }
         function RemoteSession({ sourceId, resource, options }: { sourceId: string; resource: Resource; options: WorkspaceRenderOptions }) {
             const mount = useRef<HTMLDivElement>(null)
+            const latestOptions = useRef(options); latestOptions.current = options
             const paneId = options.paneId
             const sharedView = sharedConversation(resource)
             useLayoutEffect(() => {
                 const target = mount.current!
                 const view = getPane(paneId, sourceId, resource, options)
                 target.append(view.surface)
+                if (view.previous) {
+                    view.cancelHandoff?.(); view.cancelHandoff = undefined
+                    const previous = view.previous
+                    target.append(previous.surface)
+                    const commit = (): void => {
+                        if (activePanes.get(paneId) !== view || resourceForPane(paneId)?.sessionId !== sessionResourceId(host.id, view.sourceId)) return
+                        const focus = previous.restoreFocus && workspace.store.focusedPane().id === paneId
+                            && (!document.activeElement || document.activeElement === document.body || previous.surface.contains(document.activeElement))
+                        clearHandoff(view)
+                        revealGenerationSurface(view.surface)
+                        view.update(resource, latestOptions.current)
+                        if (focus && latestOptions.current.visible !== false) view.surface.querySelector<HTMLElement>('[data-composer-input]')?.focus({ preventScroll: true })
+                    }
+                    view.cancelHandoff = stageGenerationSurface({ previous: previous.surface, next: view.surface,
+                        ready: () => view.ready?.() === true, commit, timeout: commit })
+                    view.update(resource, options)
+                }
                 return () => {
+                    const after = resourceForPane(paneId)
+                    if (view.shared && sameSourceGeneration(view.resource, after) && target.isConnected) {
+                        view.suspend?.()
+                        // A prop replacement reuses this mount. A real unmount
+                        // must still release its staged predecessor and park.
+                        queueMicrotask(() => {
+                            if (target.isConnected) return
+                            clearHandoff(view)
+                            if (activePanes.get(paneId) === view) activePanes.delete(paneId)
+                            void view.stop().catch(workspace.report)
+                        })
+                        return
+                    }
+                    clearHandoff(view)
                     view.update(resource, { ...options, visible: false, focused: false })
                     if (view.surface.parentElement === target) parking.append(view.surface)
                 }
-            }, [sourceId, paneId, sharedView])
+            }, [sourceId, resource.sessionId, paneId, sharedView])
             useLayoutEffect(() => { activePanes.get(paneId)?.update(resource, options) }, [paneId, resource, options.focused, options.visible, options.toolsTarget])
-            return <div ref={mount} className="hapi-remote-mount" style={{ minHeight: 0, height: '100%', width: '100%' }}/>
+            return <div ref={mount} className="hapi-remote-mount" style={{ position: 'relative', minHeight: 0, height: '100%', width: '100%' }}/>
         }
         const renderPane: NonNullable<import('./controller.ts').WorkspaceHost['renderPane']> = (reference, resource, options) => <RemoteSession sourceId={reference.sessionId} resource={resource} options={options}/>
         removeHost = host.id === 'local' ? workspace.bindRenderer('local', renderPane, shared ? warmSession : undefined) : workspace.addHost({

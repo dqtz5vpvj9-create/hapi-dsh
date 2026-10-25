@@ -290,7 +290,8 @@ export interface HapiTransport {
   /** An answer is a candidate; only completedRequests is final resolution. */
   approve(sessionId: string, requestId: string, answer: HapiApprovalAnswer): Promise<void>
   deny(sessionId: string, requestId: string, answer?: HapiApprovalAnswer): Promise<void>
-  subscribe(listener: (event: HapiEvent) => void): () => void
+  /** Async listeners apply backpressure; producers await them before the next event. */
+  subscribe(listener: (event: HapiEvent) => void | Promise<void>): () => void
 }
 
 /** Only an explicit HTTP rejection can prove that a mutation was rejected. */

@@ -114,6 +114,8 @@ export interface OfficialEnvironment {
     directory: string;
     /** Sanitized local fixture process output for failed official-plugin activation diagnostics. */
     diagnostics(): string;
+    /** Restart only this synthetic Host, preserving its profile, source and port. */
+    restartHost(): Promise<void>;
     close(): Promise<void>;
 }
 function sanitize(value: string, secrets: readonly string[] = []): string {
@@ -146,13 +148,14 @@ export async function startOfficialEnvironment(remote = false, options: { compan
     const children: ChildProcess[] = [];
     const processOutput: Array<() => string> = [];
     const hapi = new HapiWireFixture();
+    const stopChild = async (child: ChildProcess): Promise<void> => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill('SIGTERM');
+        const timeout = setTimeout(() => child.kill('SIGKILL'), 4000);
+        await once(child, 'close').catch(() => {}); clearTimeout(timeout);
+    };
     const close = async (): Promise<void> => {
-        for (const child of [...children].reverse()) {
-            if (child.exitCode !== null || child.signalCode !== null) continue;
-            child.kill('SIGTERM');
-            const timeout = setTimeout(() => child.kill('SIGKILL'), 4000);
-            await once(child, 'close').catch(() => {}); clearTimeout(timeout);
-        }
+        for (const child of [...children].reverse()) await stopChild(child);
         await hapi.close();
         await rm(directory, { recursive: true, force: true });
     };
@@ -193,9 +196,21 @@ export async function startOfficialEnvironment(remote = false, options: { compan
         };
         const env = runtimeEnvironment(config, configFile);
         const launchUrl = await start(command, ['--profile', config.dsh.profile, '--host', '127.0.0.1', '--port', '0', '--no-open'], env);
+        let hostChild = children.at(-1)!;
         stage('hub: started');
         const client = await rpcClient(launchUrl);
-        const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory, diagnostics: () => processOutput.map(read => read()).join('\n'), close };
+        const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory,
+            diagnostics: () => processOutput.map(read => read()).join('\n'), close,
+            async restartHost() {
+                if (remote) throw new Error('Cold Host restart fixture is only supported without a remote Runner');
+                await stopChild(hostChild);
+                const url = await start(command, ['--profile', config.dsh.profile, '--host', '127.0.0.1',
+                    '--port', new URL(result.origin).port, '--no-open'], env);
+                hostChild = children.at(-1)!;
+                const client = await rpcClient(url);
+                result.launchUrl = url; result.origin = client.origin; result.rpc = client.rpc;
+            },
+        };
         if (remote && pairToken) {
             const runner = createRunnerConfig(client.origin, { id: 'runner-one', token: pairToken, dshHome: join(directory, 'runner-home') });
             const runnerFile = join(directory, 'runner.json');

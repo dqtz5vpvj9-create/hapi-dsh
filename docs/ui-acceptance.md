@@ -25,6 +25,10 @@ TMPDIR=/mnt/cache/data-cache npm run e2e:warm -- serve
 
 弱网导航使用 `HAPI_DSH_LATENCY_MS=150 HAPI_DSH_DOWNLOAD_MBPS=1.6 HAPI_DSH_UPLOAD_MBPS=0.75 npm run test:perf:production`。这些是 CDP 的 HTTP 整形参数，不能冒充用户实际线路或 WebSocket 的端到端限速。报告区分 HTTP 编码/解码字节、WebSocket 解码字节、压缩协商、资源完成时间和首屏三个里程碑。探针对 RPC 使用只读许可表，阻止页面自动新建 Session 或保存布局，记录被阻止的路径和次数；不会用假成功回包掩盖这些行为。
 
+冷启动还必须验证内容新鲜度，不能把旧正文当作打开完成。运行 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/native-cold-opening.spec.ts --workers=1`：保留旧浏览器布局和源历史缓存、重启隔离的官方 Host，再分别阻塞元数据、最新页和完整归档。最新正文与可用输入框必须在归档被阻塞时出现；放行归档后继续逐帧观察，已知标题不得退回占位名或内部 ID，已出现的最新正文不得消失。测试包含 390px 和 1440px，并用负对照证明最终恢复正常也不能掩盖中途退化。该测试操作合成源，不能称为生产网络验收。
+
+两类生产打开探针现在均须提供从源端独立取得的 `HAPI_DSH_EXPECTED_TITLE` 和 `HAPI_DSH_EXPECTED_TEXT`；后者应是当前视口应出现的最新正文片段。缺少任一项时，新鲜度或标题身份标为未验证，不能报打开验收通过。采样从应用初始化前开始，首次成功后仍观察至少 5 秒；可用 `HAPI_DSH_OBSERVE_MS` 延长。探针只读，不自动物化尚未建立的源显示会话；被此限制挡住时须如实报告。实现、旧版失败与测量边界见 [冷打开新鲜度](cold-opening-freshness.md)。
+
 `TMPDIR=/mnt/cache/data-cache npx playwright test e2e/cold-boot.spec.ts` 专门验证首屏依赖：阅读期间账户包与 HMR 请求必须为零，真实正文和草稿仍可使用；通过原生入口打开 Settings 才请求账户包。下载期间关闭设置时只缓存资源，重新打开才激活，官方完整插件图必须无加载失败，原输入框节点和草稿保持不变。此用例同时检查浏览器使用压缩载体。另一用例不用 Playwright 路由拦截（它会关闭浏览器 HTTP 缓存），实际导航两次，要求官方带版本名的入口/vendor 脚本第二次传输字节为 0。传输层测试另外覆盖原始帧的顺序、二进制、心跳、重连关闭码及凭据/Origin 拒绝。
 
 远端 DSH 会话必须另测：`TMPDIR=/mnt/cache/data-cache npx playwright test e2e/federated-cold-boot.spec.ts` 启动真实官方 Hub 与配对 Runner，在冷浏览器恢复远端会话；要求首次正文与输入框不请求远端 Account/HMR，刷新后的远端插件传输字节为 0，草稿保留，每次连接只请求一次远端目录。另一用例用超过 20 条消息的远端会话，检查首次 follow 的窗口为 20、向前连续滚轮能通过官方分页找回最早消息、断线重连恢复官方完整窗口请求，以及草稿和重连后的实时消息仍保留。远端设置仍通过自身 Host 的认证传输加载完整插件图。不得用本地 HAPI 源会话或已启动的远端图热切换代替这个用例。
@@ -92,6 +96,8 @@ GitHub CI 的完整浏览器套件包含这些触摸断言并上传 JSON。CI �
 线上只读触摸采样：`HAPI_DSH_TOUCH_PROBE=1 HAPI_DSH_PROBE_RUNS=1 npm run test:perf:production`。真实会话首屏出现后立即执行 12 次向较早和 12 次向较新内容滑动，记录匿名 DOM 序号和几何信息。`HAPI_DSH_PROFILE=1` 可同时输出启动与触摸 CPU profile，分析运行与普通计时分别报告。生产源持续变化，样本不是固定载荷对照，也不替代物理手机验收。
 
 ## 数据与边界
+
+手机 earliest-boundary 四条路径也必须逐帧保留同一条旧 DOM 行：从放行分页前到提交后的每一帧，身份仍有效、偏移不超过 2px。只检查最终位置与空白帧会漏掉“有正文但短暂跳走再恢复”。2026-10-24 补充这一断言后，四条路径的提交帧分别为 6、9、9、9 帧，最大偏移均为 0px；对应四张手机截图已查看。它们仍是可信触摸驱动的 Chromium 合成源测试，不能替代物理手机验收。
 
 浏览器执行 pinned 官方 DSH Conversation、SessionProvider、编辑器和插件加载器；HAPI wire 和执行结果为合成 fixture，不调用真实模型。发送、队列、审批、断线等测试只操作该隔离环境。生产探针只读取既有会话及页面状态；报告只存时序、计数和脱敏错误，不存正文、凭据或私有会话身份。
 

@@ -1,3 +1,4 @@
+import { sameSourceGeneration } from './surface/generation-handoff.ts'
 import { randomId } from './random-id.ts'
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
 import type { ISessions, SessionListState, SessionReference, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -9,7 +10,7 @@ import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type Pane
 import { rebaseWorkspace, WorkspaceRebaseConflictError } from '../workspace/rebase.ts'
 import { SidebarState } from '../workspace/sidebar-state.ts'
 import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../workspace/legacy.ts'
-import { bindingFailureState, invalidPaneAddressState, paneOpenState, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
+import { bindingFailureState, invalidPaneAddressState, isSourceDisplaySessionId, paneOpenState, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
 import type { CatalogMachine, CatalogSession } from '../client-api.ts'
 import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
@@ -143,6 +144,9 @@ export interface PaneLease {
     readonly hostId: string
     readonly sessionId: string
     readonly reference?: SessionReference
+    /** Read-only rendering bridge until a same-source successor has a reference. */
+    readonly previousReference?: SessionReference
+    readonly resource?: Exclude<PaneResource, { kind: 'empty' }>
     readonly status: 'opening' | 'ready' | 'failed'
     /** Human explanation plus next step; never a raw code or JSON dump. */
     readonly error?: string
@@ -163,6 +167,8 @@ export interface PaneLease {
 export interface WorkspaceSnapshot {
     readonly layout: WorkspaceState
     readonly catalog: WorkspaceCatalog
+    /** Display labels survive a source's retired-to-successor Session gap. */
+    readonly sourcePaneTitles: Readonly<Record<string, string>>
     /** Actual first source/Host discovery, independent of a temporarily empty catalog. */
     readonly catalogDiscovery: WorkspaceCatalogDiscovery
     readonly sourceDiscovery?: SourceDiscovery
@@ -293,11 +299,13 @@ export class WorkspaceController {
     private readonly createdListeners = new Set<(sessionId: string) => void>()
     private successorHandler: ((from: import('./draft-handoff.ts').HandoffAddress, to: import('./draft-handoff.ts').HandoffAddress, paneId?: string) => Promise<void>) | undefined
     private readonly leases = new Map<string, PaneLease>()
+    private readonly previousLeases = new Map<string, { lease: PaneLease; timer: ReturnType<typeof setTimeout> }>()
     private readonly hosts = new Map<string, WorkspaceHost>()
     private readonly hostCatalogs = new Map<string, { label: string; catalog: SessionListState }>()
     private readonly hostUnsubscribers = new Map<string, Array<() => void>>()
     private readonly hostMainIds = new Map<string, string | undefined>()
     private readonly sourceCatalog = new Map<string, CatalogSession>()
+    private readonly sourcePaneTitles = new Map<string, { sourceKey: string; title: string }>()
     private sourceCatalogRevision = 0
     private readonly aggregatedHosts = new Map<string, { inputs: readonly unknown[]; ids: SessionId[]; rows: WorkspaceCatalog['byId'] }>()
     private readonly discovery = new CatalogDiscovery()
@@ -377,6 +385,7 @@ export class WorkspaceController {
             ...(options.workspaceState ? { workspaceState: options.workspaceState } : {}) })
         this.snapshot = {
             layout: this.store.getSnapshot(), catalog: this.aggregateCatalog(),
+            sourcePaneTitles: {},
             catalogDiscovery: this.discovery.snapshot(options.sessions.list.getSnapshot().phase === 'ready'),
             leases: new Map(), notice, persistence: 'local', conflict: null, hasLayoutRecovery: Boolean(this.recoveryLayout),
             creation: null, creationContext: null, pickingSession: false, machines: [], nativePanel: null,
@@ -596,7 +605,14 @@ export class WorkspaceController {
 
     private publish(patch: Partial<WorkspaceSnapshot> = {}): void {
         if (this.disposed) return
-        this.snapshot = { ...this.snapshot, ...patch, layout: this.store.getSnapshot(), leases: new Map(this.leases) }
+        const leases = new Map(this.leases)
+        for (const [paneId, previous] of this.previousLeases) {
+            const lease = leases.get(paneId)
+            if (lease?.reference || lease?.status === 'failed' || !lease) this.releasePreviousLease(paneId)
+            else leases.set(paneId, { ...lease, previousReference: previous.lease.reference! })
+        }
+        this.snapshot = { ...this.snapshot, ...patch, layout: this.store.getSnapshot(), leases }
+        this.rememberSourcePaneTitles()
         if (this.discoveryCatalog !== this.snapshot.catalog) {
             this.discoveryCatalog = this.snapshot.catalog
             const listed = new Set(this.snapshot.catalog.ids)
@@ -608,6 +624,34 @@ export class WorkspaceController {
         }
         this.snapshot = { ...this.snapshot, catalogDiscovery: this.discovery.snapshot(this.options.sessions.list.getSnapshot().phase === 'ready', this.sourceBindingsPending) }
         for (const listener of [...this.listeners]) listener()
+    }
+
+    private rememberSourcePaneTitles(): void {
+        const titles: Record<string, string> = {}, present = new Set<string>()
+        for (const pane of this.snapshot.layout.windows.flatMap(window => panes(window.root))) {
+            present.add(pane.id)
+            const resource = pane.resource
+            if (resource.kind === 'empty') { this.sourcePaneTitles.delete(pane.id); continue }
+            const row = this.snapshot.catalog.byId[resource.sessionId], identity = sourceIdentity(row)
+            const hubId = resource.sourceHubId ?? identity?.hubId, sourceSessionId = resource.sourceSessionId ?? identity?.sessionId
+            if (!hubId || !sourceSessionId) { this.sourcePaneTitles.delete(pane.id); continue }
+            const sourceKey = originalSourceKey({ hubId, sourceSessionId }), previous = this.sourcePaneTitles.get(pane.id)
+            let source = hubId === this.primarySourceHubId ? this.sourceCatalog.get(resource.sessionId) : undefined
+            if (source?.hapiSessionId !== sourceSessionId) source = undefined
+            if (!source && hubId === this.primarySourceHubId) {
+                for (const candidate of this.sourceCatalog.values()) if (candidate.hapiSessionId === sourceSessionId) { source = candidate; break }
+            }
+            const sourceTitle = source?.title.trim()
+            const sameSource = identity ? identity.hubId === hubId && identity.sessionId === sourceSessionId
+                : previous?.sourceKey === sourceKey || source?.id === row?.sourceSessionId
+            const currentTitle = sameSource ? row?.title?.trim() : undefined
+            const title = currentTitle || (previous?.sourceKey === sourceKey ? previous.title : undefined)
+                || (sourceTitle && sourceTitle !== sourceSessionId && sourceTitle !== source!.id ? sourceTitle : undefined)
+            if (title) { this.sourcePaneTitles.set(pane.id, { sourceKey, title }); titles[pane.id] = title }
+            else this.sourcePaneTitles.delete(pane.id)
+        }
+        for (const paneId of this.sourcePaneTitles.keys()) if (!present.has(paneId)) this.sourcePaneTitles.delete(paneId)
+        this.snapshot = { ...this.snapshot, sourcePaneTitles: titles }
     }
 
     private selectedMain(hostId: string): string | undefined {
@@ -704,9 +748,19 @@ export class WorkspaceController {
                 const resourceId = sessionResourceId(hostId, sourceSessionId)
                 const source = hostId === 'local' ? this.sourceCatalog.get(sourceSessionId) : undefined
                 const sourceOwned = hostId === 'local' && (sourceIdentity(row) !== null || isSourceChild(row))
+                // Reconnection clears official projections before their new
+                // baseline arrives. Keep a source display's title through
+                // that gap: current durable title, source catalog, then its
+                // last known title. This changes labels only, never identity.
+                const sourceTitle = source?.title.trim()
+                const title = hostId === 'local' && (source !== undefined || isSourceDisplaySessionId(sourceSessionId))
+                    ? row.title?.trim() || (sourceTitle && sourceTitle !== source!.hapiSessionId && sourceTitle !== source!.id ? sourceTitle : undefined)
+                        || previous?.rows[resourceId]?.title
+                    : undefined
                 const sourceLocation = sourceOwned ? sessionLocation(row) : undefined
                 const sourceMachine = sourceLocation?.machineId ? (this.snapshot?.machines ?? []).find(machine => machine.id === sourceLocation.machineId) : undefined
                 hostRows[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
+                    ...(title ? { title, displayTitle: title } : {}),
                     ...(sourceOwned ? { sourceHubOnline: this.discovery.sourcePhase !== 'unavailable',
                         ...(sourceMachine ? { sourceMachineOnline: sourceMachine.online } : {}) } : {}),
                     ...(sourceOwned && Number.isFinite(source?.updatedAt) ? { updatedAt: source!.updatedAt! } : {}),
@@ -925,6 +979,12 @@ export class WorkspaceController {
             : { hostId, sessionId, status: 'failed', error: paneFailureError(state), reason: state.reason, nextStep: state.nextStep, detail: state.detail, retryable: state.retryable, waitingForCatalog: state.retryable })
     }
 
+    private releasePreviousLease(paneId: string): void {
+        const previous = this.previousLeases.get(paneId)
+        if (!previous) return
+        this.previousLeases.delete(paneId); clearTimeout(previous.timer); previous.lease.reference?.release()
+    }
+
     private reconcileLeases(): void {
         if (this.disposed || this.reconciling) return
         this.reconciling = true
@@ -943,11 +1003,21 @@ export class WorkspaceController {
             const visible = new Set((active ? panes(active.root) : []).filter(pane => !layout.zoomed[layout.activeWindowId]
                 || pane.id === layout.focused[layout.activeWindowId]).map(pane => pane.id))
             this.pruneSourceResolutions(expected.values())
-            // Release only retired occurrences. No cancel, abort, or archive call.
+            for (const [id, previous] of this.previousLeases) {
+                if (!sameSourceGeneration(previous.lease.resource, expected.get(id))) this.releasePreviousLease(id)
+            }
+            // A same-source generation can have a short catalog gap. Keep one
+            // read-only rendering reference; the surface owns the later swap.
             for (const [id, lease] of this.leases) {
                 if (expected.get(id)?.sessionId !== sessionResourceId(lease.hostId, lease.sessionId)) {
                     this.leases.delete(id)
-                    lease.reference?.release()
+                    if (lease.reference && lease.status === 'ready' && sameSourceGeneration(lease.resource, expected.get(id))) {
+                        this.releasePreviousLease(id)
+                        const timer = setTimeout(() => { this.releasePreviousLease(id); this.publish() }, 30_000)
+                        this.previousLeases.set(id, { lease, timer })
+                    } else lease.reference?.release()
+                } else if (lease.reference && lease.resource !== expected.get(id)) {
+                    this.leases.set(id, { ...lease, resource: expected.get(id)! })
                 }
             }
             for (const [paneId, resource] of expected) {
@@ -991,16 +1061,18 @@ export class WorkspaceController {
                         continue
                     }
                     const reference = host.sessions.retain(sessionId as SessionId, { source: 'hapiWorkspace' })
-                    const lease: PaneLease = { hostId, sessionId, reference, status: 'opening' }
+                    const lease: PaneLease = { hostId, sessionId, reference, resource, status: 'opening' }
                     this.leases.set(paneId, lease)
                     void reference.ready.then(() => {
-                        if (this.disposed || this.leases.get(paneId) !== lease) return
-                        this.leases.set(paneId, { hostId, sessionId, reference, status: 'ready' })
+                        const current = this.leases.get(paneId)
+                        if (this.disposed || current?.reference !== reference) return
+                        this.leases.set(paneId, { ...current, status: 'ready' })
                         this.publish()
                     }, error => {
-                        if (this.disposed || this.leases.get(paneId) !== lease) return
+                        const current = this.leases.get(paneId)
+                        if (this.disposed || current?.reference !== reference) return
                         const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(error) })
-                        this.leases.set(paneId, { hostId, sessionId, reference, status: 'failed', error: paneFailureError(failure),
+                        this.leases.set(paneId, { ...current, status: 'failed', error: paneFailureError(failure),
                             reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
                         this.publish()
                     })
@@ -1450,7 +1522,9 @@ export class WorkspaceController {
         this.hostUnsubscribers.clear()
         for (const lease of this.leases.values()) lease.reference?.release()
         this.leases.clear()
+        for (const paneId of this.previousLeases.keys()) this.releasePreviousLease(paneId)
         this.paneCloseGuards.clear()
+        this.sourcePaneTitles.clear()
         this.listeners.clear()
         this.createdListeners.clear()
         this.successorHandler = undefined

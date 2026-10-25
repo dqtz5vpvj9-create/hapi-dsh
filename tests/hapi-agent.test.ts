@@ -13,7 +13,7 @@ import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
 import { AttachmentId } from '@deepseek-ai/dsh-attachment'
 import { freezeMessage, MessageId } from '@deepseek-ai/dsh-llm'
-import { HapiRequestError, type HapiApprovalAnswer, type HapiEvent, type HapiMessage, type HapiMessagesPage,
+import { HapiRequestError, type HapiApprovalAnswer, type HapiEvent, type HapiMessage, type HapiMessagesPage, type HapiMessagesQuery,
   type HapiQueuedState, type HapiSendMessage, type HapiSession } from '../src/codex/contracts.js'
 import { HapiAgentService, HapiObservedControl, type HapiAgentServiceOptions, type HapiObservedTransport } from '../src/hapi-agent/index.js'
 import { parseObservedHistory, parseObservedMessage } from '../src/hapi-agent/parser.js'
@@ -48,7 +48,7 @@ class Fixture implements HapiObservedTransport {
   }
   async listSessions() { return [...this.sources.values()].map(value => structuredClone(value)) }
   async getSession(id: string) { const source = this.sources.get(id); if (!source) throw new HapiRequestError('Missing source', 'rejected', 404); return structuredClone(source) }
-  async readMessages(id: string): Promise<HapiMessagesPage> {
+  async readMessages(id: string, _query?: HapiMessagesQuery): Promise<HapiMessagesPage> {
     return { messages: structuredClone(this.rows.get(id) ?? []), page: { direction: 'latest', limit: 200, epoch: 1, reset: false,
       nextBeforeSeq: null, nextBeforeAt: null, nextAfterSeq: null, nextAfterAt: null, snapshotHeadSeq: null, snapshotHeadAt: null, hasMore: false } }
   }
@@ -269,7 +269,45 @@ test('source delivery remains unknown after disconnect and restart, without auto
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('observed cache attach keeps live output moving while a blocked history snapshot backfills a missing row', async () => {
+test('observed opening reads a fresh bounded tail before a blocked archive even when a cache exists', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-fresh-opening-')), source = new Fixture()
+  source.add('claude')
+  const cached = [input(), codex('cached', 2, { type: 'message', message: 'Old cached answer' })]
+  const fresh = [codex('fresh', 10, { type: 'message', message: 'Current source answer' })]
+  source.rows.set('claude', cached)
+  let app = await mount(source, directory), release: ((value: HapiMessagesPage) => void) | undefined
+  const snapshot = await source.readMessages('claude')
+  try {
+    await app.close()
+    const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+    source.readMessages = async (_id, query) => {
+      if (query?.beforeSeq != null && query.limit !== 1) return blocked
+      return { messages: fresh, page: { ...snapshot.page, hasMore: true,
+        nextBeforeSeq: 10, nextBeforeAt: 2000, snapshotHeadSeq: 10, snapshotHeadAt: 2000 } }
+    }
+    app = await mount(source, directory, { fastHistorySeed: true })
+    const initial = app.service.list()[0]!
+    const answers = () => app.service.list()[0]!.session.snapshotEvents().flatMap(event =>
+      event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
+    assert.deepEqual(answers(), ['Current source answer'], 'old preview cannot stand in for current source content')
+    const live = codex('live', 11, { type: 'message', message: 'Live source answer' })
+    source.emit({ type: 'message-received', sessionId: 'claude', message: live })
+    for (let index = 0; index < 200 && initial.resolveSourceMessageDisplaySeq(live.id) === undefined; index++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(live.id), undefined)
+    release!({ ...snapshot, messages: cached }); release = undefined
+    await app.service.settled()
+    assert.deepEqual(answers(), ['Old cached answer', 'Current source answer', 'Live source answer'])
+    assert.equal(app.service.list()[0]!.projection.error, null)
+    assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
+  } finally {
+    release?.(snapshot)
+    await app.close(); await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('observed cache fallback keeps live output moving after a failed tail read while a blocked history snapshot recovers', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-live-first-')), source = new Fixture()
   source.add('claude')
   const cached = [input(), codex('cached', 2, { type: 'message', message: 'Cached source answer' })]
@@ -282,7 +320,11 @@ test('observed cache attach keeps live output moving while a blocked history sna
     const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
     const read = source.readMessages.bind(source)
     const snapshot = await read('claude')
-    source.readMessages = () => blocked
+    let reads = 0
+    source.readMessages = async () => {
+      if (++reads === 1) throw new Error('Latest source page is temporarily unavailable')
+      return blocked
+    }
     app = await mount(source, directory, { fastHistorySeed: true })
     const initial = app.service.list()[0]!
     assert.match(initial.projection.error ?? '', /stale/)

@@ -1125,7 +1125,7 @@ test('indexed native output and running state advance during blocked archival re
   } finally { release(page(fake.rows)); await archive.catch(() => {}); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native cached display returns before a blocked history read and live output survives older backfill', async () => {
+test('native failed opening read falls back to explicitly stale cache and live output survives older backfill', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-live-first-')), fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Cached answer' }, 'cached')]
   let app = await mount(fake, directory), release: ((value: HapiMessagesPage) => void) | undefined
@@ -1136,11 +1136,18 @@ test('native cached display returns before a blocked history read and live outpu
     const live = agentBody('message', { message: 'Live during backfill' }, 'live')
     live.createdAt = 1400; live.seq = 4
     const history = new Promise<HapiMessagesPage>(resolve => { release = resolve })
-    fake.readHook = () => history
+    let reads = 0
+    fake.readHook = () => {
+      if (++reads === 1) throw new Error('Opening tail unavailable')
+      return history
+    }
     app = await mount(fake, directory, { fastHistorySeed: true })
     const initial = app.service.list()[0]!
     assert.match(initial.projection.error ?? '', /stale/)
+    assert.match(initial.projection.error ?? '', /Opening tail unavailable/)
     assert.equal(initial.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    await initial.refreshSettings()
+    assert.equal(initial.projection.error, null, 'a successful source refresh clears the opening read fault')
     fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
     await eventuallyNative(() => initial.resolveSourceMessageDisplaySeq(live.id) !== undefined)
     // The snapshot was taken before the live row reached the source index.
@@ -1156,22 +1163,72 @@ test('native cached display returns before a blocked history read and live outpu
   } finally { release?.(page(fake.rows)); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-for (const legacyCache of [false, true]) test(`native ${legacyCache ? 'legacy cache' : 'cold attach'} seeds bounded initial context while full history remains blocked`, async () => {
+for (const epoch of [1, 2]) test(`native opening fallback resumes bounded indexed updates safely at source epoch ${epoch}`, async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-fallback-indexed-')), fake = new FakeHapi()
+  const cached = agentBody('message', { message: 'Cached before opening failure' }, 'cached-fallback')
+  fake.rows = [user(), cached]
+  let app = await mount(fake, directory), release: ((value: HapiMessagesPage) => void) | undefined
+  try {
+    await app.close(); fake.reads = []
+    const indexed = agentBody('message', { message: 'Fresh indexed answer' }, 'indexed-after-fallback')
+    indexed.createdAt = 1300; indexed.seq = 3
+    const currentRows = epoch === 1 ? [...fake.rows, indexed] : [indexed]
+    const history = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+    let reads = 0
+    fake.readHook = query => {
+      if (++reads === 1) throw new Error('Temporary opening read failure')
+      if (query.limit === 32) return page(currentRows, { epoch, snapshotHeadAt: 1300, snapshotHeadSeq: 3 })
+      if (query.limit === 1) { assert.equal(query.epoch, epoch); return page([], { epoch }) }
+      return history
+    }
+    app = await mount(fake, directory, { fastHistorySeed: true })
+    const initial = app.service.list()[0]!
+    await eventuallyNative(() => reads >= 2)
+    assert.match(initial.projection.error ?? '', /Temporary opening read failure/)
+    const refreshing = initial as unknown as { liveSync: { settled(): Promise<void> } }
+    await initial.handleEvent({ type: 'messages-invalidated', sessionId: fake.source.id, reason: 'native-history' })
+    await refreshing.liveSync.settled()
+    assert.ok(fake.reads.some(query => query.limit === 32), 'an epoch-bearing fallback must try the independent bounded live path')
+    assert.equal(initial.projection.error, null)
+    if (epoch === 1) {
+      assert.notEqual(initial.resolveSourceMessageDisplaySeq(indexed.id), undefined)
+      assert.equal(app.service.list()[0]!, initial, 'a same-epoch append does not wait for the archive or replace its owner')
+    } else {
+      assert.equal(initial.resolveSourceMessageDisplaySeq(indexed.id), undefined, 'a changed epoch must not append into stale cached history')
+    }
+    release!(page(currentRows, { epoch })); release = undefined
+    await app.service.settled()
+    // A changed epoch invalidates the already-running archive checkpoint;
+    // its existing retry must recover without another source notification.
+    for (let index = 0; index < 250 && app.service.list()[0]!.resolveSourceMessageDisplaySeq(indexed.id) === undefined; index++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.notEqual(current.resolveSourceMessageDisplaySeq(indexed.id), undefined)
+    if (epoch === 2) assert.equal(current.resolveSourceMessageDisplaySeq(cached.id), undefined)
+    assert.equal(current.projection.error, null)
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { release?.(page(fake.rows, { epoch })); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+for (const cacheEpoch of [null, undefined, 1, 2]) test(`native opening with ${cacheEpoch === null ? 'no cache' : cacheEpoch === undefined ? 'legacy cache' : `cache epoch ${cacheEpoch}`} seeds fresh bounded history while its archive remains blocked`, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-cold-tail-')), fake = new FakeHapi()
   const tail = agentBody('message', { message: 'Latest bounded answer' }, 'tail')
   tail.createdAt = 1300; tail.seq = 3
   const older = user()
-  if (legacyCache) {
+  if (cacheEpoch !== null) {
     const logicalId = nativeSessionId(fake.hubId, fake.source.id)
     new NativeHistoryCache(nativeStateDirectory(directory, logicalId, bindingFor(fake.hubId, fake.source)), logicalId)
-      .write([agentBody('message', { message: 'Old legacy cache' }, 'legacy')])
+      .write([agentBody('message', { message: 'Unrelated old cached answer' }, 'cached-old')], true, cacheEpoch)
   }
   let release!: (value: HapiMessagesPage) => void, reads = 0
   const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
   fake.readHook = query => {
-    if (query?.limit === 1) return page([tail])
+    if (query?.limit === 1) { assert.equal(query.epoch, 1); return page([tail]) }
     if (query?.beforeSeq !== undefined) return page([older, tail])
-    return ++reads === 1 ? page([tail], { hasMore: true, nextBeforeAt: 1300, nextBeforeSeq: 3 }) : blocked
+    return ++reads === 1 ? page([tail], { hasMore: true, nextBeforeAt: 1300, nextBeforeSeq: 3,
+      snapshotHeadAt: 1300, snapshotHeadSeq: 3 }) : blocked
   }
   const app = await mount(fake, directory, { fastHistorySeed: true })
   try {
@@ -1179,12 +1236,58 @@ for (const legacyCache of [false, true]) test(`native ${legacyCache ? 'legacy ca
     assert.notEqual(initial.resolveSourceMessageDisplaySeq(tail.id), undefined)
     assert.equal(initial.sourceMessageAtDisplaySeq(initial.resolveSourceMessageDisplaySeq(tail.id)!), tail.id)
     assert.equal(initial.sourceMessageAtDisplaySeq(-1), undefined)
+    assert.equal(initial.resolveSourceMessageDisplaySeq(agentBody('message', {}, 'cached-old').id), undefined,
+      'an unrelated cache must not replace or be merged into the validated latest source page')
+    assert.equal(fake.reads[0]?.limit, 200)
+    assert.equal(fake.reads[0]?.bounded, true)
+    assert.match(initial.projection.error ?? '', /initial source history tail is incomplete/)
+    const live = agentBody('message', { message: 'Same epoch output during archive loading' }, 'tail-live')
+    live.createdAt = 1400; live.seq = 4
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
+    await eventuallyNative(() => initial.resolveSourceMessageDisplaySeq(live.id) !== undefined)
     release(page([older, tail])); await app.service.settled()
     const current = app.service.list()[0]!
     assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
-    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 2)
+    assert.notEqual(current.resolveSourceMessageDisplaySeq(live.id), undefined)
     assert.equal(current.binding.threadId, initial.binding.threadId)
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
   } finally { release(page([older, tail])); await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native cached opening retries an epoch-invalidated tail before publishing and never resurrects its old cache', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-opening-epoch-')), fake = new FakeHapi()
+  const logicalId = nativeSessionId(fake.hubId, fake.source.id)
+  const cached = agentBody('message', { message: 'Cached before rewind' }, 'cached-before-rewind')
+  new NativeHistoryCache(nativeStateDirectory(directory, logicalId, bindingFor(fake.hubId, fake.source)), logicalId)
+    .write([cached], true, 1)
+  const removed = agentBody('message', { message: 'Removed during first tail read' }, 'removed-opening')
+  const latest = agentBody('message', { message: 'Validated after rewind' }, 'current-opening')
+  latest.createdAt = 1300; latest.seq = 3
+  let release!: (value: HapiMessagesPage) => void, heads = 0
+  const blocked = new Promise<HapiMessagesPage>(resolve => { release = resolve })
+  fake.readHook = query => {
+    if (query.limit === 1) return page([], { epoch: 2, reset: query.epoch === 1 })
+    if (query.beforeSeq !== undefined) return page([user()], { epoch: 2 })
+    if (++heads > 2) return blocked
+    const row = heads === 1 ? removed : latest, epoch = heads
+    return page([row], { epoch, hasMore: true, nextBeforeAt: row.createdAt, nextBeforeSeq: row.seq,
+      snapshotHeadAt: row.createdAt, snapshotHeadSeq: row.seq })
+  }
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(latest.id), undefined)
+    assert.equal(initial.resolveSourceMessageDisplaySeq(removed.id), undefined)
+    assert.equal(initial.resolveSourceMessageDisplaySeq(cached.id), undefined)
+    assert.deepEqual(fake.reads.filter(query => query.limit === 1).map(query => query.epoch), [1, 2])
+    release(page([user(), latest], { epoch: 2 })); await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.notEqual(current.resolveSourceMessageDisplaySeq(latest.id), undefined)
+    assert.equal(current.resolveSourceMessageDisplaySeq(removed.id), undefined)
+    assert.equal(current.resolveSourceMessageDisplaySeq(cached.id), undefined)
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { release(page([user(), latest], { epoch: 2 })); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
 test('native events arriving during the first history response are captured before the Agent exists', async () => {

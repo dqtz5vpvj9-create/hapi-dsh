@@ -1,0 +1,554 @@
+[
+  {
+    "index": 1,
+    "commit": "6c64e7d6c15a08739632a21fed527a27da09ec9f",
+    "onMain": true,
+    "date": "2026-10-21T04:17:34+08:00",
+    "author": "Shinn",
+    "subject": "Initialize HAPI DSH documentation"
+  },
+  {
+    "index": 2,
+    "commit": "073886ef252d16b87994c98a007034c336804d3b",
+    "onMain": true,
+    "date": "2026-10-21T04:18:42+08:00",
+    "author": "Shinn",
+    "subject": "Implement unified DSH workspace with native Codex and paired runners"
+  },
+  {
+    "index": 3,
+    "commit": "e60d7e8a94d8db762e79ec8c59d70ebd494d0142",
+    "onMain": true,
+    "date": "2026-10-21T04:23:55+08:00",
+    "author": "Shinn",
+    "subject": "fix(distribution): install the official DSH pnpm prerequisite"
+  },
+  {
+    "index": 4,
+    "commit": "1cdb2e7dcbcc7db367eeb65bb8293df558736e9d",
+    "onMain": true,
+    "date": "2026-10-21T09:09:22+08:00",
+    "author": "Shinn",
+    "subject": "feat: integrate HAPI source capabilities into the unmodified DSH workspace"
+  },
+  {
+    "index": 5,
+    "commit": "3d27a01f915a4d3de5f1362d35fe0781f9f70631",
+    "onMain": false,
+    "date": "2026-10-21T03:16:12-07:00",
+    "author": "hongwen000",
+    "subject": "fix(client): generate ids without crypto.randomUUID on insecure origins"
+  },
+  {
+    "index": 6,
+    "commit": "0bd595040a4cb280cb30b0e34a243ea8e1d06b14",
+    "onMain": false,
+    "date": "2026-10-21T03:16:18-07:00",
+    "author": "hongwen000",
+    "subject": "fix(host): keep the Host available while a large catalog attaches"
+  },
+  {
+    "index": 7,
+    "commit": "9c8c4bdb69a08871b28c02edc26b336fda9c856b",
+    "onMain": false,
+    "date": "2026-10-21T03:16:21-07:00",
+    "author": "hongwen000",
+    "subject": "test(e2e): cover the live HTTPS site and wait for the preview notice"
+  },
+  {
+    "index": 8,
+    "commit": "159907f6e2ffec0dda2e042cd87a5864e23411ed",
+    "onMain": true,
+    "date": "2026-10-21T09:47:29+08:00",
+    "author": "Shinn",
+    "subject": "feat: preserve native input, share selection, and workspace navigation"
+  },
+  {
+    "index": 9,
+    "commit": "70af5bad1546b153464049cf6af257cba803451b",
+    "onMain": true,
+    "date": "2026-10-21T03:16:12-07:00",
+    "author": "hongwen000",
+    "subject": "fix(client): generate ids without crypto.randomUUID on insecure origins"
+  },
+  {
+    "index": 10,
+    "commit": "24a3f78a7e935a8f5886eec954cb337267a0032a",
+    "onMain": true,
+    "date": "2026-10-21T03:16:18-07:00",
+    "author": "hongwen000",
+    "subject": "fix(host): keep the Host available while a large catalog attaches"
+  },
+  {
+    "index": 11,
+    "commit": "17883f229fc69216f126aebe65b5cd90fa477dcd",
+    "onMain": true,
+    "date": "2026-10-21T03:16:21-07:00",
+    "author": "hongwen000",
+    "subject": "test(e2e): cover the live HTTPS site and wait for the preview notice"
+  },
+  {
+    "index": 12,
+    "commit": "d3517b7549526e4309ce0e0c47b6c5fe5feac755",
+    "onMain": true,
+    "date": "2026-10-21T20:10:57+08:00",
+    "author": "Shinn",
+    "subject": "fix: restore source workspaces and official plugin usability"
+  },
+  {
+    "index": 13,
+    "commit": "1dad739f2cef8ab6b376bdccb81e5daecf03ea75",
+    "onMain": true,
+    "date": "2026-10-21T08:48:51-07:00",
+    "author": "hongwen000",
+    "subject": "feat: structural pane surface, native history and restore fixes"
+  },
+  {
+    "index": 14,
+    "commit": "8bb56a4ffe7d227ea990e222a088b0c5d25c5771",
+    "onMain": true,
+    "date": "2026-10-21T10:39:39-07:00",
+    "author": "hongwen000",
+    "subject": "fix: live feedback batch — history, diagnostics, writable sources, startup, UI v2, seamless history"
+  },
+  {
+    "index": 15,
+    "commit": "4aaf3d7fab22ab0bed4db6fecebef83df65e11fc",
+    "onMain": true,
+    "date": "2026-10-21T18:16:57-07:00",
+    "author": "hongwen000",
+    "subject": "feat(composer): compact workspace composer, remove routine metadata rows, handoff doc"
+  },
+  {
+    "index": 16,
+    "commit": "4f19dcac032c3489edf495372e33a75dcfebf1fb",
+    "onMain": true,
+    "date": "2026-10-21T18:17:36-07:00",
+    "author": "hongwen000",
+    "subject": "docs(handoff): add Phase-0 pre-read findings for architecture A"
+  },
+  {
+    "index": 17,
+    "commit": "6a47858d9d8a1c9776571c6bcb824bfdb37c138c",
+    "onMain": true,
+    "date": "2026-10-21T18:18:24-07:00",
+    "author": "hongwen000",
+    "subject": "docs(handoff): record official AppFrame/scope boundary for architecture A"
+  },
+  {
+    "index": 18,
+    "commit": "9e459db3e861055bf9ce5337ac4068e34202db45",
+    "onMain": true,
+    "date": "2026-10-22T11:14:55+08:00",
+    "author": "Shinn",
+    "subject": "feat: add opt-in shared Host views and live history reconciliation"
+  },
+  {
+    "index": 19,
+    "commit": "58800d1fa71d8900951af8f2d08eb0b0caf8856a",
+    "onMain": true,
+    "date": "2026-10-21T20:51:40-07:00",
+    "author": "hongwen000",
+    "subject": "feat: default shared Host views and tail-first history seed"
+  },
+  {
+    "index": 20,
+    "commit": "95892d0e3877f94bd2d491c2557bc0e00e287e5b",
+    "onMain": true,
+    "date": "2026-10-22T13:16:52+08:00",
+    "author": "Shinn",
+    "subject": "fix: polish shared pane startup and source composer"
+  },
+  {
+    "index": 21,
+    "commit": "370f4fc5eaaa037a04642a61c0999bae00c28e88",
+    "onMain": true,
+    "date": "2026-10-22T03:56:04-07:00",
+    "author": "hongwen000",
+    "subject": "Recover interrupted workspace navigation and source actions"
+  },
+  {
+    "index": 22,
+    "commit": "34ab8fc75937b9d7c346630a8436e6544761b671",
+    "onMain": true,
+    "date": "2026-10-22T04:02:12-07:00",
+    "author": "hongwen000",
+    "subject": "Restore independent toolbar controls on every workspace pane"
+  },
+  {
+    "index": 23,
+    "commit": "4935ce22c46398e83f9253d2daee911858121d67",
+    "onMain": true,
+    "date": "2026-10-22T04:09:36-07:00",
+    "author": "hongwen000",
+    "subject": "Move source status into pane headers and prune empty layouts"
+  },
+  {
+    "index": 24,
+    "commit": "5d1ef8df0910142d29d4740d0158d4c118256c9a",
+    "onMain": true,
+    "date": "2026-10-22T04:15:48-07:00",
+    "author": "hongwen000",
+    "subject": "Document connecting an existing DSH Web host"
+  },
+  {
+    "index": 25,
+    "commit": "118c33c5c867133814b88d0d124602bc6c1db764",
+    "onMain": true,
+    "date": "2026-10-22T04:53:15-07:00",
+    "author": "hongwen000",
+    "subject": "Bound initial history work and release oversized warm caches"
+  },
+  {
+    "index": 26,
+    "commit": "92df62f4b52dda6fd8576560b6db0a7996486389",
+    "onMain": true,
+    "date": "2026-10-22T04:57:54-07:00",
+    "author": "hongwen000",
+    "subject": "Preserve pending question drafts across source display revisions"
+  },
+  {
+    "index": 27,
+    "commit": "1ebe52e704329df084c4c4532ec9ae55c70b4d38",
+    "onMain": true,
+    "date": "2026-10-22T05:01:08-07:00",
+    "author": "hongwen000",
+    "subject": "Record separate pane content and composer mount timings"
+  },
+  {
+    "index": 28,
+    "commit": "08c88230ab9ec0c62f93bcd48c6312d80465eacf",
+    "onMain": true,
+    "date": "2026-10-22T05:08:43-07:00",
+    "author": "hongwen000",
+    "subject": "Isolate remote graph stylesheet ownership across DSH builds"
+  },
+  {
+    "index": 29,
+    "commit": "c4a7d40397a507237c63d6154dc20aa21ad390df",
+    "onMain": true,
+    "date": "2026-10-22T05:16:04-07:00",
+    "author": "hongwen000",
+    "subject": "Default to Codex glass and use a supported-stop effort slider"
+  },
+  {
+    "index": 30,
+    "commit": "fdb6f8c97a45fd18e3be3ceb0f0d51bbd572660a",
+    "onMain": true,
+    "date": "2026-10-22T05:19:34-07:00",
+    "author": "hongwen000",
+    "subject": "Show native shell commands and results in compact tool views"
+  },
+  {
+    "index": 31,
+    "commit": "c7430d3f2a27545bbb90cf76012e72fd19494f6f",
+    "onMain": true,
+    "date": "2026-10-22T05:27:15-07:00",
+    "author": "hongwen000",
+    "subject": "Preload source settings and separate reads from history synchronization"
+  },
+  {
+    "index": 32,
+    "commit": "2bab966c1dc6779956ef5d6b4077746548a22cdf",
+    "onMain": true,
+    "date": "2026-10-22T05:37:27-07:00",
+    "author": "hongwen000",
+    "subject": "Display source token usage without synthetic DSH statistics"
+  },
+  {
+    "index": 33,
+    "commit": "8304f2cc97e47c8273960823f30207d9ec3c9a3a",
+    "onMain": true,
+    "date": "2026-10-22T05:41:01-07:00",
+    "author": "hongwen000",
+    "subject": "Restore official composer auto-growth and text sizing"
+  },
+  {
+    "index": 34,
+    "commit": "33b18b206a0b7c064387ec2b59b4b7c1ce65ac58",
+    "onMain": true,
+    "date": "2026-10-22T05:42:58-07:00",
+    "author": "hongwen000",
+    "subject": "Separate source settings availability from execution permissions"
+  },
+  {
+    "index": 35,
+    "commit": "35a930e143b94efa8ab10ed0736295cb6eb16397",
+    "onMain": true,
+    "date": "2026-10-22T05:49:23-07:00",
+    "author": "hongwen000",
+    "subject": "Keep source settings available through history read retries"
+  },
+  {
+    "index": 36,
+    "commit": "806b1f0d2939e2aafc1f7ceb5ae393ae55ebbbc6",
+    "onMain": true,
+    "date": "2026-10-22T06:03:12-07:00",
+    "author": "hongwen000",
+    "subject": "Persist composer drafts across panes and source display generations"
+  },
+  {
+    "index": 37,
+    "commit": "2f2b8878ae86b0ec14cd5f3739b8d856e4fcc4c8",
+    "onMain": true,
+    "date": "2026-10-22T06:09:15-07:00",
+    "author": "hongwen000",
+    "subject": "Route source queue editing through confirmed native cancellation"
+  },
+  {
+    "index": 38,
+    "commit": "da3a4ba596a759b8e899896e142f7c4112a746e7",
+    "onMain": true,
+    "date": "2026-10-22T06:10:43-07:00",
+    "author": "hongwen000",
+    "subject": "Correct the queue slot fixture owner props"
+  },
+  {
+    "index": 39,
+    "commit": "37d06299a4e518e16454f0088219f79c147f6f6a",
+    "onMain": true,
+    "date": "2026-10-22T06:13:28-07:00",
+    "author": "hongwen000",
+    "subject": "Hide queue recovery details after the draft is restored"
+  },
+  {
+    "index": 40,
+    "commit": "09e77df820f2caa37ae737ad719304fcd7344b0a",
+    "onMain": true,
+    "date": "2026-10-22T06:17:11-07:00",
+    "author": "hongwen000",
+    "subject": "Compact sidebar navigation and move list controls into options"
+  },
+  {
+    "index": 41,
+    "commit": "ed507ba6a8bdf18893d69b31bfec87000f8133e8",
+    "onMain": true,
+    "date": "2026-10-22T06:18:53-07:00",
+    "author": "hongwen000",
+    "subject": "Lighten glass surfaces and give conversations the full pane width"
+  },
+  {
+    "index": 42,
+    "commit": "0de42440e0b14b37b608185763bb738b78a7883f",
+    "onMain": true,
+    "date": "2026-10-22T06:21:22-07:00",
+    "author": "hongwen000",
+    "subject": "Route official queue steering to the native source inbox"
+  },
+  {
+    "index": 43,
+    "commit": "f2301fd10e2a6c5792771af8f5bc2183d5baeb3a",
+    "onMain": true,
+    "date": "2026-10-22T06:24:49-07:00",
+    "author": "hongwen000",
+    "subject": "Use settings capability snapshot instead of transcript lock in picker"
+  },
+  {
+    "index": 44,
+    "commit": "db4be9452151ff889b112a82c1fa6b1eb15a5031",
+    "onMain": true,
+    "date": "2026-10-22T06:26:01-07:00",
+    "author": "hongwen000",
+    "subject": "Make source queue compact and replace text action glyphs"
+  },
+  {
+    "index": 45,
+    "commit": "ccfddeb038f647233824cec75bec4125d755e3b8",
+    "onMain": true,
+    "date": "2026-10-22T06:47:40-07:00",
+    "author": "hongwen000",
+    "subject": "Prioritize foreground session loading and record Host startup timings"
+  },
+  {
+    "index": 46,
+    "commit": "1c19245c309397d7f2837dd139470a363d5042df",
+    "onMain": true,
+    "date": "2026-10-22T07:14:59-07:00",
+    "author": "hongwen000",
+    "subject": "Improve pane startup, draft recovery, compact tools and release workflow"
+  },
+  {
+    "index": 47,
+    "commit": "c694b02dcc2ae54fdaa4ca0f5bf7cf5d8d907fb4",
+    "onMain": true,
+    "date": "2026-10-22T07:50:29-07:00",
+    "author": "hongwen000",
+    "subject": "fix: reuse official shell views and restore compact source queues"
+  },
+  {
+    "index": 48,
+    "commit": "d62837766e9bee5eab05420197daf8029123c84e",
+    "onMain": true,
+    "date": "2026-10-22T09:28:47-07:00",
+    "author": "hongwen000",
+    "subject": "fix: stop reentrant warm-cache eviction from freezing the page"
+  },
+  {
+    "index": 49,
+    "commit": "b1ec2038bb25ae640f1719fd40640356b1d2d999",
+    "onMain": true,
+    "date": "2026-10-22T09:46:10-07:00",
+    "author": "hongwen000",
+    "subject": "fix(mobile): reclaim conversation space and compact workspace controls"
+  },
+  {
+    "index": 50,
+    "commit": "a37ef84e5a613867103faacccb0b95084e6907fa",
+    "onMain": true,
+    "date": "2026-10-22T10:00:43-07:00",
+    "author": "hongwen000",
+    "subject": "Bridge HAPI audit gaps through official DSH views and source identities"
+  },
+  {
+    "index": 51,
+    "commit": "9be022b1dc7dd4e88ac65ec58d47718b4c770e3c",
+    "onMain": true,
+    "date": "2026-10-22T20:04:26-07:00",
+    "author": "hongwen000",
+    "subject": "Fix native live projection ordering and add measured UI acceptance"
+  },
+  {
+    "index": 52,
+    "commit": "5cda78634b3fbdbf06ccae6250c2a114fe920c74",
+    "onMain": true,
+    "date": "2026-10-22T20:06:57-07:00",
+    "author": "hongwen000",
+    "subject": "Record UI acceptance measurements and remaining cold-open and scroll failures"
+  },
+  {
+    "index": 53,
+    "commit": "e9ffa4ed4bf8a9614bf903330437dc6c2d3aa54c",
+    "onMain": true,
+    "date": "2026-10-22T20:45:32-07:00",
+    "author": "hongwen000",
+    "subject": "Improve installable package and cross-platform onboarding"
+  },
+  {
+    "index": 54,
+    "commit": "fd57928d10b272608f698cfdc349378fd5531fcc",
+    "onMain": true,
+    "date": "2026-10-22T20:51:28-07:00",
+    "author": "hongwen000",
+    "subject": "Handle Windows sharing violations during atomic credential replacement"
+  },
+  {
+    "index": 55,
+    "commit": "431c659d5bfcc466557422324daae617bbdb73b8",
+    "onMain": true,
+    "date": "2026-10-22T22:18:11-07:00",
+    "author": "hongwen000",
+    "subject": "fix: separate unknown receipts and compact native command rows"
+  },
+  {
+    "index": 56,
+    "commit": "c366dad57e79a8ec882a66e15dc390cef5a1b918",
+    "onMain": true,
+    "date": "2026-10-23T07:25:20-07:00",
+    "author": "hongwen000",
+    "subject": "perf: bound cold session work and cache official web assets"
+  },
+  {
+    "index": 57,
+    "commit": "212afb0eb838769796bb7e9509c628633beec861",
+    "onMain": true,
+    "date": "2026-10-23T10:02:19-07:00",
+    "author": "hongwen000",
+    "subject": "perf: separate native execution state and suppress unchanged wire projections"
+  },
+  {
+    "index": 58,
+    "commit": "feaefd51b2dd9c8d6b4e9f095d1dbd55c3418909",
+    "onMain": true,
+    "date": "2026-10-23T10:40:03-07:00",
+    "author": "hongwen000",
+    "subject": "test: use platform temporary directories in native and asset cases"
+  },
+  {
+    "index": 59,
+    "commit": "2a044ef1df3816b9931cb7be20cf2285ce845a61",
+    "onMain": true,
+    "date": "2026-10-23T10:56:08-07:00",
+    "author": "hongwen000",
+    "subject": "fix: preserve mobile reading during paging and plugin activation"
+  },
+  {
+    "index": 60,
+    "commit": "c5af8948df8b4a95fb36131ecc95a9fa2a7065ee",
+    "onMain": true,
+    "date": "2026-10-23T17:00:00-07:00",
+    "author": "hongwen000",
+    "subject": "fix: preserve history position across gestures at the upper edge"
+  },
+  {
+    "index": 61,
+    "commit": "5b6ff473cb1ab23f9d586d3bc31227a4cb7ccf37",
+    "onMain": true,
+    "date": "2026-10-23T18:25:27-07:00",
+    "author": "hongwen000",
+    "subject": "fix: preserve manual history anchors and defer plugin activation during touch"
+  },
+  {
+    "index": 62,
+    "commit": "25bc000265a07c10ec4df523e64327b70c2dc38c",
+    "onMain": true,
+    "date": "2026-10-23T20:01:05-07:00",
+    "author": "hongwen000",
+    "subject": "fix: reconcile shared layouts without repeated restore conflicts"
+  },
+  {
+    "index": 63,
+    "commit": "4764ae04b5eccdbbfa1d0973e58332b60e2beed3",
+    "onMain": true,
+    "date": "2026-10-23T20:19:06-07:00",
+    "author": "hongwen000",
+    "subject": "fix: simplify mobile workspace navigation and preserve reader state"
+  },
+  {
+    "index": 64,
+    "commit": "31999315fb51a5ba33e9157dccbdd9bbeff15349",
+    "onMain": true,
+    "date": "2026-10-23T20:29:44-07:00",
+    "author": "hongwen000",
+    "subject": "fix: move source receipts into existing pane menus"
+  },
+  {
+    "index": 65,
+    "commit": "301c15264d4de67e1923e26d06e02fdc3e388f9c",
+    "onMain": true,
+    "date": "2026-10-24T00:39:37-07:00",
+    "author": "hongwen000",
+    "subject": "Upgrade to DSH rc.3 and preserve workspace behavior"
+  },
+  {
+    "index": 66,
+    "commit": "67375a0597b9fb16990465653651f3b8c7e05a60",
+    "onMain": true,
+    "date": "2026-10-24T01:42:13-07:00",
+    "author": "hongwen000",
+    "subject": "Reduce federated cold opening work and verify remote navigation"
+  },
+  {
+    "index": 67,
+    "commit": "5784b2398d7567d30c761c363954bacc6254ecca",
+    "onMain": true,
+    "date": "2026-10-24T02:15:32-07:00",
+    "author": "hongwen000",
+    "subject": "Fix quadratic stream retention and add measured memory regressions"
+  },
+  {
+    "index": 68,
+    "commit": "a5073b264f6a5a9d58a8cbf416d00c3428079192",
+    "onMain": true,
+    "date": "2026-10-24T02:31:25-07:00",
+    "author": "hongwen000",
+    "subject": "Preserve desktop reading position across interrupted history pages"
+  },
+  {
+    "index": 69,
+    "commit": "6d540ca58d7b1b84cdcbe4ab7faeeda416a2bc20",
+    "onMain": true,
+    "date": "2026-10-24T02:46:04-07:00",
+    "author": "hongwen000",
+    "subject": "Keep child scope metadata without retaining cumulative message bodies"
+  }
+]

@@ -326,3 +326,63 @@ test('a non-header-safe or oversized event cursor is discarded before reconnect 
         } finally { release(); await client.close(); }
     }
 });
+
+test('SSE awaits subscriber backpressure without mistaking it for a missing network heartbeat', async () => {
+    let releasePressure!: () => void, firstReceived!: () => void;
+    const pressure = new Promise<void>(resolve => { releasePressure = resolve; });
+    const first = new Promise<void>(resolve => { firstReceived = resolve; });
+    const seen: string[] = []; let connections = 0, stream!: ReadableStreamDefaultController<Uint8Array>;
+    const client = new HapiClient({ ...base, streamIdleTimeoutMs: 20, fetch: async input => {
+        if (String(input).endsWith('/auth')) return auth();
+        connections++;
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    } });
+    const unsubscribe = client.subscribe(event => {
+        if (event.type !== 'message-cancelled') return;
+        seen.push(event.messageId);
+        if (event.messageId === 'first') { firstReceived(); return pressure; }
+    });
+    try {
+        while (!stream) await delay(1);
+        const event = (id: string) => `id: ${id}\ndata: ${JSON.stringify({ type: 'message-cancelled', sessionId: 'source', messageId: id })}\n\n`;
+        stream.enqueue(new TextEncoder().encode(event('first') + event('second')));
+        await first; await delay(55);
+        assert.deepEqual(seen, ['first']); assert.equal(connections, 1);
+        releasePressure();
+        while (seen.length < 2) await delay(1);
+        assert.deepEqual(seen, ['first', 'second']); assert.equal(connections, 1);
+    } finally { releasePressure(); unsubscribe(); await client.close(); }
+});
+
+test('closing the client cancels a stalled subscriber without waiting for its consumer', async () => {
+    let firstReceived!: () => void;
+    const first = new Promise<void>(resolve => { firstReceived = resolve; });
+    const client = new HapiClient({ ...base, fetch: async input => {
+        if (String(input).endsWith('/auth')) return auth();
+        return new Response(`id: first\ndata: ${JSON.stringify({ type: 'session-updated', sessionId: 'source' })}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
+    } });
+    client.subscribe(() => { firstReceived(); return new Promise<void>(() => {}); });
+    await first;
+    await Promise.race([client.close(), delay(500).then(() => { throw new Error('Client close waited for stalled subscriber'); })]);
+});
+
+test('a rejected async subscriber cannot acknowledge a source event and reconnects with a snapshot gap', async () => {
+    let connections = 0, finish!: () => void;
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const cursors: Array<string | null> = [];
+    const client = new HapiClient({ ...base, fetch: async (input, init) => {
+        if (String(input).endsWith('/auth')) return auth();
+        cursors.push(new Headers(init?.headers).get('Last-Event-ID')); connections++;
+        const event = connections === 1 ? { type: 'session-updated', sessionId: 'source' }
+            : { type: 'connection-changed', data: { status: 'connected', subscriptionId: 'second', resume: 'ok' } };
+        return new Response(`id: ${connections}\ndata: ${JSON.stringify(event)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } });
+    } });
+    client.subscribe(event => {
+        if (event.type === 'session-updated') return Promise.reject(new Error('consumer admission failed'));
+        if (event.type === 'connection-changed' && event.data?.status === 'connected') { assert.equal(event.data.resume, 'gap'); finish(); }
+    });
+    try {
+        await Promise.race([finished, delay(1000).then(() => { throw new Error('No reconnect gap after consumer rejection'); })]);
+        assert.deepEqual(cursors.slice(0, 2), [null, null]);
+    } finally { await client.close(); }
+});

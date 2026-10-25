@@ -8,7 +8,7 @@ import { filterSessions, parseSessionResourceId, sessionCreationContext, session
 import { initialWorkspace, panes, WorkspaceStore, type PaneResource, type WorkspaceState } from '../src/client/model.ts'
 import { WorkspaceConflictError } from '../src/client/persistence.ts'
 import { sharedWorkspaceSignature, sharedWorkspaceState } from '../src/workspace/legacy.ts'
-import { sessionFolder } from '../src/workspace/presentation.ts'
+import { paneTitle, sessionFolder } from '../src/workspace/presentation.ts'
 import { createWorkspaceNotifications } from '../src/workspace/notifications.ts'
 
 function fixture() {
@@ -21,9 +21,10 @@ function fixture() {
     const actions: Array<[string, string]> = []
     const publish = (): void => { for (const listener of [...listeners]) listener() }
     const phase = (value: SessionListState['phase']): void => { snapshot = { ...snapshot, phase: value }; publish() }
-    const add = (id: string, title = id, updatedAt = 1, cwd?: string): void => {
+    const add = (id: string, title = id, updatedAt = 1, cwd?: string, durableTitle?: string): void => {
         snapshot = { ...snapshot, ids: [...new Set([...snapshot.ids, id as SessionId])], byId: { ...snapshot.byId,
-            [id]: { id: id as SessionId, displayTitle: title, running: false, blank: false, updatedAt, retainedBy: {}, ...(cwd ? { cwd } : {}) },
+            [id]: { id: id as SessionId, displayTitle: title, running: false, blank: false, updatedAt, retainedBy: {}, ...(cwd ? { cwd } : {}),
+                ...(durableTitle === undefined ? {} : { title: durableTitle }) },
         } }
         publish()
     }
@@ -32,6 +33,10 @@ function fixture() {
         if (!row) throw new Error('Missing fake row')
         snapshot = { ...snapshot, byId: { ...snapshot.byId, [id]: { ...row, projectionValues } as SessionSummary } }
         publish()
+    }
+    const removeRow = (id: string): void => {
+        const byId = { ...snapshot.byId }; delete byId[id as SessionId]
+        snapshot = { ...snapshot, ids: snapshot.ids.filter(value => value !== id), byId }; publish()
     }
     const count = (id: string, source: string, delta: number): void => {
         if (!snapshot.byId[id as SessionId]) add(id)
@@ -92,7 +97,7 @@ function fixture() {
         storage: { getItem: key => memory.get(key) ?? null, setItem: (key, value) => { memory.set(key, value) } },
         nextId: () => `test-${++sequence}`,
     }
-    return { sessions, navigation, options, refs, add, project, publish, phase, slow, deferred, renamed, actions, memory, disposeMain: () => main?.release() }
+    return { sessions, navigation, options, refs, add, project, removeRow, publish, phase, slow, deferred, renamed, actions, memory, disposeMain: () => main?.release() }
 }
 
 test('related source tools reuse one pane without replacing another session or explicit resource', () => {
@@ -207,6 +212,127 @@ test('original source pin and lifecycle metadata stay independent of official di
     controller.setSourceCatalog([{ id: 'native', logicalSessionId: 'logical', displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner', engine: 'codex', title: 'Native', cwd: '/repo', pinMode: 'none' }])
     assert.equal(controller.getSnapshot().catalog.byId.native!.pinned, false)
     assert.equal(controller.getSnapshot().catalog.byId.dsh!.sourcePinMode, undefined)
+    controller.dispose(); source.disposeMain()
+})
+
+test('source titles survive intermediate projection clearing and an empty attaching catalog without becoming internal IDs', () => {
+    const id = `hapi-codex-${'1'.repeat(32)}`, source = fixture()
+    source.add(id, 'Known source title', 1, '/source', 'Known source title')
+    source.project(id, { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: 'original-source' } } as never)
+    const controller = new WorkspaceController(source.options)
+    controller.openSession(id)
+    const title = (): string => paneTitle(controller.store.focusedPane(), controller.getSnapshot().catalog.byId, 'Empty')
+    const catalog = { id, logicalSessionId: id, displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner',
+        engine: 'codex', title: 'Known source title', cwd: '/source' }
+    assert.equal(title(), 'Known source title')
+    // rc.3 clears projection stores on connection changes before loading the
+    // replacement baseline. Its temporary row may have neither title nor cwd.
+    source.add(id)
+    assert.equal(title(), 'Known source title', 'opening retains a title learned before the HAPI catalog arrived')
+    controller.setSourceCatalog([catalog], 'hub')
+    for (let reconnect = 0; reconnect < 2; reconnect++) {
+        controller.setSourceCatalog([], 'hub')
+        source.add(id)
+        assert.equal(title(), 'Known source title', 'a successful but not-yet-attached source catalog cannot erase a known title')
+        controller.sourceCatalogFailed(new Error('Synthetic disconnect'))
+        assert.equal(title(), 'Known source title')
+        controller.setSourceCatalog([catalog], 'hub')
+        source.add(id, 'Known source title', 2, '/source', 'Known source title')
+    }
+    source.add(id, 'Renamed at source', 3, '/source', 'Renamed at source')
+    assert.equal(title(), 'Renamed at source', 'live durable title wins over the older polled source catalog')
+    controller.setSourceCatalog([], 'hub')
+    source.add(id)
+    assert.equal(title(), 'Renamed at source', 'another loading snapshot retains the latest durable title')
+    controller.dispose(); source.disposeMain()
+})
+
+test('source catalog titles fill a cold display only, without changing ordinary or remote title ownership', () => {
+    const id = `hapi-observed-${'2'.repeat(32)}`, local = fixture(), remote = fixture()
+    local.add(id); local.add('ordinary', 'Directory label'); remote.add(id, 'Remote title', 1, '/remote', 'Remote title')
+    const controller = new WorkspaceController(local.options)
+    const off = controller.addHost({ id: 'peer', label: 'Peer', sessions: remote.sessions, navigation: remote.navigation, renderConversation: () => null })
+    const catalog = { id, logicalSessionId: id, displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner',
+        engine: 'claude', title: 'Original title', cwd: '/source' }
+    controller.setSourceCatalog([catalog], 'hub')
+    assert.equal(controller.getSnapshot().catalog.byId[id]?.displayTitle, 'Original title')
+    assert.equal(controller.getSnapshot().catalog.byId[id]?.title, 'Original title')
+    assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId('peer', id)]?.displayTitle, 'Remote title')
+    assert.equal(controller.getSnapshot().catalog.byId.ordinary?.displayTitle, 'Directory label')
+    assert.equal(controller.getSnapshot().catalog.byId.ordinary?.title, undefined)
+    controller.setSourceCatalog([{ ...catalog, title: 'Source rename while projections load' }], 'hub')
+    assert.equal(controller.getSnapshot().catalog.byId[id]?.displayTitle, 'Source rename while projections load')
+    for (const title of ['', '   ', 'original-source', id]) {
+        controller.setSourceCatalog([{ ...catalog, title }], 'hub')
+        assert.equal(controller.getSnapshot().catalog.byId[id]?.displayTitle, 'Source rename while projections load', 'a source catalog fallback ID is not a title')
+    }
+    local.add('ordinary')
+    assert.equal(controller.getSnapshot().catalog.byId.ordinary?.displayTitle, 'ordinary', 'ordinary DSH derivation remains owned by its controller')
+    off(); controller.dispose(); local.disposeMain(); remote.disposeMain()
+})
+
+test('source pane title survives the missing-row gap across display generations and is cleared when its source changes', () => {
+    const id = `hapi-codex-${'3'.repeat(32)}`, source = fixture()
+    source.add(id, 'Known original title', 1, '/source', 'Known original title')
+    source.project(id, { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: 'original-source' } } as never)
+    const controller = new WorkspaceController(source.options)
+    controller.openSession(id)
+    const paneId = controller.store.focusedPane().id
+    const title = (): string => {
+        const snapshot = controller.getSnapshot()
+        return paneTitle(controller.store.focusedPane(), snapshot.catalog.byId, 'Empty', snapshot.sourcePaneTitles)
+    }
+    assert.equal(title(), 'Known original title')
+    source.removeRow(id)
+    assert.equal(title(), 'Known original title', 'retiring the old display must not expose the original source ID')
+    controller.replaceSession(id, `${id}-r1`)
+    assert.equal(title(), 'Known original title', 'a successor without its catalog row keeps the exact original title')
+    source.add(`${id}-r1`)
+    assert.equal(title(), 'Known original title', 'an ID-only successor row is still loading metadata')
+    source.add(`${id}-r1`, 'Updated original title', 2, '/source', 'Updated original title')
+    source.project(`${id}-r1`, { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: 'original-source' } } as never)
+    assert.equal(title(), 'Updated original title')
+    source.removeRow(`${id}-r1`)
+    controller.replaceSession(`${id}-r1`, `${id}-r2`)
+    assert.equal(title(), 'Updated original title')
+    controller.store.openResource({ kind: 'chat', sessionId: 'other-display', sourceSessionId: 'original-source', sourceHubId: 'other-hub' })
+    assert.equal(controller.getSnapshot().sourcePaneTitles[paneId], undefined, 'same source ID on another Hub cannot inherit the title')
+    controller.store.openResource({ kind: 'chat', sessionId: 'another-display', sourceSessionId: 'different-source', sourceHubId: 'hub' })
+    assert.equal(controller.getSnapshot().sourcePaneTitles[paneId], undefined, 'another source on the original Hub cannot inherit the title')
+    controller.store.closePane(paneId)
+    assert.deepEqual(controller.getSnapshot().sourcePaneTitles, {})
+    controller.dispose(); source.disposeMain()
+})
+
+test('a retired source display keeps its durable rename while the polled catalog still has the old title', () => {
+    const id = `hapi-codex-${'5'.repeat(32)}`, source = fixture()
+    source.add(id, 'Old source title', 1, '/source', 'Old source title')
+    source.project(id, { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: 'original-source' } } as never)
+    const controller = new WorkspaceController(source.options)
+    controller.setSourceCatalog([{ id, logicalSessionId: id, displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner',
+        engine: 'codex', title: 'Old source title', cwd: '/source' }], 'hub')
+    controller.openSession(id)
+    source.add(id, 'New durable title', 2, '/source', 'New durable title')
+    const title = (): string => {
+        const snapshot = controller.getSnapshot()
+        return paneTitle(controller.store.focusedPane(), snapshot.catalog.byId, 'Empty', snapshot.sourcePaneTitles)
+    }
+    assert.equal(title(), 'New durable title')
+    source.removeRow(id)
+    assert.equal(title(), 'New durable title', 'a delayed catalog poll cannot roll the known title back')
+    controller.replaceSession(id, `${id}-r1`)
+    assert.equal(title(), 'New durable title')
+    controller.dispose(); source.disposeMain()
+})
+
+test('a restored source pane can use its exact catalog title before the successor display is listed', () => {
+    const id = `hapi-codex-${'4'.repeat(32)}`, source = fixture(), controller = new WorkspaceController(source.options)
+    controller.setSourceCatalog([{ id, logicalSessionId: id, displayRevision: 0, hapiSessionId: 'original-source', machineId: 'runner',
+        engine: 'codex', title: 'Known while loading', cwd: '/source' }], 'hub')
+    controller.store.openResource({ kind: 'chat', sessionId: `${id}-r1`, sourceSessionId: 'original-source', sourceHubId: 'hub' })
+    const pane = controller.store.focusedPane(), snapshot = controller.getSnapshot()
+    assert.equal(snapshot.catalog.byId[`${id}-r1`], undefined, 'a title does not fabricate a ready display row')
+    assert.equal(paneTitle(pane, snapshot.catalog.byId, 'Empty', snapshot.sourcePaneTitles), 'Known while loading')
     controller.dispose(); source.disposeMain()
 })
 
@@ -1031,4 +1157,61 @@ test('accepting a conflicting server layout backs up the layout being replaced, 
     assert.equal(JSON.parse(source.memory.get('workspace-test')!).layoutRecovery.windows[0].name, 'Current local edit')
     assert.equal(controller.getSnapshot().conflict, null)
     controller.dispose(); source.disposeMain()
+})
+
+test('same-source generation retains one rendering reference across a missing successor catalog', async () => {
+    const id = `hapi-codex-${'6'.repeat(32)}`, source = fixture()
+    source.add(id, 'Source')
+    source.project(id, { hapi: { hubId: 'hub', hapiSessionId: 'original' } } as never)
+    const controller = new WorkspaceController(source.options)
+    controller.openSession(id); await Promise.resolve()
+    const paneId = controller.store.focusedPane().id
+    const old = controller.getSnapshot().leases.get(paneId)!.reference!
+    source.removeRow(id)
+    controller.replaceSession(id, `${id}-r1`)
+    const pending = controller.getSnapshot().leases.get(paneId)!
+    assert.equal(pending.reference, undefined)
+    assert.equal(pending.previousReference, old)
+    assert.equal(source.refs.find(ref => ref === old)!.released, false)
+    source.add(`${id}-r1`)
+    source.project(`${id}-r1`, { hapi: { hubId: 'hub', hapiSessionId: 'original' } } as never)
+    const next = controller.getSnapshot().leases.get(paneId)!
+    assert.equal(next.reference?.sessionId, `${id}-r1`)
+    assert.equal(next.previousReference, undefined)
+    assert.equal(source.refs.find(ref => ref === old)!.released, true)
+    controller.dispose(); source.disposeMain()
+})
+
+test('navigating to another source releases a waiting generation rendering reference', async () => {
+    const id = `hapi-codex-${'7'.repeat(32)}`, source = fixture()
+    source.add(id)
+    source.project(id, { hapi: { hubId: 'hub', hapiSessionId: 'original' } } as never)
+    source.add('other')
+    const controller = new WorkspaceController(source.options)
+    controller.openSession(id); await Promise.resolve()
+    const paneId = controller.store.focusedPane().id
+    const old = controller.getSnapshot().leases.get(paneId)!.reference!
+    source.removeRow(id); controller.replaceSession(id, `${id}-r1`)
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.previousReference, old)
+    controller.openSession('other')
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.previousReference, undefined)
+    assert.equal(source.refs.find(ref => ref === old)!.released, true)
+    controller.dispose(); source.disposeMain()
+})
+
+test('source identity arriving during initial reference readiness is retained for generation handoff', async () => {
+    const id = `hapi-codex-${'8'.repeat(32)}`, source = fixture()
+    source.add(id); source.slow.add(id)
+    const controller = new WorkspaceController(source.options)
+    controller.openSession(id)
+    const paneId = controller.store.focusedPane().id
+    const old = controller.getSnapshot().leases.get(paneId)!.reference!
+    source.project(id, { hapi: { hubId: 'hub', hapiSessionId: 'late-original' } } as never)
+    source.deferred.get(id)!.resolve(old.binding); await Promise.resolve()
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.status, 'ready')
+    source.removeRow(id); controller.replaceSession(id, `${id}-r1`)
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.previousReference, old)
+    controller.dispose()
+    assert.equal(source.refs.find(ref => ref === old)!.released, true)
+    source.disposeMain()
 })

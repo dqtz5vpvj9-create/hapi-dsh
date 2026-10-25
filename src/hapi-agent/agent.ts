@@ -195,12 +195,9 @@ export class HapiObservedAgent implements Agent {
       let checkpoint = config.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
         const cached = config.fastHistorySeed ? agent.cache.snapshot(true) : undefined
-        if (cached) {
-          rows = agent.historyJournal.overlayCache(cached.rows)
-          agent.historyStale = true
-          agent.fault = 'Cached source history is stale; reconciling with the live source'
-          agent.historyReadFault = true
-        } else try {
+        // A persisted preview can precede ordinary appends. Read the current
+        // bounded tail first; reserve the cache for source read failures.
+        try {
           checkpoint = agent.historyJournal.checkpoint()
           const tail = config.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, 1)
             : { rows: await readNativeHistory(transport, source.id), complete: true }
@@ -216,6 +213,7 @@ export class HapiObservedAgent implements Agent {
           checkpoint = agent.historyJournal.checkpoint()
           rows = agent.historyJournal.overlayCache((cached ?? agent.cache.snapshot())?.rows ?? [])
           agent.historyStale = true
+          agent.historyReadFault = true
           agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
         }
       } else {

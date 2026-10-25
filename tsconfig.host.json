@@ -5,7 +5,7 @@
     "src/index.ts", "src/client-api.ts", "src/hapi/**/*.ts", "src/hapi-agent/**/*.ts", "src/codex/**/*.ts",
     "src/shared/**/*.ts", "src/hub/**/*.ts", "src/runner/**/*.ts", "src/cli/**/*.ts",
     "tests/codex-*.test.ts", "tests/hapi-*.test.ts", "tests/config-*.test.ts",
-    "tests/federation-*.test.ts", "tests/host-*.test.ts"
+    "tests/federation-*.test.ts", "tests/host-*.test.ts", "tests/source-event-*.test.ts"
   ],
   "exclude": ["node_modules", "dist", "src/client"]
 }

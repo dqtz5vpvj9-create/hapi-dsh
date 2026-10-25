@@ -57,7 +57,7 @@ export class HapiClient implements HapiTransport {
     private readonly lifetime = new AbortController();
     private token: { value: string; expiresAt: number } | undefined;
     private authentication: Promise<string> | undefined;
-    private readonly listeners = new Set<(event: HapiEvent) => void>();
+    private readonly listeners = new Set<(event: HapiEvent) => void | Promise<void>>();
     private readonly catalogListeners = new Set<() => void>();
     private stream: AbortController | undefined;
     private streamTask: Promise<void> | undefined;
@@ -426,7 +426,7 @@ export class HapiClient implements HapiTransport {
     }
     private sessionPath(id: string): string { return `/api/sessions/${encodeURIComponent(id)}`; }
 
-    subscribe(listener: (event: HapiEvent) => void): () => void {
+    subscribe(listener: (event: HapiEvent) => void | Promise<void>): () => void {
         if (this.closed) throw new Error('HAPI client has closed');
         this.listeners.add(listener);
         this.ensureStream();
@@ -440,8 +440,21 @@ export class HapiClient implements HapiTransport {
     private stopUnusedStream(): void {
         if (!this.listeners.size && !this.catalogListeners.size) this.stream?.abort();
     }
-    private publish(event: HapiEvent): void {
-        for (const listener of [...this.listeners]) { try { listener(event); } catch { /* Isolate subscriptions. */ } }
+    private publish(event: HapiEvent): void | Promise<void> {
+        const pending: Promise<void>[] = [];
+        for (const listener of [...this.listeners]) {
+            try { const pressure = listener(event); if (pressure) pending.push(pressure); }
+            catch (error) { pending.push(Promise.reject(error)); }
+        }
+        if (pending.length) return Promise.all(pending).then(() => {});
+    }
+    private async waitForSubscribers(pending: Promise<void>, signal: AbortSignal): Promise<void> {
+        if (signal.aborted) throw signal.reason;
+        await new Promise<void>((resolve, reject) => {
+            const abort = (): void => reject(signal.reason);
+            signal.addEventListener('abort', abort, { once: true });
+            void pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+        });
     }
     private ensureStream(): void {
         if (this.stream || this.closed) return;
@@ -503,7 +516,14 @@ export class HapiClient implements HapiTransport {
                                 this.needsSnapshot = false;
                             }
                         }
-                        this.publish(event);
+                        const pressure = this.publish(event);
+                        if (pressure) {
+                            // Waiting for local capacity is not a missing network heartbeat.
+                            clearTimeout(idleTimer!);
+                            try { await this.waitForSubscribers(pressure, streamSignal); }
+                            catch (error) { this.cursor = ''; this.needsSnapshot = true; throw error; }
+                            touch();
+                        }
                     } else if (typeof value === 'object' && value && 'type' in value &&
                         /^(session-(added|updated|removed|ended)|message-(received|updated|cancelled)|messages-(invalidated|consumed|indeterminate|dispatching|requeued)|scheduled-matured|connection-changed)$/.test(String(value.type))) {
                         // Never acknowledge a malformed business event. Reconnect from a
@@ -522,7 +542,11 @@ export class HapiClient implements HapiTransport {
             finally { clearTimeout(idleTimer!); this.subscriptionId = undefined; this.appliedVisibility = undefined; }
             this.connected = false;
             if (signal.aborted || this.closed) break;
-            this.publish({ type: 'connection-changed', data: { status: 'disconnected' } });
+            const pressure = this.publish({ type: 'connection-changed', data: { status: 'disconnected' } });
+            if (pressure) {
+                try { await this.waitForSubscribers(pressure, signal); }
+                catch { this.cursor = ''; this.needsSnapshot = true; }
+            }
             await delay(backoff, undefined, { signal }).catch(() => undefined);
             backoff = Math.min(backoff * 2, this.options.reconnectMaxMs ?? 15_000);
         }

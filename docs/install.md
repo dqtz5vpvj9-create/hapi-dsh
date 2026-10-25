@@ -169,7 +169,7 @@ Runner 只监听本机回环地址，Hub 不需要向 Runner 打开入站端口�
 
 插件直接使用该 Web 的官方连接、客户端模块和监听服务；配置中的 `dsh.profile`、`server` 仅供独立 Runner 启动器使用，在这种挂载方式下不启动新实例。原 Web 必须使用固定 DSH 版本并监听 `127.0.0.1`。认证仍由原 Web 与配对凭据共同控制，原始 Web 登录令牌不传给浏览器。
 
-配置通常通过官方 HMR 生效。如果插件管理接口报告 `restart-required`，先确认原 Web 没有正在执行的会话，再正常重启原进程。接入后，通过主 Host 的机器目录及该机器路由下的 `hapi-dsh/bootstrap`、`api/session/list` 检查连通性和原会话 ID；界面由用户手测。
+配置通常通过官方 HMR 生效。如果插件管理接口报告 `restart-required`，先确认原 Web 没有正在执行的会话，再正常重启原进程。接入后，通过主 Host 的机器目录及该机器路由下的 `hapi-dsh/bootstrap`、`api/session/list` 检查连通性和原会话 ID。Agent 还须按 [UI 验收流程](ui-acceptance.md) 运行对应的官方组件交互、过程采样和截图视觉检查，分别报告合成源、生产只读及真机覆盖；HTTP 可用不能代替界面验收。
 
 ## Profile 与插件管理
 

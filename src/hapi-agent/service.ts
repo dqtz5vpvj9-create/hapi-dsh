@@ -14,6 +14,7 @@ import { hapiObservedProjectionDefinition } from './projection-state.js'
 import { HistoryReadInvalidatedError, SourceHistoryJournal, type HistoryCheckpoint } from '../codex/history-journal.js'
 import { SourceHistoryLifetimes } from '../codex/history-lifecycle.js'
 import { SourceHistorySync } from '../codex/history-sync.js'
+import { SourceEventQueue, replacesCumulativeSnapshot, sourceEventBytes, type QueuedSourceEvent } from '../codex/event-queue.js'
 
 export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'displayRevision' | 'onHistoryChanged'> {
   /** Source discovery is independent of materializing display histories. */
@@ -27,7 +28,8 @@ export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'disp
 export class HapiAgentService {
   private readonly agents = new Map<string, HapiObservedAgent>()
   private readonly attaching = new Map<string, Promise<HapiObservedAgent | undefined>>()
-  private readonly work = new Map<string, Promise<void>>()
+  private readonly work = new Map<string, SourceEventQueue<QueuedSourceEvent<HapiObservedAgent>>>()
+  private readonly reconciling = new Map<string, Promise<HapiObservedAgent | undefined>>()
   private readonly historyJournals = new Map<string, SourceHistoryJournal>()
   private readonly lifetimes = new SourceHistoryLifetimes()
   private readonly excluded = new Set<string>()
@@ -135,11 +137,18 @@ export class HapiAgentService {
   }
 
   reconcileSource(sourceId: string): Promise<HapiObservedAgent | undefined> {
-    const previous = this.work.get(sourceId) ?? Promise.resolve()
-    const task = previous.then(() => this.reconcileNow(sourceId))
-    const tracked = task.then(() => {}, error => { this.agents.get(sourceId)?.reportError(error); this.report(error, sourceId) })
-    this.track(sourceId, tracked); return task
+    const pending = this.reconciling.get(sourceId)
+    if (pending) return pending
+    const task: Promise<HapiObservedAgent | undefined> = this.queueForSource(sourceId).run(() => {
+      if (this.reconciling.get(sourceId) === task) this.reconciling.delete(sourceId)
+      return this.reconcileNow(sourceId)
+    })
+    this.reconciling.set(sourceId, task)
+    const release = () => { if (this.reconciling.get(sourceId) === task) this.reconciling.delete(sourceId) }
+    void task.then(release, release)
+    return task
   }
+
   private async reconcileNow(sourceId: string): Promise<HapiObservedAgent | undefined> {
     if (this.disposed) return undefined
     const existing = this.agents.get(sourceId)
@@ -241,13 +250,14 @@ export class HapiAgentService {
     sync.request(true)
   }
 
-  private enqueue(event: HapiEvent): void {
+  private enqueue(event: HapiEvent): void | Promise<void> {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       for (const journal of this.historyJournals.values()) journal.capture(event)
-      for (const agent of this.agents.values()) this.queue(agent.binding.hapiSessionId, event)
+      const pressure = [...this.agents.values()].map(agent => this.queue(agent.binding.hapiSessionId, event)).filter(Boolean)
       if (event.data?.status === 'connected') void this.refreshCatalog().catch(error => this.report(error))
-    } else { this.capture(event); this.queue(event.sessionId, event) }
+      if (pressure.length) return Promise.all(pressure).then(() => {})
+    } else { this.capture(event); return this.queue(event.sessionId, event) }
   }
   private capture(event: Exclude<HapiEvent, { type: 'toast' | 'connection-changed' }>): void {
     const id = event.sessionId
@@ -261,12 +271,17 @@ export class HapiAgentService {
     }
   }
 
-  private queue(sourceId: string, event: HapiEvent): void {
+  private queue(sourceId: string, event: HapiEvent): void | Promise<void> {
     if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
-    const version = this.lifetimes.version(sourceId), checkpoint = this.historyJournals.get(sourceId)?.checkpoint()
-    const removedAgent = event.type === 'session-removed' ? this.agents.get(sourceId) : undefined
-    const previous = this.work.get(sourceId) ?? Promise.resolve()
-    const task = previous.then(async () => {
+    return this.queueForSource(sourceId).enqueue({ event, version: this.lifetimes.version(sourceId),
+      checkpoint: this.historyJournals.get(sourceId)?.checkpoint(),
+      removedAgent: event.type === 'session-removed' ? this.agents.get(sourceId) : undefined }, sourceEventBytes(event))
+  }
+
+  private queueForSource(sourceId: string): SourceEventQueue<QueuedSourceEvent<HapiObservedAgent>> {
+    let queue = this.work.get(sourceId)
+    if (queue) return queue
+    queue = new SourceEventQueue(async ({ event, version, checkpoint, removedAgent }) => {
       if (this.disposed) return
       if (event.type === 'session-removed') {
         // A remove/add burst can advance the lifecycle before queued work
@@ -290,25 +305,26 @@ export class HapiAgentService {
       }
       try { await agent.handleEvent(event, checkpoint) }
       catch (error) { if (error instanceof NativeHistoryChangedError || error instanceof HistoryReadInvalidatedError) { agent.reportError(error); agent.requestHistorySync() } else throw error }
-    }).catch(error => { this.agents.get(sourceId)?.reportError(error); this.report(error, sourceId) })
-    this.track(sourceId, task)
-  }
-  private track(id: string, task: Promise<void>): void {
-    this.work.set(id, task); void task.then(() => { if (this.work.get(id) === task) this.work.delete(id) })
+    }, replacesCumulativeSnapshot, error => {
+      this.agents.get(sourceId)?.reportError(error); this.report(error, sourceId)
+    }, () => { if (!this.disposed) this.agents.get(sourceId)?.requestHistorySync() }, undefined,
+    () => { if (this.work.get(sourceId) === queue) this.work.delete(sourceId) })
+    this.work.set(sourceId, queue)
+    return queue
   }
   async settled(): Promise<void> {
     do {
-      while (this.work.size) await Promise.all([...this.work.values()])
+      await Promise.all([...this.work.values()].map(queue => queue.settled()))
       await Promise.all(this.list().map(agent => agent.settled()))
-    } while (this.work.size)
+    } while ([...this.work.values()].some(queue => queue.pending.items > 0))
   }
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true; this.unsubscribe?.()
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
-    await Promise.allSettled([...this.attaching.values(), ...this.work.values(), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
-    await Promise.allSettled(this.list().map(agent => agent.dispose())); this.agents.clear(); this.historyJournals.clear(); this.unregister?.()
+    await Promise.allSettled([...this.attaching.values(), ...[...this.work.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
+    await Promise.allSettled(this.list().map(agent => agent.dispose())); this.agents.clear(); this.work.clear(); this.reconciling.clear(); this.historyJournals.clear(); this.unregister?.()
   }
   private report(error: unknown, sourceId?: string): void {
     const failure = error instanceof Error ? error : new Error('The original HAPI source could not be synchronized')

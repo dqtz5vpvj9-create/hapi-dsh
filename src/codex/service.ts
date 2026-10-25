@@ -13,6 +13,7 @@ import { hapiProjectionDefinition } from './projection-state.js'
 import { HistoryReadInvalidatedError, SourceHistoryJournal, type HistoryCheckpoint } from './history-journal.js'
 import { SourceHistoryLifetimes } from './history-lifecycle.js'
 import { SourceHistorySync } from './history-sync.js'
+import { SourceEventQueue, replacesCumulativeSnapshot, sourceEventBytes, type QueuedSourceEvent } from './event-queue.js'
 
 export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRevision' | 'onHistoryChanged'> {
   /** The unified source catalog already lists unopened sessions. Materialize
@@ -26,7 +27,8 @@ export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRe
 export class CodexService {
   private readonly agents = new Map<string, NativeCodexAgent>()
   private readonly attaching = new Map<string, Promise<NativeCodexAgent | undefined>>()
-  private readonly eventWork = new Map<string, Promise<void>>()
+  private readonly eventWork = new Map<string, SourceEventQueue<QueuedSourceEvent<NativeCodexAgent>>>()
+  private readonly reconciling = new Map<string, Promise<NativeCodexAgent | undefined>>()
   private readonly historyJournals = new Map<string, SourceHistoryJournal>()
   private readonly lifetimes = new SourceHistoryLifetimes()
   private readonly excluded = new Set<string>()
@@ -88,8 +90,10 @@ export class CodexService {
    * old references cannot silently send to the replacement thread or home.
    */
   reconcileSource(sourceId: string): Promise<NativeCodexAgent | undefined> {
-    const previous = this.eventWork.get(sourceId) ?? Promise.resolve()
-    const work = previous.then(async () => {
+    const pending = this.reconciling.get(sourceId)
+    if (pending) return pending
+    const work: Promise<NativeCodexAgent | undefined> = this.queueForSource(sourceId).run(async () => {
+      if (this.reconciling.get(sourceId) === work) this.reconciling.delete(sourceId)
       if (this.disposed) throw new Error('The Codex service was disposed')
       const existing = this.agents.get(sourceId)
       if (!existing) return this.attach(sourceId)
@@ -115,12 +119,9 @@ export class CodexService {
       this.errors.delete(sourceId)
       return this.agents.get(sourceId)
     })
-    const tracked = work.then(() => {}, error => {
-      this.agents.get(sourceId)?.reportError(error)
-      this.report(error, sourceId)
-    })
-    this.eventWork.set(sourceId, tracked)
-    void tracked.then(() => { if (this.eventWork.get(sourceId) === tracked) this.eventWork.delete(sourceId) })
+    this.reconciling.set(sourceId, work)
+    const release = () => { if (this.reconciling.get(sourceId) === work) this.reconciling.delete(sourceId) }
+    void work.then(release, release)
     return work
   }
 
@@ -272,16 +273,17 @@ export class CodexService {
     sync.request(true)
   }
 
-  private enqueue(event: HapiEvent): void {
+  private enqueue(event: HapiEvent): void | Promise<void> {
     if (this.disposed || event.type === 'toast') return
     if (event.type === 'connection-changed') {
       for (const journal of this.historyJournals.values()) journal.capture(event)
-      for (const agent of this.agents.values()) this.queueFor(agent.binding.hapiSessionId, event)
+      const pressure = [...this.agents.values()].map(agent => this.queueFor(agent.binding.hapiSessionId, event)).filter(Boolean)
       if (event.data?.status === 'connected') void this.refreshCatalog().catch(error => this.report(error))
+      if (pressure.length) return Promise.all(pressure).then(() => {})
       return
     }
     this.capture(event)
-    this.queueFor(event.sessionId, event)
+    return this.queueFor(event.sessionId, event)
   }
 
   private capture(event: Exclude<HapiEvent, { type: 'toast' | 'connection-changed' }>): void {
@@ -296,12 +298,17 @@ export class CodexService {
     }
   }
 
-  private queueFor(sourceId: string, event: HapiEvent): void {
+  private queueFor(sourceId: string, event: HapiEvent): void | Promise<void> {
     if (this.options.discovery === 'on-demand' && !this.agents.has(sourceId) && !this.attaching.has(sourceId)) return
-    const version = this.lifetimes.version(sourceId), checkpoint = this.historyJournals.get(sourceId)?.checkpoint()
-    const removedAgent = event.type === 'session-removed' ? this.agents.get(sourceId) : undefined
-    const previous = this.eventWork.get(sourceId) ?? Promise.resolve()
-    const work = previous.then(async () => {
+    return this.queueForSource(sourceId).enqueue({ event, version: this.lifetimes.version(sourceId),
+      checkpoint: this.historyJournals.get(sourceId)?.checkpoint(),
+      removedAgent: event.type === 'session-removed' ? this.agents.get(sourceId) : undefined }, sourceEventBytes(event))
+  }
+
+  private queueForSource(sourceId: string): SourceEventQueue<QueuedSourceEvent<NativeCodexAgent>> {
+    let queue = this.eventWork.get(sourceId)
+    if (queue) return queue
+    queue = new SourceEventQueue(async ({ event, version, checkpoint, removedAgent }) => {
       if (this.disposed) return
       if (event.type === 'session-removed') {
         // A remove/add burst can advance the lifecycle before queued work
@@ -321,20 +328,21 @@ export class CodexService {
         if (error instanceof NativeHistoryChangedError || error instanceof HistoryReadInvalidatedError) { agent.reportError(error); agent.requestHistorySync() }
         else throw error
       }
-    }).catch(error => {
+    }, replacesCumulativeSnapshot, error => {
       this.agents.get(sourceId)?.reportError(error)
       this.report(error, sourceId)
-    })
-    this.eventWork.set(sourceId, work)
-    void work.then(() => { if (this.eventWork.get(sourceId) === work) this.eventWork.delete(sourceId) })
+    }, () => { if (!this.disposed) this.agents.get(sourceId)?.requestHistorySync() }, undefined,
+    () => { if (this.eventWork.get(sourceId) === queue) this.eventWork.delete(sourceId) })
+    this.eventWork.set(sourceId, queue)
+    return queue
   }
 
   /** Wait for currently received source events; useful for explicit refresh and integration tests. */
   async settled(): Promise<void> {
     do {
-      while (this.eventWork.size) await Promise.all([...this.eventWork.values()])
+      await Promise.all([...this.eventWork.values()].map(queue => queue.settled()))
       await Promise.all(this.list().map(agent => agent.settled()))
-    } while (this.eventWork.size)
+    } while ([...this.eventWork.values()].some(queue => queue.pending.items > 0))
   }
 
   async dispose(): Promise<void> {
@@ -343,9 +351,11 @@ export class CodexService {
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
     this.unsubscribe?.()
-    await Promise.allSettled([...this.attaching.values(), ...this.eventWork.values(), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
+    await Promise.allSettled([...this.attaching.values(), ...[...this.eventWork.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
     await Promise.allSettled(this.list().map(agent => agent.dispose()))
     this.agents.clear()
+    this.eventWork.clear()
+    this.reconciling.clear()
     this.historyJournals.clear()
     this.unregisterProjection?.()
   }

@@ -60,9 +60,14 @@ interface AutosaveOptions {
     report(error: unknown): void
 }
 
+interface AutosaveBinding {
+    stop(): void
+    resume(): void
+}
+
 /** One subscription per actual official input, even when it has several panes. */
 export class ComposerAutosaves {
-    private readonly seats = new Map<Composer, { users: number; stop(): void }>()
+    private readonly seats = new Map<Composer, AutosaveBinding & { key: string; users: number }>()
     private readonly owners = new Map<string, Composer>()
 
     retain(options: AutosaveOptions): () => void {
@@ -70,7 +75,7 @@ export class ComposerAutosaves {
         let seat = this.seats.get(composer)
         if (!seat) {
             this.owners.set(key, composer)
-            seat = { users: 0, stop: this.bind(options, () => this.owners.get(key) === composer) }
+            seat = { key, users: 0, ...this.bind(options, () => this.owners.get(key) === composer) }
             this.seats.set(composer, seat)
         }
         seat.users++
@@ -80,17 +85,27 @@ export class ComposerAutosaves {
             released = true
             if (--seat.users) return
             seat.stop(); this.seats.delete(composer)
-            if (this.owners.get(key) === composer) this.owners.delete(key)
+            if (this.owners.get(key) !== composer) return
+            let replacement: Composer | undefined
+            for (const [candidate, active] of this.seats) if (active.key === key) replacement = candidate
+            if (replacement) {
+                this.owners.set(key, replacement)
+                this.seats.get(replacement)!.resume()
+            } else this.owners.delete(key)
         }
     }
 
-    private bind({ key, storage, composer, actions, resolveCommand, report }: AutosaveOptions, owns: () => boolean): () => void {
+    private bind({ key, storage, composer, actions, resolveCommand, report }: AutosaveOptions, owns: () => boolean): AutosaveBinding {
         const lifetime = new AbortController()
         let previous: string | undefined, failed = false
+        let resumedAt: number | undefined
         let command: { token: string; revision: number } | undefined
         const save = () => {
             if (!owns()) return
             const state = composer.state.getSnapshot()
+            // Reclaim persistence for future edits without flushing an older
+            // editor over the final backup left by the departed owner.
+            if (state.draftRev === resumedAt) return
             if (state.phase === 'adjudicating' || state.phase === 'submitting') return
             const draft = composerDraftSnapshot(state)
             if (command && state.draftRev === command.revision && !draft.command) {
@@ -121,7 +136,7 @@ export class ComposerAutosaves {
         } catch (error) {
             report(error)
             // Do not overwrite an unreadable or partly restored saved document.
-            return () => lifetime.abort()
+            return { stop: () => lifetime.abort(), resume() {} }
         }
         save()
         const stop = composer.state.subscribe(save)
@@ -134,6 +149,9 @@ export class ComposerAutosaves {
                 composer.beginCommand(claim, { start: 0, end: pending.token.trimEnd().length, draftRev: state.draftRev })
             }).catch(error => { if (!lifetime.signal.aborted) report(error) })
         }
-        return () => { save(); stop(); lifetime.abort() }
+        return {
+            stop: () => { save(); stop(); lifetime.abort() },
+            resume: () => { previous = undefined; resumedAt = composer.state.getSnapshot().draftRev },
+        }
     }
 }

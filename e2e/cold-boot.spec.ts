@@ -122,3 +122,123 @@ test('cold conversation keeps account assets on demand; opening native Settings 
         } finally { await environment?.close(); }
     }
 });
+
+for (const failure of ['bootstrap', 'account-script'] as const) {
+    test(`Settings retries a failed ${failure} on reopen and keeps a successful roster`, async ({ page }, info) => {
+        let environment: OfficialEnvironment | undefined;
+        let primaryFailure: unknown;
+        let failRequests = true;
+        let bootstrapRequests = 0;
+        let blockedRequests = 0;
+        let releaseRetry!: () => void;
+        const retryGate = new Promise<void>(resolve => { releaseRetry = resolve; });
+        const failures: string[] = [];
+        const errors: string[] = [];
+        page.on('console', message => {
+            if (message.text().includes('Deferred official plugins failed to load')) failures.push(message.text());
+        });
+        page.on('pageerror', error => errors.push(error.message));
+        try {
+            environment = await startOfficialEnvironment();
+            await page.goto(environment.launchUrl);
+            await acknowledgePreviewNotice(page, environment);
+            await page.locator('.hapi-session-open, .hapi-discovery-open').filter({ hasText: 'Native Codex alpha' }).click();
+            const pane = page.getByRole('region', { name: 'Pane: Native Codex alpha', exact: true });
+            const editor = pane.locator('[data-composer-input][contenteditable="true"]');
+            await expect(editor).toBeVisible();
+            await editor.fill(`Keep this draft after ${failure} fails`);
+            await editor.evaluate(element => { element.setAttribute('data-retry-editor', 'original'); });
+            // Install the fault after conversation boot, so it cannot be
+            // mistaken for an initial shell/Host failure. Fail every Account
+            // request in the first attempt, including official loader retries;
+            // rejecting only its preload would not test an activation failure.
+            await page.route('**/hapi-dsh/bootstrap', async route => {
+                bootstrapRequests++;
+                if (bootstrapRequests === 2) await retryGate;
+                if (failure === 'bootstrap' && failRequests) {
+                    blockedRequests++;
+                    await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"fixture unavailable"}' });
+                } else await route.continue();
+            });
+            await page.route('**/plugins/**', async route => {
+                if (failure === 'account-script' && failRequests
+                    && decodeURIComponent(route.request().url()).includes('dsh-client-ui-settings-account/client.js')) {
+                    blockedRequests++;
+                    await route.fulfill({ status: 503, contentType: 'text/javascript', body: '' });
+                } else await route.continue();
+            });
+            const settings = page.locator('[data-shortcut-modal="settings"]');
+            const open = () => page.getByRole('button', { name: 'Settings', exact: true }).click();
+            const readyCount = () => page.evaluate(() => performance.getEntriesByName('hapi:deferred-plugins-ready').length);
+            await open();
+            await expect(settings).toBeVisible();
+            await expect.poll(() => failures.length).toBe(1);
+            expect(blockedRequests).toBeGreaterThan(0);
+            expect(bootstrapRequests).toBe(1);
+            expect(await readyCount()).toBe(0);
+            await expect(editor).toHaveAttribute('data-retry-editor', 'original');
+            await expect(editor).toHaveText(`Keep this draft after ${failure} fails`);
+            await page.keyboard.press('Escape');
+            await expect(settings).not.toBeVisible();
+            // A failure never schedules a background retry over the reader.
+            await page.waitForTimeout(250);
+            expect(bootstrapRequests).toBe(1);
+            failRequests = false;
+            await open();
+            await expect(settings).toBeVisible();
+            await expect.poll(() => bootstrapRequests).toBe(2);
+            await page.keyboard.press('Escape');
+            await expect(settings).not.toBeVisible();
+            await open();
+            await expect(settings).toBeVisible();
+            await page.waitForTimeout(250);
+            expect(bootstrapRequests, 'reopening during a pending retry must share that attempt').toBe(2);
+            releaseRetry();
+            await expect.poll(readyCount).toBe(1);
+            expect(bootstrapRequests).toBe(2);
+            expect(failures).toHaveLength(1);
+            await page.keyboard.press('Escape');
+            await expect(settings).not.toBeVisible();
+            await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+            await expect(page.getByRole('menuitem', { name: 'Sign in', exact: true })).toBeVisible();
+            await page.keyboard.press('Escape');
+            // The successful entry roster remains installed on later opens.
+            await open();
+            await expect(settings).toBeVisible();
+            await page.waitForTimeout(250);
+            expect(bootstrapRequests).toBe(2);
+            expect(await readyCount()).toBe(1);
+            await page.keyboard.press('Escape');
+            await expect(editor).toHaveAttribute('data-retry-editor', 'original');
+            await expect(editor).toHaveText(`Keep this draft after ${failure} fails`);
+            expect(errors).toEqual([]);
+            expect(environment.hapi.sent).toHaveLength(0);
+        } catch (error) { primaryFailure = error; throw error; }
+        finally {
+            failRequests = false;
+            releaseRetry();
+            try {
+                if (!page.isClosed()) { await page.unrouteAll({ behavior: 'wait' }); await page.close(); }
+                // This fresh screenshot is the recovered Settings state, not
+                // evidence of the failed request or intermediate transition.
+                if (environment) {
+                    const ready = conversationReady('Native Codex alpha', `
+                        const settings = document.querySelector('[data-shortcut-modal="settings"]');
+                        if (!settings) {
+                            [...document.querySelectorAll('button')].find(button =>
+                                (button.getAttribute('aria-label') ?? button.textContent)?.trim() === 'Settings'
+                                || button.getAttribute('title') === 'Settings')?.click();
+                            return false;
+                        }
+                        return performance.getEntriesByName('hapi:deferred-plugins-ready').length > 0;
+                    `);
+                    const path = await visualReview(environment.launchUrl, `settings-retry-${failure}-recovered`, '1440x900', ready);
+                    if (path) await info.attach('visual-recovered-settings', { path, contentType: 'image/png' });
+                }
+            } catch (error) {
+                if (!primaryFailure) throw error;
+                await info.attach('visual-cleanup-error', { body: String(error), contentType: 'text/plain' });
+            } finally { await environment?.close(); }
+        }
+    });
+}

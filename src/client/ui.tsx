@@ -200,7 +200,8 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         seen(); document.addEventListener('visibilitychange', seen)
         return () => { document.removeEventListener('visibilitychange', seen) }
     }, [hidden, focused, snapshot.pickingSession, summary?.id, summary?.updatedAt, controller, pane.resource])
-    const title = !summary && lease?.sourceResolution ? t('originalConversation') : paneTitle(pane, snapshot.catalog.byId, t('newPane'))
+    const title = !summary && lease?.sourceResolution && !snapshot.sourcePaneTitles[pane.id] ? t('originalConversation')
+        : paneTitle(pane, snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)
     const activity = sessionActivity(summary)
     const zoomed = snapshot.layout.zoomed[window.id] === true && focused
     return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { visibility: 'hidden', pointerEvents: 'none', ...(lastVisibleSize.current ?? {}) } : {}) }}
@@ -432,13 +433,14 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         // A parked pane has not requested a session yet. It has no pending
         // operation to announce: only visible, actively opening panes load.
         // Keep retained views mounted below so their draft and scroll survive.
-        if (!visible && !lease?.reference) return null
-        if (!lease?.reference) return <div className="hapi-loading" role="status">{t(lease?.sourceResolution === 'loading' ? 'sourceLoading' : 'loading')}</div>
+        const reference = lease?.reference ?? lease?.previousReference
+        if (!visible && !reference) return null
+        if (!lease || !reference) return <div className="hapi-loading" role="status">{t(lease?.sourceResolution === 'loading' ? 'sourceLoading' : 'loading')}</div>
         if (pane.resource.kind === 'empty') return null
         const host = controller.host(lease.hostId)
         const focused = controller.store.focusedPane().id === pane.id
         const options = { paneId: pane.id, focused, visible }
-        if (host?.renderPane) return host.renderPane(lease.reference, pane.resource, options)
+        if (host?.renderPane) return host.renderPane(reference, pane.resource, options)
         return <div className="hapi-loading" role="status">{t('loading')}</div>
     }
     const shortcuts: Array<[string, WorkspaceKey]> = [
@@ -473,7 +475,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         {mobile && panes(active.root).length > 1 && <nav className="hapi-mobile-pane-bar" aria-label={t('pane')}>
             <div className="hapi-pane-tabs" role="tablist" aria-label={t('pane')} ref={paneTabs}>
                 {panes(active.root).map((pane, index) => {
-                    const paneName = paneTitle(pane, snapshot.catalog.byId, t('newPane'))
+                    const paneName = paneTitle(pane, snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)
                     return <button type="button" role="tab" key={pane.id} aria-selected={pane.id === activePane.id} onClick={() => controller.store.focus(pane.id)}
                         title={paneName}><span>P{index + 1}</span></button>
                 })}
@@ -484,7 +486,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
             <div role="tablist" aria-label={t('window')} className="hapi-window-tabs" ref={windowTabs}>
                 {layout.windows.map((window, index) => {
                     const paneCount = panes(window.root).length
-                    const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))
+                    const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)
                     // Both identities stay visible: a renamed window leads, its focused
                     // pane's session name remains the secondary label (and vice versa).
                     const windowName = window.autoName === false ? readableTitle(windowAlias(window, index + 1), t, 32) : null
@@ -541,7 +543,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
                     : event.key === 'Home' ? 0 : items.length - 1
                 if (items[next]) { event.preventDefault(); event.stopPropagation(); items[next]!.focus() }
             }}>
-            <div className="hapi-session-menu-heading" role="presentation">{windowAlias(windowMenu.window, windowMenu.index + 1)} · {windowTitle(windowMenu.window, layout.focused[windowMenu.window.id], snapshot.catalog.byId, t('newPane'))}</div>
+            <div className="hapi-session-menu-heading" role="presentation">{windowAlias(windowMenu.window, windowMenu.index + 1)} · {windowTitle(windowMenu.window, layout.focused[windowMenu.window.id], snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)}</div>
             <button role="menuitem" type="button" onClick={() => { closeWindowMenu(true); setRename(windowMenu.window) }}>{t('renameWindow')}</button>
             <button role="menuitem" type="button" onClick={() => { closeWindowMenu(); action(() => { controller.store.createWindow(); controller.requestSessionPicker() }) }}>{t('newWindow')}</button>
             <button role="menuitem" type="button" onClick={() => { closeWindowMenu(); controller.store.closeWindow(windowMenu.window.id) }}>{t('closeWindow')}</button>
@@ -554,7 +556,7 @@ export function WorkspaceRoot({ controller, api, language, t, uploadInitialFile,
         {switcher && <Dialog title={t('windowList')} close={() => setSwitcher(false)} t={t}><div className="hapi-window-switcher">
             {layout.windows.map((window, index) => {
                 const count = panes(window.root).length
-                const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'))
+                const paneName = windowTitle(window, layout.focused[window.id], snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)
                 return <button type="button" key={window.id} aria-current={window.id === active.id ? 'page' : undefined}
                     onClick={() => { controller.store.selectWindow(window.id); setSwitcher(false) }}><ActivityDot kind={windowActivity(window, snapshot.catalog.byId)} t={t}/>
                     <strong>W{index + 1}</strong><span>{window.autoName === false ? windowAlias(window, index + 1) : readableTitle(paneName, t)}</span><small>{t('paneCount', { n: count })}</small></button>

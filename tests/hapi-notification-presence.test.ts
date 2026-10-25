@@ -30,7 +30,7 @@ function environment() {
 }
 
 test('the daemon opens its original SSE as hidden and forwards the original foreground toast unchanged', async () => {
-    const fixture = environment(), events: unknown[] = [], dispose = fixture.client.subscribe(event => events.push(event));
+    const fixture = environment(), events: unknown[] = [], dispose = fixture.client.subscribe(event => { events.push(event); });
     try {
         await until(() => fixture.client.isConnected); assert.deepEqual(fixture.queries, ['hidden']); assert.deepEqual(fixture.writes, []);
         const toast = { type: 'toast', data: { title: 'Needs input', body: 'Original source task', sessionId: 'source-one', url: '/sessions/source-one' } };

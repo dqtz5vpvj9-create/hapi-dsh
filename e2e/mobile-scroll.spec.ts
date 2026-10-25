@@ -12,6 +12,7 @@ type MotionFrame = { at: number; top: number; height: number; portTop: number; p
   composerTop: number; headerHeight: number; rows: Array<{ key: string; top: number }>;
   hitRows: Array<{ key: string; top: number }>; intersectionMiss: boolean;
   retainedAnchorMove: { key: string; before: number; after: number; heightChange: number } | null;
+  boundaryAnchor: { key: string; retained: boolean; offset: number } | null;
   touching: boolean; overflowAnchor?: string; following: boolean }
 let warm: WarmOfficialSession
 test.beforeAll(async () => {
@@ -181,11 +182,15 @@ async function frames(page: Page, pane: Locator, active: boolean): Promise<Motio
       const retainedAnchorMove = previousAnchor?.element.isConnected && port.scrollHeight !== previousAnchor.height
         ? { key: previousAnchor.element.dataset.chatAnchorKey!, before: previousAnchor.top,
           after: previousAnchor.element.getBoundingClientRect().top - box.top, heightChange: port.scrollHeight - previousAnchor.height } : null
+      const boundary = Reflect.get(window, '__earliestBoundary') as { row: HTMLElement; port: HTMLElement; key: string } | undefined
+      const boundaryAnchor = boundary?.port === port ? { key: boundary.key,
+        retained: boundary.row.isConnected && port.contains(boundary.row) && boundary.row.dataset.chatAnchorKey === boundary.key,
+        offset: boundary.row.getBoundingClientRect().top - box.top } : null
       if (rows.length) primed = true
       if (primed) probe.frames.push({ at, top: port.scrollTop, height: port.scrollHeight, portTop: box.top, portHeight: box.height,
         composerTop: pane.querySelector('[data-composer-card]')!.getBoundingClientRect().top,
         headerHeight: pane.querySelector('.hapi-pane-header')!.getBoundingClientRect().height,
-        rows, hitRows, intersectionMiss, retainedAnchorMove, touching,
+        rows, hitRows, intersectionMiss, retainedAnchorMove, boundaryAnchor, touching,
         ...(retainedAnchorMove ? { overflowAnchor: getComputedStyle(port).overflowAnchor } : {}),
         following: !!pane.querySelector('[data-chat-following-tail]') })
       previousAnchor = firstRow ? { element: firstRow, top: rows[0]!.top, height: port.scrollHeight } : null
@@ -585,11 +590,11 @@ for (const phase of ['held', 'released gap', 'manual released gap', 'manual reve
     requestDelayMs = Date.now() - at
     await route.continue()
   })
-  type BoundaryReading = { key: string; retained: boolean; offset: number; documentTop: number; scrollTop: number; height: number; controlDisabled: boolean | undefined }
+  type BoundaryReading = { at: number; key: string; retained: boolean; offset: number; documentTop: number; scrollTop: number; height: number; controlDisabled: boolean | undefined }
   const readBoundary = () => page.evaluate(() => {
     const { row, port, key } = Reflect.get(window, '__earliestBoundary') as { row: HTMLElement; port: HTMLElement; key: string }
     const offset = row.getBoundingClientRect().top - port.getBoundingClientRect().top
-    return { key, retained: row.isConnected && port.contains(row) && row.dataset.chatAnchorKey === key,
+    return { at: performance.now(), key, retained: row.isConnected && port.contains(row) && row.dataset.chatAnchorKey === key,
       offset, documentTop: offset + port.scrollTop, scrollTop: port.scrollTop, height: port.scrollHeight,
       controlDisabled: port.querySelector<HTMLButtonElement>('[data-chat-flow]:not([data-step-process-content]) > div > button')?.disabled }
   })
@@ -669,6 +674,11 @@ for (const phase of ['held', 'released gap', 'manual released gap', 'manual reve
     expect(after.documentTop - before.documentTop, 'older content must actually be inserted before the retained row').toBeGreaterThan(1000)
     expect(Math.abs(after.offset - before.offset), 'a page arriving at the earliest boundary must continue from its bottom, not skip to its top').toBeLessThanOrEqual(2)
     expect(Math.abs((after.scrollTop - before.scrollTop) - (after.documentTop - before.documentTop))).toBeLessThanOrEqual(2)
+    const commitFrames = samples.filter(sample => sample.at >= before!.at && sample.at <= after!.at)
+    expect(commitFrames.length, 'measure every rendered frame during prepend, not just its settled position').toBeGreaterThan(0)
+    expect(commitFrames.every(sample => sample.boundaryAnchor?.retained && sample.boundaryAnchor.key === before!.key)).toBe(true)
+    expect(Math.max(...commitFrames.map(sample => Math.abs(sample.boundaryAnchor!.offset - before!.offset))),
+      'the same old row must not jump away and recover between the two final measurements').toBeLessThanOrEqual(2)
     expect(movement(samples, direction).blankFrames).toBe(0)
   } catch (error) {
     primaryFailure = error

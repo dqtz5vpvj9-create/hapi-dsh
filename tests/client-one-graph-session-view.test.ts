@@ -228,3 +228,20 @@ test('a closed loading occurrence cannot poison a surviving reference to the sam
         assert.equal(source.events.subscriptions(), 0)
     } finally { await f.close() }
 })
+
+test('generation handoff stops old reading ownership while retaining its real portal and reference', async t => {
+    const f = await fixture(t), old = reference('old-generation')
+    try {
+        const view = f.mount('pane', old.ref)
+        old.resolve(); await tick()
+        assert.equal(f.host.size(), 1)
+        view.suspendReading(); view.suspendReading()
+        assert.equal(f.host.size(), 1, 'the old official portal remains available for visual handoff')
+        assert.equal(old.releases(), 0)
+        assert.equal(f.observers.size, 0)
+        assert.equal(old.source.events.subscriptions(), 0)
+        assert.equal(old.source.state.subscriptions(), 0)
+        await view.dispose()
+        assert.equal(f.host.size(), 0)
+    } finally { await f.close() }
+})

@@ -3,6 +3,10 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
 import { availableParallelism, loadavg } from 'node:os';
 import { probeTouch } from './probe-touch.mjs';
+import { installColdOpeningObserver, coldOpeningIssues } from './cold-opening-observer.mjs';
+const openingOptions = { expectedTitle: process.env.HAPI_DSH_EXPECTED_TITLE, expectedText: process.env.HAPI_DSH_EXPECTED_TEXT,
+  staleText: process.env.HAPI_DSH_STALE_TEXT, paneSelector: process.env.HAPI_DSH_PROBE_PANE_SELECTOR };
+const observeMs = Number(process.env.HAPI_DSH_OBSERVE_MS ?? 5000);
 const root = process.env.HAPI_DSH_TEST_ROOT ?? '/mnt/cache/data-cache';
 await mkdir(root, { recursive: true });
 const browser = await chromium.launch({ headless: true });
@@ -13,18 +17,52 @@ const cdp = await context.newCDPSession(page);
 // Do not let a production measurement perform those writes. CDP intercepts
 // only RPC requests, leaving asset caching intact for repeat navigation.
 const readRpcs = new Set([
-  '/api/dynamicCordisRunner/syncInspectManifest', '/api/settings/describe',
+  '/api/settings/describe',
   '/api/session/modelCatalog', '/api/session/list', '/api/session/page', '/api/session/projections',
   '/api/credentials/describe', '/api/dynamicCordisRunner/inventory', '/api/cotTranslation/limits', '/api/agentPresets/list',
   '/api/permissionPresets/catalog', '/api/hapi/workspaceGet', '/api/hapi/catalog',
   '/api/hapi/sourceNotificationSettings', '/api/hapi/sourceAdministration', '/api/hapi/sourceReadStates',
   '/api/hapi/sourceQueuedEdits', '/api/hapi/nativeSettings', '/api/hapi/sourceSummarySettings',
-  '/api/hapi/sourceSessionResolve',
   '/api/hapi/sourceReadingAnchor',
   '/api/hapi/nativePlan', '/api/commands/list', '/api/skills/list',
   '/api/llm/listProviders', '/api/llm/listConfigurableProviders',
 ]);
 const blockedWrites = new Map();
+// rc.3 session/control is a read-only projection stream. Client item frames
+// remain forbidden, including on an admitted stream. Resolving an unattached
+// source or synchronizing a manifest is a mutation and is never a probe setup.
+const streamReads = new Set(['session/follow', 'session/control', 'workspace/follow', '$events']);
+const openedStreams = new Map();
+await page.routeWebSocket(() => true, route => {
+  const url = new URL(route.url());
+  const path = url.pathname === '/hapi-dsh/socket'
+    ? new URL(url.searchParams.get('path') ?? '/', url.origin).pathname : url.pathname;
+  const mux = path === '/api/remote.mux' || path === '/hapi-dsh/remote.mux';
+  if (!mux && path !== '/hapi-dsh/plugin-events') {
+    blockedWrites.set('WS unlisted socket', (blockedWrites.get('WS unlisted socket') ?? 0) + 1);
+    void route.close(); return;
+  }
+  const upstream = route.connectToServer();
+  const active = new Set();
+  route.onMessage(message => {
+    let frame;
+    try { if (typeof message === 'string') frame = JSON.parse(message); } catch {}
+    if (mux && typeof frame?.streamId === 'string') {
+      if (frame.type === 'open' && streamReads.has(frame.endpoint)) {
+        active.add(frame.streamId);
+        openedStreams.set(frame.endpoint, (openedStreams.get(frame.endpoint) ?? 0) + 1);
+        upstream.send(message); return;
+      }
+      if (['cancel', 'end'].includes(frame.type) && active.delete(frame.streamId)) {
+        upstream.send(message); return;
+      }
+    }
+    const key = `WS ${typeof frame?.endpoint === 'string' ? frame.endpoint : 'client-message'}`;
+    blockedWrites.set(key, (blockedWrites.get(key) ?? 0) + 1);
+    if (typeof frame?.streamId === 'string') route.send(JSON.stringify({ type: 'error', streamId: frame.streamId,
+      error: { code: 'probe/read-only', message: 'Blocked by read-only probe', details: {} } }));
+  });
+});
 await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
 cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
   const path = new URL(request.url).pathname;
@@ -53,7 +91,8 @@ if (Object.values(networkConditions).some(Boolean)) await cdp.send('Network.emul
 });
 if (process.env.HAPI_DSH_PROFILE) await cdp.send('Profiler.enable');
 if (process.env.HAPI_DSH_CPU_RATE) await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.HAPI_DSH_CPU_RATE) });
-const report = { environment: 'Chromium mobile emulation; production read-only; CDP HTTP network shaping (not a physical remote network or WebSocket latency guarantee)', networkConditions, cpuRate: Number(process.env.HAPI_DSH_CPU_RATE ?? 1), runs: [] };
+const report = { environment: 'Chromium mobile emulation; production read-only HTTP and WebSocket admission; CDP HTTP network shaping (not a physical remote network or WebSocket latency guarantee)',
+  networkConditions, cpuRate: Number(process.env.HAPI_DSH_CPU_RATE ?? 1), allowedStreams: [...streamReads], runs: [] };
 const errors = [];
 let runStarted = performance.now(), runIndex = -1;
 const transport = { webSockets: 0, receivedFrames: 0, decodedBytes: 0, maxDecodedFrame: 0, errors: 0, negotiatedCompression: [], frames: [] };
@@ -114,27 +153,8 @@ page.on('websocket', socket => { transport.webSockets++; socket.on('framereceive
   }
 }); socket.on('socketerror', () => transport.errors++); });
 page.on('pageerror', e => errors.push(e.name));
-await page.addInitScript(() => {
-  const marks = { workspace: null, body: null, editor: null, tasks: [] };
-  window.__coldOpen = marks;
-  new PerformanceObserver(list => { for (const e of list.getEntries()) marks.tasks.push({ at: e.startTime, ms: e.duration }); }).observe({ type: 'longtask', buffered: true });
-  function tick() {
-    const visible = e => e && e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0;
-    if (!marks.workspace && document.querySelector('[data-hapi-workspace]')) marks.workspace = performance.now();
-    const pane = [...document.querySelectorAll('.hapi-pane-focused')].find(visible) ?? [...document.querySelectorAll('.hapi-pane')].find(visible);
-    const editor = pane?.querySelector('[data-composer-input][contenteditable="true"]');
-    if (!marks.editor && visible(editor) && editor.getAttribute('aria-disabled') !== 'true') marks.editor = performance.now();
-    const rows = pane?.querySelectorAll('[data-chat-node-key]') ?? [];
-    const viewport = pane?.querySelector('[data-conversation-scroll]')?.getBoundingClientRect();
-    if (!marks.body && viewport && [...rows].some(e => {
-      const box = e.getBoundingClientRect();
-      return visible(e) && box.bottom > viewport.top && box.top < viewport.bottom
-        && box.right > viewport.left && box.left < viewport.right && e.textContent.trim().length > 5;
-    })) marks.body = performance.now();
-    if (!marks.body || !marks.editor) requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
-});
+await page.addInitScript(installColdOpeningObserver, openingOptions);
+
 try {
   const launch = new URL((await readFile(process.env.HAPI_DSH_LAUNCH_FILE ?? '/home/chris/.config/hapi-dsh/launch-url', 'utf8')).trim());
   const auth = await page.request.get(launch.href, { maxRedirects: 0 });
@@ -158,9 +178,21 @@ try {
     await page.goto(launch.origin, { waitUntil: 'domcontentloaded', timeout: 90000 });
     const notice = page.getByRole('dialog', { name: /^(Preview Notice|预览版说明)$/ });
     if (await notice.count()) await notice.getByRole('button', { name: /^(Continue|继续)$/ }).click();
-    try { await page.waitForFunction(() => window.__coldOpen.body && window.__coldOpen.editor, null, { timeout: 90000 }); }
-    catch { failure = 'Timed out before real transcript and usable editor'; }
-    const result = await page.evaluate(() => ({ ...window.__coldOpen, paints: performance.getEntriesByType('paint').map(e => ({ name: e.name, at: e.startTime })), marks: performance.getEntriesByType('mark').filter(e => e.name.startsWith('hapi:')).map(e => ({ name: e.name, at: e.startTime })), resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/(sessions|machine)\/[^/]+/g, '/$1/[id]'), at: e.startTime, ms: e.duration, bytes: e.transferSize, encodedBytes: e.encodedBodySize, decodedBytes: e.decodedBodySize, responseStart: e.responseStart, responseEnd: e.responseEnd, protocol: e.nextHopProtocol })), nodes: document.querySelectorAll('*').length, views: [...document.querySelectorAll('[data-hapi-session-view]')].map(e => ({ visible: !!e.getBoundingClientRect().width, rows: e.querySelectorAll('[data-chat-node-key]').length })) }));
+    try {
+      await page.waitForFunction(() => {
+        const probe = window.__hapiColdOpening;
+        return probe?.verifiedFreshness ? probe.current?.ready && probe.current.stableForMs >= probe.stableMs
+          : probe?.first.body && probe?.first.editor && probe?.first.title;
+      }, null, { timeout: 90000 });
+      // Do not stop at first success: late metadata/history can regress again.
+      await page.waitForTimeout(observeMs);
+    } catch { failure = 'Timed out before the latest source body, title and usable editor stabilized'; }
+    await page.evaluate(() => window.__hapiColdOpening.stop());
+    const result = await page.evaluate(() => ({ ...window.__hapiColdOpening, workspace: window.__hapiColdOpening.first.workspace,
+      body: window.__hapiColdOpening.first.body, editor: window.__hapiColdOpening.first.editor,
+      latest: window.__hapiColdOpening.first.latest, stable: window.__hapiColdOpening.first.stable, paints: performance.getEntriesByType('paint').map(e => ({ name: e.name, at: e.startTime })), marks: performance.getEntriesByType('mark').filter(e => e.name.startsWith('hapi:')).map(e => ({ name: e.name, at: e.startTime })), resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/(sessions|machine)\/[^/]+/g, '/$1/[id]'), at: e.startTime, ms: e.duration, bytes: e.transferSize, encodedBytes: e.encodedBodySize, decodedBytes: e.decodedBodySize, responseStart: e.responseStart, responseEnd: e.responseEnd, protocol: e.nextHopProtocol })), nodes: document.querySelectorAll('*').length, views: [...document.querySelectorAll('[data-hapi-session-view]')].map(e => ({ visible: !!e.getBoundingClientRect().width, rows: e.querySelectorAll('[data-chat-node-key]').length })) }));
+    const openingFailures = coldOpeningIssues(result);
+    if (openingFailures.length) failure = [failure, ...openingFailures].filter(Boolean).join('; ');
     page.off('request', request); page.off('requestfinished', finished); page.off('requestfailed', failed);
     if (process.env.HAPI_DSH_PROFILE) {
       const { profile } = await cdp.send('Profiler.stop');
@@ -168,11 +200,11 @@ try {
       await writeFile(`${root}/hapi-cold-${i}.cpuprofile`, JSON.stringify(profile), { mode: 0o600 });
     }
     report.runs.push({ mode: i ? 'repeat navigation with browser cache' : 'fresh browser navigation', ...result, network, failure });
-    console.log(JSON.stringify({ run: i, workspace: result.workspace, body: result.body, editor: result.editor, bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure, longestTasks: result.tasks.sort((a,b) => b.ms-a.ms).slice(0,5) }));
+    console.log(JSON.stringify({ run: i, workspace: result.workspace, body: result.body, editor: result.editor, latest: result.latest, stable: result.stable, bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure, longestTasks: result.tasks.sort((a,b) => b.ms-a.ms).slice(0,5) }));
     if (process.env.HAPI_DSH_TOUCH_PROBE && i === 0 && !failure) {
       if (process.env.HAPI_DSH_PROFILE) await cdp.send('Profiler.start');
       report.touch = await probeTouch(page, cdp);
-      report.touch.tasks = await page.evaluate(() => window.__coldOpen.tasks);
+      report.touch.tasks = await page.evaluate(() => window.__hapiColdOpening.tasks);
       if (process.env.HAPI_DSH_PROFILE) {
         const { profile } = await cdp.send('Profiler.stop');
         await writeFile(`${root}/hapi-touch.cpuprofile`, JSON.stringify(profile), { mode: 0o600 });
@@ -184,6 +216,7 @@ try {
 finally {
   report.errors = errors;
   report.transport = transport;
+  report.openedStreams = Object.fromEntries(openedStreams);
   report.blockedWrites = Object.fromEntries(blockedWrites);
   report.hostLoad = { availableCpus: availableParallelism(), loadAverage: loadavg() };
   const path = `${root}/hapi-cold-open-${Date.now()}.json`;

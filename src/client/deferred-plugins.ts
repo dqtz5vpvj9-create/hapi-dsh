@@ -126,7 +126,15 @@ export function installDeferredPlugins(ctx: Context, host?: DeferredPluginHost):
                     if (failures.length) throw new Error(`Official plugin activation failed: ${failures.map(failure => failure.id).join(', ')}`);
                     performance.mark('hapi:deferred-plugins-ready');
                     removeDemand();
-                })().catch(error => { if (!signal.aborted) ctx.logger.error('Deferred official plugins failed to load', error); }).finally(() => {
+                })().catch(error => {
+                    if (!signal.aborted) {
+                        // Retry only on another explicit Settings demand. The
+                        // official entries.sync reconciles failed entries even
+                        // at the same revision; it owns module invalidation.
+                        started = false;
+                        ctx.logger.error('Deferred official plugins failed to load', error);
+                    }
+                }).finally(() => {
                     for (const link of preloadLinks) link.remove();
                     preloadLinks.clear();
                 });

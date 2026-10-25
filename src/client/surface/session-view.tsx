@@ -43,6 +43,8 @@ export interface SessionViewMount {
 export interface SessionViewHandle {
     /** Changing presentation preserves the factory occurrence and editor DOM. */
     update(options: { navigation?: WorkspacePaneNavigation | undefined }): void
+    /** Persist the reading anchor before a same-source successor mounts. */
+    suspendReading(): void
     /** Waits for portal unmount before its owner may release the reference. */
     dispose(): Promise<void>
 }
@@ -173,7 +175,8 @@ export function installSessionViewHost(ctx: Context): {
             entries.set(identity, entry); publish()
             const stopHistory = bindInitialHistory(options.target, options.reference, options.navigation)
             const stopReading = bindPaneReading(ctx, options.target, options.reference, options.navigation)
-            const uninitialHistory = (): void => { stopHistory(); stopReading() }
+            let readingStopped = false
+            const uninitialHistory = (): void => { if (!readingStopped) { readingStopped = true; stopHistory(); stopReading() } }
             initialHistory.set(identity, uninitialHistory)
             let live = true
             let removed: Promise<void> | undefined
@@ -186,6 +189,7 @@ export function installSessionViewHost(ctx: Context): {
                 entry.onError?.(error)
             })
             return {
+                suspendReading: uninitialHistory,
                 update(next) {
                     if (!live || disposed || next.navigation === undefined || next.navigation === entry.navigation) return
                     entry = { ...entry, navigation: next.navigation }; entries.set(identity, entry); publish()

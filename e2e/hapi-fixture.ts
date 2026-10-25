@@ -19,6 +19,8 @@ const jwt = 'e2e-hapi-jwt';
 export interface NativeFixture {
     session: HapiSession
     rows: HapiMessage[]
+    /** Explicit metadata response gate for cold-opening transport races. */
+    readSession?: () => HapiSession | Promise<HapiSession>
     /** Explicit per-session history page override (remote hotfix hook). */
     readHistory?: (url: URL) => HapiMessagesPage | Promise<HapiMessagesPage>
 }
@@ -410,7 +412,7 @@ export class HapiWireFixture {
                     const error = this.sessionReadErrors.get(id);
                     this.sessionReads.push({ sessionId: id, status: error?.status ?? 200 });
                     if (error) send({ error: 'Explicit original-session read failure fixture', code: error.code }, error.status);
-                    else send({ session: fixture.session });
+                    else send({ session: fixture.readSession ? await fixture.readSession() : fixture.session });
                 }
                 return;
             }

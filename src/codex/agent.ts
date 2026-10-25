@@ -310,16 +310,10 @@ export class NativeCodexAgent implements Agent {
       let rows = initialRows
       let checkpoint = options.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
-        const cached = options.fastHistorySeed ? agent.cache.snapshot(true) : undefined
-        // Legacy caches predate structural epochs. Seed their bounded live
-        // tail first so index notifications need not wait for a full archive.
-        if (cached?.epoch !== undefined) {
-          agent.historyEpoch = cached.epoch
-          rows = agent.historyJournal.overlayCache(cached.rows)
-          agent.historyStale = true
-          agent.fault = 'Cached source history is stale; reconciling with the live source'
-          agent.historyReadFault = true
-        } else try {
+        // An epoch proves structural identity, not cache freshness: ordinary
+        // appends keep it unchanged. Open the latest bounded source tail before
+        // the archive backfill so an old cache cannot hide current messages.
+        try {
           checkpoint = agent.historyJournal.checkpoint()
           const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, 1)
             : { ...await readNativeHistorySnapshot(transport, source.id), complete: true }
@@ -334,8 +328,11 @@ export class NativeCodexAgent implements Agent {
           options.assertSourceCurrent?.()
           if (error instanceof HistoryReadInvalidatedError) throw error
           checkpoint = agent.historyJournal.checkpoint()
-          rows = agent.historyJournal.overlayCache((cached ?? agent.cache.snapshot())?.rows ?? [])
+          const cached = (options.fastHistorySeed ? agent.cache.snapshot(true) : undefined) ?? agent.cache.snapshot()
+          agent.historyEpoch = cached?.epoch
+          rows = agent.historyJournal.overlayCache(cached?.rows ?? [])
           agent.historyStale = true
+          agent.historyReadFault = true
           agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
         }
       } else {

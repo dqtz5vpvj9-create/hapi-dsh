@@ -2,6 +2,11 @@
 // All production writes, including WebSocket commands, are blocked.
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { installColdOpeningObserver, coldOpeningIssues } from './cold-opening-observer.mjs';
+const openingOptions = { paneSelector: '[data-pane-id="probe-pane"]',
+  expectedTitle: process.env.HAPI_DSH_EXPECTED_TITLE, expectedText: process.env.HAPI_DSH_EXPECTED_TEXT,
+  staleText: process.env.HAPI_DSH_STALE_TEXT };
+const observeMs = Number(process.env.HAPI_DSH_OBSERVE_MS ?? 5000);
 
 const target = process.env.HAPI_DSH_PROBE_SESSION;
 if (!target?.startsWith('hapi-remote:')) throw new Error('Set HAPI_DSH_PROBE_SESSION to an existing federated session resource ID');
@@ -82,31 +87,12 @@ cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
   } catch { /* Browser shutdown may cancel intercepted requests. */ }
 });
 page.on('pageerror', error => report.errors.push(error.name));
-await page.addInitScript(({ target, state }) => {
+await page.addInitScript(state => {
   performance.setResourceTimingBufferSize(5000);
   localStorage.setItem(`hapi-dsh:workspace:v1:${location.origin}${location.pathname}`, JSON.stringify(state));
-  const sample = { workspace: null, title: null, body: null, editor: null, tasks: [] };
-  window.__federatedCold = sample;
-  new PerformanceObserver(list => { for (const entry of list.getEntries()) sample.tasks.push({ at: entry.startTime, ms: entry.duration }); })
-    .observe({ type: 'longtask', buffered: true });
-  const visible = e => {
-    const r = e?.getBoundingClientRect();
-    return r && r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
-  };
-  const tick = () => {
-    const dialog = document.querySelector('[role="dialog"]');
-    if (dialog) [...dialog.querySelectorAll('button')].find(b => /^(Continue|继续)$/.test(b.textContent.trim()))?.click();
-    const pane = document.querySelector('[data-pane-id="probe-pane"]');
-    if (!sample.workspace && pane) sample.workspace = performance.now();
-    const label = pane?.getAttribute('aria-label');
-    if (!sample.title && label && !label.includes(target)) sample.title = performance.now();
-    const editor = pane?.querySelector('[data-composer-input][contenteditable="true"]');
-    if (!sample.editor && visible(editor)) sample.editor = performance.now();
-    if (!sample.body && [...pane?.querySelectorAll('[data-chat-node-key]') ?? []].some(visible)) sample.body = performance.now();
-    if (!sample.body || !sample.editor) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}, { target, state });
+}, state);
+await page.addInitScript(installColdOpeningObserver, openingOptions);
+
 try {
   const launch = new URL((await readFile(process.env.HAPI_DSH_LAUNCH_FILE ?? '/home/chris/.config/hapi-dsh/launch-url', 'utf8')).trim());
   const auth = await page.request.get(launch.href, { maxRedirects: 0 });
@@ -114,13 +100,26 @@ try {
   for (let i = 0; i < runs; i++) {
     await page.goto(launch.origin, { waitUntil: 'domcontentloaded', timeout: 90000 });
     let failure;
-    try { await page.waitForFunction(() => window.__federatedCold.body && window.__federatedCold.editor, null, { timeout: 90000 }); }
-    catch { failure = 'No visible body and editor within 90 seconds'; }
-    const result = await page.evaluate(() => ({ ...window.__federatedCold,
+    try {
+      const notice = page.getByRole('dialog', { name: /^(Preview Notice|预览版说明)$/ });
+      if (await notice.count()) await notice.getByRole('button', { name: /^(Continue|继续)$/ }).click();
+      await page.waitForFunction(() => {
+        const probe = window.__hapiColdOpening;
+        return probe?.verifiedFreshness ? probe.current?.ready && probe.current.stableForMs >= probe.stableMs
+          : probe?.first.body && probe?.first.editor && probe?.first.title;
+      }, null, { timeout: 90000 });
+      await page.waitForTimeout(observeMs);
+    } catch { failure = 'Latest source body, usable editor and title did not stabilize within 90 seconds'; }
+    await page.evaluate(() => window.__hapiColdOpening.stop());
+    const result = await page.evaluate(() => ({ ...window.__hapiColdOpening, workspace: window.__hapiColdOpening.first.workspace,
+      title: window.__hapiColdOpening.first.title, body: window.__hapiColdOpening.first.body,
+      editor: window.__hapiColdOpening.first.editor, latest: window.__hapiColdOpening.first.latest, stable: window.__hapiColdOpening.first.stable,
       marks: performance.getEntriesByType('mark').filter(e => e.name.startsWith('hapi:')).map(e => ({ name: e.name, at: e.startTime })),
       resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/machine\/[^/]+/, '/machine/[id]'),
         at: e.startTime, ms: e.duration, bytes: e.transferSize, encoded: e.encodedBodySize, decoded: e.decodedBodySize, responseStart: e.responseStart })),
     }));
+    const openingFailures = coldOpeningIssues(result);
+    if (openingFailures.length) failure = [failure, ...openingFailures].filter(Boolean).join('; ');
     let memory;
     if (measureMemory && !failure) {
       // Separate from opening timings. GC measures retention, not the normal
@@ -131,7 +130,7 @@ try {
       memory = { natural, afterGc: await memorySample() };
     }
     report.runs.push({ mode: i ? 'cached reload' : 'fresh browser', ...result, failure, memory });
-    console.log(JSON.stringify({ run: i, body: result.body, editor: result.editor, title: result.title,
+    console.log(JSON.stringify({ run: i, body: result.body, editor: result.editor, title: result.title, latest: result.latest, stable: result.stable,
       bytes: result.resources.reduce((sum, r) => sum + r.bytes, 0), failure, memory,
       largest: [...result.resources].sort((a,b) => b.bytes-a.bytes).slice(0, 5),
       longestTasks: [...result.tasks].sort((a,b) => b.ms-a.ms).slice(0, 5) }));
