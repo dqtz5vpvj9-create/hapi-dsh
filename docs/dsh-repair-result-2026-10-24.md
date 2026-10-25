@@ -3,7 +3,7 @@
 状态：本轮可执行修复已完成并提交；仍是合成源、本机 Chromium、隔离 Host 的验收，不是生产部署，也不是长期生产 OOM 的证明。逐项结论见“验收矩阵”，无法满足的条目明确标为 `FAIL` 或 `UNVERIFIED`。
 
 - 审计基线：`6d540ca58d7b1b84cdcbe4ab7faeeda416a2bc20` 的 69 个可达提交（66 主线、3 备份独有）；交接 checkpoint：`a8bf4aff1b00cb5fc8241cac702d263421240555`。
-- 本轮代码提交：`d6193fd`（父提交 `a8bf4af`，未 amend/rebase/push）；文档与验收测试提交：`d1e3f92`。
+- 本轮代码提交：`d6193fd`（父提交 `a8bf4af`，未 amend/rebase/push）；文档与验收测试提交：`d1e3f92`；最终 HEAD 以 `git log -1` 为准。
 - 候选目录：`/mnt/cache/data-cache/hapi-dsh-rc3-candidate`，普通目录，不是 worktree，也不是部署目录。
 - 候选构建：`dist/index.js`/`dist/client.js` 的 source build id 为 `8ac857bc642ec81640eca37728acc44706e1af7090a1b9f502f67436d7c36cd7`；Node `v24.22.1`，DSH `0.2.1-rc.3`。
 - 生产约束：未部署、未重启 HAPI Hub/Runner、未发送真实消息、未停止真实执行、未改上游/node_modules/生产服务配置。本报告和截图不含 admission URL、token、生产正文或私有尾页。
