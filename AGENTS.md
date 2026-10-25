@@ -28,3 +28,10 @@ Build a distributable DSH plugin composition with one cross-machine session side
 - Work only in the files assigned to your task; coordinate shared contracts with the root agent.
 - Leave each component typechecked and tested for its meaningful failure modes.
 - Keep dependencies exact and record upstream provenance and licenses.
+
+## Immediate publication (user instruction, 2026-10-24)
+
+- 本项目每次修改完成后立即发布到当前线上站点，发布属于任务的一部分；用户已持续授权，无需再次确认。
+- 使用与修改匹配且已通过验收的构建，发布后核对线上版本和实际界面。已有历史缺口尚未清零，不是将已验证修复留在本地的理由。
+- 保留现有认证、原生执行和发布保护。仅前端改动不重启 Host；Host 改动沿用运行中普通 DSH 会话检查，并保留旧构建供失败时恢复。
+- 发布或验收失败时继续处理并报告真实状态，明确区分已提交、已上线、已验证和仍未解决。
