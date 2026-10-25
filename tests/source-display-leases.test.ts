@@ -43,3 +43,43 @@ for (const kind of ['native', 'observed'] as const) {
     } finally { await fixture.close() }
   })
 }
+
+for (const kind of ['native', 'observed'] as const) {
+  test(`${kind} renew reports an expired lease and another browser lease keeps the display alive`, async () => {
+    const fixture = await sourceQueueFixture(kind)
+    try {
+      const sourceId = fixture.source.id
+      await fixture.service.acquireDisplayLease(sourceId, 'expiring', 1_000)
+      await fixture.service.acquireDisplayLease(sourceId, 'other-browser', 60_000)
+      await new Promise(resolve => setTimeout(resolve, 1_050))
+      assert.deepEqual(await fixture.service.expireDisplayLeases(), [], 'the other browser still owns a live lease')
+      assert.equal(await fixture.service.renewDisplayLease(sourceId, 'expiring'), false)
+      assert.equal(await fixture.service.renewDisplayLease(sourceId, 'other-browser'), true)
+      assert.ok(fixture.service.byHapiSession(sourceId), 'expiry of one browser must not retire a shared display')
+      assert.equal(await fixture.service.releaseDisplayLease(sourceId, 'other-browser'), false)
+      assert.equal(await fixture.service.releaseDisplay(sourceId), true)
+      assert.equal(fixture.service.byHapiSession(sourceId), undefined)
+    } finally { await fixture.close() }
+  })
+
+  test(`${kind} a re-acquired lease after retirement opens a new display generation`, async () => {
+    const fixture = await sourceQueueFixture(kind)
+    try {
+      const sourceId = fixture.source.id
+      const first = fixture.service.byHapiSession(sourceId)
+      assert.ok(first)
+      await fixture.service.acquireDisplayLease(sourceId, 'expired', 1_000)
+      await new Promise(resolve => setTimeout(resolve, 1_050))
+      assert.deepEqual(await fixture.service.expireDisplayLeases(), [sourceId])
+      assert.equal(await fixture.service.releaseDisplay(sourceId), true)
+      assert.equal(await fixture.service.renewDisplayLease(sourceId, 'expired'), false)
+
+      await fixture.service.acquireDisplayLease(sourceId, 'recovered', 60_000)
+      const reopened = await fixture.service.openSource(sourceId)
+      assert.ok(reopened)
+      assert.notEqual(reopened.id, first.id)
+      assert.equal(fixture.service.byHapiSession(sourceId), reopened)
+      assert.equal(await fixture.service.renewDisplayLease(sourceId, 'recovered'), true)
+    } finally { await fixture.close() }
+  })
+}

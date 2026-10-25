@@ -33,11 +33,13 @@ export class DisplayLeases {
     source.set(leaseId, this.now() + Math.max(1_000, ttlMs))
   }
 
-  /** A renewal for an unknown lease is ignored; the original acquire owns it. */
-  renew(sourceId: string, leaseId: string, ttlMs = DISPLAY_LEASE_TTL_MS): void {
+  /** False means the lease already expired or the Host restarted; the caller
+   * must re-acquire, then recover the source display generation if needed. */
+  renew(sourceId: string, leaseId: string, ttlMs = DISPLAY_LEASE_TTL_MS): boolean {
     const source = this.bySource.get(sourceId)
-    if (!source?.has(leaseId)) return
+    if (!source?.has(leaseId)) return false
     source.set(leaseId, this.now() + Math.max(1_000, ttlMs))
+    return true
   }
 
   /** Returns true only after the final lease for this source is gone. */

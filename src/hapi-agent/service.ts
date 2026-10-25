@@ -83,10 +83,10 @@ export class HapiAgentService {
     this.leased.add(sourceId)
     this.suspended.delete(sourceId)
   }
-  async renewDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<void> {
-    if (this.disposed) return
+  async renewDisplayLease(sourceId: string, leaseId: string, ttlMs?: number): Promise<boolean> {
+    if (this.disposed) return false
     await this.releasing.get(sourceId)
-    this.leases.renew(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
+    return this.leases.renew(sourceId, leaseId, ttlMs ?? this.options.displayLeaseTtlMs ?? DISPLAY_LEASE_TTL_MS)
   }
   async releaseDisplayLease(sourceId: string, leaseId: string): Promise<boolean> {
     if (this.disposed) return true

@@ -11,7 +11,20 @@ test.setTimeout(180_000)
 test('closing the last browser reference retires the Host display and reopening restores the source', async ({ page }, info) => {
     const environment: OfficialEnvironment = await startOfficialEnvironment()
     const errors: string[] = []
+    let acquiredLease: { hubId: string; leaseId: string } | undefined
     page.on('pageerror', error => errors.push(error.message))
+    // Capture the browser's real lease id so this test can perform the same
+    // last-lease release as Host TTL expiry without waiting five wall minutes.
+    page.on('request', request => {
+        if (!request.url().includes('/api/hapi/sourceDisplayLease')) return
+        try {
+            const body = request.postDataJSON() as { payload?: { args?: { request?: { action?: string; hubId?: string; leaseId?: string; sourceSessionId?: string } } } }
+            const lease = body.payload?.args?.request
+            if (lease?.action === 'acquire' && lease.hubId && lease.leaseId && lease.sourceSessionId === 'source-display-lifecycle') {
+                acquiredLease = { hubId: lease.hubId, leaseId: lease.leaseId }
+            }
+        } catch { /* non-JSON fixture request */ }
+    })
     try {
         const key = 'display-lifecycle'
         const fixture = environment.hapi.addObserved('claude', key)
@@ -103,7 +116,58 @@ test('closing the last browser reference retires the Host display and reopening 
         fixture.rows.push(liveRow)
         environment.hapi.emit({ type: 'message-received', sessionId: fixture.session.id, message: liveRow })
         await expect(pane.getByText(liveText, { exact: true })).toBeVisible()
-        expect(await pane.getAttribute('data-session-id')).not.toBe(displayId)
+        const reopenedId = await pane.getAttribute('data-session-id')
+        expect(reopenedId).not.toBe(displayId)
+
+        // A Host restart removes the in-memory display generation and every
+        // lease. Foreground/network recovery must probe immediately, re-acquire
+        // the lease, resolve the public source again and rebind the normal
+        // Controller/SessionProvider without a source send or abort. Add a row
+        // while the Host is down: seeing it proves real source re-read rather
+        // than the old DOM generation.
+        const restartText = 'Lifecycle answer after Host restart'
+        const restartSeq = (fixture.rows.at(-1)?.seq ?? total) + 1
+        const restartRow: HapiMessage = { id: 'lifecycle-after-host-restart', localId: null, seq: restartSeq, createdAt: Date.now(),
+            content: { role: 'agent', content: { type: 'output', data: { type: 'assistant', uuid: 'lifecycle-after-host-restart',
+                message: { model: 'sonnet', content: [{ type: 'text', text: restartText }] } } } } }
+        fixture.rows.push(restartRow)
+        fixture.session.seq = restartSeq + 1; fixture.session.updatedAt = restartRow.createdAt
+        await environment.restartHost()
+        await page.evaluate(() => window.dispatchEvent(new Event('online')))
+        await expect(pane.getByText(restartText, { exact: true })).toBeVisible({ timeout: 45_000 })
+        await expect(pane.locator('[data-composer-input][contenteditable="true"]')).toHaveText(draft)
+        await expect(pane.getByText(`Lifecycle answer ${total - 1}`, { exact: true })).toBeVisible()
+        await expect(pane.getByText(liveText, { exact: true })).toBeVisible()
+        await expect.poll(async () => (await catalogState()).pending, { timeout: 20_000 }).toBe(1)
+        await expect.poll(async () => (await catalogState()).attached, { timeout: 20_000 }).toBe(true)
+        expect(environment.hapi.aborted).not.toContain(fixture.session.id)
+        expect(environment.hapi.sent.filter(row => row.sessionId === fixture.session.id)).toEqual([])
+
+        // Exercise the same Host path as TTL expiry: release the browser's only
+        // lease, wait for the 10s retirement grace, then resume the page. The
+        // Host must create a new display generation and the client must re-read
+        // a row added while its lease was gone.
+        expect(acquiredLease).toBeTruthy()
+        const expireText = 'Lifecycle answer after lease expiry recovery'
+        const expireSeq = (fixture.rows.at(-1)?.seq ?? total) + 1
+        const expireRow: HapiMessage = { id: 'lifecycle-after-lease-expiry', localId: null, seq: expireSeq, createdAt: Date.now(),
+            content: { role: 'agent', content: { type: 'output', data: { type: 'assistant', uuid: 'lifecycle-after-lease-expiry',
+                message: { model: 'sonnet', content: [{ type: 'text', text: expireText }] } } } } }
+        fixture.rows.push(expireRow)
+        fixture.session.seq = expireSeq + 1; fixture.session.updatedAt = expireRow.createdAt
+        await environment.rpc('hapi/sourceDisplayLease', {
+            hubId: acquiredLease!.hubId, sourceSessionId: fixture.session.id,
+            leaseId: acquiredLease!.leaseId, action: 'release',
+        })
+        await expect.poll(async () => (await catalogState()).attached, { timeout: 25_000 }).toBe(false)
+        const beforeExpiry = await pane.getAttribute('data-session-id')
+        await page.evaluate(() => window.dispatchEvent(new Event('online')))
+        await expect(pane.getByText(expireText, { exact: true })).toBeVisible({ timeout: 45_000 })
+        expect(await pane.getAttribute('data-session-id')).not.toBe(beforeExpiry)
+        await expect(pane.locator('[data-composer-input][contenteditable="true"]')).toHaveText(draft)
+        await expect.poll(async () => (await catalogState()).pending, { timeout: 20_000 }).toBe(1)
+        expect(environment.hapi.aborted).not.toContain(fixture.session.id)
+        expect(environment.hapi.sent.filter(row => row.sessionId === fixture.session.id)).toEqual([])
         const image = await visualReview(environment.launchUrl, 'display-lifecycle-reopened', '1440x900',
             conversationReady(title, `if (!pane.textContent.includes(${JSON.stringify(`Lifecycle answer ${total - 1}`)})) return false;`))
         if (image) await info.attach('reopened-source-after-display-release', { path: image, contentType: 'image/png' })

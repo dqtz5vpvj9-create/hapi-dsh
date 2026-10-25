@@ -106,9 +106,15 @@ export interface NativeQueueRequest { sessionId: string; localId: string }
 export interface NativeAnswerRequest { sessionId: string; requestId: string; answer: HapiApprovalAnswer; deny?: boolean }
 export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, SessionExtrasApi, SourceInitialTaskApi, SourceHistoryApi, SourceAdminApi, SourceCompanionApi, LegacyTerminalApi, LegacyTerminalTextApi, SourceVoiceApi, SourceNotificationsApi {
     catalog(): Promise<RemoteResult<HapiCatalog>>;
-    sourceSessionResolve(request: { hubId: string; sourceSessionId: string }): Promise<RemoteResult<{ hubId: string; sourceSessionId: string; sessionId: string }>>;
+    sourceSessionResolve(request: { hubId: string; sourceSessionId: string }, signal?: AbortSignal): Promise<RemoteResult<{ hubId: string; sourceSessionId: string; sessionId: string }>>;
     /** Exact browser reference lease; release only retires this Host display. */
-    sourceDisplayLease(request: { hubId: string; sourceSessionId: string; leaseId: string; action: 'acquire' | 'renew' | 'release'; ttlMs?: number }): Promise<RemoteResult<{ released: boolean }>>;
+    sourceDisplayLease(request: { hubId: string; sourceSessionId: string; leaseId: string; action: 'acquire' | 'renew' | 'release'; ttlMs?: number }, signal?: AbortSignal): Promise<RemoteResult<{
+        released: boolean
+        /** False means this exact lease was expired/unknown; re-acquire it. */
+        leaseActive?: boolean
+        /** False means the Host display generation was retired; resolve the source again. */
+        attached?: boolean
+    }>>;
     machineOptions(request: { machineId: string }): Promise<RemoteResult<MachineOptions>>;
     sourceMachineOptions(request: SourceMachineOptionsRequest): Promise<RemoteResult<SourceMachineOptions>>;
     sourceMachineDirectory(request: SourceDirectoryRequest): Promise<RemoteResult<SourceDirectory>>;
@@ -344,7 +350,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
         models: z.array(z.object({ id, name: z.string(), reasoningEfforts: z.array(z.string()) })), warnings: z.array(z.string()),
     }),
     sourceSessionResolve: z.strictObject({ hubId: id, sourceSessionId: id, sessionId: id }),
-    sourceDisplayLease: z.object({ released: z.boolean() }),
+    sourceDisplayLease: z.object({ released: z.boolean(), leaseActive: z.boolean().optional(), attached: z.boolean().optional() }),
     createSession: sessionRequest, resumeSession: sessionRequest,
     sourceMachineOptions: sourceMachineOptionsSchema,
     sourceMachineDirectory: sourceDirectorySchema, sourceMachinePaths: sourcePathsSchema,
@@ -375,7 +381,9 @@ export const HAPI_REMOTE: TypertRemoteContribution = {
     descriptors: (Object.keys(outputs) as Array<keyof HapiRemoteApi>).map((method): InvocationDescriptor => ({
         id: `hapi-dsh#hapi/${method}`, service: 'hapi', namespace: 'hapi', method,
         invocation: { kind: 'direct' },
-        ...(method === 'nativeTerminalText' || method === 'sourceLegacyTerminalOpen' || method === 'sourceLegacyTerminalText' || method in voiceInputs || method in notificationInputs ? { cancellation: { parameter: 'signal' as const } } : {}),
+        ...(method === 'nativeTerminalText' || method === 'sourceLegacyTerminalOpen' || method === 'sourceLegacyTerminalText'
+            || method === 'sourceDisplayLease' || method === 'sourceSessionResolve'
+            || method in voiceInputs || method in notificationInputs ? { cancellation: { parameter: 'signal' as const } } : {}),
         parameters: inputs[method] === undefined ? [] : [{ name: 'request', wire: 'request', source: 'json', codec: codec(`${method}Input`, inputs[method]!) }],
         result: codec(`${method}Output`, outputs[method]),
     })),

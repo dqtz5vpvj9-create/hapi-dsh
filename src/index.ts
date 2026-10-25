@@ -239,24 +239,30 @@ export class HapiController extends TypertRemoteService {
         return nativeLaunchOptions(this.options.client, request.machineId);
     }
 
-    sourceSessionResolve(request: OriginalSessionRequest) { return this.sourceCall(() => this.sourceResolver.resolve(request)); }
+    sourceSessionResolve(request: OriginalSessionRequest, signal?: AbortSignal) {
+        return this.sourceCall(() => { signal?.throwIfAborted(); return this.sourceResolver.resolve(request) })
+    }
     /**
      * Browser-owned reference leases are the only signal that retires an
      * unviewed Host display. They never attach a source or start execution.
      */
-    sourceDisplayLease(request: DisplayLeaseView) {
+    sourceDisplayLease(request: DisplayLeaseView, signal?: AbortSignal) {
         return this.sourceCall(async () => {
+            signal?.throwIfAborted()
             if (request.hubId !== this.options.client.hubId) {
                 throw new HapiRequestError('This Host is connected to a different original HAPI Hub.', 'rejected', 409, 'source_hub_mismatch')
             }
             const services = [this.options.codex, this.options.observed]
+            let leaseActive = request.action === 'acquire'
             for (const service of services) {
                 if (request.action === 'acquire') await service.acquireDisplayLease(request.sourceSessionId, request.leaseId, request.ttlMs)
-                else if (request.action === 'renew') await service.renewDisplayLease(request.sourceSessionId, request.leaseId, request.ttlMs)
+                else if (request.action === 'renew') leaseActive = await service.renewDisplayLease(request.sourceSessionId, request.leaseId, request.ttlMs) || leaseActive
                 else await service.releaseDisplayLease(request.sourceSessionId, request.leaseId)
             }
-            return { released: !this.options.codex.byHapiSession(request.sourceSessionId)
-                && !this.options.observed.byHapiSession(request.sourceSessionId) }
+            signal?.throwIfAborted()
+            const attached = Boolean(this.options.codex.byHapiSession(request.sourceSessionId)
+                || this.options.observed.byHapiSession(request.sourceSessionId))
+            return { released: !attached && request.action === 'release', leaseActive: request.action === 'acquire' ? true : leaseActive, attached }
         })
     }
 

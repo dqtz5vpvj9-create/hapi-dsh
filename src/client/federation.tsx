@@ -402,7 +402,13 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
     let hostApi = root.remote.hapi
     const displayLeases = createDisplayLeaseRegistry({
         sourceDisplayLease: request => hostApi.sourceDisplayLease(request),
-    }, error => workspace.report(error))
+        sourceSessionResolve: request => hostApi.sourceSessionResolve(request),
+    }, error => workspace.report(error), {
+        // After a lost/expired lease creates a new Host display generation,
+        // re-read the normal Host catalogs so the Controller rebinds the visible
+        // source with the official SessionProvider, draft and approval state.
+        onRecover: () => workspace.refresh(),
+    })
     const catalogSurface = document.createElement('div')
     catalogSurface.hidden = true; catalogSurface.dataset.hapiCatalogHost = host.id
     document.body.append(catalogSurface)
