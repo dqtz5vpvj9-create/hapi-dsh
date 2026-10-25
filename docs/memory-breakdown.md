@@ -120,3 +120,11 @@ HAPI_DSH_PROBE_MEMORY=1 HAPI_DSH_PROBE_RUNS=3 npm run test:perf:federated
 发布后既有远端会话的桌面和手机只读截图也已查看。只读代理故意拒绝保存布局，因此图中的 403 布局提示是探针造成的，不能冒充正常生产 UI 状态。此验证只证明发布可用；现有证据不能证明长期 OOM 已消失，浏览器与 Host 的全局字节预算也尚未完成。
 
 后续 scope 修复通过 18 项定向测试、完整类型检查，以及正式发布中的全量逻辑测试（1,181 通过、1 跳过）和完整构建。真实官方组件的 Codex/Pi 两项实时历史 E2E 通过，四张合成桌面/手机截图已查看。2026-10-24 02:44 PDT 在再次确认普通 DSH 会话空闲后发布显示 Host，HAPI Hub 和原生执行没有重启；原三个机器身份全部在线，HTTP 与认证压缩 WebSocket 正常。既有远端会话的两张生产只读截图也已检查，客户端资源版本为 `32985e11e684`。这些是发布和功能验证，尚未完成长期同负载 OOM 验收；服务事件 Promise 队列问题仍明确未修复。
+
+## 5. 2026-10-24 后续：显示租约与可丢弃缓存
+
+Checkpoint `a8bf4af` 后提交 `d6193fd` 增加浏览器引用租约：官方 `SessionReference`（pane 与 warm cache）的最后一个引用释放后，Host 等待 10 秒 grace 再退役对应 observation Agent/Session；5 分钟 TTL 覆盖崩溃/丢失 release，页面正常 reload 不主动 pagehide 释放，以免旧页 release 与新页 acquire 竞争。退役不 abort 原生执行、队列投递或审批；重开生成新的 display generation。`display-lifecycle.spec.ts` 在 1600 行合成源上验证：关闭后经 5 个 warm 源淘汰目标，Host 显示从 attached 变为非 attached；重开后最新正文、草稿、`pendingRequestsCount=1` 的待审批事实和重连后的实时后缀均在，`sent`/`aborted` 为空。
+
+历史缓存现在最多保留 8 MiB 连续最新 tail 并标记 `complete:false`；单个超大最新 row 完整保留。归档读取每 8 页让出事件循环，`refresh`/`replaceDisplay` 不再重复整数组 merge。上述改动减少重复序列化和整数组复制，但**没有**消除 `readPass` 对整个归档 raw rows 的保留，也没有全 Host 显示缓存的字节预算；`SourceHistorySync` 的 slot 数是并发数，不是字节数。因此本条仍是部分修复，不能写成全局内存有界。
+
+15 分钟持续压力（6 源 × 2,000 行，3,005 个 open/release cycle）exit 0：每 cycle 后 agents=0，work/journals/releasing/timers/leased/suspended 均归零，revisions 固定 6，官方 session store 为 0；GC 后 heap 30.30→48.95MiB，RSS 158.15→164.28MiB，最后 5 分钟仍 +1.33MiB，不能宣称严格平台。单次 20,000 行全归档 3.28s、peak RSS 226.1MiB，归档后 GC 留存 +84.1MiB，release 后 +10.9MiB。详细 JSON 与口径见[修复结果](dsh-repair-result-2026-10-24.md)第 6 节；它是合成 Host/源，不是生产进程或用户网络。

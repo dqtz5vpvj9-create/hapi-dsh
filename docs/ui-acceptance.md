@@ -104,3 +104,7 @@ GitHub CI 的完整浏览器套件包含这些触摸断言并上传 JSON。CI �
 单次通过只说明对应环境与样本通过。最终交付同时给出源码版本、客户端构建时间、Host/浏览器启动次数、运行次数、失败项和未覆盖范围。内存窗口长期有界、跨设备通知、真实远端冷启动等，必须有各自证据，不能从短流程推断。
 
 DSH rc.3 的展开工具历史回归连续记录三个滑动方向、方向之间的间隔和结束后的静置。不要在每个方向结束时停止帧采样，否则插件加载造成的长任务会漏记。首次 649.9ms 失败和完整诊断保留；修复及实际测量见 [rc.3 升级记录](dsh-rc3-upgrade.md)。
+
+## 2026-10-24 后续验收
+
+Checkpoint `a8bf4af` 后的修复提交为 `d6193fd`，候选构建 `8ac857…`。最终专项组合 23/23 通过（live-history 2、desktop-history-scroll 3、mobile-scroll 12、mobile-chrome 2、source-presentation 2、federated-cold-boot 2）；通用 UI acceptance 22/22 通过；5 轮性能 acceptance 86 项通过。关键数值：冷文档 1.43–2.60s，首次正文/输入框 169–371ms/100–200ms，连续滚动 p95 16.8–33.4ms、最大 50–66.7ms，实时六次增量最大 582.8ms 且 drift 0，360/390px composer 92px、header 0、bottom 45px、overflow 0。首次 5 轮运行有 1 项 desktop 4 打开失败，报告保留在 `perf-1792897519366.json`；定位为 reload 时旧租约 release 与新页 acquire 竞争，移除 pagehide 释放并依赖 TTL 后，最终 `perf-1792897751574.json` 全过。该修正不改变“性能失败保留、不挑选最好一轮”的原则。

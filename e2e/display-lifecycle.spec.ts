@@ -93,6 +93,16 @@ test('closing the last browser reference retires the Host display and reopening 
         await expect(pane.locator('[data-composer-input]')).toBeVisible()
         await expect(pane.getByText(`Lifecycle answer ${total - 1}`, { exact: true })).toBeVisible()
         await expect(pane.getByText(`Lifecycle question ${total - 2}`, { exact: true })).toBeVisible()
+        await expect(pane.locator('[data-composer-input][contenteditable="true"]')).toHaveText(draft)
+        await expect.poll(async () => (await catalogState()).pending).toBe(1)
+        const liveText = 'Lifecycle live answer after reopening'
+        const at = Date.now(), seq = (fixture.rows.at(-1)?.seq ?? total) + 1
+        const liveRow: HapiMessage = { id: 'lifecycle-live-after-reopen', localId: null, seq, createdAt: at,
+            content: { role: 'agent', content: { type: 'output', data: { type: 'assistant', uuid: 'lifecycle-live-after-reopen',
+                message: { model: 'sonnet', content: [{ type: 'text', text: liveText }] } } } } }
+        fixture.rows.push(liveRow)
+        environment.hapi.emit({ type: 'message-received', sessionId: fixture.session.id, message: liveRow })
+        await expect(pane.getByText(liveText, { exact: true })).toBeVisible()
         expect(await pane.getAttribute('data-session-id')).not.toBe(displayId)
         const image = await visualReview(environment.launchUrl, 'display-lifecycle-reopened', '1440x900',
             conversationReady(title, `if (!pane.textContent.includes(${JSON.stringify(`Lifecycle answer ${total - 1}`)})) return false;`))

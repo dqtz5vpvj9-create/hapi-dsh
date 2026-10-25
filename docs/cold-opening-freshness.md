@@ -100,3 +100,11 @@ retained separately; only the corrected measurement is reported above.
 Full archive projection, serial attachment imports, remote asset loading and
 service event-queue retention remain separate costs. This repair does not claim
 that every long task, OOM risk or network-dependent opening delay is resolved.
+
+## 2026-10-24 后续验收状态
+
+Checkpoint `a8bf4af` 之后的修复已提交为 `d6193fd`。在候选构建 `8ac857bc642ec81640eca37728acc44706e1af7090a1b9f502f67436d7c36cd7` 上，最终 `native-cold-opening.spec.ts` 8/8 通过：两条真实 Host 用例在归档仍被阻塞时出现最新正文和可编辑 composer，`archiveReleased=false`；归档放行后继续稳定观察，标题/正文不回退，唯一可操作 composer 保留草稿。两条真实用例的截图已逐张查看。
+
+此前记录的两条 Settings 重试用例在本轮第一次运行失败：503 已真实发生（trace network 证据），但测试监听的是浏览器 console，而 `ctx.logger` 只写进程内 buffer；account-script 用例还错误假设账户插件加载后侧栏仍有独立 Settings 按钮。测试改为读取 `hapi:deferred-plugins-failed` performance mark，并在 signed-out 状态通过官方 Account menu → Settings menuitem 打开；最终 4/4 通过。原始失败日志保留。
+
+仍为 `UNVERIFIED`/`FAIL` 的条目：30 秒换代超时的浏览器注入、完整归档的单源 raw-row 峰值与全局字节预算、生产长期 OOM、物理手机和用户网络。详见[修复结果](dsh-repair-result-2026-10-24.md)。
