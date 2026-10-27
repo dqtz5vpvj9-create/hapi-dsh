@@ -14,10 +14,15 @@ declare module '@deepseek-ai/dsh-session/types' {
       key: string
       fingerprint: string
       surfaceSeq: number | null
+      sourceMessageId?: string
+      sourceAt?: number
+      sourceSeq?: number
       displayTurn: number
       displayStep: number
       nativeTurnId: string | null
       nativeItemId: string | null
+      /** Stable source step identity shared by detached pages and live records. */
+      nativeStepId?: string
     }
   }
 }

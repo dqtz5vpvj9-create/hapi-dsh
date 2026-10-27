@@ -1,3 +1,4 @@
+import { NoticeGate } from './error-policy.ts'
 import { sameSourceGeneration } from './surface/generation-handoff.ts'
 import { randomId } from './random-id.ts'
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
@@ -308,6 +309,8 @@ export class WorkspaceController {
     private readonly sourcePaneTitles = new Map<string, { sourceKey: string; title: string }>()
     private sourceCatalogRevision = 0
     private readonly aggregatedHosts = new Map<string, { inputs: readonly unknown[]; ids: SessionId[]; rows: WorkspaceCatalog['byId'] }>()
+    private aggregateParts: readonly object[] = []
+    private aggregateValue?: WorkspaceCatalog
     private readonly discovery = new CatalogDiscovery()
     private discoveryCatalog: WorkspaceCatalog | undefined
     private sourceBindingsPending = 0
@@ -483,6 +486,8 @@ export class WorkspaceController {
                 || machine.online === previous.online && (machine.lastSeenAt ?? 0) >= (previous.lastSeenAt ?? 0)) unique.set(machine.id, machine)
         }
         this.snapshot = { ...this.snapshot, machines: [...unique.values()] }
+        this.notices.markReady()
+        this.notices.recovered()
         this.publish({ catalog: this.aggregateCatalog() })
     }
     setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {
@@ -723,8 +728,7 @@ export class WorkspaceController {
 
     private aggregateCatalog(): WorkspaceCatalog {
         for (const host of this.hosts.values()) this.hostCatalogs.set(host.id, { label: host.label, catalog: host.sessions.list.getSnapshot() })
-        const ids: SessionId[] = []
-        const byId: WorkspaceCatalog['byId'] = {}
+        const parts: Array<{ ids: SessionId[]; rows: WorkspaceCatalog['byId'] }> = []
         let phase: SessionListState['phase'] = 'ready'
         for (const [hostId, cached] of this.hostCatalogs) {
             const host = this.hosts.get(hostId)
@@ -739,7 +743,7 @@ export class WorkspaceController {
                 hostId === 'local' ? this.discovery.sourcePhase : undefined]
             const previous = this.aggregatedHosts.get(hostId)
             if (previous && inputs.every((value, index) => value === previous.inputs[index])) {
-                Object.assign(byId, previous.rows); ids.push(...previous.ids); continue
+                parts.push(previous); continue
             }
             const hostRows: WorkspaceCatalog['byId'] = {}
             const archived = new Set(workspace?.archivedSessionIds ?? [])
@@ -778,16 +782,26 @@ export class WorkspaceController {
                 }
             }
             const hostIds = cached.catalog.ids.map(id => sessionResourceId(hostId, id) as SessionId)
-            this.aggregatedHosts.set(hostId, { inputs, ids: hostIds, rows: hostRows })
-            Object.assign(byId, hostRows); ids.push(...hostIds)
+            const part = { inputs, ids: hostIds, rows: hostRows }
+            this.aggregatedHosts.set(hostId, part)
+            parts.push(part)
         }
         for (const id of this.aggregatedHosts.keys()) if (!this.hostCatalogs.has(id)) this.aggregatedHosts.delete(id)
+        // Retaining a lease can synchronously publish a catalog update. Keep
+        // the second reconciliation, but do not copy every row again when all
+        // Host snapshots and their presentation inputs are still identical.
+        if (this.aggregateValue && phase === this.aggregateValue.phase && parts.length === this.aggregateParts.length
+            && parts.every((part, index) => part === this.aggregateParts[index])) return this.aggregateValue
+        this.aggregateParts = parts
+        const ids: SessionId[] = []
+        const byId: WorkspaceCatalog['byId'] = {}
+        for (const part of parts) { Object.assign(byId, part.rows); ids.push(...part.ids) }
         const previous = this.snapshot?.catalog
         if (previous && phase === previous.phase && ids.length === previous.ids.length
             && ids.every((id, index) => id === previous.ids[index])
             && Object.keys(byId).length === Object.keys(previous.byId).length
-            && Object.entries(byId).every(([id, row]) => row === previous.byId[id])) return previous
-        return { ids, byId, phase, projectionsBySession: {} }
+            && Object.entries(byId).every(([id, row]) => row === previous.byId[id])) return this.aggregateValue = previous
+        return this.aggregateValue = { ids, byId, phase, projectionsBySession: {} }
     }
 
     /** Add an independently booted Host; never pass its reference into another Host's provider. */
@@ -1163,6 +1177,30 @@ export class WorkspaceController {
 
     /** A source notification never treats its original id as a DSH display id
      * or silently opens another Hub's same-named session. */
+    /**
+     * A pending source resolution must produce a visible outcome: either it
+     * settles, it times out with an actionable error, or the caller aborts. A
+     * silently hanging "opening" row is not an acceptable state.
+     * @param entry - resolution shared by all callers of this source.
+     */
+    private async awaitResolution(entry: SourceResolution): Promise<void> {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        try {
+            await Promise.race([
+                entry.work,
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('Resolving the source conversation timed out; retry opening it')), 15_000)
+                }),
+            ])
+        } catch (error) {
+            if (entry.phase === 'opening' && !entry.abort.signal.aborted) entry.abort.abort(error)
+            this.report(error)
+            throw error
+        } finally {
+            if (timer !== undefined) clearTimeout(timer)
+        }
+    }
+
     async openSourceSession(source: { hubId: string; sessionId: string; messageId?: string; requestId?: string }): Promise<void> {
         if (!source.hubId.trim() || !source.sessionId.trim()) throw new Error('A source conversation requires both its Hub and session identity')
         const revision = ++this.navigationRevision
@@ -1174,7 +1212,8 @@ export class WorkspaceController {
             const failed = this.sourceResolutions.get(key)
             if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
             this.sourceRequests.set(key, (this.sourceRequests.get(key) ?? 0) + 1)
-            try { await this.resolveSource(original)!.work }
+            const resolution = this.resolveSource(original)!
+            try { await this.awaitResolution(resolution) }
             finally {
                 const count = (this.sourceRequests.get(key) ?? 1) - 1
                 if (count) this.sourceRequests.set(key, count)
@@ -1252,7 +1291,7 @@ export class WorkspaceController {
 
     /** Source deep links wait for their real native binding; no guessed display ID. */
     private openPendingSource(): boolean {
-        if (!this.remoteLoaded || !this.pendingSourceSession) return false
+        if (this.disposed || !this.pendingSourceSession) return false
         const hubId = this.pendingSourceSession.hubId ?? this.primarySourceHubId
         // Legacy /sessions links belong to the configured original Hub. Wait
         // for its real catalog identity instead of guessing from an early row
@@ -1264,6 +1303,10 @@ export class WorkspaceController {
             if (matches.length === 0) this.resolveSource({ hubId, sourceSessionId: this.pendingSourceSession.sessionId })
             return false
         }
+        // Identity resolution can overlap the independent layout read. Opening
+        // still waits for its merge so the deep link cannot overwrite a layout
+        // that has not arrived yet or create an early persistence write.
+        if (!this.remoteLoaded) return false
         const row = matches[0]!
         const target = this.pendingSourceSession.target
         this.pendingSourceSession = null
@@ -1324,7 +1367,14 @@ export class WorkspaceController {
     }
 
     clearNotice = (): void => { this.publish({ notice: null }) }
-    report = (error: unknown): void => { this.publish({ notice: errorMessage(error) }) }
+    // HAPI parity: cancellations stay silent, a transient transport failure shows
+    // one delayed notice, and auth/operation failures remain explicit and human.
+    private readonly notices = new NoticeGate(text => this.publish({ notice: text }), () => this.publish({ notice: null }))
+
+    report = (error: unknown): void => { this.notices.report(error) }
+
+    /** Cancel a pending transient notice after a successful connect or read. */
+    recovered = (): void => { this.notices.recovered() }
 
     async refresh(): Promise<void> {
         const results = await Promise.allSettled([...this.hosts.values()].map(host => host.sessions.refresh()))
@@ -1407,6 +1457,7 @@ export class WorkspaceController {
 
     private async loadRemote(): Promise<void> {
         if (this.remoteLoading || this.disposed) return
+        try { performance.clearMarks('hapi-dsh:workspace:load-remote-start'); performance.mark('hapi-dsh:workspace:load-remote-start') } catch {}
         this.remoteLoading = true
         const initialRevision = this.store.getSnapshot().revision
         try {
@@ -1440,6 +1491,7 @@ export class WorkspaceController {
             if (!this.disposed) this.publish({ notice: `Workspace sync failed: ${errorMessage(error)}`, persistence: 'failed' })
         } finally {
             this.remoteLoading = false
+            try { performance.clearMarks('hapi-dsh:workspace:load-remote-end'); performance.mark('hapi-dsh:workspace:load-remote-end') } catch {}
             this.openPendingSource()
             if (this.remoteLoaded && this.queuedSave && !this.disposed) void this.flushRemote()
         }
@@ -1511,6 +1563,7 @@ export class WorkspaceController {
     }
 
     dispose(): void {
+        this.notices.dispose()
         if (this.disposed) return
         this.disposed = true
         this.lifetime.abort()

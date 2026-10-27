@@ -37,6 +37,7 @@ import type { PaneGraphPolicy } from './contracts.ts'
  */
 export const PANE_GRAPH_EXCLUDE: ReadonlySet<string> = new Set([
     'hapi-dsh',
+    'hapi-dsh-session-provider',
     '@deepseek-ai/dsh-client-ui-settings-account',
     '@deepseek-ai/dsh-cordis-client-runner',
     '@deepseek-ai/dsh-client-ui-trajectory',

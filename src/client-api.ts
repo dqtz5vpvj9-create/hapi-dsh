@@ -6,6 +6,11 @@ import type { InvocationDescriptor, RemoteResult, TypertRemoteContribution } fro
 import type { HapiApprovalAnswer, HapiCancelResult, HapiSteerResult, HapiRetryResult } from './codex/contracts.ts';
 import { deliveryViewSchema, type DeliveryView } from './codex/projection-types.ts';
 import { parseWorkspaceState, type WorkspaceState } from './client/model.ts';
+import { sourceHistoryOutlinePageRequestSchema, sourceHistoryOutlinePageValueSchema, sourceHistoryOutlineValueSchema, sourceHistoryWindowRequestSchema, sourceHistoryWindowValueSchema, type SourceHistoryOutlinePageRequest, type SourceHistoryOutlinePageValue, type SourceHistoryOutlineValue, type SourceHistoryWindowRequest, type SourceHistoryWindowValue } from './source-window-types.ts';
+import {
+    sourceHistoryAttachmentRequestSchema, sourceHistoryAttachmentValueSchema,
+    type SourceHistoryAttachmentRequest, type SourceHistoryAttachmentValue,
+} from './source-attachment-types.ts';
 import { legacyWorkspaceSnapshotSchema, type LegacyWorkspaceSnapshot } from './legacy-workspace-types.ts';
 export type * from './legacy-workspace-types.ts';
 import { nativeLibraryInputs, nativeLibraryOutputs, type NativeLibraryApi } from './native-library-types.ts';
@@ -146,6 +151,14 @@ export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, Ses
     nativeSchedule(request: { sessionId: string; operationId: string; text: string; scheduledAt: number }): Promise<RemoteResult<DeliveryView>>;
     nativeScheduleRead(request: { sessionId: string; operationId: string }): Promise<RemoteResult<DeliveryView | null>>;
     sourceReadingAnchor(request: { sessionId: string; seq: number }): Promise<RemoteResult<{ sourceMessageId: string | null }>>;
+    /** Lightweight source-wide outline in display turn coordinates. */
+    sourceHistoryOutline(request: { sessionId: string }): Promise<RemoteResult<SourceHistoryOutlineValue>>;
+    /** One bounded outline page; the preview reflects every page read so far. */
+    sourceHistoryOutlinePage(request: SourceHistoryOutlinePageRequest): Promise<RemoteResult<SourceHistoryOutlinePageValue>>;
+    /** Direct bounded source window at a message, or a contiguous older/newer page. */
+    sourceHistoryWindowPage(request: SourceHistoryWindowRequest): Promise<RemoteResult<SourceHistoryWindowValue>>;
+    /** Read an image ref actually served by this display's bounded source history page. */
+    sourceHistoryAttachment(request: SourceHistoryAttachmentRequest): Promise<RemoteResult<SourceHistoryAttachmentValue>>;
     sourceLocateMessage(request: { sessionId: string; sourceMessageId: string }): Promise<RemoteResult<{ sessionId: string; seq: number | null }>>;
     nativeSettings(request: { sessionId: string }): Promise<RemoteResult<NativeSettings>>;
     nativeApplySetting(request: NativeApplySetting): Promise<RemoteResult<NativeSettingReceipt>>;
@@ -233,6 +246,10 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/nativeScheduleRead': HapiRemoteApi['nativeScheduleRead'];
         'hapi/sourceReadingAnchor': HapiRemoteApi['sourceReadingAnchor'];
         'hapi/sourceLocateMessage': HapiRemoteApi['sourceLocateMessage'];
+        'hapi/sourceHistoryOutline': HapiRemoteApi['sourceHistoryOutline'];
+        'hapi/sourceHistoryOutlinePage': HapiRemoteApi['sourceHistoryOutlinePage'];
+        'hapi/sourceHistoryWindowPage': HapiRemoteApi['sourceHistoryWindowPage'];
+        'hapi/sourceHistoryAttachment': HapiRemoteApi['sourceHistoryAttachment'];
         'hapi/nativeSettings': HapiRemoteApi['nativeSettings'];
         'hapi/nativeApplySetting': HapiRemoteApi['nativeApplySetting'];
         'hapi/observedSettings': HapiRemoteApi['observedSettings'];
@@ -313,6 +330,10 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     nativeSchedule: z.strictObject({ sessionId: id, operationId: z.string().uuid(), text: z.string().trim().min(1).max(1_000_000), scheduledAt: z.number().int().positive() }),
     nativeScheduleRead: z.strictObject({ sessionId: id, operationId: z.string().uuid() }),
     sourceReadingAnchor: z.strictObject({ sessionId: id, seq: z.number().int().nonnegative() }),
+    sourceHistoryOutline: z.strictObject({ sessionId: id }),
+    sourceHistoryOutlinePage: sourceHistoryOutlinePageRequestSchema,
+    sourceHistoryWindowPage: sourceHistoryWindowRequestSchema,
+    sourceHistoryAttachment: sourceHistoryAttachmentRequestSchema,
     sourceLocateMessage: z.strictObject({ sessionId: id, sourceMessageId: id }),
     nativeSettings: sessionRequest, nativeApplySetting: nativeApplySettingSchema,
     observedSettings: sessionRequest, observedApplySetting: observedApplySettingSchema, observedSetting: observedSettingReadSchema,
@@ -366,6 +387,10 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     nativeSchedule: deliveryViewSchema,
     nativeScheduleRead: deliveryViewSchema.nullable(),
     sourceReadingAnchor: z.object({ sourceMessageId: id.nullable() }),
+    sourceHistoryOutline: sourceHistoryOutlineValueSchema,
+    sourceHistoryOutlinePage: sourceHistoryOutlinePageValueSchema,
+    sourceHistoryWindowPage: sourceHistoryWindowValueSchema,
+    sourceHistoryAttachment: sourceHistoryAttachmentValueSchema,
     sourceLocateMessage: z.object({ sessionId: id, seq: z.number().int().nonnegative().nullable() }),
     nativeSettings: nativeSettingsSchema, nativeApplySetting: nativeSettingReceiptSchema,
     observedSettings: observedSettingsSchema, observedApplySetting: observedSettingReceiptSchema, observedSetting: observedSettingReceiptSchema,
@@ -388,6 +413,33 @@ export const HAPI_REMOTE: TypertRemoteContribution = {
         result: codec(`${method}Output`, outputs[method]),
     })),
 };
+
+
+/** Errors from tagged Remote calls carry the operation that produced them. */
+export interface HapiOperationError { hapiOperation?: string }
+
+/**
+ * Tag every Remote rejection with the operation name so notice policy and
+ * diagnostics can classify by operation instead of parsing endpoint strings.
+ * @param api - the generated Remote API object.
+ * @returns a proxy that annotates rejected calls.
+ */
+export function taggedRemote<T extends object>(api: T): T {
+    return new Proxy(api, {
+        get(target, prop, receiver) {
+            const value = Reflect.get(target, prop, receiver)
+            if (typeof value !== 'function' || typeof prop !== 'string') return value
+            return (...args: unknown[]) => {
+                const result = (value as (...values: unknown[]) => unknown).apply(target, args)
+                if (typeof (result as PromiseLike<unknown> | undefined)?.then !== 'function') return result
+                return (result as Promise<unknown>).catch((error: unknown) => {
+                    if (error !== null && typeof error === 'object') Object.assign(error, { hapiOperation: `hapi/${prop}` })
+                    throw error
+                })
+            }
+        },
+    })
+}
 
 export function remoteValue<T>(result: RemoteResult<T>): T {
     if (!result.ok) throw result.error;

@@ -6,6 +6,7 @@ import WebSocket from 'ws';
 import { DSH_VERSION } from '../cli/config.ts';
 import { type RunnerConfig, runnerToken } from './config.ts';
 import { CHUNK_BYTES, MAX_CHANNELS, MAX_FRAME_BYTES, MAX_SOCKET_BYTES, RUNNER_PATH, filterHeaders, safeSocketClose, validateUpstreamPath, type FederationFrame, type WireHeaders } from './protocol.ts';
+import { identityMatches, runtimeIdentity, RUNTIME_PROTOCOL, type RuntimeIdentityV1 } from './identity.ts';
 import { bytes, Tunnel } from './tunnel.ts';
 
 interface HttpRequestState { opening: Promise<ClientRequest>; abort: AbortController; done: boolean }
@@ -17,6 +18,8 @@ export interface RunnerClientOptions {
     /** Official connection.authenticatedUrl callback; the returned token never leaves this process. */
     authenticatedUrl(origin: string): string;
     dshVersion?: string;
+    /** Exact runtime identity this Runner offers; defaults to the source identity. */
+    identity?: RuntimeIdentityV1;
     status?(state: 'connecting' | 'connected' | 'disconnected'): void;
 }
 
@@ -32,7 +35,10 @@ export class RunnerClient {
     private cookie?: { value: string; expiresAt: number };
     private cookieRequest?: Promise<string>;
 
+    private readonly identity: RuntimeIdentityV1;
+
     constructor(private readonly options: RunnerClientOptions) {
+        this.identity = options.identity ?? runtimeIdentity({ dshVersion: options.dshVersion ?? DSH_VERSION });
         const origin = new URL(options.origin);
         if (origin.hostname !== '127.0.0.1' || !['http:', 'https:'].includes(origin.protocol) || origin.pathname !== '/' || origin.username || origin.password) {
             throw new Error('Runner transport requires the official loopback DSH origin');
@@ -81,7 +87,7 @@ export class RunnerClient {
                 if (this.lifetime.signal.aborted) { socket.close(1000); return; }
                 const tunnel = new Tunnel(socket, async (frame) => {
                     if (!connected) {
-                        if (frame.type !== 'welcome') { tunnel.close(1002); return; }
+                        if (frame.type !== 'welcome' || !identityMatches(frame.identity, this.identity)) { tunnel.close(1002); return; }
                         connected = true;
                         if (helloTimer) clearTimeout(helloTimer);
                         this.options.status?.('connected');
@@ -95,8 +101,9 @@ export class RunnerClient {
                 this.tunnel = tunnel;
                 helloTimer = setTimeout(() => tunnel.close(1008), 10_000);
                 helloTimer.unref();
-                void tunnel.send({ type: 'hello', protocol: 1, machineId: this.options.config.machine.id,
-                    name: this.options.config.machine.name, dshVersion: this.options.dshVersion ?? DSH_VERSION, generation: this.generation }).catch(() => tunnel.close(1011));
+                void tunnel.send({ type: 'hello', protocol: RUNTIME_PROTOCOL, machineId: this.options.config.machine.id,
+                    name: this.options.config.machine.name, dshVersion: this.options.dshVersion ?? DSH_VERSION,
+                    generation: this.generation, identity: this.identity }).catch(() => tunnel.close(1011));
             });
         });
     }

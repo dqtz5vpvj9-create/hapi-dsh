@@ -269,11 +269,47 @@ test('source delivery remains unknown after disconnect and restart, without auto
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('observed reconnect revisions retain their official owner while missing source boundaries still replace it', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-revision-'), source = new Fixture()
+  source.add('claude')
+  const oldest = input(), latest = codex('revision-answer', 2, { type: 'message', message: 'Original answer' })
+  source.rows.set('claude', [oldest, latest])
+  const base = await source.readMessages('claude'), requests: HapiMessagesQuery[] = []
+  let epoch = 1
+  source.readMessages = async (id, query = {}) => {
+    requests.push(query)
+    return { messages: structuredClone(source.rows.get(id) ?? []),
+      page: { ...base.page, epoch, reset: query.epoch !== undefined && query.epoch !== epoch } }
+  }
+  const app = await mount(source, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!, anchor = initial.historyWindowAnchor()!, start = requests.length
+    assert.equal(anchor.epoch, 1, 'observed opening retains its authoritative epoch')
+    epoch = 2
+    await initial.refresh(true); await app.service.settled()
+    assert.equal(app.service.list()[0], initial)
+    assert.equal(initial.historyWindowAnchor()?.epoch, 2)
+    assert.deepEqual(initial.historyWindowAnchor()?.oldest, anchor.oldest)
+    assert.ok(requests.slice(start).every(query => query.afterAt !== undefined || query.limit === 32 || query.limit === 1))
+    source.rows.set('claude', [latest]); epoch = 3
+    await initial.refresh(true); await app.service.settled()
+    const replacement = app.service.list()[0]!
+    assert.notEqual(replacement, initial, 'a missing retained source boundary is a structural change')
+    assert.equal(replacement.resolveSourceMessageDisplaySeq(oldest.id), undefined)
+    assert.equal(replacement.historyWindowAnchor()?.epoch, 3)
+    assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('observed opening reads a fresh bounded tail before a blocked archive even when a cache exists', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-fresh-opening-')), source = new Fixture()
   source.add('claude')
   const cached = [input(), codex('cached', 2, { type: 'message', message: 'Old cached answer' })]
-  const fresh = [codex('fresh', 10, { type: 'message', message: 'Current source answer' })]
+  const fresh = [
+    row('fresh-input', 8, 'user', { type: 'text', text: 'Fresh question' }, { localId: 'fresh-input', invokedAt: 1800 }),
+    codex('fresh', 9, { type: 'message', message: 'Current source answer' }),
+    row('fresh-input-2', 10, 'user', { type: 'text', text: 'Fresh follow-up' }, { localId: 'fresh-input-2', invokedAt: 2000 }),
+    codex('fresh-2', 11, { type: 'message', message: 'Current source follow-up' })]
   source.rows.set('claude', cached)
   let app = await mount(source, directory), release: ((value: HapiMessagesPage) => void) | undefined
   const snapshot = await source.readMessages('claude')
@@ -289,7 +325,7 @@ test('observed opening reads a fresh bounded tail before a blocked archive even 
     const initial = app.service.list()[0]!
     const answers = () => app.service.list()[0]!.session.snapshotEvents().flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
-    assert.deepEqual(answers(), ['Current source answer'], 'old preview cannot stand in for current source content')
+    assert.deepEqual(answers(), ['Current source answer', 'Current source follow-up'], 'old preview cannot stand in for current source content')
     const live = codex('live', 11, { type: 'message', message: 'Live source answer' })
     source.emit({ type: 'message-received', sessionId: 'claude', message: live })
     for (let index = 0; index < 200 && initial.resolveSourceMessageDisplaySeq(live.id) === undefined; index++) {
@@ -298,7 +334,9 @@ test('observed opening reads a fresh bounded tail before a blocked archive even 
     assert.notEqual(initial.resolveSourceMessageDisplaySeq(live.id), undefined)
     release!({ ...snapshot, messages: cached }); release = undefined
     await app.service.settled()
-    assert.deepEqual(answers(), ['Old cached answer', 'Current source answer', 'Live source answer'])
+    // The old cache is not appended after the validated fresh page; it is a
+    // stale preview, not a source-history prefix.
+    assert.deepEqual(answers(), ['Current source answer', 'Current source follow-up', 'Live source answer'])
     assert.equal(app.service.list()[0]!.projection.error, null)
     assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
   } finally {
@@ -337,7 +375,18 @@ test('observed cache fallback keeps live output moving after a failed tail read 
     await app.service.settled()
     const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
-    assert.deepEqual(answers, ['Cached source answer', 'Previously missing source row', 'Live source answer'])
+    assert.ok(answers.includes('Live source answer'))
+    assert.ok(answers.includes('Previously missing source row'))
+    const sourceItems = current.session.snapshotEvents().flatMap(event => {
+      if ((event.type as string) !== 'plugin:hapi-dsh-observed/item') return []
+      const data = (event as unknown as { data?: { sourceSeq?: unknown; key?: unknown } }).data
+      if (!data) return []
+      return typeof data.sourceSeq === 'number' && typeof data.key === 'string' ? [{ seq: data.sourceSeq, key: data.key }] : []
+    }).sort((left, right) => left.seq - right.seq)
+    const missingKey = sourceItems.findIndex(value => value.key.includes('missing'))
+    const liveKey = sourceItems.findIndex(value => value.key.includes('live'))
+    assert.ok(missingKey >= 0 && liveKey > missingKey, 'the annotated history surface retains source order for the late row')
+    assert.equal(current, initial, 'the live-first fallback keeps the same display owner')
     assert.equal(current.binding.nativeId, initial.binding.nativeId)
     assert.equal(current.projection.error, null)
     assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)

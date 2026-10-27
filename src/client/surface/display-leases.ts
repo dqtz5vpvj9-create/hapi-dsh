@@ -14,9 +14,34 @@
  */
 import type { HapiRemoteApi } from '../../client-api.ts'
 import { randomId } from '../random-id.ts'
+import { sourceIdentity } from '../../workspace/legacy.ts'
+import type { WorkspaceCatalogRow } from '../controller.ts'
 
 type Api = Pick<HapiRemoteApi, 'sourceDisplayLease'> & Partial<Pick<HapiRemoteApi, 'sourceSessionResolve'>>
 export interface DisplayIdentity { hubId: string; sourceSessionId: string }
+/** Catalog sourceSessionId is a hosted DSH id, including for ordinary sessions.
+ * Only an explicit saved HAPI identity or its source projection owns a lease. */
+export function displayLeaseIdentity(resource: { sourceHubId?: string; sourceSessionId?: string },
+    row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): DisplayIdentity | undefined {
+    if (resource.sourceHubId && resource.sourceSessionId)
+        return { hubId: resource.sourceHubId, sourceSessionId: resource.sourceSessionId }
+    const source = sourceIdentity(row)
+    if (!source?.hubId || (resource.sourceSessionId && resource.sourceSessionId !== source.sessionId)) return undefined
+    return { hubId: source.hubId, sourceSessionId: source.sessionId }
+}
+
+/**
+ * A lease RPC aborted by page unload, dispose, or our own timeout is expected
+ * background failure. It must never surface as a user-visible error: the next
+ * renew retries, and HAPI customers never see internal Remote endpoint names.
+ * @param error - the rejected RPC error.
+ * @returns whether the failure is an expected cancellation.
+ */
+function expectedLeaseCancellation(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error)
+    return /was aborted|aborted|abort/i.test(message)
+}
+
 export interface DisplayLeaseOptions {
     heartbeatMs?: number
     leaseTtlMs?: number
@@ -110,7 +135,7 @@ class DisplayLease {
                 try { await this.step() }
                 catch (error) {
                     if (this.refs > 0 && !this.disposed) {
-                        try { this.onError(error) } catch { /* reporting is best effort */ }
+                        if (!expectedLeaseCancellation(error)) { try { this.onError(error) } catch { /* reporting is best effort */ } }
                         this.scheduleRetry()
                     }
                 }
@@ -203,7 +228,8 @@ class DisplayLease {
         this.recovery = tracked
         void tracked.catch(error => {
             if (this.disposed || this.refs === 0) return
-            this.onError(error)
+            if (expectedLeaseCancellation(error)) return
+            if (!expectedLeaseCancellation(error)) this.onError(error)
             this.scheduleRetry()
         })
     }

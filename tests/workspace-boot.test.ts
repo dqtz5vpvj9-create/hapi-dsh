@@ -63,6 +63,8 @@ function boot(options: { saved?: unknown; raw?: string; href?: string; hidden?: 
     }, { timeout: 1_000 })
     return {
         document, marks, storageReads, observers,
+        pendingFrames: () => frames.length,
+        pendingTimers: () => [...timers.values()].map(timer => timer.delay),
         root: () => document.querySelector<HTMLElement>('[data-hapi-workspace-boot]'),
         frame() { const current = frames.splice(0); for (const callback of current) callback() },
         time(delay: number) { for (const [id, timer] of [...timers]) if (timer.delay === delay) { timers.delete(id); timer.callback() } },
@@ -96,14 +98,13 @@ test('boot carrier only defers the known official entry when its release script 
     assert.equal(workspaceBootInjections().filter(item => item.kind === 'script').length, 1)
 })
 
-test('boot script paints first, then releases exactly one unchanged official module after two frames', () => {
+test('boot script releases exactly one unchanged official module without waiting for paint or a timer', () => {
     const result = boot()
     assert.ok(result.root())
-    assert.equal(result.document.querySelectorAll('script[type="module"]').length, 0)
+    assert.equal(result.document.querySelectorAll('script[type="module"]').length, 1)
     assert.deepEqual(result.marks, ['hapi:boot-layout'])
-    result.frame()
-    assert.equal(result.document.querySelectorAll('script[type="module"]').length, 0)
-    result.frame()
+    assert.equal(result.pendingFrames(), 0)
+    assert.deepEqual(result.pendingTimers(), [15_000])
     const module = result.document.querySelector('script[type="module"]')!
     assert.equal(module.getAttribute('src'), './assets/index-fixture.js')
     assert.equal(module.getAttribute('nonce'), 'fixture-nonce')
@@ -115,10 +116,11 @@ test('boot script paints first, then releases exactly one unchanged official mod
     assert.equal(result.document.querySelector('[data-hapi-workspace]') ?? null, null)
 })
 
-test('a throttled paint, hidden tab and explicit boot opt-out all release the official module', () => {
+test('a throttled paint, hidden tab and explicit boot opt-out do not delay the official module', () => {
     const throttled = boot()
-    throttled.time(250)
     assert.equal(throttled.document.querySelectorAll('script[type="module"]').length, 1)
+    assert.equal(throttled.pendingFrames(), 0)
+    throttled.time(250)
     throttled.frame(); throttled.frame()
     assert.equal(throttled.document.querySelectorAll('script[type="module"]').length, 1)
     const hidden = boot({ hidden: true })
@@ -154,7 +156,6 @@ test('boot honors the saved zoomed pane and falls back for broken or unavailable
         const result = boot(options)
         assert.equal(result.document.querySelectorAll('[data-boot-pane]').length, 1)
         assert.match(result.root()!.textContent!, /Your workspace is starting/)
-        result.frame(); result.frame()
         assert.equal(result.document.querySelectorAll('script[type="module"]').length, 1)
     }
 })

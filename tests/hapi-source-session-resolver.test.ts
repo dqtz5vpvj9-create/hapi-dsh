@@ -11,7 +11,11 @@ function fixture() {
     const native = {
         byHapiSession: () => attached ? display : undefined,
         attach: async () => { nativeAttaches++; attached = true; return display; },
-        openSource: async () => { if (attached) reconciles++; else { nativeAttaches++; attached = true; } return display; },
+        openSource: async (_id: string, source?: HapiSession) => {
+            assert.equal(source, session, 'display admission must reuse this exact authoritative source reply');
+            if (attached) reconciles++; else { nativeAttaches++; attached = true; }
+            return display;
+        },
     };
     const observed = { byHapiSession: () => undefined, attach: async () => { observedAttaches++; return undefined; }, openSource: async () => undefined };
     const resolver = new SourceSessionResolver({ hubId: 'original-hub', getSession: async () => { gets++; return session; } }, native, observed);

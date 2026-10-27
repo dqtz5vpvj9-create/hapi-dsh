@@ -1,4 +1,7 @@
+import { logicalDisplayId, observedSessionId } from './hapi-agent/identity.ts'
 import { join } from 'node:path';
+import { DSH_VERSION } from './cli/config.ts';
+import { runtimeIdentity } from './runner/identity.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import S from '@deepseek-ai/schemastery';
 import { z } from 'zod';
@@ -10,6 +13,11 @@ import type {} from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-client-modules';
 import type { SessionRenameValue } from '@deepseek-ai/dsh-api-session-controller/types';
+import { DisplayHistoryWindows, isSourceTurnStart, SourceHistoryWindow, sourcePosition, uniqueSourceRows, DISPLAY_SEQ_OFFSET } from './codex/source-window.ts';
+import type { SourceHistoryWindowRequest, SourceHistoryWindowValue, SourceHistoryOutlineValue, SourceHistoryOutlinePageRequest, SourceHistoryOutlinePageValue } from './source-window-types.ts';
+import type { SourceHistoryAttachmentRequest, SourceHistoryAttachmentValue } from './source-attachment-types.ts';
+import { sourceAttachmentErrorOf } from './source-window-attachments.ts';
+import { isSourceChildDisplayId, isSourceDisplayId } from './shared/source-display-id.ts';
 import { TerminalController, type Config as TerminalConfig } from '@deepseek-ai/dsh-api-terminal-controller';
 import {
     HAPI_REMOTE, type CreateNativeSession, type HapiCatalog, type MachineOptions,
@@ -26,7 +34,7 @@ import { discoverSourceSession } from './hapi/source-discovery.ts';
 import type { DeliveryRecoveryRequest } from './codex/delivery-recovery-types.ts';
 import { startSourceCatalogs } from './hapi/catalog-startup.ts';
 import { SourceSessionResolver, type OriginalSessionRequest } from './hapi/source-session-resolver.ts';
-import { HapiRequestError, type HapiCancelResult, type HapiSteerResult, type HapiRetryResult } from './codex/contracts.ts';
+import { HapiRequestError, type HapiCancelResult, type HapiMessage, type HapiSteerResult, type HapiRetryResult } from './codex/contracts.ts';
 import { CodexService, type NativeCodexAgent } from './codex/index.ts';
 import { attachmentResolver, artifactImporter, sourceUploadImporter, sourceInlineImporter } from './hapi/attachments.ts';
 import { NativeModelMetadata, NATIVE_CODEX_PROVIDER, HAPI_OBSERVED_PROVIDER } from './hapi/model-adapter.ts';
@@ -119,6 +127,7 @@ interface ControllerOptions {
     workbench: NativeWorkbench;
     legacyTerminals: LegacySessionTerminals;
     extras: HapiSessionExtras;
+    historyWindows: DisplayHistoryWindows;
 }
 
 /** The native control surface uses DSH's existing Remote registration and access policy. */
@@ -166,6 +175,62 @@ export class HapiController extends TypertRemoteService {
                 events: [], objects: [],
             },
         }), 'hapi-dsh: native Remote methods');
+        ctx.effect(() => () => options.historyWindows.clear(), 'hapi-dsh: source history windows');
+    }
+
+    /** One virtual source window per live display; normal paging never replaces it. */
+    sourceHistoryWindow(sessionId: string): SourceHistoryWindow | undefined {
+        if (!isSourceDisplayId(sessionId) || isSourceChildDisplayId(sessionId)) return undefined;
+        const agent = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        if (!agent) return undefined;
+        return this.options.historyWindows.window(sessionId, agent, this.options.client, async query => {
+      const source = this.workbenchSource(sessionId)!;
+      return this.options.extras.sourceOutline({ source, query });
+    }, async (messageId, radius) => {
+      const source = this.workbenchSource(sessionId)!;
+      const value = await this.options.extras.sourceMessageContext({ source, messageId, radius });
+      return { messages: value.messages as unknown as readonly HapiMessage[], page: value.page };
+    });
+    }
+
+    historyWindowBound(sessionId: string): boolean {
+        if (!isSourceDisplayId(sessionId) || isSourceChildDisplayId(sessionId)) return false;
+        const agent = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        return Boolean(agent);
+    }
+
+    /** Virtual display seq -> source row id, including paged older history. */
+    sourceMessageAtDisplaySeq(sessionId: string, seq: number): string | undefined {
+        const agent = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        if (seq >= DISPLAY_SEQ_OFFSET / 2) {
+            const virtual = this.options.historyWindows.peek(sessionId)?.sourceMessageAtVirtualSeq(seq);
+            if (virtual !== undefined) return virtual;
+            return agent?.sourceMessageAtDisplaySeq(seq - DISPLAY_SEQ_OFFSET);
+        }
+        return agent?.sourceMessageAtDisplaySeq(seq);
+    }
+
+    displaySeqForSourceMessage(sessionId: string, sourceMessageId: string): number | null {
+        const window = this.options.historyWindows.peek(sessionId);
+        const virtual = window?.virtualSeqForSourceMessage(sourceMessageId);
+        if (virtual !== undefined) return virtual;
+        const agent = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        const real = agent?.resolveSourceMessageDisplaySeq(sourceMessageId);
+        return real === undefined ? null : real + DISPLAY_SEQ_OFFSET;
+    }
+
+    resolveHistoryRewind(sessionId: string, seq: number): string | undefined {
+        const direct = this.options.historyWindows.peek(sessionId)?.resolveRewind(seq);
+        if (direct !== undefined) return direct;
+        const agent = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        if (!agent || seq < DISPLAY_SEQ_OFFSET) return undefined;
+        return agent.resolveRewindLocalIdAtSeq(seq - DISPLAY_SEQ_OFFSET);
+    }
+
+    resolveHistoryFork(sessionId: string, messageId: string) {
+        const live = (this.options.codex.get(sessionId) ?? this.options.observed.get(sessionId) ?? this.options.codex.get(logicalDisplayId(sessionId)) ?? this.options.observed.get(logicalDisplayId(sessionId)));
+        return this.options.historyWindows.peek(sessionId)?.resolveFork(messageId)
+            ?? (live && 'resolveForkBoundary' in live ? live.resolveForkBoundary(messageId) : undefined);
     }
 
     private async refreshMachines(): Promise<void> {
@@ -262,6 +327,7 @@ export class HapiController extends TypertRemoteService {
             signal?.throwIfAborted()
             const attached = Boolean(this.options.codex.byHapiSession(request.sourceSessionId)
                 || this.options.observed.byHapiSession(request.sourceSessionId))
+            if (request.action === 'release' && !attached) this.options.historyWindows.retireSource(request.sourceSessionId)
             return { released: !attached && request.action === 'release', leaseActive: request.action === 'acquire' ? true : leaseActive, attached }
         })
     }
@@ -393,8 +459,212 @@ export class HapiController extends TypertRemoteService {
     nativeScheduleRead(request: { sessionId: string; operationId: string }) {
         return this.sourceCall(async () => this.sourceAgent(request.sessionId).scheduleReceipt(request.operationId));
     }
+    sourceHistoryOutline(request: { sessionId: string }): Promise<SourceHistoryOutlineValue> {
+        return this.sourceCall(async () => {
+            await this.ensureDisplayAgent(request.sessionId);
+            const window = this.requireHistoryWindow(request.sessionId);
+            const agent = this.sourceAgent(request.sessionId);
+            let head: SourceHistoryOutlineValue['head'];
+            try {
+                const latest = await this.options.client.readMessages(agent.binding.hapiSessionId, { limit: 1, bounded: true });
+                if (latest.page.reset) window.invalidateSnapshot(latest.page.epoch);
+                window.observeSnapshotEpoch(latest.page.epoch);
+                const row = latest.messages.filter(message => message.invokedAt != null).at(-1) ?? latest.messages.at(-1);
+                if (row) head = { messageId: row.id, at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 };
+            } catch { /* The outline remains usable; latest falls back to its user entry. */ }
+            // Head and outline identify messages independently. Their snapshot
+            // revisions need not equal the display's opening seed revision.
+            const value = await window.canonicalOutline();
+            if (!value) throw new RemoteError('hapi/request', 'The source outline is not available for this display yet', {
+                outcome: 'rejected', status: 409, sourceCode: 'source_outline_unavailable' });
+            return { entries: [...value.entries], seedIndex: value.seedIndex, firstTurn: value.firstTurn,
+                epoch: value.epoch, complete: value.complete, indexing: value.indexing,
+                unreadable: value.unreadable, scannedThrough: value.scannedThrough, headSeq: value.headSeq,
+                ...(head ? { head } : {}) };
+        });
+    }
+    /** One bounded outline page. The preview covers every page read so far. */
+    sourceHistoryOutlinePage(request: SourceHistoryOutlinePageRequest): Promise<SourceHistoryOutlinePageValue> {
+        return this.sourceCall(async () => {
+            await this.ensureDisplayAgent(request.sessionId);
+            const window = this.requireHistoryWindow(request.sessionId);
+            const agent = this.sourceAgent(request.sessionId);
+            let head: SourceHistoryOutlineValue['head'];
+            try {
+                const latest = await this.options.client.readMessages(agent.binding.hapiSessionId, { limit: 1, bounded: true });
+                if (latest.page.reset) window.invalidateSnapshot(latest.page.epoch);
+                window.observeSnapshotEpoch(latest.page.epoch);
+                const row = latest.messages.filter(message => message.invokedAt != null).at(-1) ?? latest.messages.at(-1);
+                if (row) head = { messageId: row.id, at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 };
+            } catch { /* A page preview stays usable without a head snapshot. */ }
+            const page = await window.outlinePage({
+                ...(request.limit === undefined ? {} : { limit: request.limit }),
+                ...(request.beforeAt === undefined ? {} : { beforeAt: request.beforeAt }),
+                ...(request.beforeSeq === undefined ? {} : { beforeSeq: request.beforeSeq }),
+                ...(request.epoch === undefined ? {} : { epoch: request.epoch }),
+            });
+            if (!page) throw new RemoteError('hapi/request', 'The source outline is not available for this display yet', {
+                outcome: 'rejected', status: 409, sourceCode: 'source_outline_unavailable' });
+            return { entries: [...page.entries], seedIndex: page.seedIndex, firstTurn: page.firstTurn,
+                epoch: page.epoch, complete: page.complete, indexing: page.indexing,
+                unreadable: page.unreadable, scannedThrough: page.scannedThrough, headSeq: page.headSeq,
+                cursor: page.cursor, hasMore: page.hasMore, pageSize: page.pageSize,
+                ...(head ? { head } : {}) };
+        });
+    }
+    sourceHistoryWindowPage(request: SourceHistoryWindowRequest): Promise<SourceHistoryWindowValue> {
+        return this.sourceCall(async () => {
+            await this.ensureDisplayAgent(request.sessionId);
+            const window = this.requireHistoryWindow(request.sessionId);
+            const agent = this.sourceAgent(request.sessionId);
+            const source = this.workbenchSource(request.sessionId);
+            if (!source) throw new RemoteError('hapi/request', 'The source window has no verified machine identity', {
+                outcome: 'rejected', status: 409, sourceCode: 'source_unavailable' });
+            if (request.messageId !== undefined) {
+                const page = await window.windowAt(request.messageId, request.radius ?? 50, request.startSeq ?? 3_000_000_000, async (messageId, radius) => {
+                    const value = await this.options.extras.sourceMessageContext({ source, messageId, radius });
+                    return { messages: value.messages as unknown as readonly HapiMessage[], page: {
+                        beforeCursor: value.page.beforeCursor, afterCursor: value.page.afterCursor,
+                        hasMoreBefore: value.page.hasMoreBefore, hasMoreAfter: value.page.hasMoreAfter,
+                        epoch: value.page.epoch, reset: value.page.reset } };
+                });
+                return { ...page, records: [...page.records] };
+            }
+            if (request.fromOldest) {
+                const page = await window.windowOldest(request.endSeq ?? 3_000_000_000, async (cursor, epoch) => {
+                    let rows: Awaited<ReturnType<HapiClient['readMessages']>>['messages'] = [];
+                    let next: { at: number; seq: number } | null = null;
+                    let hasMore = false;
+                    let pageEpoch: number | undefined;
+                    let reset = false;
+                    let cursorValue = cursor;
+                    let requestEpoch = epoch;
+                    // Admission asks for one small contiguous page. Normal
+                    // history traversal retains its existing turn batching.
+                    for (let pageIndex = 0; pageIndex < (request.limit === undefined ? 3 : 1); pageIndex++) {
+                        const value = await this.options.client.readMessages(agent.binding.hapiSessionId, {
+                            limit: request.limit ?? 200, bounded: true, ...(requestEpoch === undefined ? {} : { epoch: requestEpoch }),
+                            beforeAt: cursorValue.at, beforeSeq: cursorValue.seq,
+                        });
+                        pageEpoch = value.page.epoch; reset ||= value.page.reset;
+                        if (value.page.reset || requestEpoch !== undefined && value.page.epoch !== requestEpoch) { reset = true; break; }
+                        requestEpoch ??= value.page.epoch;
+                        const batch = uniqueSourceRows(value.messages);
+                        if (!batch.length) { hasMore = false; break; }
+                        rows = [...batch, ...rows];
+                        cursorValue = sourcePosition(batch[0]!);
+                        next = cursorValue;
+                        hasMore = value.page.hasMore;
+                        if (batch.filter(isSourceTurnStart).length >= 2 || !hasMore) break;
+                    }
+                    return { messages: uniqueSourceRows(rows), hasMore, next, ...(pageEpoch === undefined ? {} : { epoch: pageEpoch }), reset };
+                });
+                return { ...page, records: [...page.records] };
+            }
+            if (request.beforeAt !== undefined && request.beforeSeq !== undefined) {
+                const before = { at: request.beforeAt, seq: request.beforeSeq };
+                const page = await window.windowBefore(before, request.endSeq ?? 3_000_000_000, async (cursor, epoch) => {
+                    let rows: Awaited<ReturnType<HapiClient['readMessages']>>['messages'] = [];
+                    let next: { at: number; seq: number } | null = null;
+                    let hasMore = false;
+                    let epochValue: number | undefined;
+                    let reset = false;
+                    let cursorValue = cursor;
+                    let requestEpoch = epoch;
+                    for (let pageIndex = 0; pageIndex < (request.limit === undefined ? 3 : 1); pageIndex++) {
+                        const value = await this.options.client.readMessages(agent.binding.hapiSessionId, {
+                            limit: request.limit ?? 200, bounded: true, ...(requestEpoch === undefined ? {} : { epoch: requestEpoch }),
+                            beforeAt: cursorValue.at, beforeSeq: cursorValue.seq,
+                        });
+                        epochValue = value.page.epoch; reset ||= value.page.reset;
+                        if (value.page.reset || requestEpoch !== undefined && value.page.epoch !== requestEpoch) { reset = true; break; }
+                        requestEpoch ??= value.page.epoch;
+                        const batch = uniqueSourceRows(value.messages);
+                        if (!batch.length) { hasMore = false; break; }
+                        rows = [...batch, ...rows];
+                        const nextBefore = value.page.nextBeforeAt !== null && value.page.nextBeforeSeq !== null && value.page.nextBeforeSeq > 0
+                            ? { at: value.page.nextBeforeAt, seq: value.page.nextBeforeSeq }
+                            : sourcePosition(batch[0]!);
+                        if (nextBefore.seq <= 0) { hasMore = false; break; }
+                        cursorValue = nextBefore;
+                        next = cursorValue;
+                        hasMore = value.page.hasMore;
+                        if (batch.filter(isSourceTurnStart).length >= 2 || !hasMore) break;
+                    }
+                    return { messages: uniqueSourceRows(rows), hasMore, next, ...(epochValue === undefined ? {} : { epoch: epochValue }), reset };
+                }, request.epoch, request.cursorMessageId);
+                return { ...page, records: [...page.records] };
+            }
+            if (request.afterAt !== undefined && request.afterSeq !== undefined) {
+                const after = { at: request.afterAt, seq: request.afterSeq };
+                const page = await window.windowAfter(after, request.startSeq ?? 3_000_000_000, async (cursor, epoch) => {
+                    let rows: Awaited<ReturnType<HapiClient['readMessages']>>['messages'] = [];
+                    let next: { at: number; seq: number } | null = null;
+                    let hasMore = false;
+                    let epochValue: number | undefined;
+                    let reset = false;
+                    let cursorValue = cursor;
+                    let requestEpoch = epoch;
+                    for (let pageIndex = 0; pageIndex < 2; pageIndex++) {
+                        const value = await this.options.client.readMessages(agent.binding.hapiSessionId, {
+                            limit: 200, bounded: true, ...(requestEpoch === undefined ? {} : { epoch: requestEpoch }),
+                            afterAt: cursorValue.at, afterSeq: cursorValue.seq,
+                        });
+                        epochValue = value.page.epoch; reset ||= value.page.reset;
+                        if (value.page.reset || requestEpoch !== undefined && value.page.epoch !== requestEpoch) { reset = true; break; }
+                        requestEpoch ??= value.page.epoch;
+                        const batch = uniqueSourceRows(value.messages);
+                        if (!batch.length) { hasMore = false; break; }
+                        rows = [...rows, ...batch];
+                        const nextAfter = value.page.nextAfterAt !== null && value.page.nextAfterSeq !== null && value.page.nextAfterSeq > 0
+                            ? { at: value.page.nextAfterAt, seq: value.page.nextAfterSeq }
+                            : sourcePosition(batch[batch.length - 1]!);
+                        if (nextAfter.seq <= 0) { hasMore = false; break; }
+                        cursorValue = nextAfter;
+                        next = cursorValue;
+                        hasMore = value.page.hasMore;
+                        if (!hasMore) break;
+                    }
+                    return { messages: uniqueSourceRows(rows), hasMore, next, ...(epochValue === undefined ? {} : { epoch: epochValue }), reset };
+                }, request.epoch, request.cursorMessageId);
+                return { ...page, records: [...page.records] };
+            }
+            throw new RemoteError('hapi/request', 'The source window request has no route', { outcome: 'rejected', status: 400 });
+        });
+    }
+    /**
+     * Read an image that this display's bounded source history page actually
+     * served. The official `session/attachment` route remains the only reader
+     * for refs in the original Session log and for every ordinary Session.
+     */
+    sourceHistoryAttachment(request: SourceHistoryAttachmentRequest): Promise<SourceHistoryAttachmentValue> {
+        return this.sourceCall(async () => {
+            if (!isSourceDisplayId(request.sessionId) || isSourceChildDisplayId(request.sessionId)) {
+                throw new RemoteError('hapi/request', 'This source display has no active history window', {
+                    outcome: 'rejected', status: 404, sourceCode: 'source_window_unavailable',
+                })
+            }
+            const window = this.options.historyWindows.peek(request.sessionId)
+            if (!window) throw new RemoteError('hapi/request', 'This source display has no active history window', {
+                outcome: 'rejected', status: 404, sourceCode: 'source_window_unavailable',
+            })
+            try {
+                const stored = await window.attachments.read(this.ctx.attachments, request.attachmentId, window.epoch,
+                    this.ctx.invocation?.signal)
+                return { attachment: stored.ref, data: Buffer.from(stored.data).toString('base64') }
+            } catch (error) {
+                const denial = sourceAttachmentErrorOf(error)
+                if (denial) {
+                    throw new HapiRequestError(denial.message, 'rejected',
+                        denial.reason === 'ATTACHMENT_TOO_LARGE' ? 413 : denial.reason === 'ATTACHMENT_WINDOW_CLOSED' ? 410 : 404,
+                        denial.reason.toLowerCase())
+                }
+                throw error
+            }
+        })
+    }
     sourceReadingAnchor(request: { sessionId: string; seq: number }): Promise<{ sourceMessageId: string | null }> {
-        return this.sourceCall(async () => ({ sourceMessageId: this.sourceAgent(request.sessionId).sourceMessageAtDisplaySeq(request.seq) ?? null }));
+        return this.sourceCall(async () => ({ sourceMessageId: this.sourceMessageAtDisplaySeq(request.sessionId, request.seq) ?? null }));
     }
     sourceLocateMessage(request: { sessionId: string; sourceMessageId: string }): Promise<{ sessionId: string; seq: number | null }> {
         return this.sourceCall(async () => {
@@ -402,7 +672,13 @@ export class HapiController extends TypertRemoteService {
             const sourceId = agent.binding.hapiSessionId;
             await agent.refresh(true);
             const current = this.options.codex.byHapiSession(sourceId) ?? this.options.observed.byHapiSession(sourceId);
-            return { sessionId: current?.id ?? agent.id, seq: current?.resolveSourceMessageDisplaySeq(request.sourceMessageId) ?? null };
+            const sessionId = current?.id ?? agent.id;
+            const known = this.displaySeqForSourceMessage(sessionId, request.sourceMessageId);
+            if (known !== null) return { sessionId, seq: known };
+            // Do not walk or materialize intervening archive pages. A target
+            // is navigable only when its display mapping is already retained;
+            // an unvisited source cursor has no public exact display seq yet.
+            return { sessionId, seq: this.options.historyWindows.peek(sessionId)?.virtualSeqForSourceMessage(request.sourceMessageId) ?? null };
         });
     }
     nativeSettings(request: { sessionId: string }): Promise<NativeSettings> {
@@ -503,9 +779,41 @@ export class HapiController extends TypertRemoteService {
         if (!child) throw new HapiRequestError('This source DSH child is no longer available in the current display generation', 'rejected', 404, 'source_child_unavailable');
         return child;
     }
+    /**
+     * A restored display id can outlive the Host process that materialized its
+     * observed agent. Reattach it from the current Hub catalog before a window
+     * read, so a saved layout never sees "no active history window".
+     */
+    private async ensureDisplayAgent(displayId: string): Promise<void> {
+        if (!isSourceDisplayId(displayId) || isSourceChildDisplayId(displayId)) return;
+        const logical = logicalDisplayId(displayId);
+        if (this.options.codex.get(displayId) ?? this.options.observed.get(displayId)
+            ?? this.options.codex.get(logical) ?? this.options.observed.get(logical)) return;
+        try {
+            const catalog = await this.catalog();
+            // `sessions` lists attached agents; the Hub catalog is sourceDiscovery.
+            const discovered = catalog.sourceDiscovery?.sessions ?? [];
+            const source = discovered.find(session => observedSessionId(this.options.client.hubId, session.sourceSessionId) === logical);
+            const attached = source ? await this.options.observed.attach(source.sourceSessionId) : undefined;
+            console.warn(`[hapi-dsh] ensure display logical=${logical.slice(-10)} discovered=${discovered.length} matched=${Boolean(source)} attached=${Boolean(attached)}`);
+        } catch (error) { console.warn(`[hapi-dsh] ensure display failed logical=${logical.slice(-10)} error=${error instanceof Error ? error.message.slice(0, 120) : 'unknown'}`) }
+    }
+
+    private requireHistoryWindow(sessionId: string): SourceHistoryWindow {
+        const window = this.sourceHistoryWindow(sessionId);
+        if (!window) {
+            // Bounded, sanitized diagnosis: display kind and owner lookup only.
+            const prefix = sessionId.split('-').slice(0, 2).join('-');
+            console.warn(`[hapi-dsh] outline window missing prefix=${prefix} source=${isSourceDisplayId(sessionId)} child=${isSourceChildDisplayId(sessionId)} native=${Boolean(this.options.codex.get(sessionId))} observed=${Boolean(this.options.observed.get(sessionId))}`);
+            throw new RemoteError('hapi/request', 'This source display has no active history window', {
+                outcome: 'rejected', status: 404, sourceCode: 'source_window_unavailable' });
+        }
+        return window;
+    }
     private sourceAgent(id: string): NativeCodexAgent | HapiObservedAgent {
-        const agent = this.options.codex.get(id) ?? this.options.observed.get(id);
-        if (!agent || agent.id !== id) throw new RemoteError('hapi/request', 'This source display is unavailable or was replaced; refresh the workspace.', { outcome: 'rejected', status: 404 });
+        const agent = this.options.codex.get(id) ?? this.options.observed.get(id)
+            ?? this.options.codex.get(logicalDisplayId(id)) ?? this.options.observed.get(logicalDisplayId(id));
+        if (!agent) throw new RemoteError('hapi/request', 'This source display is unavailable or was replaced; refresh the workspace.', { outcome: 'rejected', status: 404 });
         return agent;
     }
     private async sourceCall<T>(run: () => Promise<T>): Promise<T> {
@@ -527,6 +835,8 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
     const hapiToken = resolveHapiToken(config);
     const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken });
+    const historyWindows = new DisplayHistoryWindows();
+    let hapiController: HapiController;
     const companion = new SourceCompanionService({ hubId: config.hapi.id, sourceUrl: config.hapi.url,
         ...(config.hapi.companionUrl ? { companionUrl: config.hapi.companionUrl } : {}), readCredential: () => hapiToken });
     // One HAPI resume callback for the durable delivery path. A delivery only
@@ -536,6 +846,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         stateDirectory: join(dataDirectory, 'native'), fastHistorySeed: true, discovery: 'on-demand', resolveAttachments: attachmentResolver(ctx.attachments, client),
         importArtifact: artifactImporter(ctx.attachments, client),
         onError: (error) => { ctx.logger.warn(`Native Codex synchronization: ${error.message}`); },
+        onDisplayRetired: displayId => historyWindows.retire(displayId),
         resumeSession,
     });
     const observed = new HapiAgentService(ctx, client, {
@@ -544,14 +855,25 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         importGeneratedMedia: sourceGeneratedMediaImporter(ctx.attachments, client),
         importInline: sourceInlineImporter(ctx.attachments),
         onError: error => { ctx.logger.warn(`HAPI session synchronization: ${error.message}`); },
+        onDisplayRetired: displayId => historyWindows.retire(displayId),
         resumeSession,
     });
-    const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json') });
-    const nativeControl = new NativeControl(client, codex, join(dataDirectory, 'native'));
+    const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json'),
+        identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });
+    const nativeControl = new NativeControl(client, {
+        get: id => codex.get(id),
+        attach: id => codex.attach(id),
+        resolveForkBoundary: (sessionId, messageId) => hapiController.resolveHistoryFork(sessionId, messageId),
+    }, join(dataDirectory, 'native'));
     const observedControl = new HapiObservedControl(client, observed, join(dataDirectory, 'observed'));
     const nativeCreation = new NativeCreation(client, codex, join(dataDirectory, 'native'));
     const sourceCreation = new SourceCreation(client, observed, join(dataDirectory, 'observed'));
-    const sourceLifecycle = new SourceLifecycle(client, observed, join(dataDirectory, 'observed'));
+    const sourceLifecycle = new SourceLifecycle(client, {
+        get: id => observed.get(id),
+        reconcileSource: id => observed.reconcileSource(id),
+        detachSource: id => observed.detachSource(id),
+        resolveRewind: (sessionId, seq) => hapiController.resolveHistoryRewind(sessionId, seq),
+    }, join(dataDirectory, 'observed'));
     const initialTasks = new SourceInitialTasks(ctx, {
         get: id => codex.get(id) ?? observed.get(id),
         byHapiSession: id => codex.byHapiSession(id) ?? observed.byHapiSession(id),
@@ -576,6 +898,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     const nativePlan = new NativePlan(client, codex, join(dataDirectory, 'native'));
     const nativeLibrary = new NativeLibrary(client, {
         get: id => codex.get(id), reconcileSource: id => codex.reconcileSource(id),
+        resolveRewind: (sessionId, seq) => hapiController.resolveHistoryRewind(sessionId, seq),
         refreshCatalog: async () => { await Promise.all([codex.refreshCatalog(), observed.refreshCatalog()]); },
     }, join(dataDirectory, 'native'));
     const workbench = new NativeWorkbench(client);
@@ -631,7 +954,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     voice.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     notifications.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountShareTarget({ webServer: ctx.webServer }), 'hapi-dsh: browser share target');
-    new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, legacyTerminals, extras, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
+    hapiController = new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, legacyTerminals, extras, historyWindows, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
     const startup = await startSourceCatalogs([{ name: 'Native Codex', start: () => codex.start() }, { name: 'HAPI', start: () => observed.start() }],
         (source, error) => { ctx.logger.warn(`${source} catalog synchronization failed; source sessions will reconnect: ${error instanceof Error ? error.message : 'connection failed'}`); });
     if (startup === 'background') ctx.logger.info('The initial HAPI catalog is still loading. The Host is ready; all source sessions continue synchronizing in the background.');

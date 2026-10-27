@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readRunnerConfig } from './config.ts';
 import { RunnerClient } from './client.ts';
+import { runtimeIdentity } from './identity.ts';
 import { bootstrapPayload, mountBootstrapRoute } from '../shared/bootstrap.ts';
 export { bootstrapPayload, SAFE_GLOBALS } from '../shared/bootstrap.ts';
 
@@ -27,6 +28,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const disposeRoute = mountBootstrapRoute(services, () => {
         const payload = bootstrapPayload(services);
         client = new RunnerClient({ config: runtime, origin: services.webServer.getOrigin(), dshVersion: payload.dshVersion,
+            identity: runtimeIdentity({ dshVersion: payload.dshVersion, dshHome: runtime.dsh.home, profile: runtime.dsh.profile }),
             authenticatedUrl: (origin) => services.connection.authenticatedUrl(origin),
             status: (state) => { process.stdout.write(`hapi-dsh Runner ${runtime.machine.id}: ${state}\n`); } });
         client.start();

@@ -23,7 +23,7 @@ function references(state: InputState): HandoffReference[] {
 type Props = PropsRuntime<'conversation.input.dock'>;
 
 export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposerBridge): () => void {
-    const scope = ctx.inject(['hapiWorkspaceUi'], owner => {
+    const scope = ctx.inject(['hapiWorkspaceUi', 'sessions'], owner => {
         const handoffs = owner.hapiWorkspaceUi.handoffs;
         const Receiver = (props: Props) => {
             const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed;

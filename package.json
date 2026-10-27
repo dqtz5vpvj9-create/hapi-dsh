@@ -47,6 +47,10 @@
       "types": "./dist/types/hapi-agent/subagent-controller.d.ts",
       "default": "./dist/subagent-controller.js"
     },
+    "./session-provider": {
+      "types": "./dist/types/session-provider/index.d.ts",
+      "default": "./dist/session-provider/index.js"
+    },
     "./package.json": "./package.json",
     "./config/cordis.patch.yml": "./config/cordis.patch.yml",
     "./locale/*.json": "./locale/*.json"
@@ -64,6 +68,7 @@
     "NOTICE",
     "docs",
     "src",
+    "scripts/bundle",
     "scripts/build.mjs",
     "scripts/build-identity.mjs",
     "scripts/client-bundle.mjs",
@@ -78,6 +83,7 @@
     },
     "client": {
       "inject": [
+        "hapi-dsh-session-provider",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-api-workspace-files",
         "@deepseek-ai/dsh-api-terminal-controller",
@@ -97,6 +103,9 @@
     "build": "node scripts/build.mjs",
     "build:client": "node scripts/build-client.mjs",
     "dist:pack": "npm run build && node scripts/distribution-pack.mjs",
+    "bundle:pack": "node scripts/bundle/pack.mjs",
+    "bundle:pack:fixture": "node scripts/bundle/pack.mjs --fixture",
+    "test:bundle": "node --import tsx --test --test-isolation=none tests/host-bundle-*.test.ts",
     "test:install": "node scripts/distribution-smoke.mjs",
     "deploy": "node scripts/deploy.mjs",
     "deploy:host": "node scripts/deploy.mjs --host",

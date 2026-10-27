@@ -22,6 +22,8 @@ export interface HapiAgentServiceOptions extends Omit<HapiObservedOptions, 'disp
   discovery?: 'eager' | 'on-demand'
   onDisplayReset?: (oldId: SessionId, newId: SessionId) => void | Promise<void>
   onError?: (error: Error, sourceSessionId?: string) => void
+  /** A retired display's virtual source window must release its agent/cache. */
+  onDisplayRetired?: (displayId: string, sourceId: string) => void
   /** A deployment may prefer an already federated official DSH Host for that same source. */
   includeSession?: (source: HapiSession) => boolean
   displayLeaseTtlMs?: number
@@ -111,6 +113,7 @@ export class HapiAgentService {
         if (!current) { this.suspended.delete(sourceId); return false }
         this.agents.delete(sourceId); this.errors.delete(sourceId)
         await current.dispose()
+        this.options.onDisplayRetired?.(current.id, sourceId)
         this.advanceRevision(sourceId)
         this.historyJournals.delete(sourceId)
         this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
@@ -159,17 +162,18 @@ export class HapiAgentService {
     await agent?.dispose()
   }
   failures(): ReadonlyMap<string, string> { return this.errors }
-  /** View admission needs current identity, not another complete archive scan. */
-  async openSource(sourceId: string): Promise<HapiObservedAgent | undefined> {
+  /** Reuse this resolver operation's checked reply, but never across a release. */
+  async openSource(sourceId: string, snapshot?: HapiSession): Promise<HapiObservedAgent | undefined> {
+    if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     const releasing = this.releasing.get(sourceId)
-    if (releasing) await releasing
+    if (releasing) { await releasing; snapshot = undefined }
     const existing = this.agents.get(sourceId)
-    if (!existing) return this.attach(sourceId)
-    const source = await this.transport.getSession(sourceId)
+    if (!existing) return this.attach(sourceId, snapshot)
+    const source = snapshot ?? await this.transport.getSession(sourceId)
     if (!this.eligible(source) || !sameObservedIdentity(existing.binding, observedBinding(this.transport.hubId, source))) {
       return this.reconcileSource(sourceId)
     }
-    await existing.refreshSettings()
+    await existing.refreshSettings(source)
     return this.agents.get(sourceId) === existing ? existing : this.openSource(sourceId)
   }
   private eligible(source: HapiSession): boolean { return source.metadata?.codexNativeSession !== true && (this.options.includeSession?.(source) ?? true) }
@@ -188,11 +192,12 @@ export class HapiAgentService {
     this.catalogRefresh = task
     try { await task } finally { if (this.catalogRefresh === task) this.catalogRefresh = undefined }
   }
-  async attach(sourceId: string): Promise<HapiObservedAgent | undefined> {
+  async attach(sourceId: string, snapshot?: HapiSession): Promise<HapiObservedAgent | undefined> {
+    if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined
     const releasing = this.releasing.get(sourceId)
-    if (releasing) await releasing
+    if (releasing) { await releasing; snapshot = undefined }
     const existing = this.agents.get(sourceId)
     if (existing) return existing
     const pending = this.attaching.get(sourceId)
@@ -203,7 +208,8 @@ export class HapiAgentService {
     }
     const version = this.lifetimes.version(sourceId)
     const task = (async () => {
-      const source = await this.transport.getSession(sourceId)
+      // Publish the pending attachment before constructing its Agent.
+      const source = await (snapshot ?? this.transport.getSession(sourceId))
       if (this.disposed || !this.lifetimes.current(sourceId, version)) return undefined
       if (!(this.eligible(source))) { this.excluded.add(sourceId); this.historyJournals.delete(sourceId); return undefined }
       this.excluded.delete(sourceId)
@@ -264,16 +270,17 @@ export class HapiAgentService {
     if (!journal) { journal = new SourceHistoryJournal(); this.historyJournals.set(sourceId, journal) }
     return journal
   }
-  private create(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id)) {
+  private create(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id), epoch?: number) {
     const logical = observedSessionId(this.transport.hubId, source.id)
     return HapiObservedAgent.create(this.ctx, this.transport, source, { ...this.options,
       displayRevision: this.revisions.get(logical) ?? 0,
       historyJournal: this.historyFor(source.id), ...(checkpoint ? { historyCheckpoint: checkpoint } : {}),
+      ...(epoch === undefined ? {} : { historyEpoch: epoch }),
       assertSourceCurrent: () => { if (this.disposed) throw new HistoryReadInvalidatedError(); this.lifetimes.assertCurrent(source.id, version) },
-      onHistoryChanged: (agent, snapshot, checkpoint) => this.replaceDisplay(agent, snapshot, undefined, checkpoint),
+      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.replaceDisplay(agent, snapshot, undefined, checkpoint, epoch),
       ...(rows ? { initialRowsMerged: true } : {}) }, rows)
   }
-  private async replaceDisplay(previous: HapiObservedAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint()): Promise<void> {
+  private async replaceDisplay(previous: HapiObservedAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint(), epoch?: number): Promise<void> {
     const sourceId = previous.binding.hapiSessionId
     const pending = this.attaching.get(sourceId)
     if (pending) {
@@ -297,7 +304,8 @@ export class HapiAgentService {
         // service retry below survives disposal of its history sync worker.
         this.pendingResets.set(sourceId, this.pendingResets.get(sourceId) ?? previous.id)
         await previous.dispose(); this.agents.delete(sourceId)
-        current = await this.create(source ?? await this.transport.getSession(sourceId), rows, checkpoint, version)
+        this.options.onDisplayRetired?.(previous.id, sourceId)
+        current = await this.create(source ?? await this.transport.getSession(sourceId), rows, checkpoint, version, epoch)
         journal.assertCurrent(checkpoint); this.lifetimes.assertCurrent(sourceId, version)
         if (this.disposed) { await current.dispose(); return undefined }
         this.agents.set(sourceId, current)
@@ -392,7 +400,9 @@ export class HapiAgentService {
         if (removedAgent && this.agents.get(sourceId) === removedAgent) {
           this.agents.delete(sourceId); this.errors.delete(sourceId)
         }
-        await removedAgent?.dispose(); return
+        await removedAgent?.dispose()
+        if (removedAgent) this.options.onDisplayRetired?.(removedAgent.id, sourceId)
+        return
       }
       if (!this.lifetimes.current(sourceId, version)) return
       const pending = this.attaching.get(sourceId)
@@ -430,7 +440,7 @@ export class HapiAgentService {
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
     await Promise.allSettled([...this.attaching.values(), ...[...this.work.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
-    await Promise.allSettled(this.list().map(agent => agent.dispose())); this.agents.clear(); this.work.clear(); this.reconciling.clear(); this.historyJournals.clear(); this.unregister?.()
+    await Promise.allSettled(this.list().map(agent => { this.options.onDisplayRetired?.(agent.id, agent.binding.hapiSessionId); return agent.dispose() })); this.agents.clear(); this.work.clear(); this.reconciling.clear(); this.historyJournals.clear(); this.unregister?.()
   }
   private report(error: unknown, sourceId?: string): void {
     const failure = error instanceof Error ? error : new Error('The original HAPI source could not be synchronized')

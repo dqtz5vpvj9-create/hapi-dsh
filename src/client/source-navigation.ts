@@ -4,6 +4,7 @@ import type {} from '@deepseek-ai/dsh-api-session-controller/client';
 import { remoteValue, type HapiRemoteApi } from '../client-api.ts';
 import { messageNodeTarget, placeReadingAnchor, revealChatElement } from './reading-anchor.ts';
 import { loadHistoryThrough } from './history-navigation.ts';
+import { sourceMessageForSequence, sourceSequenceForMessage } from './source-event-order.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hapiMessageNavigation: SourceMessageNavigation } }
 
@@ -27,9 +28,15 @@ export class SourceMessageNavigation {
         return target ? revealChatElement(root, target, clicked) : undefined;
     }
     async sourceAnchor(sessionId: SessionId, seq: number): Promise<string | null> {
+        const entries = this.ctx.sessions.binding(sessionId)?.eventSource.getSnapshot().entries
+        const sourceMessageId = entries && sourceMessageForSequence(entries, seq)
+        if (sourceMessageId) return sourceMessageId
         return remoteValue(await this.api.sourceReadingAnchor({ sessionId, seq })).sourceMessageId;
     }
     async locate(sessionId: SessionId, sourceMessageId: string, signal?: AbortSignal): Promise<{ sessionId: SessionId; seq: SessionSeq }> {
+        const entries = this.ctx.sessions.binding(sessionId)?.eventSource.getSnapshot().entries
+        const resident = entries && sourceSequenceForMessage(entries, sourceMessageId)
+        if (resident !== undefined) return { sessionId, seq: resident as SessionSeq }
         const located = remoteValue(await this.api.sourceLocateMessage({ sessionId, sourceMessageId }));
         signal?.throwIfAborted();
         if (located.seq === null) throw new Error('This source message has not been observed in the conversation yet.');

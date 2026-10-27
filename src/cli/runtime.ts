@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { access, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { access, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DSH_VERSION, type RuntimeConfig, resolveHapiToken } from './config.ts';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
@@ -95,7 +96,23 @@ export const runCommand: CommandRunner = async (command, options) => new Promise
 
 /** Prefer the exact DSH dependency shipped with this package over an unrelated global installation. */
 export async function resolveDshCommand(config: Pick<RuntimeConfig, 'dsh'>, anchor: string = import.meta.url): Promise<Command> {
+    // A bundle-managed DSH home must run its verified runtime; an explicit
+    // launcher or a missing profile would silently bypass it.
+    const managedState = await readManagedState(config.dsh.home);
+    if (managedState !== undefined) {
+        if (config.dsh.command) {
+            if (process.env.HAPI_DSH_ALLOW_UNMANAGED !== '1') {
+                throw new Error('config.dsh.command bypasses the bundle-managed runtime; unset it or set HAPI_DSH_ALLOW_UNMANAGED=1 to run an unrelated launcher');
+            }
+        } else if (managedState.profiles?.[config.dsh.profile]?.runtime === undefined) {
+            throw new Error(`profile ${config.dsh.profile} is not managed by a bundle runtime; run the bundle installer for this profile`);
+        }
+    }
     if (config.dsh.command) return { executable: config.dsh.command, args: [...(config.dsh.args ?? [])] };
+    // A bundle-managed install runs its own pinned runtime so ext packages are
+    // the single physical copy every consumer resolves.
+    const managed = await managedRuntimeBinary(config.dsh.home, config.dsh.profile);
+    if (managed) return { executable: process.execPath, args: [managed] };
     const require = createRequire(anchor);
     let manifestPath: string;
     try {
@@ -110,6 +127,96 @@ export async function resolveDshCommand(config: Pick<RuntimeConfig, 'dsh'>, anch
     const binary = resolve(dirname(manifestPath), manifest.bin.dsh);
     await access(binary);
     return { executable: process.execPath, args: [binary] };
+}
+
+
+
+/** Sealed-runtime verification: every recorded file must still match its hash. */
+async function verifyRuntimeSeal(runtimeRoot: string, dshVersion: string, extRelease: string): Promise<void> {
+    const seal = JSON.parse(await readFile(join(runtimeRoot, 'runtime-identity.json'), 'utf8')) as {
+        schemaVersion?: unknown; upstreamVersion?: unknown; extRelease?: unknown;
+        files?: Record<string, unknown>;
+    };
+    if (seal.schemaVersion !== 1 || seal.upstreamVersion !== dshVersion || String(seal.extRelease) !== extRelease) {
+        throw new Error('The managed runtime seal does not match the recorded identity; reinstall the bundle');
+    }
+    const files = seal.files ?? {};
+    const names = Object.keys(files);
+    if (names.length === 0) throw new Error('The managed runtime seal lists no files; reinstall the bundle');
+    for (const path of names) {
+        const expected = files[path];
+        if (typeof expected !== 'string') throw new Error(`The managed runtime seal is malformed at ${path}; reinstall the bundle`);
+        const target = resolve(runtimeRoot, path);
+        if (!target.startsWith(`${resolve(runtimeRoot)}${sep}`)) {
+            throw new Error(`The managed runtime seal escapes its root at ${path}; reinstall the bundle`);
+        }
+        let realTarget: string;
+        try { realTarget = await realpath(target); }
+        catch { throw new Error(`The managed runtime is missing ${path}; reinstall the bundle`); }
+        if (!realTarget.startsWith(`${await realpath(runtimeRoot)}${sep}`)) {
+            throw new Error(`The managed runtime seal escapes its root at ${path}; reinstall the bundle`);
+        }
+        let bytes: Buffer;
+        try { bytes = await readFile(realTarget); }
+        catch { throw new Error(`The managed runtime is missing ${path}; reinstall the bundle`); }
+        if (createHash('sha256').update(bytes).digest('hex') !== expected) {
+            throw new Error(`The managed runtime changed since sealing (${path}); reinstall the bundle`);
+        }
+    }
+}
+
+
+/** Parsed bundle state, or undefined when this home has no managed install. */
+async function readManagedState(dshHome: string): Promise<{ profiles?: Record<string, { runtime?: { dshBinary?: unknown } }> } | undefined> {
+    const path = join(dshHome, 'hapi-dsh', 'state.json');
+    try { await access(path); }
+    catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw new Error(`The bundle state at ${path} cannot be accessed (${error instanceof Error ? error.message : String(error)}); repair the DSH home`);
+    }
+    try {
+        const state = JSON.parse(await readFile(path, 'utf8')) as { profiles?: Record<string, { runtime?: { dshBinary?: unknown } }> };
+        return state;
+    } catch (error) {
+        throw new Error(`The bundle state at ${path} is unreadable (${error instanceof Error ? error.message : String(error)}); repair or reinstall the bundle`);
+    }
+}
+
+/** The active bundle release's runtime launcher, verified against the state. */
+async function managedRuntimeBinary(dshHome: string, profile: string): Promise<string | undefined> {
+    // A home without bundle state uses the package's pinned dependency; a
+    // state file that exists but cannot be read must not fall back silently.
+    let state: {
+        profiles?: Record<string, { runtime?: { dshBinary?: unknown; dshVersion?: unknown; extRelease?: unknown } }>;
+    };
+    try {
+        state = JSON.parse(await readFile(join(dshHome, 'hapi-dsh', 'state.json'), 'utf8')) as typeof state;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+        throw new Error(`The bundle state at ${join(dshHome, 'hapi-dsh', 'state.json')} is unreadable (${error instanceof Error ? error.message : String(error)}); repair or reinstall the bundle`);
+    }
+    const runtime = (state as { profiles?: Record<string, { runtime?: { dshBinary?: unknown; dshVersion?: unknown; extRelease?: unknown } }> }).profiles?.[profile]?.runtime;
+    if (!runtime) return undefined;
+    if (typeof runtime.dshBinary !== 'string' || !isAbsolute(runtime.dshBinary)
+        || typeof runtime.dshVersion !== 'string' || typeof runtime.extRelease !== 'string') {
+        throw new Error('The managed DSH runtime pointer is malformed; reinstall the bundle');
+    }
+    const binary = runtime.dshBinary;
+    // runtime/node_modules/@deepseek-ai/dsh/<bin>
+    const runtimeRoot = resolve(dirname(binary), '..', '..', '..', '..');
+    const manifestPath = join(runtimeRoot, 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+    try {
+        await access(binary);
+        const dsh = JSON.parse(await readFile(manifestPath, 'utf8')) as { version?: unknown };
+        if (dsh.version !== runtime.dshVersion) {
+            throw new Error(`The managed runtime resolves @deepseek-ai/dsh ${String(dsh.version)}, expected ${runtime.dshVersion}; reinstall the bundle`);
+        }
+        await verifyRuntimeSeal(runtimeRoot, runtime.dshVersion, runtime.extRelease);
+    } catch (error) {
+        if (error instanceof Error && /reinstall the bundle/.test(error.message)) throw error;
+        throw new Error(`The managed DSH runtime is incomplete (${error instanceof Error ? error.message : String(error)}); reinstall the bundle`);
+    }
+    return binary;
 }
 
 export function runtimeEnvironment(config: Pick<RuntimeConfig, 'dsh'>, configFile: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

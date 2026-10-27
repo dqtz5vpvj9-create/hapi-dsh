@@ -1,13 +1,18 @@
 export type ColdOpeningNavigationRequirement = boolean | 'auto'
+export type ColdOpeningSourceTarget = { kind: 'text'; text: string } | { kind: 'tool-result'; callId: string }
 export interface ColdOpeningOptions {
   paneSelector?: string
   expectedTitle?: string
   expectedText?: string
+  /** Independently frozen source item; completed tool identity does not require old prose to remain visible. */
+  expectedSourceTarget?: ColdOpeningSourceTarget
   staleText?: string
   /** Exact visible session-view id. Optional, but a mismatch is a failure. */
   expectedViewId?: string
   /** Exact body text of the older navigation target. */
   expectedNavigationText?: string
+  /** Exact source marker for return-latest when the current head is a tool. */
+  expectedNavigationTarget?: ColdOpeningSourceTarget
   /** Exact action: official rail older target or mobile return-latest. */
   navigationAction?: 'unvisited-target' | 'return-latest'
   stableMs?: number
@@ -84,12 +89,66 @@ export interface ColdOpeningReaderEvidence {
   touch: number
   key: number
   pointer: number
+  motion?: ColdOpeningReaderMotion[]
+  departures?: Array<{
+    kind: 'offscreen' | 'unmounted'
+    at: number
+    intended: boolean
+    visibleAt: number | null
+    port: number
+    top: number | null
+    scrollAt: number | null
+    scrollEndTop: number | null
+    motion: ColdOpeningReaderMotion[]
+  }>
+}
+export interface ColdOpeningReaderMotion {
+  phase: 'gesture' | 'scroll' | 'scrollend'
+  at: number
+  direction: number
+  port: number
+  top: number | null
+  kind: string | null
+  gestureAt: number | null
+  moving: boolean
+}
+export interface ColdOpeningHistoryOperation {
+  id: number
+  scopeRevision: number
+  origin: 'requested' | 'observed'
+  intentRevision: number
+  intentAt: number | null
+  requestAt: number
+  commitAt: number | null
+  status: 'pending' | 'committed' | 'failed' | 'ambiguous'
+  failureAt?: number
+  failureType?: string
+  failureDetail?: string | null
+  /** Latest captured pre-write sample, retained even when it did not prove a prepend. */
+  domAt: number | null
+  /** A non-prepend batch discarded the sample as a commit baseline; diagnostics remain. */
+  domProbeDiscarded?: boolean
+  domPrepend: boolean
+  beforeScrollTop?: number | null
+  beforeScrollHeight?: number | null
+  beforeInterruptedAnchor?: boolean
+  commitScrollTop?: number | null
+  commitScrollHeight?: number | null
+  anchorAt: number | null
+  anchorKeyHash: number | null
+  anchorOffset: number | null
+  anchorRetained: boolean | null
+  anchorDriftPx: number | null
 }
 export interface ColdOpeningHistoryEvidence {
   intents: number
   intentAt: number | null
   lastIntentAt: number | null
   nearTopIntents: number
+  operationRevision: number
+  /** Last 128 operations; violations survive record eviction. */
+  operations: ColdOpeningHistoryOperation[]
+  violations: string[]
   requestRevision: number
   requestAt: number | null
   observedRevision: number
@@ -126,6 +185,10 @@ export interface ColdOpeningNavigationEvidence {
   action: 'unvisited-target' | 'return-latest'
   targetIntents: number
   returnLatestIntents: number
+  targetCommits?: number
+  returnLatestCommits?: number
+  targetCommitted?: boolean
+  returnLatestCommitted?: boolean
 }
 export interface ColdOpeningPartialExposure {
   editorUsable: boolean
@@ -154,6 +217,8 @@ export interface ColdOpeningState {
   bodyLastKeyHash?: number
   latestAttached: boolean | null
   latestVisible: boolean | null
+  /** A completed exact call may be represented by its own official collapsed disclosure. */
+  latestRepresentation?: 'text' | 'tool-card' | 'collapsed-tool-group' | null
   staleVisible: boolean | null
   editorVisible: boolean
   editorUsable: boolean
@@ -208,6 +273,7 @@ export interface ColdOpeningResult {
   startedAt: number
   stoppedAt: number | null
   verifiedFreshness: boolean
+  sourceTargetKind?: 'text' | 'tool-result' | null
   verifiedTitle: boolean
   verifiedView: boolean
   verifiedTarget: boolean
@@ -232,6 +298,9 @@ export interface ColdOpeningResult {
 declare global {
   interface Window {
     __hapiColdOpening: ColdOpeningResult & {
+      setNavigationTarget(text: string): boolean
+      setReturnLatestTarget(target: string | ColdOpeningSourceTarget): boolean
+      sourceTargetVisible(target: string | ColdOpeningSourceTarget): boolean
       checkpoint(name: string): ColdOpeningState | null
       stop(): void
     }

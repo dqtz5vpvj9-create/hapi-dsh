@@ -4,6 +4,13 @@ export const workspaceStyles = String.raw`
    Preserve native panning and pinch zoom; only stop vertical scroll chaining. */
 html,body {overscroll-behavior-y:none}
 .hapi-workspace [data-conversation-scroll],.hapi-session-list,.hapi-source-panel {overscroll-behavior-y:contain}
+/* Chat hides its own latest action while following the local window bottom.
+   Show the source-gap action only in that state, without observing or moving
+   the scrollport. The dock remains empty when Chat's own action is present. */
+.hapi-source-latest {display:none}
+[data-conversation-content]:has([data-chat-following-tail]) .hapi-source-latest {display:flex;justify-content:center}
+.hapi-source-latest button {min-height:28px;padding:2px 10px;border:1px solid var(--dsw-alias-border-l2,#d8dedf);border-radius:14px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-secondary,#65717b);font:inherit;font-size:12px;cursor:pointer}
+.hapi-source-latest button:disabled {opacity:.5;cursor:default}
 .hapi-workspace,.hapi-session-sidebar,.hapi-session-rail,.hapi-dialog,.hapi-conversation,.hapi-remote-shell,.hapi-sidebar-context {
  --hapi-bg:var(--dsw-alias-bg-layer-1,#fff);--hapi-muted:var(--dsw-alias-bg-layer-2,#f6f7f8);
  --hapi-fg:var(--dsw-alias-label-primary,#22272c);--hapi-secondary:var(--dsw-alias-label-secondary,#65717b);

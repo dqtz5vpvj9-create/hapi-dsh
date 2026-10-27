@@ -9,6 +9,51 @@ import { keyIntent } from './seamless/intent.ts'
 import { loadHistoryThrough } from './history-navigation.ts'
 import type {} from './source-navigation.ts'
 
+const latestCancellations = new WeakMap<HTMLElement, () => void>()
+
+/** Link a mounted official action to this occurrence's explicit destinations. */
+export function registerLatestCancellation(content: HTMLElement, cancel: () => void): () => void {
+    latestCancellations.set(content, cancel)
+    return () => { if (latestCancellations.get(content) === cancel) latestCancellations.delete(content) }
+}
+
+function cancelLatestNavigation(root: HTMLElement): void {
+    latestCancellations.get(root)?.()
+    for (const content of root.querySelectorAll<HTMLElement>('[data-conversation-content]')) latestCancellations.get(content)?.()
+}
+
+/** Let the mounted official Chat owner resume following after the source commit.
+ * rc.3 does not export its ChatNavigation/ChatReading instance through the
+ * public Chat slot. Its existing button is the supported action already used
+ * for manual navigation; no plugin scroll position is written here. */
+export async function activateOfficialLatest(root: HTMLElement, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const window = root.ownerDocument.defaultView
+    if (!window) throw new Error('The conversation view is no longer available.')
+    // Source publication notifies React before its load promise resolves. Run
+    // before the next paint, after that committed window reaches the same Chat.
+    await new Promise<void>((resolve, reject) => {
+        const abort = (): void => { window.cancelAnimationFrame(frame); reject(signal.reason) }
+        const frame = window.requestAnimationFrame(() => {
+            signal.removeEventListener('abort', abort)
+            if (signal.aborted) reject(signal.reason); else resolve()
+        })
+        signal.addEventListener('abort', abort, { once: true })
+    })
+    signal.throwIfAborted()
+    if (!root.isConnected || root.closest('[aria-hidden="true"], [data-hapi-pane-visible="false"]'))
+        throw new Error('The conversation view is no longer visible.')
+    const buttons = [...root.querySelectorAll<HTMLButtonElement>('button[aria-label]')]
+        .filter(button => button.className.includes('toBottom') && !button.disabled && button.getClientRects().length > 0)
+    if (buttons.length === 1) { buttons[0]!.click(); return }
+    const port = root.querySelector<HTMLElement>('[data-conversation-scroll]')
+    // The official button is absent while Chat already owns tail following,
+    // including its in-flight smooth motion. Do not create another position
+    // owner or mistake that motion for a missing navigation action.
+    if (buttons.length === 0 && port && (port.closest('[data-chat-following-tail]') || port.querySelector('[data-chat-following-tail]'))) return
+    throw new Error('The official return-to-latest action is not available.')
+}
+
 /** Per-occurrence destination lifetime. Live/history/focus never request latest. */
 export function bindPaneReading(ctx: Context, root: HTMLElement, reference: SessionReference, navigation: WorkspacePaneNavigation): () => void {
     const window = root.ownerDocument.defaultView
@@ -129,12 +174,19 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                 signal.throwIfAborted()
                 placeReadingAnchor(scrollport, row, reload.offset)
             } else if (target?.kind === 'latest') {
-                // Activate the official return-to-bottom action when paused;
-                // this keeps future live following under the original owner.
-                const label = ctx.locale.bind('chat')('chat.toBottom')
-                const button = [...root.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find(button => button.getAttribute('aria-label') === label)
-                if (button) button.click()
-                else scrollport.scrollTop = scrollport.scrollHeight
+                const session = reference.binding.session as typeof reference.binding.session & {
+                    returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>
+                }
+                const returned = session.returnToLive?.(signal) ?? false
+                // Synchronous false is the ordinary, already-resident Session
+                // path. A false async result means this source jump failed or
+                // was superseded: keep its previous window and reading owner.
+                if (typeof returned !== 'boolean' && !await returned) {
+                    signal.throwIfAborted()
+                    throw new Error('The latest source window could not be opened.')
+                }
+                signal.throwIfAborted()
+                await activateOfficialLatest(root, signal)
             }
             signal.throwIfAborted(); current.phase = readerOwned ? 'reader' : 'done'; root.dataset.hapiReading = 'ready'
             retainedAnchor = readAnchor()
@@ -149,6 +201,9 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         const next = source?.getSnapshot()
         if (!observed || next !== observedIntent) {
             observed = true; observedIntent = next
+            // A resident message/receipt may need no source fetch, so it cannot
+            // rely on SourceSession.beginJump to cancel a prior latest request.
+            cancelLatestNavigation(root)
             pending?.abort(); pending = undefined; clearFailure()
             retainedAnchor = undefined; readerOwned = false
             const reload = !next || next.target.kind === 'latest' ? restored : undefined
@@ -156,6 +211,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             restored = undefined
         }
         if (!visible()) {
+            cancelLatestNavigation(root)
             readerMoving = touchHeld = pointerHeld = readerScrolled = false
             if (settleTimer !== undefined) window.clearTimeout(settleTimer)
             settleTimer = undefined
@@ -172,6 +228,31 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             const current = request
             showFailure(current.error, () => retry(current))
         }
+    }
+    // Official navigation owns the next window placement. A replace caused by
+    // that action must not be mistaken for a transport reconnect and restore
+    // the bookmark from the window the user deliberately left.
+    const officialNavigation = (event: Event): void => {
+        if (!event.isTrusted) return
+        const button = (event.target as Element | null)?.closest?.('button')
+        if (!button) return
+        const t = ctx.locale.bind('chat')
+        const latest = button.className.includes('toBottom')
+        const rail = button.closest('nav[aria-label]')
+        const turn = button.getAttribute('data-index') !== null
+            && rail?.getAttribute('aria-label') === t('chat.turnNavigation.label')
+        if (!latest && !turn) return
+        pending?.abort(); pending = undefined; request = undefined
+        retainedAnchor = undefined; restored = undefined; readerOwned = true
+        readerMoving = touchHeld = pointerHeld = readerScrolled = false
+        if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
+        if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
+        if (settleTimer !== undefined) window.clearTimeout(settleTimer)
+        if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
+        sampleFrame = anchorTimer = settleTimer = settleFrame = undefined
+        clearFailure()
+        root.dataset.hapiReading = 'reader'
+        try { window.sessionStorage.removeItem(storageKey) } catch { /* optional bookmark */ }
     }
     const reader = (event: Event): void => {
         // Real gestures win over outstanding history I/O. No focus/store event
@@ -250,7 +331,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     const readAnchor = (): ReloadReadingAnchor | undefined => {
         if (!ready || !visible()) return undefined
         const port = root.querySelector<HTMLElement>('[data-conversation-scroll]')
-        if (!port || port.scrollHeight - port.clientHeight - port.scrollTop < 4) return undefined
+        if (!port || port.closest('[data-chat-following-tail]') || port.querySelector('[data-chat-following-tail]')
+            || port.scrollHeight - port.clientHeight - port.scrollTop < 4) return undefined
         const viewport = port.getBoundingClientRect(), top = viewport.top
         const snapshot = ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot()
         for (const element of readingCandidates(port)) {
@@ -271,7 +353,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         if (disposed || sampleFrame !== undefined) return
         sampleFrame = window.requestAnimationFrame(() => {
             sampleFrame = undefined
-            if (ready && visible() && !pending && request?.phase !== 'waiting' && request?.phase !== 'error') {
+            if (ready && visible() && !pending && !reference.binding.session.getSnapshot().loadingOlder
+                && request?.phase !== 'waiting' && request?.phase !== 'error') {
                 retainedAnchor = readAnchor()
                 if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
                 const anchor = retainedAnchor
@@ -314,6 +397,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged), ...(source ? [source.subscribe(update)] : [])]
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
     for (const event of events) root.addEventListener(event, reader, { capture: true, passive: true })
+    root.addEventListener('click', officialNavigation, { capture: true })
     root.addEventListener('scroll', scroll, { capture: true, passive: true })
     root.addEventListener('scrollend', scrollend, { capture: true, passive: true })
     for (const event of ['touchend', 'touchcancel']) root.addEventListener(event, releaseReader, { capture: true, passive: true })
@@ -321,6 +405,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     window.addEventListener('pagehide', remember)
     void reference.ready.then(() => { if (!disposed) { ready = true; update() } }, () => {})
     return () => {
+        cancelLatestNavigation(root)
         remember(); disposed = true; pending?.abort(); clearFailure()
         if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
         if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
@@ -328,6 +413,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
         for (const stop of stops) stop()
         for (const event of events) root.removeEventListener(event, reader, { capture: true })
+        root.removeEventListener('click', officialNavigation, { capture: true })
         root.removeEventListener('scroll', scroll, { capture: true })
         root.removeEventListener('scrollend', scrollend, { capture: true })
         for (const event of ['touchend', 'touchcancel']) root.removeEventListener(event, releaseReader, { capture: true })

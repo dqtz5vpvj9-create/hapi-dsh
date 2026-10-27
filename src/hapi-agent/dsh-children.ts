@@ -1,3 +1,5 @@
+import { withSourceAgentServices } from '../shared/source-agent-services.ts'
+import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -96,7 +98,7 @@ export class HapiDshChildAgent implements Agent {
     this.id = sourceChildSessionId(owner.agent.id, scopeId)
     this.logicalSessionId = sourceChildSessionId(owner.logicalSessionId, scopeId)
     this.parentSessionId = owner.agent.id
-    this.scope = createScope(owner.agent.ctx, this, { parent: owner.agent }); this.ctx = this.scope.ctx
+    this.scope = createScope(owner.agent.ctx, this, { parent: owner.agent }); this.ctx = withSourceAgentServices(this.scope.ctx, owner.agent.ctx)
     this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
     this.current = this.ctx.sessions.prepare(this.id, { meta: this.meta() })
     this.dispatch = agentEvents(this.ctx, this); this.inbox = new ChildInbox(this)
@@ -110,7 +112,7 @@ export class HapiDshChildAgent implements Agent {
       stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }) })
   }
   private meta() {
-    return { cwd: this.owner.state().path, createdAt: this.descriptor.createdAt,
+    return { cwd: sessionHeaderCwd(this.owner.state().path), createdAt: this.descriptor.createdAt,
       parentSession: this.parentSessionId, origin: 'subagent' as const,
       delegationDepth: (this.owner.agent.session.header.delegationDepth ?? 0) + 1, agentPreset: 'hapi-source-dsh-child' }
   }
@@ -135,7 +137,9 @@ export class HapiDshChildAgent implements Agent {
       child.detachSession = child.ctx.sessions.enter(child.session)
       child.detachAgent = child.ctx.agents.enter(child, owner.agent)
       child.blockLocalCommands()
-      child.ctx.sessions.announce(child.session); await child.ctx.agents.announce(child, 'startup')
+      child.ctx.sessions.announce(child.session)
+      try { await child.ctx.agents.announce(child, 'startup') }
+      catch (error) { console.warn('[hapi-dsh] child startup listener failed; continuing:', error instanceof Error ? error.message : String(error)) }
       return child
     } catch (error) { await child.dispose(); throw error }
   }

@@ -25,11 +25,6 @@ export const WORKSPACE_BOOT_SCRIPT = String.raw`(()=>{
     for(const attribute of original.attributes)if(attribute.name!=='type')script.setAttribute(attribute.name,attribute.value);
     script.type='module';original.replaceWith(script);
   }};
-  // Only the carrier's module start is scheduled. No upstream JS, module
-  // registration, loader, scope or service implementation is changed.
-  const release=()=>{if(document.visibilityState==='hidden')start();else{
-    requestAnimationFrame(()=>requestAnimationFrame(start));setTimeout(start,250);
-  }};
   try{
     if(new URL(location.href).searchParams.get('hapiBoot')==='off') {start();return;}
     const zh=(navigator.language||'').startsWith('zh');
@@ -67,15 +62,16 @@ export const WORKSPACE_BOOT_SCRIPT = String.raw`(()=>{
     const observer=new MutationObserver(done);observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','style','class']});
     const timeout=setTimeout(()=>{if(disposed)return;status.textContent=tr('Still connecting','仍在连接');const retry=make('button',tr('Reload','重新加载'));retry.onclick=()=>location.reload();header.append(retry);},15000);
     done();
-  }catch{}finally{release();}
+  }catch{}finally{start();}
 })()`;
 
 export function workspaceBootInjections(): IndexInjection[] {
     return [{ kind: 'style', text: WORKSPACE_BOOT_STYLE }, { kind: 'script', placement: 'body', text: WORKSPACE_BOOT_SCRIPT }];
 }
 
-/** Supported Web carrier transform: give the layout one paint before starting
- * its existing entry module. Fall through unchanged on a different shell. */
+/** Supported Web carrier transform: prepare the layout preview, then release
+ * the existing entry immediately without waiting for paint or a timer.
+ * Fall through unchanged on a different shell. */
 export function deferWorkspaceEntry(html: string): string {
     if (!html.includes(WORKSPACE_BOOT_SCRIPT)) return html;
     return html.replace(/<script\b([^>]*\btype=["'])module(["'][^>]*\bsrc=["']\.\/assets\/index-[^"']+\.js["'][^>]*)><\/script>/g,

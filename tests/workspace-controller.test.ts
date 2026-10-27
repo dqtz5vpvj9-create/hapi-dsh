@@ -757,6 +757,100 @@ test('notification and initial deep links keep both Hub and source identities', 
     controller.dispose(); source.disposeMain()
 })
 
+test('an exact deep link resolves during a slow layout read but opens only after the layout merge', async () => {
+    const source = fixture(), calls: unknown[] = [], writes: WorkspaceState[] = []
+    const localWrites: string[] = []
+    let finishLayout!: (state: WorkspaceState) => void, finishSource!: () => void
+    const layoutReady = new Promise<WorkspaceState>(resolve => { finishLayout = resolve })
+    const sourceReady = new Promise<void>(resolve => { finishSource = resolve })
+    const controller = new WorkspaceController({ ...source.options,
+        sourceSessionQuery: 'requested-original', sourceHubQuery: 'requested-hub',
+        storage: { getItem: source.options.storage!.getItem,
+            setItem(key, value) { localWrites.push(key); source.options.storage!.setItem(key, value) } },
+        persistence: { load: () => layoutReady, save: async state => { writes.push(state) } },
+    })
+    const initial = controller.store.getSnapshot()
+    controller.installSourceResolver(async (identity, signal) => {
+        calls.push(identity); await sourceReady; signal.throwIfAborted()
+        source.add('resolved-display')
+        source.project('resolved-display', { hapi: { hubId: identity.hubId, hapiSessionId: identity.sourceSessionId } } as never)
+    })
+    try {
+        await turn()
+        assert.deepEqual(calls, [{ hubId: 'requested-hub', sourceSessionId: 'requested-original' }])
+        source.publish(); await turn()
+        assert.equal(calls.length, 1, 'catalog progress shares the same pending identity resolution')
+        finishSource(); await turn()
+        assert.equal(controller.store.getSnapshot(), initial)
+        assert.equal(controller.store.focusedPane().resource.kind, 'empty')
+        assert.equal(source.refs.length, 0, 'resolved identity alone cannot open or retain the target')
+        assert.deepEqual(writes, [])
+        assert.deepEqual(localWrites, [])
+        let sequence = 0
+        const remote = initialWorkspace(() => `remote-layout-${++sequence}`)
+        remote.windows[0]!.name = 'Server layout'
+        finishLayout(remote); await turn()
+        assert.equal(controller.store.active().id, remote.activeWindowId)
+        assert.equal(controller.store.active().name, 'Server layout')
+        assert.deepEqual(controller.store.focusedPane().resource, {
+            kind: 'chat', sessionId: 'resolved-display', sourceSessionId: 'requested-original', sourceHubId: 'requested-hub',
+        })
+        assert.ok(source.refs.some(reference => reference.sessionId === 'resolved-display'))
+        assert.equal(calls.length, 1)
+    } finally { controller.dispose(); source.disposeMain() }
+})
+
+test('disposing a deep link during layout loading cancels early resolution without later navigation or writes', async () => {
+    const source = fixture(), writes: WorkspaceState[] = []
+    let finishLayout!: (state: WorkspaceState) => void, finishSource!: () => void, sourceSignal!: AbortSignal
+    const layoutReady = new Promise<WorkspaceState>(resolve => { finishLayout = resolve })
+    const sourceReady = new Promise<void>(resolve => { finishSource = resolve })
+    const controller = new WorkspaceController({ ...source.options,
+        sourceSessionQuery: 'requested-original', sourceHubQuery: 'requested-hub',
+        persistence: { load: () => layoutReady, save: async state => { writes.push(state) } },
+    })
+    const initial = controller.store.getSnapshot()
+    controller.installSourceResolver(async (_identity, signal) => {
+        sourceSignal = signal; await sourceReady; signal.throwIfAborted()
+        source.add('late-display')
+        source.project('late-display', { hapi: { hubId: 'requested-hub', hapiSessionId: 'requested-original' } } as never)
+    })
+    try {
+        await turn()
+        assert.ok(sourceSignal)
+        assert.equal(sourceSignal.aborted, false)
+        controller.dispose()
+        assert.equal(sourceSignal.aborted, true)
+        finishSource(); finishLayout(initial); await turn()
+        assert.equal(controller.store.getSnapshot(), initial)
+        assert.equal(source.refs.length, 0)
+        assert.deepEqual(writes, [])
+    } finally { controller.dispose(); source.disposeMain() }
+})
+
+test('successful early source resolution cannot bypass a failed layout read', async () => {
+    const source = fixture(), writes: WorkspaceState[] = []
+    let failLayout!: (error: Error) => void
+    const layoutReady = new Promise<WorkspaceState>((_resolve, reject) => { failLayout = reject })
+    const controller = new WorkspaceController({ ...source.options,
+        sourceSessionQuery: 'requested-original', sourceHubQuery: 'requested-hub',
+        persistence: { load: () => layoutReady, save: async state => { writes.push(state) } },
+    })
+    controller.installSourceResolver(async identity => {
+        source.add('resolved-display')
+        source.project('resolved-display', { hapi: { hubId: identity.hubId, hapiSessionId: identity.sourceSessionId } } as never)
+    })
+    try {
+        await turn()
+        assert.ok(controller.getSnapshot().catalog.byId['resolved-display'])
+        failLayout(new Error('Workspace storage unavailable')); await turn()
+        assert.equal(controller.store.focusedPane().resource.kind, 'empty')
+        assert.equal(source.refs.length, 0)
+        assert.deepEqual(writes, [])
+        assert.match(controller.getSnapshot().notice ?? '', /Workspace storage unavailable/)
+    } finally { controller.dispose(); source.disposeMain() }
+})
+
 test('a legacy source-only deep link waits for the configured primary Hub instead of guessing from conflicting rows', () => {
     const source = fixture()
     for (const hub of ['alpha', 'beta']) {

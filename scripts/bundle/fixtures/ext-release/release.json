@@ -1,0 +1,16 @@
+{
+  "fixture": true,
+  "description": "Placeholder dsh-ext release used until the real ext payload exists. Every tarball built from this manifest is a fixture and must not be published.",
+  "upstreamVersion": "0.2.1-rc.3",
+  "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+  "extRelease": "0.2.1-rc.3.ext.1.fixture.0",
+  "patchSetSha256": "32bf2cfc814dbe120cf8e6109b93e2260a55a21a89f5376837ff96ae9dc498eb",
+  "compositionVersion": "fixture-1",
+  "protocol": 2,
+  "capabilities": { "historySource": 1, "mountedChat": 1, "windowCommit": 1 },
+  "packages": [
+    { "name": "@deepseek-ai/dsh-client-ui-chat", "version": "0.2.1-rc.3.ext.1.fixture.0", "source": "packages/dsh-client-ui-chat" },
+    { "name": "@deepseek-ai/dsh-client-ui-conversation", "version": "0.2.1-rc.3.ext.1.fixture.0", "source": "packages/dsh-client-ui-conversation" },
+    { "name": "@deepseek-ai/dsh-api-session-controller", "version": "0.2.1-rc.3.ext.1.fixture.0", "source": "packages/dsh-api-session-controller" }
+  ]
+}

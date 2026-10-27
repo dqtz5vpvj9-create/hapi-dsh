@@ -9,7 +9,7 @@ interface SourceDisplay {
 }
 interface SourceDisplays {
     attach(sourceId: string): Promise<SourceDisplay | undefined>;
-    openSource(sourceId: string): Promise<SourceDisplay | undefined>;
+    openSource(sourceId: string, source?: HapiSession): Promise<SourceDisplay | undefined>;
     byHapiSession(sourceId: string): SourceDisplay | undefined;
 }
 
@@ -38,7 +38,7 @@ export class SourceSessionResolver {
         const source = await this.transport.getSession(sourceSessionId);
         if (source.id !== sourceSessionId) throw new HapiRequestError('The original Hub returned another session for this request.', 'rejected', 409, 'source_identity_mismatch');
         const owner = source.metadata?.codexNativeSession === true ? this.codex : this.observed;
-        const display = await owner.openSource(sourceSessionId);
+        const display = await owner.openSource(sourceSessionId, source);
         if (!display) throw new HapiRequestError('The original session exists, but its source identity is not ready to open.', 'rejected', 409, 'source_not_ready');
         if (display.binding.hubId !== this.transport.hubId || display.binding.hapiSessionId !== sourceSessionId || display.sourceSession.id !== sourceSessionId
             || owner.byHapiSession(sourceSessionId) !== display) {

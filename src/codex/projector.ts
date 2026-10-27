@@ -15,6 +15,7 @@ import './projection-state.js'
 import { independentStreamDelta } from '../shared/stream-text.js'
 
 interface Step {
+  key: string
   turn: number
   step: number
   nativeTurnId: string
@@ -24,6 +25,7 @@ interface Turn {
   number: number
   nextStep: number
   ended: boolean
+  anchor: { id: string; at: number; seq: number; key: string | null } | undefined
 }
 interface Stream {
   key: string
@@ -48,6 +50,8 @@ export interface NativeProjectorOptions {
   submittedMessage(localId: string): UserMessage | undefined
   content?(row: NativeRow): readonly ContentBlock[] | undefined
   stream(frame: AssistantStreamFrame): void
+  /** First display Turn number. History pages render below the live seed. */
+  turnBase?: number
 }
 
 /**
@@ -67,11 +71,20 @@ export class NativeProjector {
   private readonly surfaceSeqs = new Map<string, number>()
   private readonly turnErrors = new Map<string, string>()
   private activeStream: Stream | undefined
+  private latestSourceAt = Number.NEGATIVE_INFINITY
+  private latestSourceSeq = Number.NEGATIVE_INFINITY
   private revision = 0
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
 
-  constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {}
+  private readonly turnBase: number
+  private suppressFirstTurn = false
+  constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {
+    this.turnBase = options.turnBase ?? 0
+  }
+
+  /** A live seed/history page begins inside its first source turn. */
+  setSuppressFirstTurnStart(): void { this.suppressFirstTurn = true }
 
   get session(): Session { return this.currentSession }
 
@@ -118,6 +131,19 @@ export class NativeProjector {
   }
 
   get projectedKeys(): ReadonlySet<string> { return this.rawKeys }
+  /** Source row identity -> display event seq for the rendered page. */
+  sourceSeqEntries(): ReadonlyMap<string, number> { return this.sourceMessageSeqs }
+  rewindSeqEntries(): ReadonlyMap<number, string> { return this.rewindLocalIdsBySeq }
+  forkBoundaryEntries(): ReadonlyMap<string, NativeForkBoundary> { return this.forkBoundaries }
+  get lastTurn(): number { let value = 0; for (const turn of this.turns.values()) value = Math.max(value, turn.number); return value }
+  turnAnchorEntries(): ReadonlyMap<number, { id: string; at: number; seq: number; key: string | null }> {
+    const values = new Map<number, { id: string; at: number; seq: number; key: string | null }>()
+    for (const turn of this.turns.values()) if (turn.anchor) values.set(turn.number, turn.anchor)
+    return values
+  }
+  stepAnchorEntries(): ReadonlyMap<string, { turn: number; step: number }> {
+    return new Map([...this.steps].map(([key, step]) => [key, { turn: step.turn, step: step.step }]))
+  }
 
   /** Only a committed displayed message can name a source-native boundary. */
   forkBoundary(messageId: string): NativeForkBoundary | undefined {
@@ -132,7 +158,7 @@ export class NativeProjector {
   sourceMessageAtDisplaySeq(seq: number): string | undefined { for (const [id, value] of this.sourceMessageSeqs) if (value === seq) return id; return undefined }
 
   /** Apply a coherent source page; terminal facts settle after that page's items. */
-  apply(rows: readonly NativeRow[]): void {
+  apply(rows: readonly NativeRow[], lateTolerant = false): void {
     const groups = new Map<string, NativeRow[]>()
     for (const row of rows) {
       const key = row.execution?.turnId ?? ''
@@ -145,13 +171,23 @@ export class NativeProjector {
       for (const row of group) {
         this.sourceTime = row.createdAt
         if (row.execution?.turn?.ended) ending = row.execution.turn
-        this.applyRow(row)
+        if (row.kind !== 'user' || row.invoked) this.applyRow(row, lateTolerant && this.isLateSourceRow(row), lateTolerant)
+        const sourceAt = row.sourceAt ?? row.createdAt
+        if (this.latestSourceAt < sourceAt || this.latestSourceAt === sourceAt && this.latestSourceSeq < (row.seq ?? 0)) {
+          this.latestSourceAt = sourceAt; this.latestSourceSeq = row.seq ?? 0
+        }
       }
       if (ending) this.endTurn(id, ending.status)
     }
   }
 
-  private applyRow(row: NativeRow): void {
+  private isLateSourceRow(row: NativeRow): boolean {
+    const sourceAt = row.sourceAt ?? row.createdAt
+    return sourceAt < this.latestSourceAt
+      || sourceAt === this.latestSourceAt && (row.seq ?? 0) <= this.latestSourceSeq
+  }
+
+  private applyRow(row: NativeRow, late: boolean, lateTolerant: boolean): void {
     if (row.kind === 'user' && !row.invoked) return
     const previous = this.committed.get(row.key)
     if (previous !== undefined) {
@@ -159,6 +195,10 @@ export class NativeProjector {
       if (seq !== undefined) this.sourceMessageSeqs.set(row.rowId, seq)
       if (row.kind === 'assistant' && !row.final) return // A delayed provisional frame cannot regress a committed item.
       if (previous !== row.fingerprint && row.kind !== 'turn') {
+        // A delayed page may contain the older version of a row whose live
+        // update was already committed. Keep the committed version; a genuine
+        // newer source mutation still requires a fresh generation.
+        if (lateTolerant && late) return
         throw new NativeHistoryChangedError('Native Codex changed an already projected item; the conversation must acquire a fresh history generation')
       }
       return
@@ -172,14 +212,17 @@ export class NativeProjector {
       return
     }
     if (row.kind === 'turn') {
-      if (turnId) this.ensureTurn(turnId)
+      if (turnId) this.ensureTurn(turnId, row)
       this.committed.set(row.key, row.fingerprint)
       return
     }
     // Native errors without a turn cannot be attributed to an invented model turn.
     if (!turnId) return
-    const turn = this.ensureTurn(turnId)
-    if (turn.ended) throw new NativeHistoryChangedError('A native item arrived after its projected terminal boundary; refresh native history')
+    const turn = this.ensureTurn(turnId, row)
+    // A delayed page can legitimately name an already-ended turn. It is
+    // appended with its source annotation; the history window orders by source
+    // position rather than pretending the append-only log is source order.
+    if (turn.ended && !(lateTolerant && late)) throw new NativeHistoryChangedError('A native item arrived after its projected terminal boundary; refresh native history')
     let event: SessionEvent | undefined
     let step: Step | undefined
     switch (row.kind) {
@@ -231,7 +274,10 @@ export class NativeProjector {
         step = this.stepFor(row)
         // Native plan updates reuse `codex-plan-state` within a turn. The
         // completed item's stable key distinguishes each real invocation.
-        const callId = ToolCallId(`codex:${turnId}:${row.callId}:${row.key}`)
+        // Stable per source item, so a result rendered from an older page can
+        // match a call exposed after a bounded giant-turn continuation while
+        // repeated same-callId plan updates remain distinct.
+        const callId = ToolCallId(`codex:${turnId}:${row.callId}:${row.execution?.itemId ?? `call:${row.callId}`}`)
         const argumentsText = typeof row.input === 'string' ? row.input : JSON.stringify(row.input)
         event = this.append('assistant/message', {
           turn: step.turn, step: step.step,
@@ -246,7 +292,7 @@ export class NativeProjector {
         const call = (row.execution?.itemId ? this.calls.get(`${turnId}:${row.callId}:${row.execution.itemId}`) : undefined)
           ?? this.calls.get(`${turnId}:${row.callId}`)
         step = call?.step ?? this.stepFor(row)
-        const callId = call?.id ?? ToolCallId(`codex:${turnId}:${row.callId}:result:${row.key}`)
+        const callId = call?.id ?? ToolCallId(`codex:${turnId}:${row.callId}:${row.execution?.itemId ?? `call:${row.callId}`}`)
         event = this.append('tool/result', {
           turn: step.turn, step: step.step,
           message: freezeMessage({
@@ -274,23 +320,26 @@ export class NativeProjector {
       this.rawKeys.add(row.key)
       const nativeRecord = {
         key: row.key, fingerprint: row.fingerprint, surfaceSeq: event.seq,
+        sourceMessageId: row.rowId, sourceAt: row.sourceAt ?? row.createdAt, sourceSeq: row.seq ?? 0,
         // Official Conversation treats top-level `turn` / `step` fields on
         // every event as timeline coordinates, including ignorable records.
         // An annotation must not invent a Step 0 that replaces the final
         // answer's real latest Step in the official location index.
         displayTurn: step?.turn ?? turn.number, displayStep: step?.step ?? 0,
         nativeTurnId: turnId, nativeItemId: row.execution?.itemId ?? null,
+        ...(step === undefined ? {} : { nativeStepId: step.key }),
       }
       this.appendRecord('plugin:hapi-dsh/native-item', nativeRecord)
     }
   }
 
-  private ensureTurn(id: string): Turn {
+  private ensureTurn(id: string, row?: NativeRow): Turn {
     let turn = this.turns.get(id)
     if (!turn) {
-      turn = { number: this.turns.size + 1, nextStep: 0, ended: false }
+      turn = { number: this.turnBase + this.turns.size + 1, nextStep: 0, ended: false,
+        anchor: row ? { id: row.rowId, at: row.sourceAt ?? row.createdAt, seq: row.seq ?? 0, key: id } : undefined }
       this.turns.set(id, turn)
-      this.append('turn/start', { turn: turn.number })
+      if (!(this.suppressFirstTurn && this.turns.size === 1)) this.append('turn/start', { turn: turn.number })
     }
     return turn
   }
@@ -298,11 +347,13 @@ export class NativeProjector {
   private stepFor(row: NativeRow): Step {
     const turnId = row.execution?.turnId
     if (!turnId) throw new Error('A native item must identify its source turn')
-    const key = `${turnId}:${row.execution?.itemId ?? row.key}:${row.kind === 'assistant' && row.reasoning ? 'reasoning' : 'item'}`
+    const item = row.execution?.itemId
+      ?? (row.kind === 'tool-call' || row.kind === 'tool-result' ? `call:${row.callId}` : row.key)
+    const key = `${turnId}:${item}:${row.kind === 'assistant' && row.reasoning ? 'reasoning' : 'item'}`
     let step = this.steps.get(key)
     if (!step) {
-      const turn = this.ensureTurn(turnId)
-      step = { turn: turn.number, step: ++turn.nextStep, nativeTurnId: turnId, open: true }
+      const turn = this.ensureTurn(turnId, row)
+      step = { key, turn: turn.number, step: ++turn.nextStep, nativeTurnId: turnId, open: true }
       this.steps.set(key, step)
       this.append('step/start', { turn: step.turn, step: step.step })
     }

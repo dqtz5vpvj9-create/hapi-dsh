@@ -1,3 +1,5 @@
+import { withSourceAgentServices } from '../shared/source-agent-services.ts'
+import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent, type AgentCancelCause, type AgentEventDispatch, type AgentOptions, type AgentStatus, type Inbox, type InboxTarget } from '@deepseek-ai/dsh-agent'
@@ -65,7 +67,7 @@ export class HapiObservedChild implements Agent {
     this.id = sourceChildSessionId(owner.agent.id, info.scopeId)
     this.logicalSessionId = sourceChildSessionId(owner.logicalSessionId, info.scopeId)
     this.parentSessionId = parent.id
-    this.scope = createScope(parent.ctx, this, { parent }); this.ctx = this.scope.ctx
+    this.scope = createScope(parent.ctx, this, { parent }); this.ctx = withSourceAgentServices(this.scope.ctx, parent.ctx)
     // The official registry reference-counts one definition across scopes.
     // Native-only deployments do not otherwise need an observed root service.
     this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
@@ -76,7 +78,7 @@ export class HapiObservedChild implements Agent {
       content: item => owner.content(item), stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }) })
   }
   private meta() {
-    return { cwd: this.owner.state().path, createdAt: this.info.createdAt, parentSession: this.parentSessionId,
+    return { cwd: sessionHeaderCwd(this.owner.state().path), createdAt: this.info.createdAt, parentSession: this.parentSessionId,
       origin: 'subagent' as const, delegationDepth: (this.parent.session.header.delegationDepth ?? 0) + 1,
       agentPreset: 'hapi-observed-child' }
   }
@@ -92,7 +94,9 @@ export class HapiObservedChild implements Agent {
       child.detachSession = child.ctx.sessions.enter(child.session)
       child.detachAgent = child.ctx.agents.enter(child, parent)
       child.blockCommands()
-      child.ctx.sessions.announce(child.session); await child.ctx.agents.announce(child, 'startup')
+      child.ctx.sessions.announce(child.session)
+      try { await child.ctx.agents.announce(child, 'startup') }
+      catch (error) { console.warn('[hapi-dsh] child startup listener failed; continuing:', error instanceof Error ? error.message : String(error)) }
       return child
     } catch (error) { await child.dispose(); throw error }
   }

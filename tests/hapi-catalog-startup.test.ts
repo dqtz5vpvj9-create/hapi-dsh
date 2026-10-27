@@ -84,6 +84,87 @@ class CatalogFixture implements HapiObservedTransport {
     subscribe(listener: (event: HapiEvent) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
 }
 
+async function withOnDemandCatalog(run: (fixture: CatalogFixture, codex: CodexService, observed: HapiAgentService) => Promise<void>) {
+    const directory = await mkdtemp('/mnt/cache/data-cache/hapi-resolver-snapshot-'), fixture = new CatalogFixture(), ctx = new Context();
+    let codex!: CodexService, observed!: HapiAgentService;
+    try {
+        await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime);
+        await ctx.plugin(Object.assign(async (owner: Context) => {
+            codex = new CodexService(owner, fixture, { stateDirectory: join(directory, 'native'), discovery: 'on-demand', fastHistorySeed: true });
+            observed = new HapiAgentService(owner, fixture, { stateDirectory: join(directory, 'observed'), discovery: 'on-demand', fastHistorySeed: true });
+            await codex.start(); await observed.start();
+        }, { inject: ['sessions', 'agents', 'sessionProjections'] }));
+        await run(fixture, codex, observed);
+    } finally { await codex?.dispose(); await observed?.dispose(); await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); }
+}
+
+for (const engine of ['native', 'observed'] as const) {
+    test(`${engine} source resolution reads metadata once for attach and once for each existing-view open`, async () => {
+        await withOnDemandCatalog(async (fixture, codex, observed) => {
+            const sourceId = engine === 'native' ? 'synthetic-source-152' : 'synthetic-source-153';
+            const service = engine === 'native' ? codex : observed;
+            const resolver = new SourceSessionResolver(fixture, codex, observed), request = { hubId: fixture.hubId, sourceSessionId: sourceId };
+            const first = await resolver.resolve(request), agent = service.byHapiSession(sourceId)!;
+            assert.deepEqual(fixture.details, [sourceId], 'initial admission must not fetch the resolver reply again');
+            assert.deepEqual(fixture.history, [sourceId]);
+            const source = fixture.sources.get(sourceId)!;
+            assert.ok(source.metadata);
+            fixture.sources.set(sourceId, { ...source, metadataVersion: 2, metadata: { ...source.metadata, name: 'Refreshed source title' } });
+            const second = await resolver.resolve(request);
+            assert.equal(second.sessionId, first.sessionId);
+            assert.equal(service.byHapiSession(sourceId), agent);
+            assert.deepEqual(fixture.details, [sourceId, sourceId], 'refreshSettings must apply the checked reply without another metadata request');
+            assert.deepEqual(fixture.history, [sourceId], 'settings admission must not read transcript history again');
+            assert.equal(agent.sourceSession.metadataVersion, 2);
+            assert.equal(agent.sourceSession.metadata?.name, 'Refreshed source title');
+
+            const wrong = { ...source, id: 'another-source' };
+            await assert.rejects(service.openSource(sourceId, wrong), /another session/);
+            await assert.rejects(service.attach(sourceId, wrong), /another session/);
+            assert.equal(fixture.details.length, 2, 'foreign snapshots must fail before any source read');
+
+            const current = fixture.sources.get(sourceId)!;
+            assert.ok(current.metadata);
+            fixture.sources.set(sourceId, { ...current, metadataVersion: 3,
+                metadata: { ...current.metadata, ...(engine === 'native' ? { codexSessionId: 'replacement-native-thread' } : { claudeSessionId: 'replacement-native-thread' }) } });
+            const replaced = await resolver.resolve(request);
+            assert.notEqual(replaced.sessionId, first.sessionId, 'native identity replacement still requires a new display generation');
+            assert.notEqual(service.byHapiSession(sourceId), agent);
+            assert.equal(service.byHapiSession(sourceId)?.sourceSession.metadataVersion, 3);
+            assert.ok(fixture.details.length > 3, 'identity changes still enter the authoritative reconciliation read');
+            assert.equal(fixture.history.length, 2, 'the replacement generation still reads its own history');
+        });
+    });
+
+    test(`${engine} source admission discards a supplied snapshot across an in-flight display release`, async () => {
+        await withOnDemandCatalog(async (fixture, codex, observed) => {
+            const sourceId = engine === 'native' ? 'synthetic-source-152' : 'synthetic-source-153';
+            const service = engine === 'native' ? codex : observed;
+            const resolver = new SourceSessionResolver(fixture, codex, observed);
+            const first = await resolver.resolve({ hubId: fixture.hubId, sourceSessionId: sourceId });
+            const agent = service.byHapiSession(sourceId)!, snapshot = await fixture.getSession(sourceId);
+            const disposing = deferred<void>(), continueDisposal = deferred<void>(), dispose = agent.dispose.bind(agent);
+            agent.dispose = async () => { disposing.resolve(); await continueDisposal.promise; await dispose(); };
+            const release = service.releaseDisplay(sourceId);
+            try {
+                await disposing.promise;
+                const opening = service.openSource(sourceId, snapshot), before = fixture.details.length;
+                const source = fixture.sources.get(sourceId)!;
+                assert.ok(source.metadata);
+                fixture.sources.set(sourceId, { ...source, metadataVersion: 2, metadata: { ...source.metadata, name: 'Changed during release' } });
+                continueDisposal.resolve();
+                assert.equal(await release, true);
+                const replacement = await opening;
+                assert.ok(replacement);
+                assert.notEqual(replacement.id, first.sessionId);
+                assert.equal(replacement.sourceSession.metadataVersion, 2);
+                assert.equal(replacement.sourceSession.metadata?.name, 'Changed during release');
+                assert.equal(fixture.details.length, before + 1, 'the new display must fetch after the old display is fully retired');
+            } finally { continueDisposal.resolve(); await release; }
+        });
+    });
+}
+
 test('154 mixed sessions keep importing after startup while exact late native and archived sessions open immediately', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-large-catalog-')), fixture = new CatalogFixture(), ctx = new Context();
     let codex!: CodexService, observed!: HapiAgentService, completed: Promise<void> = Promise.resolve(), startup: string | undefined;

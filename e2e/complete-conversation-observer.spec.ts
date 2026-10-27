@@ -4,10 +4,13 @@
  * The long source is synthetic HAPI wire data. The Host, official Conversation,
  * pager, editor and official TurnNavigator are the pinned real implementation.
  * The target is resolved once to an exact display view, the Host is restarted,
- * and the observer is installed before the cold navigation back to that view.
+ * then its browser HTTP cache is cleared before the measured navigation.
+ * Saved workspace/origin storage is retained, as on a returning user's open.
  */
 import { test, expect } from '@playwright/test'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { WarmOfficialSession } from './warm-session.ts'
 import { acknowledgePreviewNotice } from './preview-notice.ts'
@@ -22,19 +25,19 @@ let warm: WarmOfficialSession
 test.beforeAll(async () => {
     warm = new WarmOfficialSession()
     await warm.start()
-    // The shared warm fixture's 180x25 source is intentionally heavy for other
-    // specs. This focused acceptance source stays above the 200-row tail so the
-    // official pager has a real older page, without making the test a load test.
+    // Exceed the six 200-row source seed pages. The older navigation target
+    // must require an actual source window, not just a resident Host log page.
     const fixture = warm.environment.hapi.require('native-accept-history')
-    fixture.rows = nativeIndexedHistory(fixture.session.metadata!.codexSessionId!, 30, 8)
+    fixture.rows = nativeIndexedHistory(fixture.session.metadata!.codexSessionId!, 180, 8)
 })
 test.afterAll(async () => { await warm?.close() })
 
 const title = 'Native Codex accept-history'
-const latestText = 'Synthetic final answer 30.'
+const latestText = 'Synthetic final answer 180.'
 const navigationText = 'Synthetic original input 20.'
 const draftText = 'Unsent observer acceptance draft; never submit.'
 const liveText = 'Live synthetic source update for the complete observer.'
+let sourceHeadText = latestText
 
 function appendLive(key: string, text: string): void {
     const fixture = warm.environment.hapi.require('native-accept-history')
@@ -57,6 +60,7 @@ function appendLive(key: string, text: string): void {
         fixture.session.updatedAt = row.createdAt
         warm.environment.hapi.emit({ type: 'message-received', sessionId: fixture.session.id, message: row })
     }
+    sourceHeadText = text
 }
 
 async function openListedSession(page: import('@playwright/test').Page, mobile: boolean): Promise<void> {
@@ -74,10 +78,37 @@ async function openListedSession(page: import('@playwright/test').Page, mobile: 
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }] as const) {
     test(`real official Host complete opening ${viewport.width}px: exact view, body, draft, history, navigation, live update and 30 s observation`, async ({}, info) => {
         const mobile = viewport.width < 900
+        const openingText = sourceHeadText
+        const liveMarker = `${liveText} ${viewport.width}px`
         const page = await warm.page({ width: viewport.width, height: viewport.height }, mobile)
         const errors: string[] = []
+        const sourceWindows: Array<{ receivedAt: number; count: number; openingMarker: boolean; liveMarker: boolean }> = []
+        let navigationTurn: number | undefined
+        page.on('response', async response => {
+            if (new URL(response.url()).pathname === '/api/hapi/sourceHistoryWindowPage' && response.ok()) {
+                try {
+                    const payload = await response.json() as { result?: { value?: { records?: unknown[] } } }
+                    const rows = payload.result?.value?.records ?? []
+                    const encoded = JSON.stringify(rows)
+                    sourceWindows.push({ receivedAt: await page.evaluate(() => performance.now()), count: rows.length,
+                        openingMarker: encoded.includes(openingText), liveMarker: encoded.includes(liveMarker) })
+                } catch { /* Closing the page is recorded by the interaction assertion. */ }
+            }
+            if (new URL(response.url()).pathname !== '/api/hapi/sourceHistoryOutline' || !response.ok()) return
+            try {
+                const data = await response.json() as { result?: { value?: { entries?: Array<{ prompt: string; turn: number }> } } }
+                const entry = data.result?.value?.entries?.find(row => row.prompt === navigationText)
+                if (entry) navigationTurn = entry.turn
+            } catch { /* A missing authoritative target fails the assertion below. */ }
+        })
         let sampling = false
+        let expectedViewId: string | undefined
         page.on('pageerror', error => errors.push(error.message))
+        // The official feed catches renderer exceptions and emits a warning;
+        // a pageerror listener alone misses this real broken-history path.
+        page.on('console', message => {
+            if (message.text().includes('event feed subscriber failed')) errors.push(message.text().slice(0, 1200))
+        })
         try {
             // Resolve the exact display view once. This warm-up is setup only;
             // the measured opening below happens after a Host restart with the
@@ -85,18 +116,22 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             await warm.admit(page)
             await openListedSession(page, mobile)
             const warmPane = page.getByRole('region', { name: `Pane: ${title}`, exact: true })
-            await expect(warmPane.getByText(latestText, { exact: true })).toBeVisible({ timeout: 45_000 })
+            await expect(warmPane.getByText(openingText, { exact: true })).toBeVisible({ timeout: 45_000 })
             const paneId = await warmPane.getAttribute('data-pane-id')
             const viewId = await warmPane.locator('[data-hapi-session-view]').first().getAttribute('data-hapi-session-view')
             expect(paneId).toBeTruthy()
             expect(viewId).toBeTruthy()
+            expectedViewId = viewId!
             await page.goto('about:blank')
             await warm.environment.restartHost()
+            const cacheControl = await page.context().newCDPSession(page)
+            await cacheControl.send('Network.clearBrowserCache')
+            await cacheControl.detach()
 
             await installColdOpeningProbe(page, {
                 paneSelector: `[data-pane-id="${paneId}"]`,
-                expectedViewId: viewId!, expectedTitle: title, expectedText: latestText,
-                expectedNavigationText: mobile ? latestText : navigationText,
+                expectedViewId: viewId!, expectedTitle: title, expectedText: openingText,
+                expectedNavigationText: mobile ? liveMarker : navigationText,
                 navigationAction: mobile ? 'return-latest' : 'unvisited-target',
                 stableMs: 750, captureTitles: false,
                 requiresHistory: true, requiresNavigation: 'auto', fullCapabilities: true,
@@ -108,7 +143,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             sampling = true
             await acknowledgePreviewNotice(page, warm.environment, { initialView: 'existing-session' })
             const pane = page.getByRole('region', { name: `Pane: ${title}`, exact: true })
-            await expect(pane.getByText(latestText, { exact: true })).toBeVisible({ timeout: 45_000 })
+            await expect(pane.getByText(openingText, { exact: true })).toBeVisible({ timeout: 45_000 })
             await page.waitForFunction(() => window.__hapiColdOpening.current?.ready
                 && window.__hapiColdOpening.current.stableForMs >= 750, null, { timeout: 45_000 })
             const composer = pane.locator('[data-composer-input][contenteditable="true"]:visible').first()
@@ -118,8 +153,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             await expect(composer).toHaveText(draftText)
             expect((await page.evaluate(() => window.__hapiColdOpening.input)).everRetained).toBe(true)
 
-            appendLive(`${viewport.width}`, liveText)
-            await expect(pane.getByText(liveText, { exact: true })).toBeVisible({ timeout: 20_000 })
+            appendLive(`${viewport.width}`, liveMarker)
+            await expect(pane.getByText(liveMarker, { exact: true })).toBeVisible({ timeout: 1_500 })
             const history = await exerciseOpeningHistory(page, pane, mobile ? 'touch' : 'wheel')
             expect(history.failure, JSON.stringify(history)).toBeNull()
             expect(history.requested, JSON.stringify(history)).toBe(true)
@@ -129,21 +164,39 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             expect(Math.abs(history.anchorDriftPx ?? 0), JSON.stringify(history)).toBeLessThanOrEqual(2)
 
             if (mobile) {
-                const navigation = await exerciseOpeningReturnLatest(page, pane, latestText)
+                const navigation = await exerciseOpeningReturnLatest(page, pane, liveMarker)
                 expect(navigation.attempted, JSON.stringify(navigation)).toBe(true)
                 expect(navigation.failure, JSON.stringify(navigation)).toBeNull()
                 expect(navigation.committed, JSON.stringify(navigation)).toBe(true)
                 expect(navigation.targetVisible, JSON.stringify(navigation)).toBe(true)
             } else {
-                const navigation = await exerciseOpeningUnvisitedTarget(page, pane, navigationText, 20)
+                expect(navigationTurn, 'The exact source target must appear in the authoritative outline').toBeDefined()
+                const navigation = await exerciseOpeningUnvisitedTarget(page, pane, navigationText, navigationTurn!)
                 expect(navigation.attempted, JSON.stringify(navigation)).toBe(true)
                 expect(navigation.failure, JSON.stringify(navigation)).toBeNull()
                 expect(navigation.committed, JSON.stringify(navigation)).toBe(true)
                 expect(navigation.targetVisible, JSON.stringify(navigation)).toBe(true)
             }
+            // The newest source row is the live update above, not the older
+            // opening marker. Returning from history must rejoin that head and
+            // keep receiving later events through the same official editor.
+            if (!mobile) {
+                expect(await page.evaluate(text => window.__hapiColdOpening.setReturnLatestTarget(text), liveMarker)).toBe(true)
+                await pane.locator('button[class*="toBottom"]').click()
+                await expect(pane.getByText(liveMarker, { exact: true })).toBeVisible({ timeout: 1_500 })
+            }
+            for (let index = 1; index <= 5; index++) {
+                const text = `Live update after returning to latest ${viewport.width}.${index}.`
+                appendLive(`${viewport.width}-returned-${index}`, text)
+                await expect(pane.getByText(text, { exact: true })).toBeVisible({ timeout: 1_500 })
+            }
             await expect(composer).toHaveText(draftText)
             await waitForColdOpeningObservation(page, 70_000)
             const result = await readColdOpeningProbe(page, true)
+            // Keep the full interaction trace even when opening is slow. The
+            // 60 s observer deadline is diagnostic, never the performance SLA.
+            expect.soft(result.first.full ?? Infinity,
+                'The first complete conversation must be usable within 1500 ms of navigation').toBeLessThan(1_500)
             expect(result.observation.complete).toBe(true)
             expect(result.observation.deadlineMissed).toBe(false)
             expect(result.observation.checkpoints.map(row => row.name)).toContain('t+6000')
@@ -156,20 +209,47 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             expect(errors).toEqual([])
             expect(warm.environment.hapi.sent).toEqual([])
             await info.attach(`complete-observer-${viewport.width}`, { body: JSON.stringify({
+                first: result.first,
                 history: result.history, navigation: result.navigation, input: result.input,
                 liveUpdateAt: result.liveUpdateAt, observation: result.observation,
                 editorIds: [...new Set(result.states.map(row => row.editorRevision).filter(Boolean))].length,
                 portIds: [...new Set(result.states.map(row => row.portRevision).filter(Boolean))].length,
             }, null, 2), contentType: 'application/json' })
         } finally {
-            if (sampling && !page.isClosed()) {
+            if (!page.isClosed()) {
                 try {
-                    const trace = await readColdOpeningProbe(page, true)
+                    const trace = sampling ? await readColdOpeningProbe(page, true) : null
                     const directory = process.env.HAPI_DSH_VISUAL_DIR ?? '/mnt/cache/data-cache/hapi-dsh-visual-review'
-                    await mkdir(directory, { recursive: true })
+                    await mkdir(directory, { recursive: true, mode: 0o700 })
+                    await chmod(directory, 0o700)
+                    const geometry = await page.locator('[data-conversation-scroll]').evaluateAll(nodes => nodes.map(node => {
+                        const rect = node.getBoundingClientRect(), style = getComputedStyle(node)
+                        return { clientHeight: node.clientHeight, scrollHeight: node.scrollHeight,
+                            scrollTop: node.scrollTop, width: rect.width, height: rect.height,
+                            overflowY: style.overflowY, visible: node.checkVisibility(),
+                            flowHeight: node.querySelector('[data-chat-flow]')?.getBoundingClientRect().height ?? null }
+                    }))
+                    const timings = await page.evaluate(() => ({ marks: performance.getEntriesByType('mark').map(e => ({ name: e.name, at: e.startTime })), resources: performance.getEntriesByType('resource').map(e => { const r = e as PerformanceResourceTiming; return { path: new URL(r.name).pathname, start: r.startTime, response: r.responseStart, end: r.responseEnd, bytes: r.transferSize } }) }))
                     const path = join(directory, `complete-observer-${viewport.width}-${Date.now()}-timeline.json`)
-                    await writeFile(path, JSON.stringify({ viewport, errors, trace }, null, 2))
+                    await writeFile(path, JSON.stringify({ viewport, errors, geometry, timings, sourceWindows, trace }, null, 2))
                     await info.attach(`complete-observer-${viewport.width}-timeline`, { path, contentType: 'application/json' })
+                    // Fixed webshot opens a fresh browser on this same synthetic
+                    // workspace. It is a visual companion, not the action trace.
+                    if (expectedViewId || await page.locator('[data-hapi-session-view]').count() > 0) {
+                        const shot = join(directory, `complete-observer-${viewport.width}-${Date.now()}.png`)
+                        const readySelector = expectedViewId
+                            ? `[data-hapi-session-view="${expectedViewId}"] [data-hapi-session-reveal="ready"] [data-composer-input]`
+                            : `[aria-label="Pane: ${title}"] [data-hapi-session-reveal="ready"] [data-composer-input]`
+                        try {
+                            await promisify(execFile)('webshot', ['--url', warm.environment.launchUrl,
+                                '--output', shot, '--viewport', `${viewport.width}x${viewport.height}`,
+                                '--ready-js', `Boolean(document.querySelector(${JSON.stringify(readySelector)})) || [...document.querySelectorAll('[role="alert"]')].some(node => node.textContent?.includes('could not fill'))`,
+                                '--timeout-ms', '20000', '--quiet'], { timeout: 25000 })
+                            await info.attach(`complete-observer-${viewport.width}-fresh-context`, { path: shot, contentType: 'image/png' })
+                        } catch {
+                            await info.attach('visual-companion-failed', { body: 'webshot did not produce a ready image; no visual pass is claimed.', contentType: 'text/plain' })
+                        }
+                    }
                 } catch { /* Preserve the primary test failure. */ }
             }
             await page.unrouteAll({ behavior: 'wait' }).catch(() => {})

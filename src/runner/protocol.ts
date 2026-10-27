@@ -1,5 +1,7 @@
+import { RUNTIME_PROTOCOL, validRuntimeIdentity, type RuntimeIdentityV1 } from './identity.ts';
+
 /** Versioned transport envelopes. DSH HTTP and WebSocket payloads are opaque bytes. */
-export const FEDERATION_PROTOCOL = 1;
+export const FEDERATION_PROTOCOL = RUNTIME_PROTOCOL;
 export const RUNNER_PATH = '/hapi-dsh/runner';
 export const SOCKET_PATH = '/hapi-dsh/socket';
 export const MACHINE_PREFIX = '/hapi-dsh/machine';
@@ -25,8 +27,8 @@ export interface FederatedMachine {
 export type WireHeaders = Array<[string, string]>;
 export type DataLane = 'request' | 'response' | 'socket';
 export type FederationFrame =
-    | { type: 'hello'; protocol: 1; machineId: string; name: string; dshVersion: string; generation: string }
-    | { type: 'welcome'; protocol: 1 }
+    | { type: 'hello'; protocol: typeof RUNTIME_PROTOCOL; machineId: string; name: string; dshVersion: string; generation: string; identity: RuntimeIdentityV1 }
+    | { type: 'welcome'; protocol: typeof RUNTIME_PROTOCOL; identity: RuntimeIdentityV1 }
     | { type: 'http-open'; id: string; method: string; path: string; headers: WireHeaders }
     | { type: 'http-head'; id: string; status: number; headers: WireHeaders }
     | { type: 'data'; id: string; lane: DataLane; data: string; ticket: string; binary?: boolean }
@@ -69,10 +71,11 @@ export function parseFrame(raw: string): FederationFrame {
     const frame = value as Record<string, unknown>;
     let valid = false;
     switch (frame.type) {
-        case 'hello': valid = frame.protocol === 1 && validMachineId(frame.machineId) && validIdentifier(frame.generation)
+        case 'hello': valid = frame.protocol === RUNTIME_PROTOCOL && validMachineId(frame.machineId) && validIdentifier(frame.generation)
             && typeof frame.name === 'string' && frame.name.length > 0 && frame.name.length <= 128
-            && typeof frame.dshVersion === 'string' && frame.dshVersion.length < 80; break;
-        case 'welcome': valid = frame.protocol === 1; break;
+            && typeof frame.dshVersion === 'string' && frame.dshVersion.length < 80
+            && validRuntimeIdentity(frame.identity); break;
+        case 'welcome': valid = frame.protocol === RUNTIME_PROTOCOL && validRuntimeIdentity(frame.identity); break;
         case 'ack': valid = validIdentifier(frame.ticket); break;
         case 'http-open': valid = validIdentifier(frame.id) && typeof frame.method === 'string' && /^[A-Z]{1,20}$/.test(frame.method)
             && headers(frame.headers); if (valid) validateUpstreamPath(frame.path); break;

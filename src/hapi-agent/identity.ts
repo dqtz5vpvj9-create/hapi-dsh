@@ -54,3 +54,8 @@ export function observedCapabilities(source: HapiSession) {
     permissions: known && flavor !== 'pi',
   }
 }
+
+/** The revision-free display id; a display successor keeps the logical id. */
+export function logicalDisplayId(displayId: string): SessionId {
+  return SessionId(displayId.replace(/-r\d+$/, ''))
+}

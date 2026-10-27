@@ -30,6 +30,8 @@ export interface NativeControlAgent {
 export interface NativeControlSessions {
   get(sessionId: string): NativeControlAgent | undefined
   attach(sourceId: string): Promise<NativeControlAgent | undefined>
+  /** Resolve a historical display message's native fork boundary. */
+  resolveForkBoundary?(sessionId: string, messageId: string): NativeForkBoundary | undefined
 }
 
 const bindingSchema = z.object({
@@ -288,7 +290,8 @@ export class NativeControl {
       return this.forkOperation({ sessionId: agent.id, operationId: request.operationId, action: 'read' })
     }
     this.agent(request.sessionId, true)
-    const boundary = request.displayMessageId === undefined ? request.nativeBoundary : agent.resolveForkBoundary(request.displayMessageId)
+    const boundary = request.displayMessageId === undefined ? request.nativeBoundary
+      : this.sessions.resolveForkBoundary?.(agent.id, request.displayMessageId) ?? agent.resolveForkBoundary(request.displayMessageId)
     if (request.displayMessageId !== undefined && !boundary) throw new HapiRequestError('The displayed message has no committed source-native fork boundary; refresh the conversation', 'rejected')
     if (boundary && boundary.threadId !== agent.binding.threadId) throw new HapiRequestError('The displayed fork boundary belongs to another native thread', 'rejected')
     const entry: ForkEntry = { binding: agent.binding, request: { ...request, sessionId: agent.logicalSessionId }, view: {

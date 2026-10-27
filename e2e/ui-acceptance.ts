@@ -228,6 +228,20 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       // the anchor by 120px and cannot measure stationary prepend stability.
       await expect(loadOlder).toBeEnabled()
       await loadOlder.evaluate(button => (button as HTMLButtonElement).click())
+      await page.waitForTimeout(300)
+      const stationaryDiagnostic = record({
+        pagesBefore: before,
+        pagesNow: pages,
+        dom: await history.evaluate(pane => ({
+          loadEarlier: [...pane.querySelectorAll('button')].filter(button => /Load earlier/i.test(button.innerText)).length,
+          anchors: pane.querySelectorAll('[data-chat-anchor-key]').length,
+          flow: Boolean(pane.querySelector('[data-chat-flow]')),
+          height: pane.querySelector<HTMLElement>('[data-conversation-scroll]')?.scrollHeight ?? 0,
+        })),
+        marks: (await page.evaluate(() => performance.getEntriesByType('mark').map(entry => entry.name)))
+          .filter(name => /hapi-dsh:(flush|source|facade|seamless|loadOlder)/.test(name)).slice(-14),
+      })
+      void stationaryDiagnostic
       await expect.poll(() => pages, { timeout: 12_000 }).toBeGreaterThan(before)
       await expect(history.locator('[data-chat-flow]:not([data-step-process-content]) > div > button').first()).toBeEnabled()
       await page.waitForTimeout(300); await paint(page)
@@ -278,6 +292,16 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       await composer(history).fill('Draft while reading and streaming')
       await scrollport(history).evaluate(port => { port.scrollTop = port.scrollHeight })
       await page.waitForTimeout(250)
+      record({
+        liveEdge: await history.evaluate(pane => {
+          const port = pane.querySelector<HTMLElement>('[data-conversation-scroll]')
+          return {
+            following: Boolean(pane.querySelector('[data-chat-following-tail]')),
+            toBottom: [...pane.querySelectorAll('button')].filter(button => [...button.classList].some(name => name.includes('toBottom'))).length,
+            remaining: port === null ? null : port.scrollHeight - port.clientHeight - port.scrollTop,
+          }
+        }),
+      })
       const identityBefore = await history.getAttribute('data-session-id')
       const input = await composer(history).elementHandle()
       const live = beginUiLive(session.environment.hapi, 'native-accept-history', 'indexed')
@@ -304,6 +328,8 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
         const catalog = await session.environment.rpc<{ items: Array<{ sessionId: string; running: boolean; projections: unknown }> }>('session/list', { _request: {} })
         const id = await history.getAttribute('data-session-id')
         record({ failure: safe(error), before, identityBefore, id, latencyMs,
+          marks: (await page.evaluate(() => performance.getEntriesByType('mark').map(entry => entry.name)))
+            .filter(name => /hapi-dsh:(live|loadOlder|flush)/.test(name)).slice(-20),
           state: catalog.items.find(row => row.sessionId === id),
           text: (await history.innerText()).slice(-1600),
           anchors: await history.locator('[data-chat-anchor-key]').evaluateAll(rows => rows.map(e => e.getAttribute('data-chat-anchor-key'))) })

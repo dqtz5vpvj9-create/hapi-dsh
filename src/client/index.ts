@@ -1,4 +1,5 @@
 /** HAPI's workspace composition, loaded by DSH's unchanged official plugin runtime. */
+import { taggedRemote } from '../client-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { createElement } from 'react'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
@@ -9,7 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { HAPI_REMOTE, remoteValue } from '../client-api.ts'
+import { HAPI_REMOTE, remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { WorkspaceController } from './controller.ts'
 import { installFederation } from './federation.tsx'
 import { en, zh } from './locales.ts'
@@ -22,6 +23,7 @@ import { SessionSidebar, WorkspaceRoot } from './ui.tsx'
 import type { SessionSidebarProps, WorkspaceRootProps } from './slots.ts'
 import { installWorkspaceStyles } from './styles.ts'
 import { installSeamlessHistory } from './seamless/index.ts'
+import { requestOlderThroughMountedChat, resolveMountedChatForPane, resolveMountedChatLatestForPane, toLatestThroughMountedChat } from './mounted-chat-control.ts'
 import { installSidebarNavigation } from './sidebar-navigation.ts'
 import { installWorkspaceMenus } from './menus.ts'
 import { installNewSessionShortcut } from './shortcuts.ts'
@@ -76,7 +78,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'hapi-dsh-client'
-export const inject = ['slots', 'sessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
+export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
 
 /** Mount the namespace first, then consume it in an explicit Cordis inject scope. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
@@ -86,7 +88,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         const unmount = await ctx.remote.$mount(HAPI_REMOTE)
         let child: ReturnType<Context['inject']> | undefined
         try {
-            child = ctx.inject(['remote.hapi'], installPaneNative)
+            child = ctx.inject(['remote.hapi', 'sessions'], installPaneNative)
             await child
             return async () => { await child?.dispose(); await unmount?.() }
         } catch (error) {
@@ -98,7 +100,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     let child: ReturnType<Context['inject']> | undefined
     try {
         unmount = await ctx.remote.$mount(HAPI_REMOTE)
-        child = ctx.inject(['remote.hapi'], installWorkspace)
+        child = ctx.inject(['remote.hapi', 'sessions'], installWorkspace)
         await child
         return async () => { await child?.dispose(); await unmount?.() }
     } catch (error) {
@@ -108,11 +110,26 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     }
 }
 
+function diagnosticMark(name: string): void {
+    try { performance.clearMarks(name); performance.mark(name) } catch { /* diagnostics are optional */ }
+}
+
+function attachSourceSessions(ctx: Context, api: HapiRemoteApi): void {
+    ctx.hapiSourceSessions.attach({
+        sourceHistoryOutline: request => api.sourceHistoryOutline(request),
+        sourceHistoryOutlinePage: request => api.sourceHistoryOutlinePage(request),
+        sourceHistoryWindowPage: request => api.sourceHistoryWindowPage(request),
+        sourceHistoryAttachment: request => api.sourceHistoryAttachment(request),
+        sourceReadingAnchor: request => api.sourceReadingAnchor(request),
+    })
+}
+
 async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     const disposers: Array<() => void | Promise<void>> = []
     let stage = 'consume native API'
     try {
-    const api = ctx.remote.hapi
+    const api = taggedRemote(ctx.remote.hapi)
+    attachSourceSessions(ctx, api)
     const ledger = new NativeActionLedger()
     const controls = new NativeControlLedger(api)
     const observedControls = new ObservedControlLedger(api)
@@ -148,7 +165,25 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     // Page-global: covers local and remote Host panes. Automates the official
     // Load earlier control so upstream paging/anchoring stays authoritative.
-    disposers.push(installSeamlessHistory(document, { loadEarlierLabel: () => ctx.locale.bind('chat')('chat.loadOlder') }))
+    // The optional data seams below are only the public source facade's forward
+    // page and explicit live-tail restore; they never write scroll state.
+    const sourceControl = (sessionId: string | null): { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } | undefined =>
+        sessionId ? ctx.sessions.binding(sessionId as SessionId)?.session as unknown as
+            { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } : undefined
+    disposers.push(installSeamlessHistory(document, {
+        loadEarlierLabel: () => ctx.locale.bind('chat')('chat.loadOlder'),
+        loadOlderProgrammatically: async (pane, _sessionId, signal) =>
+            requestOlderThroughMountedChat(resolveMountedChatForPane(pane), signal),
+        loadAfter: async (_pane, sessionId) => {
+            const control = sourceControl(sessionId)
+            return control?.loadAfter ? await control.loadAfter() : false
+        },
+        returnToLive: async (pane, sessionId, signal) => {
+            const control = resolveMountedChatLatestForPane(pane)
+            if (control && await toLatestThroughMountedChat(control, signal)) return true
+            return sourceControl(sessionId)?.returnToLive?.(signal) ?? false
+        },
+    }))
     disposers.push(installHapiTabs(ctx, api))
     const administration = installSourceAdmin(ctx, api)
     disposers.push(administration)
@@ -206,10 +241,27 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
         name: 'conversation.chat.assistant-actions', id: 'hapi.native-fork', order: 100, locale: 'hapiWorkspace',
     }, Fork)))
-    stage = 'bind official sidebar navigation'
-    disposers.push(await installSidebarNavigation(ctx, controller))
+    // The target conversation must not wait for the independent sidebar
+    // new-session adaptation. Start federation/local target first, then adapt
+    // the official sidebar in the background; disposal awaits both.
+    stage = 'start workspace federation'
+    diagnosticMark('hapi-dsh:workspace:federation-start')
     disposers.push(installNewSessionShortcut(ctx.shortcuts, controller.requestNewSession))
     disposers.push(installFederation(ctx, controller))
+    stage = 'bind official sidebar navigation'
+    diagnosticMark('hapi-dsh:sidebar:start')
+    const sidebarNavigation = installSidebarNavigation(ctx, controller)
+    void sidebarNavigation.then(dispose => {
+        diagnosticMark('hapi-dsh:sidebar:ready')
+        return dispose
+    }, error => {
+        diagnosticMark('hapi-dsh:sidebar:failed')
+        console.error('[hapi-dsh] official sidebar navigation adaption failed', error)
+        controller.report(error)
+    })
+    disposers.push(async () => {
+        try { await (await sidebarNavigation)?.() } catch { /* startup failure already reported */ }
+    })
     disposers.push(installDeferredPlugins(ctx))
     disposers.push(installShareInbox(ctx, controller))
     disposers.push(installDraftHandoff(ctx, controller))

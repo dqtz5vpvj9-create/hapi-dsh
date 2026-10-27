@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import type { HapiMessage } from '../src/codex/contracts.js'
@@ -54,5 +54,39 @@ test('cache file budget includes UTF-8 rows and the persisted JSON envelope', as
       assert.ok((await stat(join(directory, `unicode-cache.${kind}.json`))).size <= budget)
     }
     assert.equal(cache.snapshot()?.complete, false)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('cache replacement leaves private complete snapshots and no temporary files', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-replace-')
+  try {
+    const cache = new NativeHistoryCache(directory, 'replacement')
+    cache.write([row(1, 1_000)], true, 7)
+    const rows = [row(2, 500), row(3, 700)]
+    cache.write(rows, true, 8)
+    assert.deepEqual(cache.snapshot(), { rows, complete: true, epoch: 8 })
+    assert.deepEqual(cache.snapshot(true), { rows, complete: true, epoch: 8 })
+    assert.deepEqual((await readdir(directory)).sort(), ['replacement.history.json', 'replacement.opening.json'])
+    if (process.platform !== 'win32') {
+      for (const kind of ['history', 'opening']) {
+        assert.equal((await stat(join(directory, `replacement.${kind}.json`))).mode & 0o777, 0o600)
+      }
+    }
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('a failed cache replacement reports the error and removes its temporary file', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-failure-')
+  try {
+    const cache = new NativeHistoryCache(directory, 'blocked')
+    const destination = join(directory, 'blocked.opening.json')
+    await mkdir(destination)
+    await writeFile(join(destination, 'existing'), 'preserved')
+    assert.throws(() => cache.writeOpening([row(1, 100)], false, 7))
+    assert.deepEqual(await readdir(directory), ['blocked.opening.json'])
+    assert.equal(await readFile(join(destination, 'existing'), 'utf8'), 'preserved')
+    await rm(destination, { recursive: true })
+    cache.writeOpening([row(2, 100)], false, 8)
+    assert.equal(cache.snapshot(true)?.rows[0]?.id, 'row-2')
   } finally { await rm(directory, { recursive: true, force: true }) }
 })

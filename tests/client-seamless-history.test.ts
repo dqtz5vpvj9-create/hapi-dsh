@@ -240,6 +240,7 @@ const view = (overrides: Partial<EarlierViewState> = {}): EarlierViewState => ({
     followingTail: false,
     scrollTop: 120,
     clientHeight: 800,
+    scrollHeight: 2400,
     fixated: false,
     ...overrides,
 })
@@ -270,6 +271,36 @@ test('every reader-facing gate refuses before the budget is touched', () => {
     assert.deepEqual(subject.evaluate(view({ scrollTop: 5_000 }), 'up', 0), { request: false, reason: 'not-near-top' })
     // No gate consumed a request: the first accepted evaluation still works.
     assert.deepEqual(subject.evaluate(view(), 'up', 0), { request: true })
+})
+
+for (const scrollHeight of [754, 774]) {
+test(`a following window with ${scrollHeight - 754}px range can page upward at its actual top`, () => {
+    const subject = new policy.EarlierLoadPolicy(policyOptions())
+    const short = view({ followingTail: true, scrollTop: 0, clientHeight: 754, scrollHeight })
+    assert.deepEqual(subject.evaluate(short, 'up', 0), { request: true })
+    assert.deepEqual(subject.evaluate({ ...short, scrollTop: 1 }, 'up', 0), { request: true })
+    assert.deepEqual(subject.evaluate({ ...short, scrollTop: 1.1 }, 'up', 0), { request: false, reason: 'following-tail' })
+    if (scrollHeight > short.clientHeight) assert.deepEqual(
+        subject.evaluate({ ...short, scrollTop: scrollHeight - short.clientHeight }, 'up', 0),
+        { request: false, reason: 'following-tail' }, 'the short window bottom is still protected until the reader reaches its top')
+    assert.deepEqual(subject.evaluate(short, 'none', 0), { request: false, reason: 'no-intent' })
+    assert.deepEqual(subject.evaluate(short, 'down', 0), { request: false, reason: 'no-intent' })
+    assert.deepEqual(subject.evaluate({ ...short, open: false }, 'up', 0), { request: false, reason: 'not-open' })
+    assert.deepEqual(subject.evaluate({ ...short, loading: true }, 'up', 0), { request: false, reason: 'loading' })
+    assert.deepEqual(subject.evaluate({ ...short, hasMore: false }, 'up', 0), { request: false, reason: 'exhausted' })
+    assert.deepEqual(subject.evaluate({ ...short, fixated: true }, 'up', 0), { request: false, reason: 'fixated' })
+    subject.requested(0)
+    assert.deepEqual(subject.evaluate(short, 'up', 1), { request: false, reason: 'budget' })
+})
+}
+
+test('a long following window permits upward paging only at its actual top', () => {
+    const subject = new policy.EarlierLoadPolicy(policyOptions())
+    const long = view({ followingTail: true, scrollTop: 0, clientHeight: 754, scrollHeight: 2400 })
+    assert.deepEqual(subject.evaluate(long, 'up', 0), { request: true })
+    assert.deepEqual(subject.evaluate({ ...long, scrollTop: 120 }, 'up', 0), { request: false, reason: 'following-tail' },
+        'being within the prefetch lead alone cannot override following')
+    assert.deepEqual(subject.evaluate({ ...long, scrollTop: 1646 }, 'up', 0), { request: false, reason: 'following-tail' })
 })
 
 test('one in-flight request blocks a second request from scroll momentum', () => {

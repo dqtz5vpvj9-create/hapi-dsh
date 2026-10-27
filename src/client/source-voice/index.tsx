@@ -59,7 +59,7 @@ function installVoiceSeats(ctx: Context, api: HapiRemoteApi, shared: WorkspaceUi
 export function installSourceVoice(ctx: Context, api: HapiRemoteApi): () => void {
     // A graph may not invent a temporary independent microphone coordinator
     // while the shared workspace capability is still starting.
-    const scope = ctx.inject(['hapiWorkspaceUi', 'uiSession'], owner => installVoiceSeats(owner, api, owner.hapiWorkspaceUi));
+    const scope = ctx.inject(['hapiWorkspaceUi', 'uiSession', 'sessions'], owner => installVoiceSeats(owner, api, owner.hapiWorkspaceUi));
     return () => { void scope.dispose(); };
 }
 

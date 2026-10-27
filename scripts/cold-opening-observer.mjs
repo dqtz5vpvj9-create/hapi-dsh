@@ -22,11 +22,20 @@
 export function installColdOpeningObserver(options = {}) {
   const selector = options.paneSelector ?? '.hapi-pane-focused, .hapi-pane';
   const expectedTitle = options.expectedTitle?.trim();
-  const expectedText = options.expectedText;
-  const staleText = options.staleText;
+  // Markdown omits source-only whitespace around a paragraph. Keep the whole
+  // inner text exact; do not normalize internal whitespace or Markdown syntax.
+  const sourceTarget = value => typeof value === 'string' && value.trim() ? { kind: 'text', text: value.trim() }
+    : value?.kind === 'text' && typeof value.text === 'string' && value.text.trim() ? { ...value, text: value.text.trim() }
+      : value?.kind === 'tool-result' && typeof value.callId === 'string' && value.callId.trim() ? value : undefined;
+  const expectedText = (options.expectedSourceTarget?.kind === 'text' ? options.expectedSourceTarget.text : options.expectedText)?.trim();
+  const expectedSourceTarget = sourceTarget(options.expectedSourceTarget ?? expectedText);
+  const hasSourceTarget = Boolean(expectedSourceTarget);
+  const staleText = options.staleText?.trim();
   const expectedViewId = options.expectedViewId?.trim();
-  const expectedNavigationText = options.expectedNavigationText;
+  let expectedNavigationText = sourceTarget(options.expectedNavigationTarget ?? options.expectedNavigationText);
   const navigationAction = options.navigationAction === 'return-latest' ? 'return-latest' : 'unvisited-target';
+  let returnLatestText = navigationAction === 'return-latest' ? expectedNavigationText : undefined;
+  let activeNavigationText;
   const stableMs = options.stableMs ?? 750;
   // Product acceptance is full by default. A sampler-mechanics test may
   // explicitly narrow its fixture; no production probe has to opt in.
@@ -48,6 +57,14 @@ export function installColdOpeningObserver(options = {}) {
   const observation = { startedAt: performance.now(), firstFullAt: null, completeAt: null, complete: false,
     deadlineAt: 0, deadlineMissed: false, stoppedEarly: false, lastSyncActivityAt: null, lastBodyUpdateAt: null, checkpoints: [] };
   observation.deadlineAt = observation.startedAt + failureDeadlineMs;
+  const extendForReaderAction = at => {
+    if (first.full === null || observation.deadlineMissed) return;
+    // Only real reader actions earn time for their result to settle and then
+    // remain usable. Source activity never moves this bounded deadline.
+    observation.deadlineAt = Math.max(observation.deadlineAt, Math.min(
+      observation.startedAt + failureDeadlineMs + observeAfterReadyMs,
+      at + 5000 + observeAfterReadyMs));
+  };
 
   const titleIds = new Map(), documentTitleIds = new Map();
   const nodeIds = new WeakMap();
@@ -79,11 +96,77 @@ export function installColdOpeningObserver(options = {}) {
     // A preparing surface can have layout boxes under an opacity:0 ancestor.
     // Its descendants' computed opacity is still 1. Keep inert content
     // visually readable here; the editor usability check rejects inert.
-    if (!(node instanceof Element) || !node.isConnected) return false;
+    if (!(node instanceof Element) || !node.isConnected || node.closest('[hidden]')) return false;
     try { if (!node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) return false; } catch { /* old engines */ }
     const rect = node.getBoundingClientRect();
     return intersects(rect, clip) && intersects(rect, screen());
   };
+  const foldedToolHeader = (call, cards, clip) => {
+    // rc.3 ChatGroupSeat keeps its exact ToolCallTree under a searchable hidden
+    // body. Only that body's own visible disclosure represents the call; a
+    // nearby "Called tools" label is not source identity evidence.
+    const body = call.closest('[data-step-process-body]');
+    const group = body?.parentElement;
+    if (!body?.id || body.getAttribute('hidden') !== 'until-found'
+      || !group?.matches('[data-chat-group-key][data-step-process]')
+      || call.closest('[data-chat-group-key]') !== group || !cachedFlow?.contains(group)
+      || body.closest('[inert]') || document.querySelectorAll(`#${CSS.escape(body.id)}`).length !== 1) return null;
+    if (!cards.some(card => card.textContent.trim() && card.closest('[hidden]') === body
+      && !card.closest('[inert], [aria-hidden="true"]'))) return null;
+    const headers = [...group.querySelectorAll('button[data-process-activity][aria-controls]')].filter(header =>
+      header.closest('[data-chat-group-key]') === group && !body.contains(header)
+      && header.getAttribute('aria-controls') === body.id);
+    if (headers.length !== 1) return null;
+    const header = headers[0];
+    if (header.disabled || header.getAttribute('aria-expanded') !== 'false'
+      || header.closest('[inert], [aria-disabled="true"]') || !visible(header, clip)) return null;
+    const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+    let node, count = 0;
+    while ((node = walker.nextNode()) && count++ < 32) {
+      if (!node.textContent.trim()) continue;
+      const range = document.createRange(); range.selectNodeContents(node);
+      if (rangeVisible(range, clip)) return header;
+    }
+    return null;
+  };
+  const targetEvidence = (value, clip) => {
+    const target = sourceTarget(value);
+    if (!target || !cachedFlow) return { attached: false, visible: false };
+    if (target.kind === 'text') {
+      const range = target.text === expectedText ? latestRange : rangeFor([cachedFlow], target.text);
+      return { attached: rangeCurrent(range, target.text), visible: rangeVisible(range, clip) };
+    }
+    // These are official rc.3 ToolCallTree/ToolRow attributes. A result and its
+    // earlier running call share an id, so identity alone cannot prove result
+    // delivery. Reject duplicates and nested calls borrowing another state.
+    const calls = cachedFlow.querySelectorAll(`[data-chat-call-id="${CSS.escape(target.callId)}"]`);
+    if (calls.length !== 1) return { attached: false, visible: false };
+    const call = calls[0];
+    // GenericToolCard/QuestionToolRow use data-tool; the official standalone
+    // BashRow (also used by CodexBash aliases) exposes data-sample instead.
+    const cards = [...call.querySelectorAll('[data-tool][data-state], [data-sample="bash"][data-variant="bash"][data-state]')].filter(card =>
+      card.closest('[data-chat-call-id]') === call && ['ok', 'error', 'stopped'].includes(card.getAttribute('data-state')));
+    const attached = cards.length > 0 && call.isConnected;
+    if (!attached || !clip) return { attached, visible: false };
+    // An expanded card's tall box can overlap the viewport while all of its
+    // actual content is outside. Require a visible text range inside the exact
+    // completed card, never just its containing rectangle or tool heading text.
+    for (const card of cards) {
+      if (!visible(card, clip)) continue;
+      const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+      let node, count = 0;
+      while ((node = walker.nextNode()) && count++ < 256) {
+        if (!node.textContent.trim() || node.parentElement.closest('[data-chat-call-id]') !== call
+          || !visible(node.parentElement, clip) || node.parentElement.getBoundingClientRect().height <= 1) continue;
+        const range = document.createRange(); range.selectNodeContents(node);
+        if (rangeVisible(range, clip)) return { attached, visible: true, representation: 'tool-card' };
+      }
+    }
+    if (foldedToolHeader(call, cards, clip)) return { attached, visible: true, representation: 'collapsed-tool-group' };
+    return { attached, visible: false };
+  };
+  const openingMarkerAttached = () => expectedSourceTarget?.kind === 'tool-result'
+    ? targetEvidence(expectedSourceTarget).attached : rangeCurrent(latestRange, expectedText);
   const currentPane = () => options.paneSelector
     ? [...document.querySelectorAll(selector)].find(node => visible(node))
     : [...document.querySelectorAll('.hapi-pane-focused')].find(node => visible(node))
@@ -140,18 +223,21 @@ export function installColdOpeningObserver(options = {}) {
   const inputEvidence = { focusAt: null, focusTrusted: false, trustedKeys: 0, printableKeys: 0, firstPrintableAt: null,
     trustedInputs: 0, textHash: 0, textLength: 0, textRevision: 0, everRetained: false, retainedAt: null, lostAt: null,
     lastTextAt: null, lastTrustedKeyAt: null, replacedAt: null };
-  const reader = { intents: 0, lastAt: null, lastKind: null, wheel: 0, touch: 0, key: 0, pointer: 0 };
+  const reader = { intents: 0, lastAt: null, lastKind: null, wheel: 0, touch: 0, key: 0, pointer: 0,
+    motion: [], departures: [] };
   const historyEvidence = { intents: 0, intentAt: null, lastIntentAt: null, nearTopIntents: 0,
     requestRevision: 0, requestAt: null, observedRevision: 0, commitRevision: 0, commitAt: null,
     domPrependRevision: 0, failureRevision: 0, failureAt: null,
+    operationRevision: 0, operations: [], violations: [],
     networkRequests: 0, networkOlder: 0, lastNetworkAt: null, hasMore: false, controlDisabled: null,
     anchorKeyHash: null, anchorOffset: null, anchorRetained: null, anchorDriftPx: null, anchorAt: null };
   const navigationEvidence = { intents: 0, intentAt: null, commitRevision: 0, commitAt: null,
     clickedKind: null, clickedIndex: null, targetVisible: null, beforeBodyRevision: 0, beforeScrollTop: null,
     mode: null, required: false, marks: 0, usable: false, action: navigationAction,
-    targetIntents: 0, returnLatestIntents: 0 };
+    targetIntents: 0, returnLatestIntents: 0, targetCommits: 0, returnLatestCommits: 0,
+    targetCommitted: false, returnLatestCommitted: false };
 
-  let stopped = false, frame, rowsDirty = true;
+  let stopped = false, frame, rowsDirty = true, bodyDirty = true;
   let cachedPane, cachedView, cachedFlow, cachedPort, cachedEditor, cachedRail, candidates = [];
   let latestRange, staleRange, lastTitle, lastBodySample = -Infinity;
   let bodyVisible = false, bodyText = '', bodyRevisionCounter = 0, visibleBodyCharacters = 0, bodyRowCount = 0;
@@ -165,10 +251,53 @@ export function installColdOpeningObserver(options = {}) {
   let latestEverVisible = false, latestVisibleAt = null, bodyChangedAt = null, readerIntentAt = null, tailAppendedAt = null;
   let firstBodySeen = false, firstBodyWrong = false, contentHash = 0;
   let liveUpdateAt = null, liveRevision = 0, lastEditorText = '', editorTextInitialized = false;
-  let anchorRowKey, anchorOffset, touchY = null, previous;
+  let touchY = null, previous;
+  let pendingHistory = null, historyDOMProbe = null;
+  let historyScope = null, historyScopeRevision = 0;
+  let readerScroll = null, readerScrollAt = null, readerScrollEnd = null, readerTouchY = null;
+  let observedScroll = null;
+  const recordReaderMotion = (phase, at, direction = 0) => {
+    reader.motion.push({ phase, at, direction, port: identityOf(cachedPort), top: cachedPort?.scrollTop ?? null,
+      kind: readerScroll?.kind ?? null, gestureAt: readerScroll?.gestureAt ?? null, moving: readerMotionOngoing() });
+    if (reader.motion.length > 128) reader.motion.shift();
+  };
+  const beginReaderScroll = (kind, direction, at) => {
+    if (!cachedPort) return;
+    // Chromium may apply compositor scrolling before dispatching a passive
+    // wheel. The last independent scroll event is the before-position; reading
+    // scrollTop here would make that first real movement appear to be zero.
+    const top = observedScroll?.port === cachedPort ? observedScroll.top : cachedPort.scrollTop;
+    const continuing = readerScroll?.port === cachedPort && readerScroll.kind === kind
+      && readerScroll.direction === direction && readerScroll.moving;
+    readerScroll = { port: cachedPort, kind, direction, gestureAt: at,
+      top, moving: Boolean(continuing) };
+    recordReaderMotion('gesture', at, direction);
+  };
+  const readerMotionOngoing = () => Boolean(readerScroll && readerScroll.port === cachedPort && readerScroll.moving);
+  const readerMovedSince = at => at !== null && (readerMotionOngoing()
+    || (readerScrollAt !== null && readerScrollAt >= at && readerScrollEnd?.port === cachedPort
+      && readerScrollEnd.top === cachedPort?.scrollTop));
+  const recordDeparture = (kind, at, intended) => {
+    reader.departures.push({ kind, at, intended, visibleAt: latestVisibleAt,
+      port: identityOf(cachedPort), top: cachedPort?.scrollTop ?? null,
+      scrollAt: readerScrollAt, scrollEndTop: readerScrollEnd?.top ?? null,
+      motion: reader.motion.slice(-8) });
+    if (reader.departures.length > 32) reader.departures.shift();
+  };
+  const historyViolation = message => {
+    if (!historyEvidence.violations.includes(message)) historyEvidence.violations.push(message);
+  };
 
   const noteSyncActivity = at => {
-    if (Number.isFinite(at)) observation.lastSyncActivityAt = at;
+    if (!Number.isFinite(at)) return;
+    observation.lastSyncActivityAt = at;
+    // A completed quiet interval is provisional until recording stops. Source
+    // activity afterwards starts a new interval; an earlier quiet gap cannot
+    // conceal updates that continue beyond the diagnostic deadline.
+    if (observation.complete && at > observation.completeAt) {
+      observation.complete = false;
+      observation.completeAt = null;
+    }
   };
   const titleChange = (title, at, reason) => {
     if (title === lastTitle) return;
@@ -176,11 +305,9 @@ export function installColdOpeningObserver(options = {}) {
     titles.push({ at, reason, kind: titleKind(title), revision: revision(titleIds, title), ...(options.captureTitles ? { value: title } : {}) });
     noteSyncActivity(at);
   };
-  const captureAnchor = () => {
-    if (!cachedPort) { anchorRowKey = undefined; historyEvidence.anchorOffset = null; historyEvidence.anchorKeyHash = null; return; }
+  const readAnchor = () => {
+    if (!cachedPort) return null;
     const box = cachedPort.getBoundingClientRect();
-    // Hit tests are bounded and avoid scanning a long virtualized history on
-    // every wheel. The fallback is the already-bounded candidate set.
     let row;
     const x = clamp((box.left + box.right) / 2, 0, innerWidth - 1);
     for (const fraction of [0.02, 0.15, 0.35, 0.5]) {
@@ -189,24 +316,85 @@ export function installColdOpeningObserver(options = {}) {
       if (candidate instanceof Element && cachedPort.contains(candidate) && !candidate.closest('[hidden]')) { row = candidate; break; }
     }
     row ??= candidates.find(candidate => visible(candidate, box));
-    if (!row) { anchorRowKey = undefined; historyEvidence.anchorOffset = null; historyEvidence.anchorKeyHash = null; return; }
-    anchorRowKey = row.dataset.chatAnchorKey ?? row.dataset.chatNodeKey ?? '';
-    anchorOffset = row.getBoundingClientRect().top - box.top;
-    historyEvidence.anchorKeyHash = hashText(anchorRowKey);
-    historyEvidence.anchorOffset = anchorOffset;
-    historyEvidence.anchorAt = performance.now();
-    historyEvidence.anchorRetained = null;
-    historyEvidence.anchorDriftPx = null;
+    if (!row) return null;
+    return { row, key: row.dataset.chatAnchorKey ?? row.dataset.chatNodeKey ?? '',
+      offset: row.getBoundingClientRect().top - box.top, at: performance.now() };
   };
-  const commitAnchor = () => {
-    if (!cachedPort || anchorRowKey === undefined) return;
-    const box = cachedPort.getBoundingClientRect();
-    let row = candidates.find(candidate => (candidate.dataset.chatAnchorKey ?? candidate.dataset.chatNodeKey) === anchorRowKey);
-    row ??= [...cachedPort.querySelectorAll('[data-chat-anchor-key], [data-chat-node-key]')]
-      .find(candidate => (candidate.dataset.chatAnchorKey ?? candidate.dataset.chatNodeKey) === anchorRowKey);
-    historyEvidence.anchorRetained = Boolean(row);
-    historyEvidence.anchorDriftPx = row && anchorOffset !== null ? row.getBoundingClientRect().top - box.top - anchorOffset : null;
+  // Official folded process controls stay mounted ahead of readable history.
+  // Their hidden sentinels cannot be the boundary of a visible page prepend.
+  const firstHistoryRow = () => cachedFlow?.querySelector(
+    '[data-chat-anchor-key]:not([hidden]):not([hidden] *), [data-chat-node-key]:not([hidden]):not([hidden] *)');
+  const domPrepended = probe => Boolean(probe?.first && probe.first.isConnected && cachedFlow?.contains(probe.first)
+    && firstHistoryRow() !== probe.first && (firstHistoryRow()?.compareDocumentPosition(probe.first) & Node.DOCUMENT_POSITION_FOLLOWING));
+  const measureCommittedAnchor = operation => {
+    const before = historyDOMProbe;
+    operation.domPrepend = Boolean(before && before.operationId === operation.id && domPrepended(before));
+    // Keep the pre-write/anchor diagnostics even if the independent prepend
+    // proof fails. A failed boundary comparison must not erase a valid sample.
+    if (before && before.operationId === operation.id) {
+      operation.domAt = before.at;
+      operation.beforeScrollTop = before.scrollTop;
+      operation.beforeScrollHeight = before.scrollHeight;
+      operation.beforeInterruptedAnchor = before.interruptedAnchor;
+      operation.commitScrollTop = cachedPort?.scrollTop ?? null;
+      operation.commitScrollHeight = cachedPort?.scrollHeight ?? null;
+      const anchor = before.anchor;
+      if (anchor && cachedPort) {
+        const row = anchor.row.isConnected && (anchor.row.dataset.chatAnchorKey ?? anchor.row.dataset.chatNodeKey) === anchor.key
+          ? anchor.row : cachedFlow?.querySelector(`[data-chat-anchor-key="${CSS.escape(anchor.key)}"], [data-chat-node-key="${CSS.escape(anchor.key)}"]`);
+        operation.anchorAt = anchor.at;
+        operation.anchorKeyHash = hashText(anchor.key);
+        operation.anchorOffset = anchor.offset;
+        operation.anchorRetained = Boolean(row && cachedPort.contains(row));
+        operation.anchorDriftPx = operation.anchorRetained
+          ? row.getBoundingClientRect().top - cachedPort.getBoundingClientRect().top - anchor.offset : null;
+      }
+    }
+    // Summary geometry belongs to the last matched commit. Request/commit
+    // correlation and every anchor check use the bounded operation records.
+    for (const key of ['anchorAt', 'anchorKeyHash', 'anchorOffset', 'anchorRetained', 'anchorDriftPx'])
+      historyEvidence[key] = operation[key];
+    if (!operation.domPrepend) historyViolation('Source page commit had no independently observed DOM prepend');
+    if (operation.anchorRetained !== true || operation.anchorAt === null)
+      historyViolation('Older-page commit did not measure a retained reading anchor');
+    if (operation.anchorDriftPx !== null && Math.abs(operation.anchorDriftPx) > 2)
+      historyViolation('Older-page commit drifted the reading anchor beyond 2 px');
+    historyDOMProbe = null;
   };
+  // MutationObserver runs after DOM writes. Capture immediately before the
+  // renderer's first structural write instead, so natural scrolling between a
+  // gesture/request and the page commit is not mistaken for compensation error.
+  // These wrappers only observe; the original DOM operations run unchanged.
+  const restoreDOMMethods = [];
+  const beforeDOMWrite = target => {
+    if (stopped || !pendingHistory || historyDOMProbe || !cachedFlow
+      || !(target instanceof Node) || !(target === cachedFlow || cachedFlow.contains(target))) return;
+    historyDOMProbe = { operationId: pendingHistory.operation.id, first: firstHistoryRow(),
+      anchor: readAnchor(), at: performance.now(), scrollTop: cachedPort?.scrollTop ?? null,
+      scrollHeight: cachedPort?.scrollHeight ?? null,
+      interruptedAnchor: cachedPort?.hasAttribute('data-hapi-interrupted-prepend') ?? false };
+    // Mutation delivery may discard a non-prepend baseline before the
+    // controller settles. Preserve that sample as diagnostics, not proof.
+    const operation = pendingHistory.operation, anchor = historyDOMProbe.anchor;
+    operation.domAt = historyDOMProbe.at;
+    operation.domProbeDiscarded = false;
+    operation.beforeScrollTop = historyDOMProbe.scrollTop;
+    operation.beforeScrollHeight = historyDOMProbe.scrollHeight;
+    operation.beforeInterruptedAnchor = historyDOMProbe.interruptedAnchor;
+    operation.anchorAt = anchor?.at ?? null;
+    operation.anchorKeyHash = anchor ? hashText(anchor.key) : null;
+    operation.anchorOffset = anchor?.offset ?? null;
+  };
+  for (const [prototype, methods] of [[Node.prototype, ['insertBefore', 'appendChild', 'removeChild', 'replaceChild']],
+    [Element.prototype, ['prepend', 'append', 'replaceChildren', 'insertAdjacentElement', 'insertAdjacentHTML', 'before', 'after', 'replaceWith', 'remove']]]) {
+    for (const method of methods) {
+      const original = prototype[method];
+      if (typeof original !== 'function') continue;
+      const wrapped = function (...args) { beforeDOMWrite(this); return Reflect.apply(original, this, args); };
+      prototype[method] = wrapped;
+      restoreDOMMethods.push(() => { if (prototype[method] === wrapped) prototype[method] = original; });
+    }
+  }
   const setReaderIntent = (at, kind) => {
     reader.intents++;
     reader.lastAt = at;
@@ -223,7 +411,6 @@ export function installColdOpeningObserver(options = {}) {
     historyEvidence.intentAt = at;
     historyEvidence.lastIntentAt = at;
     setReaderIntent(at, kind);
-    captureAnchor();
   };
 
   const refreshRows = () => {
@@ -309,6 +496,7 @@ export function installColdOpeningObserver(options = {}) {
   };
 
   const sampleBody = at => {
+    bodyDirty = false;
     if (rowsDirty || !candidates.length) refreshRows();
     const port = cachedPort;
     const clip = port && visible(port) ? port.getBoundingClientRect() : undefined;
@@ -346,7 +534,7 @@ export function installColdOpeningObserver(options = {}) {
       // A new tail node with the previous tail retained is the normal live
       // append path. A history commit in the same interval is a page prepend,
       // not a live source update.
-      if (first.full !== null && firstKeyHash === priorFirstKey && rangeCurrent(latestRange, expectedText)
+      if (first.full !== null && firstKeyHash === priorFirstKey && openingMarkerAttached()
         && at - (historyEvidence.commitAt ?? -Infinity) > 1000) { liveUpdateAt = at; liveRevision++; noteSyncActivity(at); }
     }
     if (nextBody !== bodyText) {
@@ -374,7 +562,6 @@ export function installColdOpeningObserver(options = {}) {
       // DOM growth is corroboration only. It never becomes source-page commit
       // evidence without an observed source request/commit pair.
       historyEvidence.domPrependRevision++;
-      if (historyEvidence.requestAt !== null || historyEvidence.intentAt !== null) commitAnchor();
     }
     if (cachedView && presented) {
       if (firstViewId === null) firstViewId = identityOf(cachedView);
@@ -421,6 +608,7 @@ export function installColdOpeningObserver(options = {}) {
       if (pane !== cachedPane || view !== cachedView || port !== cachedPort || flow !== cachedFlow || editor !== cachedEditor || rail !== cachedRail) {
         const viewChanged = cachedView !== undefined && view !== cachedView;
         cachedPane = pane; cachedView = view; cachedPort = port; cachedFlow = flow; cachedEditor = editor; cachedRail = rail;
+        if (observedScroll?.port !== port) observedScroll = port ? { port, top: port.scrollTop } : null;
         latestRange = staleRange = undefined; candidates = [];
         rowsDirty = true; lastBodySample = -Infinity;
         if (viewChanged) noteSyncActivity(at);
@@ -449,8 +637,18 @@ export function installColdOpeningObserver(options = {}) {
     // was invalidated. Editor/rail/history capability checks stay per-frame so
     // a short painted partial window is not missed, and the transcript DOM is
     // not rescanned on every painted frame.
-    const markerInvalid = Boolean(expectedText && latestRange && !rangeCurrent(latestRange, expectedText));
-    if (!candidates.length || !bodyVisible || markerInvalid || at - lastBodySample >= bodySampleMs) {
+    const toolEvidence = expectedSourceTarget?.kind === 'tool-result' ? targetEvidence(expectedSourceTarget, clip) : null;
+    const markerInvalid = toolEvidence ? previous?.latestAttached === true && !toolEvidence.attached
+      : Boolean(expectedText && latestRange && !rangeCurrent(latestRange, expectedText));
+    const markerLeaving = previous?.latestVisible === true && (toolEvidence ? !toolEvidence.visible
+      : latestRange && !rangeVisible(latestRange, clip));
+    const quietBoundary = first.full !== null
+      && at >= Math.max(first.full, observation.lastSyncActivityAt ?? first.full) + observeAfterReadyMs;
+    // Classify a pending source write before a marker departure or a quiet
+    // boundary. A live append may move the still-retained watermark offscreen
+    // before the usual 100 ms sample can establish its cause.
+    if (!candidates.length || !bodyVisible || markerInvalid || at - lastBodySample >= bodySampleMs
+      || (bodyDirty && (quietBoundary || markerLeaving))) {
       lastBodySample = at;
       sampleBody(at);
       refreshCapabilities(at);
@@ -468,8 +666,8 @@ export function installColdOpeningObserver(options = {}) {
         || cachedPane.matches('[data-hapi-pane-opening="loading"]')));
     }
     sampleNavigation();
-    const latestVisible = expectedText ? rangeVisible(latestRange, clip) : null;
-    const latestAttached = expectedText ? rangeCurrent(latestRange, expectedText) : null;
+    const latestVisible = toolEvidence ? toolEvidence.visible : hasSourceTarget ? rangeVisible(latestRange, clip) : null;
+    const latestAttached = toolEvidence ? toolEvidence.attached : hasSourceTarget ? rangeCurrent(latestRange, expectedText) : null;
     if (latestVisible) { latestVisibleAt = at; latestEverVisible = true; }
     const titleReady = expectedTitle ? kind === 'expected' : kind === 'other';
     // The first painted target body must already identify the expected source
@@ -477,19 +675,19 @@ export function installColdOpeningObserver(options = {}) {
     // excused by a later correct body.
     if (!firstBodySeen && bodyVisible && (!expectedViewId || viewMatches)) {
       firstBodySeen = true;
-      if ((expectedText && latestVisible !== true) || (expectedTitle && !titleReady)) firstBodyWrong = true;
+      if ((hasSourceTarget && latestVisible !== true) || (expectedTitle && !titleReady)) firstBodyWrong = true;
     }
     if (presented && bodyVisible) {
       // A nonempty body whose latest marker vanished is only intentional when
       // a trusted reader intent and a committed page/navigation explain it.
-      if (latestEverVisible && expectedText && latestAttached === false) {
+      if (latestEverVisible && hasSourceTarget && previous?.latestAttached === true && latestAttached === false) {
         const prompted = (historyEvidence.intentAt !== null && historyEvidence.commitAt !== null
           && historyEvidence.commitAt >= historyEvidence.intentAt - 50 && at - historyEvidence.commitAt < 3000)
           || (navigationEvidence.intentAt !== null && navigationEvidence.commitAt !== null
             && navigationEvidence.commitAt >= navigationEvidence.intentAt - 50 && at - navigationEvidence.commitAt < 3000)
           // A trusted reader gesture is the intent the spec requires before a
           // marker may leave the reading window (virtualized rows can unmount).
-          || (readerIntentAt !== null && latestVisibleAt !== null && readerIntentAt >= latestVisibleAt);
+          || readerMovedSince(latestVisibleAt);
         // A trusted older-page or navigation target that is still loading can
         // temporarily replace the window. Do not call that arbitrary while the
         // intent is pending; a missing commit becomes its own explicit failure.
@@ -497,15 +695,20 @@ export function installColdOpeningObserver(options = {}) {
           && (historyEvidence.commitAt === null || historyEvidence.commitAt < historyEvidence.intentAt))
           || (navigationEvidence.intentAt !== null && at - navigationEvidence.intentAt <= 12000
             && (navigationEvidence.commitAt === null || navigationEvidence.commitAt < navigationEvidence.intentAt));
+        recordDeparture('unmounted', at, prompted || pending);
         if (!prompted && !pending) bodyReplacement = true;
       }
-      if (latestEverVisible && latestAttached && !latestVisible && !latestOffscreenUnprompted) {
+      // Attribute the transition once. Starting another gesture or reaching
+      // scrollend cannot retroactively turn an accepted departure into a jump.
+      // A marker which reappears is checked again when it next leaves.
+      if (latestEverVisible && previous?.latestVisible === true && latestAttached && !latestVisible) {
         const intended = latestVisibleAt !== null && (
-          (readerIntentAt !== null && readerIntentAt >= latestVisibleAt)
+          readerMovedSince(latestVisibleAt)
           || (historyEvidence.commitAt !== null && historyEvidence.commitAt >= latestVisibleAt)
           || (navigationEvidence.intentAt !== null && navigationEvidence.intentAt >= latestVisibleAt)
           || (navigationEvidence.commitAt !== null && navigationEvidence.commitAt >= latestVisibleAt));
         const appended = latestVisibleAt !== null && tailAppendedAt !== null && tailAppendedAt >= latestVisibleAt;
+        recordDeparture('offscreen', at, intended || appended);
         if (!intended && !appended) latestOffscreenUnprompted = true;
       }
     }
@@ -516,16 +719,23 @@ export function installColdOpeningObserver(options = {}) {
     // change. A decorative rail button that changes nothing never commits.
     if (navigationEvidence.intentAt !== null
       && (navigationEvidence.commitAt === null || navigationEvidence.commitAt < navigationEvidence.intentAt)) {
-      const targetVisible = expectedNavigationText
-        ? rangeVisible(rangeFor([cachedFlow], expectedNavigationText), clip) : null;
+      const targetVisible = activeNavigationText ? targetEvidence(activeNavigationText, clip).visible : null;
       const changed = targetVisible === true
-        || (expectedNavigationText === undefined && (bodyRevisionCounter !== navigationEvidence.beforeBodyRevision
+        || (!fullCapabilities && activeNavigationText === undefined && navigationEvidence.clickedKind !== 'to-bottom'
+          && (bodyRevisionCounter !== navigationEvidence.beforeBodyRevision
           || (cachedPort && navigationEvidence.beforeScrollTop !== null
             && Math.abs(cachedPort.scrollTop - navigationEvidence.beforeScrollTop) > 8)));
       if (changed) {
         navigationEvidence.commitRevision++;
         navigationEvidence.commitAt = at;
         navigationEvidence.targetVisible = targetVisible;
+        if (navigationEvidence.clickedKind === 'to-bottom') {
+          navigationEvidence.returnLatestCommits++;
+          navigationEvidence.returnLatestCommitted = targetVisible === true;
+        } else {
+          navigationEvidence.targetCommits++;
+          navigationEvidence.targetCommitted = targetVisible === true;
+        }
       }
     }
     const navigationIntentUncommitted = navigationEvidence.intentAt !== null
@@ -534,7 +744,12 @@ export function installColdOpeningObserver(options = {}) {
     if (!presented && (bodyVisible || first.full !== null)) presented = true;
     const capabilitiesMissing = Boolean(bodyVisible && (!editorUsable || !titleReady || opening
       || (expectedViewId && !viewMatches) || (requiresHistory && !historyNavigable) || (navigationRequired && !navigationUsable)));
-    const ready = Boolean(pane && titleReady && (!expectedViewId || viewMatches) && latestVisible && editorUsable && !opening
+    // First presentation must show the independent opening watermark. Once
+    // proved, reading older content or subsequent live appends may move that
+    // watermark offscreen while the same conversation remains fully usable.
+    const sourceUsable = first.full === null ? latestVisible
+      : bodyVisible && !bodyReplacement && !latestOffscreenUnprompted && !firstBodyWrong;
+    const ready = Boolean(pane && bodyVisible && titleReady && (!expectedViewId || viewMatches) && sourceUsable && editorUsable && !opening
       && (!requiresHistory || historyNavigable) && navigationUsable);
     const staleVisible = staleText ? rangeVisible(staleRange, clip) : null;
     if (staleVisible && !latestVisible && editorUsable && !opening && !staleReadyUnprompted) {
@@ -554,6 +769,7 @@ export function installColdOpeningObserver(options = {}) {
       bodyVisible, bodyRevision: bodyRevisionCounter, bodyHash: hashText(bodyText),
       visibleBodyCharacters, bodyRowCount, bodyFirstKeyHash: firstKeyHash, bodyLastKeyHash: lastKeyHash,
       latestAttached, latestVisible, staleVisible,
+      latestRepresentation: latestVisible ? toolEvidence?.representation ?? 'text' : null,
       editorVisible: editorEvidence.editorVisible, editorUsable,
       editorFocused: Boolean(editor && (document.activeElement === editor || editor.contains(document.activeElement))),
       editorRevision, editorTextLength: inputEvidence.textLength, editorTextHash: inputEvidence.textHash,
@@ -620,6 +836,13 @@ export function installColdOpeningObserver(options = {}) {
   const contentObserver = new MutationObserver(records => {
     for (const record of records) {
       if (record.type === 'childList') rowsDirty = true;
+      if (cachedFlow && (record.target === cachedFlow || cachedFlow.contains(record.target))) bodyDirty = true;
+    }
+    // A live append or other non-page write must not freeze the baseline for a
+    // later page. The controller's own observer can then commit this batch.
+    if (historyDOMProbe && !domPrepended(historyDOMProbe)) {
+      if (pendingHistory?.operation.id === historyDOMProbe.operationId) pendingHistory.operation.domProbeDiscarded = true;
+      historyDOMProbe = null;
     }
   });
   contentObserver.observe(document, { subtree: true, childList: true, characterData: true });
@@ -646,33 +869,83 @@ export function installColdOpeningObserver(options = {}) {
   try {
     new PerformanceObserver(list => {
       for (const entry of list.getEntries()) {
-        let path = '';
-        try { path = new URL(entry.name, location.href).pathname; } catch { continue; }
-        if (!/(?:\/session\/page|\/messages)$/.test(path)) continue;
+        let url;
+        try { url = new URL(entry.name, location.href); } catch { continue; }
+        const sessionId = cachedView?.getAttribute('data-hapi-session-view');
+        if (!sessionId || !/\/session\/page$/.test(url.pathname) || url.searchParams.get('sessionId') !== sessionId) continue;
         historyEvidence.networkRequests++;
-        if (/beforeSeq|beforeAt/.test(entry.name)) {
-          historyEvidence.networkOlder++;
-          historyEvidence.requestRevision++;
-          historyEvidence.requestAt = Math.max(historyEvidence.requestAt ?? 0, entry.startTime);
-        }
+        if (url.searchParams.has('beforeSeq') || url.searchParams.has('beforeAt')) historyEvidence.networkOlder++;
+        // Resource timings arrive at completion and do not identify the pane
+        // controller operation. They are diagnostics, never request evidence.
         historyEvidence.lastNetworkAt = performance.now();
         noteSyncActivity(performance.now());
       }
     }).observe({ type: 'resource', buffered: true });
   } catch { /* resource timing is optional */ }
   window.addEventListener('hapi-dsh:seamless-history', event => {
+    if (stopped) return;
     const detail = event?.detail;
-    if (!detail || typeof detail !== 'object') return;
-    const paneId = cachedPane?.getAttribute('data-pane-id');
-    const sessionId = cachedView?.getAttribute('data-hapi-session-view');
-    if (detail.paneId && paneId && detail.paneId !== paneId) return;
-    if (detail.sessionId && sessionId && detail.sessionId !== sessionId) return;
+    if (!detail || typeof detail !== 'object' || detail.detail === 'forward') return;
+    const pane = currentPane();
+    const view = [...pane?.querySelectorAll('[data-hapi-session-view]') ?? []].find(node => visible(node));
+    const paneId = pane?.getAttribute('data-pane-id');
+    const sessionId = view?.getAttribute('data-hapi-session-view');
+    // Missing ids must not act as wildcards, including before the first frame.
+    if (!paneId || !sessionId || detail.paneId !== paneId || detail.sessionId !== sessionId
+      || (expectedViewId && sessionId !== expectedViewId)) return;
+    if (!['requested', 'observed', 'committed', 'failed', 'suspended', 'reset'].includes(detail.type)) return;
+    if (typeof detail.identity !== 'string' || detail.identity.length === 0) {
+      historyViolation('Source page event had no exact controller identity');
+      return;
+    }
+    const scope = JSON.stringify([paneId, sessionId, detail.identity]);
     const at = performance.now();
     noteSyncActivity(at);
-    if (detail.type === 'requested') { historyEvidence.requestRevision++; historyEvidence.requestAt = at; }
-    else if (detail.type === 'observed') historyEvidence.observedRevision++;
-    else if (detail.type === 'committed') { historyEvidence.commitRevision++; historyEvidence.commitAt = at; noteSyncActivity(at); commitAnchor(); }
-    else if (detail.type === 'failed' || detail.type === 'suspended') { historyEvidence.failureRevision++; historyEvidence.failureAt = at; }
+    if (detail.type === 'requested' || detail.type === 'observed') {
+      if (pendingHistory) {
+        pendingHistory.operation.status = 'ambiguous';
+        historyViolation('Source page request overlapped an unresolved request; correlation is ambiguous');
+        return;
+      }
+      if (scope !== historyScope) { historyScope = scope; historyScopeRevision++; }
+      const operation = { id: ++historyEvidence.operationRevision, scopeRevision: historyScopeRevision,
+        origin: detail.type, intentRevision: historyEvidence.intents, intentAt: historyEvidence.intentAt,
+        requestAt: at, commitAt: null, status: 'pending', domAt: null, domPrepend: false,
+        anchorAt: null, anchorKeyHash: null, anchorOffset: null, anchorRetained: null, anchorDriftPx: null };
+      historyEvidence.operations.push(operation);
+      if (historyEvidence.operations.length > 128) historyEvidence.operations.shift();
+      pendingHistory = { scope, operation };
+      historyDOMProbe = null;
+      historyEvidence.requestRevision++;
+      historyEvidence.requestAt = at;
+      if (detail.type === 'observed') historyEvidence.observedRevision++;
+    } else if (detail.type === 'committed') {
+      if (!pendingHistory || pendingHistory.scope !== scope) {
+        historyViolation('Source page commit had no matching request in its pane/session/identity');
+        return;
+      }
+      const operation = pendingHistory.operation;
+      if (operation.status !== 'ambiguous') {
+        operation.status = 'committed';
+        operation.commitAt = at;
+        historyEvidence.commitRevision++;
+        historyEvidence.commitAt = at;
+        measureCommittedAnchor(operation);
+      }
+      pendingHistory = null;
+      historyDOMProbe = null;
+    } else {
+      if (pendingHistory?.scope === scope) {
+        pendingHistory.operation.status = 'failed';
+        pendingHistory.operation.failureAt = at;
+        pendingHistory.operation.failureType = detail.type;
+        pendingHistory.operation.failureDetail = typeof detail.detail === 'string' ? detail.detail.slice(0, 200) : null;
+        pendingHistory = null;
+        historyDOMProbe = null;
+        historyViolation('Source page request ended without a source page commit');
+      }
+      if (detail.type !== 'reset') { historyEvidence.failureRevision++; historyEvidence.failureAt = at; }
+    }
   });
   window.addEventListener('keydown', event => {
     if (!event.isTrusted) return;
@@ -688,13 +961,18 @@ export function installColdOpeningObserver(options = {}) {
         inputEvidence.lastTrustedKeyAt = performance.now();
       }
     }
-    if (!(target instanceof Element) || !target.closest('[data-conversation-scroll]')) return;
+    if (!(target instanceof Element) || target.closest('[data-conversation-scroll]') !== cachedPort) return;
+    extendForReaderAction(performance.now());
+    if (['PageUp', 'Home', 'ArrowUp', 'PageDown', 'End', 'ArrowDown'].includes(event.key))
+      beginReaderScroll('key', ['PageUp', 'Home', 'ArrowUp'].includes(event.key) ? -1 : 1, performance.now());
     if (['PageUp', 'Home', 'ArrowUp'].includes(event.key) && cachedPort
       && cachedPort.scrollTop <= cachedPort.clientHeight) setHistoryIntent(performance.now(), 'key');
     else setReaderIntent(performance.now(), 'key');
   }, { capture: true, passive: true });
   window.addEventListener('wheel', event => {
-    if (!event.isTrusted || !(event.target instanceof Element) || !event.target.closest('[data-conversation-scroll]')) return;
+    if (!event.isTrusted || !(event.target instanceof Element) || event.target.closest('[data-conversation-scroll]') !== cachedPort) return;
+    extendForReaderAction(performance.now());
+    if (event.deltaY !== 0) beginReaderScroll('wheel', Math.sign(event.deltaY), performance.now());
     setReaderIntent(performance.now(), 'wheel');
     if (event.deltaY < 0 && cachedPort && cachedPort.scrollTop <= cachedPort.clientHeight) {
       // The official automation enters paging within one viewport of the
@@ -705,24 +983,56 @@ export function installColdOpeningObserver(options = {}) {
     }
   }, { capture: true, passive: true });
   window.addEventListener('touchstart', event => {
-    if (!event.isTrusted || !(event.target instanceof Element) || !event.target.closest('[data-conversation-scroll]')) return;
+    if (!event.isTrusted || !(event.target instanceof Element) || event.target.closest('[data-conversation-scroll]') !== cachedPort) return;
+    extendForReaderAction(performance.now());
     touchY = event.touches?.[0]?.clientY ?? null;
+    readerTouchY = touchY;
+    beginReaderScroll('touch', 0, performance.now());
     setReaderIntent(performance.now(), 'touch');
   }, { capture: true, passive: true });
   window.addEventListener('touchmove', event => {
-    if (!event.isTrusted || touchY === null || !(event.target instanceof Element) || !event.target.closest('[data-conversation-scroll]')) return;
+    if (!event.isTrusted || touchY === null || !(event.target instanceof Element) || event.target.closest('[data-conversation-scroll]') !== cachedPort) return;
     const touch = event.touches?.[0];
     if (!touch) return;
     const at = performance.now();
+    extendForReaderAction(at);
+    if (readerTouchY !== null && touch.clientY !== readerTouchY)
+      beginReaderScroll('touch', Math.sign(readerTouchY - touch.clientY), at);
+    readerTouchY = touch.clientY;
     setReaderIntent(at, 'touch');
     if (touch.clientY > touchY + 8 && cachedPort
       && cachedPort.scrollTop <= Math.max(8, cachedPort.clientHeight)) setHistoryIntent(at, 'touch');
   }, { capture: true, passive: true });
-  const endTouch = () => { touchY = null; };
+  const endTouch = () => { touchY = null; readerTouchY = null; };
   window.addEventListener('touchend', endTouch, { capture: true, passive: true });
   window.addEventListener('touchcancel', endTouch, { capture: true, passive: true });
+  window.addEventListener('scroll', event => {
+    if (stopped || !event.isTrusted || event.target !== cachedPort) return;
+    const at = performance.now(), top = cachedPort.scrollTop;
+    const direction = Math.sign(top - (observedScroll?.port === cachedPort ? observedScroll.top : top));
+    observedScroll = { port: cachedPort, top };
+    recordReaderMotion('scroll', at, direction);
+    if (readerScroll?.port !== cachedPort) return;
+    readerScroll.top = top;
+    if (!direction) return;
+    // Once native scrolling starts, its scrollend owns the end of momentum.
+    // A delayed programmatic scroll cannot start a gesture that never moved.
+    if (direction !== readerScroll.direction || (!readerScroll.moving && at - readerScroll.gestureAt > 250)) {
+      readerScroll = null;
+      return;
+    }
+    readerScroll.moving = true;
+    readerScrollAt = at;
+    readerScrollEnd = { port: cachedPort, top };
+    if (direction < 0 && cachedPort.scrollTop <= cachedPort.clientHeight)
+      setHistoryIntent(at, readerScroll.kind);
+  }, { capture: true, passive: true });
+  window.addEventListener('scrollend', event => {
+    if (event.target === cachedPort) recordReaderMotion('scrollend', performance.now());
+    if (event.target === readerScroll?.port) readerScroll = null;
+  }, { capture: true, passive: true });
   window.addEventListener('pointerdown', event => {
-    if (!event.isTrusted || !(event.target instanceof Element) || !event.target.closest('[data-conversation-scroll]')) return;
+    if (!event.isTrusted || !(event.target instanceof Element) || event.target.closest('[data-conversation-scroll]') !== cachedPort) return;
     setReaderIntent(performance.now(), 'pointer');
   }, { capture: true, passive: true });
   window.addEventListener('input', event => {
@@ -738,13 +1048,15 @@ export function installColdOpeningObserver(options = {}) {
   window.addEventListener('click', event => {
     if (!event.isTrusted || !(event.target instanceof Element)) return;
     const button = event.target.closest('button');
-    if (!button) return;
+    if (!button || !cachedView?.contains(button)) return;
     const label = button.getAttribute('aria-label') ?? '';
     const rail = button.closest('nav[aria-label]');
     if ((rail && turnLabel(label)) || /to bottom|回到(?:底部|最新)/i.test(label)) {
       navigationEvidence.intents++;
       navigationEvidence.intentAt = performance.now();
       navigationEvidence.clickedKind = clickKind(label);
+      activeNavigationText = navigationEvidence.clickedKind === 'to-bottom' ? returnLatestText : expectedNavigationText;
+      extendForReaderAction(navigationEvidence.intentAt);
       navigationEvidence.clickedIndex = button.dataset.index ? Number(button.dataset.index) : null;
       navigationEvidence.targetVisible = null;
       navigationEvidence.beforeBodyRevision = bodyRevisionCounter;
@@ -758,14 +1070,36 @@ export function installColdOpeningObserver(options = {}) {
 
   const probe = window.__hapiColdOpening = {
     first, states, titles, tasks, current: null, startedAt: observation.startedAt, stoppedAt: null,
-    verifiedFreshness: Boolean(expectedText), verifiedTitle: Boolean(expectedTitle),
-    verifiedView: Boolean(expectedViewId), verifiedTarget: Boolean(expectedTitle && expectedText && expectedViewId),
+    verifiedFreshness: hasSourceTarget, verifiedTitle: Boolean(expectedTitle),
+    sourceTargetKind: expectedSourceTarget?.kind ?? null,
+    verifiedView: Boolean(expectedViewId), verifiedTarget: Boolean(expectedTitle && hasSourceTarget && expectedViewId),
     expectedViewSupplied: Boolean(expectedViewId), navigationAction,
     expectedNavigationTextSupplied: Boolean(expectedNavigationText),
     stableMs, requiresHistory, requiresNavigation: navigationRequirement, fullCapabilities,
     requireEditorInput, requireLiveUpdate, requireHistoryAction, requireNavigationAction,
     observation, history: historyEvidence, navigation: navigationEvidence, reader, input: inputEvidence,
     liveUpdateAt: null,
+    setNavigationTarget(text) {
+      // Production obtains the independent source target after opening has
+      // been measured. Pin it once, before any navigation action; never erase
+      // an earlier target or change what an in-flight action must prove.
+      if (stopped || first.full === null || expectedNavigationText !== undefined || navigationEvidence.intents > 0
+        || typeof text !== 'string' || !text.trim()) return false;
+      expectedNavigationText = sourceTarget(text);
+      probe.expectedNavigationTextSupplied = true;
+      return true;
+    },
+    setReturnLatestTarget(text) {
+      if (stopped || first.full === null || navigationEvidence.returnLatestIntents > 0
+        || (navigationEvidence.intentAt !== null && (navigationEvidence.commitAt === null
+          || navigationEvidence.commitAt < navigationEvidence.intentAt)) || !sourceTarget(text)) return false;
+      returnLatestText = sourceTarget(text);
+      return true;
+    },
+    sourceTargetVisible(target) {
+      const clip = cachedPort && visible(cachedPort) ? cachedPort.getBoundingClientRect() : undefined;
+      return targetEvidence(target, clip).visible;
+    },
     checkpoint(name) {
       sample(name ?? 'checkpoint');
       const current = probe.current;
@@ -777,6 +1111,7 @@ export function installColdOpeningObserver(options = {}) {
       sample('stop');
       stopped = true;
       contentObserver.disconnect(); titleObserver.disconnect();
+      for (const restore of restoreDOMMethods) restore();
       cancelAnimationFrame(frame);
       probe.stoppedAt = performance.now();
       probe.observation.stoppedEarly = !probe.observation.complete;
@@ -810,7 +1145,7 @@ export function coldOpeningIssues(result) {
   if (full && !result.expectedViewSupplied) add('Expected source view identity was not supplied; exact target identity is unverified');
   const observed = result.observation;
   if (observed && !observed.complete) add('Observation window did not complete');
-  if (observed?.deadlineMissed) add('Opening or observation exceeded the 60 s diagnostic deadline');
+  if (observed?.deadlineMissed) add(`Opening or observation exceeded the ${((observed.deadlineAt - observed.startedAt) / 1000).toFixed(1)} s diagnostic deadline`);
   if (observed?.stoppedEarly) add('Observation stopped before the required post-sync window');
   let knownTitle = false, expectedTitleSeen = false;
   for (const row of result.titles ?? []) {
@@ -837,7 +1172,11 @@ export function coldOpeningIssues(result) {
         else if (row.viewRevision !== viewId) add(`Visible session view identity changed at ${row.at.toFixed(1)} ms`);
       }
     }
-    if (row.viewMatches === false) add(`Visible session view did not match the exact target at ${row.at.toFixed(1)} ms`);
+    // Navigation starts before a pane or its session view exists. An empty
+    // opening shell is not a presented conversation; once body/editor content
+    // appears, exact identity is required on that frame and every later one.
+    if (row.viewMatches === false && (presentedSeen || row.editorVisible))
+      add(`Visible session view did not match the exact target at ${row.at.toFixed(1)} ms`);
     if (row.viewIdentityChanged) add(`Visible session view was replaced at ${row.at.toFixed(1)} ms`);
     if (row.editorIdentityChanged) add(`Editor identity changed at ${row.at.toFixed(1)} ms`);
     if (row.portIdentityChanged) add(`Scroll root identity changed at ${row.at.toFixed(1)} ms`);
@@ -877,25 +1216,29 @@ export function coldOpeningIssues(result) {
     add('Trusted history paging did not commit an older page');
   if (full && result.requireHistoryAction) {
     const h = result.history ?? {};
-    const intentAt = h.lastIntentAt ?? h.intentAt ?? null;
+    const operations = h.operations ?? [];
+    for (const violation of h.violations ?? []) add(violation);
     if ((h.intents ?? 0) === 0) add('History action evidence is required but no trusted intent was observed');
-    else if ((h.requestRevision ?? 0) === 0 || h.requestAt === null)
+    else if (!operations.some(operation => operation.intentAt !== null))
       add('Trusted history paging did not issue a source page request');
-    else if (intentAt !== null && h.requestAt < intentAt - 100)
-      add('Source page request predates the trusted history gesture');
-    else if ((h.commitRevision ?? 0) === 0 || h.commitAt === null)
-      add('Source page request did not commit a source page');
-    else if (h.commitAt < h.requestAt - 50)
-      add('Source page commit predates its request');
-    else {
-      if (h.anchorRetained === false || h.anchorRetained === null)
+    for (const operation of operations) {
+      if (operation.intentAt === null) continue;
+      if (operation.requestAt < operation.intentAt - 100)
+        add('Source page request predates the trusted history gesture');
+      if (operation.status !== 'committed' || operation.commitAt === null) {
+        add('Source page request did not commit a source page');
+        continue;
+      }
+      if (operation.commitAt < operation.requestAt)
+        add('Source page commit predates its request');
+      if (!operation.domPrepend) add('Source page commit had no independently observed DOM prepend');
+      if (operation.anchorRetained !== true || operation.anchorAt === null)
         add('Older-page commit did not measure a retained reading anchor');
-      if (h.anchorDriftPx !== null && Math.abs(h.anchorDriftPx) > 2)
-        add(`Older-page commit drifted the reading anchor by ${h.anchorDriftPx.toFixed(1)} px`);
-      if (h.anchorAt === null)
-        add('Older-page reading anchor was not measured');
+      if (operation.anchorDriftPx !== null && Math.abs(operation.anchorDriftPx) > 2)
+        add(`Older-page commit drifted the reading anchor by ${operation.anchorDriftPx.toFixed(1)} px`);
     }
   }
+
   const navigationRequired = (result.states ?? []).some(row => row.navigationRequired);
   if (full && navigationRequired && (result.navigation?.intents ?? 0) === 0)
     add('No trusted reading-navigation intent was observed; navigation is unproven');
@@ -905,12 +1248,12 @@ export function coldOpeningIssues(result) {
     if ((n.intents ?? 0) === 0) add('Navigation action evidence is required but no reading-navigation intent was observed');
     if (action === 'return-latest') {
       if ((n.returnLatestIntents ?? 0) === 0) add('Return-latest action was not attempted');
-      if ((n.commitRevision ?? 0) === 0) add('Return-latest action did not commit');
-      if (n.targetVisible !== true) add('Return-latest action did not expose the latest source marker');
+      if ((n.returnLatestCommits ?? n.commitRevision ?? 0) === 0) add('Return-latest action did not commit');
+      if ((n.returnLatestCommitted ?? n.targetVisible) !== true) add('Return-latest action did not expose the latest source marker');
     } else {
       if ((n.targetIntents ?? 0) === 0) add('Unvisited navigation target was not attempted');
-      if ((n.commitRevision ?? 0) === 0) add('Unvisited navigation target did not commit');
-      if (n.targetVisible !== true) add('Unvisited navigation target did not expose the exact target');
+      if ((n.targetCommits ?? n.commitRevision ?? 0) === 0) add('Unvisited navigation target did not commit');
+      if ((n.targetCommitted ?? n.targetVisible) !== true) add('Unvisited navigation target did not expose the exact target');
     }
   }
   if (full && navigationRequired && result.expectedNavigationTextSupplied === false)

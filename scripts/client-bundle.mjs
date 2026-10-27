@@ -59,3 +59,31 @@ export async function buildClientBundle(buildIdentity, { publish = true, minifyI
     await rename(pending, 'dist/client.js');
     return result;
 }
+
+/**
+ * Build the pre-UI source-session composition as a separate client graph row.
+ * The package manifest lives beside the bundle so the official Host module
+ * registry can discover `dsh.client` through the same mechanism as every
+ * pinned package. No upstream or node_modules byte is changed.
+ */
+export async function buildSourceProvider(buildIdentity) {
+    const options = {
+        bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
+        write: false, legalComments: 'inline', minifyWhitespace: true, minifySyntax: true, minifyIdentifiers: true,
+        external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller/client'],
+        define: { __HAPI_DSH_BUILD_ID__: buildIdentity },
+    };
+    const result = await build({ ...options, entryPoints: ['src/client/source-sessions-provider.ts'] });
+    const body = result.outputFiles[0].text;
+    await mkdir('dist/session-provider', { recursive: true });
+    const pending = `dist/session-provider/client.js.${process.pid}.pending`;
+    await writeFile(pending, `window.__ModuleLoader__.load({id:"hapi-dsh-session-provider",factory:function(require){var module={exports:{}};var exports=module.exports;\n${body}\nreturn module.exports;}});\n`);
+    await rename(pending, 'dist/session-provider/client.js');
+    await writeFile('dist/session-provider/package.json', JSON.stringify({
+        name: 'hapi-dsh-session-provider', version: JSON.parse(await readFile('package.json', 'utf8')).version,
+        type: 'module', main: './index.js', license: 'AGPL-3.0-only',
+        exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
+        dsh: { client: { platform: 'web', external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller'] } },
+    }, null, 2) + '\n');
+    return result;
+}

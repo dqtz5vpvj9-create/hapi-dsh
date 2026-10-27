@@ -81,7 +81,10 @@ interface NativeBase {
   key: string
   rowId: string
   localId: string | null
+  seq?: number | null
   createdAt: number
+  /** Indexed source cursor time; native item timestamps can differ from turn order. */
+  sourceAt?: number
   execution: NativeExecution | undefined
   fingerprint: string
 }
@@ -119,8 +122,10 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
   const base: NativeBase = {
     key: stable,
     rowId: row.id,
+    seq: row.seq ?? null,
     localId: row.localId,
     createdAt: row.createdAt,
+    sourceAt: row.invokedAt ?? row.createdAt,
     execution,
     fingerprint: '',
   }
@@ -159,7 +164,7 @@ export function parseNativeRow(row: HapiMessage, binding: NativeBinding): Native
   // Transport row ids / seqs differ between SSE and native history; neither
   // participates in semantic identity or deduplication.
   result.fingerprint = createHash('sha256').update(canonicalJson({
-    ...result, rowId: undefined, createdAt: undefined, localId: undefined, fingerprint: undefined,
+    ...result, rowId: undefined, seq: undefined, createdAt: undefined, sourceAt: undefined, localId: undefined, fingerprint: undefined,
     // Lifecycle changes do not change completed item content.
     execution: execution ? { ...execution, turn: undefined } : undefined,
   })).digest('hex')

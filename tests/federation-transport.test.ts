@@ -17,6 +17,8 @@ import { RunnerClient } from '../src/runner/client.ts';
 import { createRunnerConfig } from '../src/runner/config.ts';
 import { bootstrapPayload } from '../src/runner/index.ts';
 import { parseFrame, validateUpstreamPath } from '../src/runner/protocol.ts';
+import { runtimeIdentity } from '../src/runner/identity.ts';
+import { DSH_VERSION } from '../src/cli/config.ts';
 
 async function until(condition: () => boolean, message: string): Promise<void> {
     const deadline = Date.now() + 5000;
@@ -144,7 +146,7 @@ async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: n
         await rm(directory, { recursive: true, force: true });
     });
     const runner = await connectRunner();
-    return { base, id, runner, hub, connectRunner, credentialsFile, upstreamHeaders, get mutationCount() { return mutationCount; },
+    return { base, id, origin, runner, hub, connectRunner, credentialsFile, upstreamHeaders, get mutationCount() { return mutationCount; },
         get compressedChunks() { return compressedChunks; }, get compressedStreamClosed() { return compressedStreamClosed; },
         get upstreamSocketCount() { return upstreamSockets.clients.size; },
         headers: { cookie: 'fixture-main-dsh=authorized' } };
@@ -321,4 +323,30 @@ test('wire parser rejects non-local paths, unknown messages, and invalid headers
     for (const path of ['https://outside.example.test', '//outside.example.test', '/api\\other', '/api\r\nx: y']) assert.throws(() => validateUpstreamPath(path));
     assert.throws(() => parseFrame(JSON.stringify({ type: 'execute-shell', id: 'fixture' })));
     assert.throws(() => parseFrame(JSON.stringify({ type: 'http-open', id: 'fixture', method: 'GET', path: '/api', headers: [['x-value', 'a\r\nb']] })));
+});
+
+
+test('a Runner whose runtime identity differs is rejected before any business frame', async (t) => {
+    const fixture = await transportFixture(t);
+    const secondId = 'fixture-machine-b';
+    const secondToken = await addPairing(fixture.credentialsFile, secondId, 'Second workstation');
+    const config = createRunnerConfig(fixture.base, { id: secondId, name: 'Second workstation', token: secondToken });
+    const identity = { ...runtimeIdentity({ dshVersion: DSH_VERSION }), upstreamCommit: 'f'.repeat(40) };
+    const runner = new RunnerClient({ config, origin: fixture.origin,
+        authenticatedUrl: (local) => `${local}/?token=fixture-launch`, identity });
+    const forwardedBefore = fixture.upstreamHeaders.length;
+    try {
+        runner.start();
+        await delay(500);
+        // The Hub must not admit a mismatched identity...
+        assert.equal(fixture.hub.listMachines().some((machine) => machine.id === secondId && machine.online), false,
+            'a mismatched Runner identity must never appear online');
+        // ...and no business frame may reach the fake DSH application.
+        const denied = await fetch(`${fixture.base}/hapi-dsh/machine/${secondId}/api/read`, { headers: fixture.headers });
+        assert.notEqual(denied.status, 200);
+        await denied.body?.cancel();
+        assert.equal(fixture.upstreamHeaders.length, forwardedBefore, 'mismatched identity must forward zero frames');
+    } finally {
+        await runner.stop();
+    }
 });

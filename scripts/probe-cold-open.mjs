@@ -5,6 +5,9 @@ import { chromium } from 'playwright';
 import { availableParallelism, loadavg } from 'node:os';
 import { probeTouch } from './probe-touch.mjs';
 import { installColdOpeningObserver, coldOpeningIssues } from './cold-opening-observer.mjs';
+import { allowedDisplayRpc as auditDisplayRpc, parseCdpRpcBody } from './probe-display-rpc.mjs';
+import { exerciseOpeningUnvisitedTarget, textInConversationViewport } from './probe-navigation.mjs';
+import { selectSourceNavigationTarget, sourceNavigationText, sourceOpeningTarget } from './probe-navigation-target.mjs';
 const numberEnv = (name, fallback, minimum) => {
   if (process.env[name] === undefined || process.env[name] === '') return fallback;
   const value = Number(process.env[name]);
@@ -17,41 +20,36 @@ const requiredEnv = name => {
   return value;
 };
 const expectedTitle = requiredEnv('HAPI_DSH_EXPECTED_TITLE');
-const expectedText = requiredEnv('HAPI_DSH_EXPECTED_TEXT');
+const sourceOpeningProof = process.env.HAPI_DSH_EXPECTED_SOURCE_TARGET
+  ? JSON.parse(process.env.HAPI_DSH_EXPECTED_SOURCE_TARGET) : undefined;
+const expectedSourceTarget = sourceOpeningProof?.marker ?? sourceOpeningProof;
+const expectedText = expectedSourceTarget?.kind === 'tool-result' ? undefined : requiredEnv('HAPI_DSH_EXPECTED_TEXT');
 const expectedView = requiredEnv('HAPI_DSH_EXPECTED_VIEW');
 const expectedHub = requiredEnv('HAPI_DSH_EXPECTED_HUB');
 const expectedSource = requiredEnv('HAPI_DSH_EXPECTED_SOURCE');
+const probeWidth = numberEnv('HAPI_DSH_PROBE_WIDTH', 390, 1);
+const mobile = probeWidth < 900;
+const viewport = { width: probeWidth, height: mobile ? 844 : 900 };
 // Product acceptance is always full and never stops five seconds after first
 // success. The mobile action is explicitly return-latest; old-content proof is
 // the trusted touch history action.
 const openingOptions = {
-  expectedTitle, expectedText, staleText: process.env.HAPI_DSH_STALE_TEXT,
+  expectedTitle, expectedText, expectedSourceTarget, staleText: process.env.HAPI_DSH_STALE_TEXT,
   expectedViewId: expectedView,
-  expectedNavigationText: expectedText, navigationAction: 'return-latest',
+  ...(mobile ? { expectedNavigationTarget: expectedSourceTarget ?? { kind: 'text', text: expectedText } } : {}),
+  navigationAction: mobile ? 'return-latest' : 'unvisited-target',
   paneSelector: process.env.HAPI_DSH_PROBE_PANE_SELECTOR,
   requiresHistory: true, requiresNavigation: 'auto', fullCapabilities: true, requireNavigationAction: true,
   observeAfterReadyMs: numberEnv('HAPI_DSH_OBSERVE_MS', 30000, 30000),
   failureDeadlineMs: numberEnv('HAPI_DSH_FAILURE_DEADLINE_MS', 60000, 60000),
   checkpointsMs: [6000, 20000],
 };
-const displayRpcRequest = body => body?.payload?.args?.request ?? body?.payload?.request ?? body?.request ?? body;
-const allowedDisplayRpc = (path, body) => {
-  const method = path.replace(/^\/api\/hapi\//, '');
-  const request = displayRpcRequest(body);
-  if (!request || typeof request !== 'object' || request.hubId !== expectedHub
-    || request.sourceSessionId !== expectedSource) return false;
-  if (method === 'sourceSessionResolve')
-    return Object.keys(request).every(key => key === 'hubId' || key === 'sourceSessionId');
-  if (method === 'sourceDisplayLease')
-    return ['acquire', 'renew', 'release'].includes(request.action)
-      && Object.keys(request).every(key => ['hubId', 'sourceSessionId', 'leaseId', 'action', 'ttlMs'].includes(key));
-  return false;
-};
+const allowedDisplayRpc = (path, body) => auditDisplayRpc(path, body, expectedHub, expectedSource);
 const root = process.env.HAPI_DSH_TEST_ROOT ?? '/mnt/cache/data-cache';
 const runRoot = `${root}/hapi-cold-open-${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
 await mkdir(runRoot, { recursive: true });
 const browser = await chromium.launch({ headless: true });
-const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: 'zh-CN' });
+const context = await browser.newContext({ viewport, isMobile: mobile, hasTouch: mobile, locale: 'zh-CN' });
 const page = await context.newPage();
 const cdp = await context.newCDPSession(page);
 // A real page can automatically create an empty Session or persist a layout.
@@ -120,8 +118,7 @@ cdp.on('Fetch.requestPaused', async ({ requestId, request }) => {
   try {
     const displayPath = rpcPath.replace(/^\/api/, '');
     if (displayPath === '/hapi/sourceSessionResolve' || displayPath === '/hapi/sourceDisplayLease') {
-      let body;
-      try { body = JSON.parse(request.postData() ?? '{}'); } catch { body = undefined; }
+      const body = parseCdpRpcBody(request);
       if (allowedDisplayRpc(`/api${displayPath}`, body)) {
         await cdp.send('Fetch.continueRequest', { requestId });
       } else {
@@ -151,7 +148,8 @@ if (Object.values(networkConditions).some(Boolean)) await cdp.send('Network.emul
 });
 if (process.env.HAPI_DSH_PROFILE) await cdp.send('Profiler.enable');
 if (process.env.HAPI_DSH_CPU_RATE) await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.HAPI_DSH_CPU_RATE) });
-const report = { environment: 'Chromium mobile emulation; read-only source admission plus payload-audited display-local resolve/lease; native commands blocked; CDP HTTP network shaping (not a physical remote network or WebSocket latency guarantee)',
+const report = { environment: `Chromium ${mobile ? 'mobile emulation' : 'desktop'}; read-only source admission plus payload-audited display-local resolve/lease; native commands blocked; CDP HTTP network shaping (not a physical remote network or WebSocket latency guarantee)`,
+  viewport, historyGesture: mobile ? 'touch' : 'wheel', desktopMinimapExercised: false,
   networkConditions, cpuRate: Number(process.env.HAPI_DSH_CPU_RATE ?? 1), allowedStreams: [...streamReads], runs: [] };
 const errors = [];
 let runStarted = performance.now(), runIndex = -1;
@@ -213,8 +211,13 @@ page.on('websocket', socket => { transport.webSockets++; socket.on('framereceive
   }
 }); socket.on('socketerror', () => transport.errors++); });
 page.on('pageerror', e => errors.push(e.name));
+page.on('console', message => {
+  // The official feed catches assembler exceptions instead of raising a
+  // pageerror. Retain only the error category, never its source text or stack.
+  if (message.text().includes('event feed subscriber failed')) errors.push('SessionEventFeedSubscriberError');
+});
 
-const activePane = () => page.locator(process.env.HAPI_DSH_PROBE_PANE_SELECTOR ?? '.hapi-pane-focused:visible, .hapi-pane:visible').first();
+const activePane = () => page.locator(process.env.HAPI_DSH_PROBE_PANE_SELECTOR ?? '.hapi-pane-focused:visible, .hapi-pane:visible');
 async function touchSwipe(port, direction) {
   const box = await port.boundingBox();
   if (!box) throw new Error('No conversation scrollport');
@@ -254,6 +257,7 @@ async function safeDraftAction(pane, run) {
     focused: window.__hapiColdOpening.current?.editorFocused ?? false }));
   evidence.markerMatched = after.text === marker;
   evidence.editorStable = after.connected && after.focused && state.revision === revision && state.focused;
+  evidence.accepted = evidence.markerMatched && evidence.editorStable;
   evidence.retained = evidence.markerMatched && evidence.editorStable;
   if (!evidence.markerMatched || !evidence.editorStable) {
     evidence.failure = evidence.markerMatched ? 'Editor identity/focus changed while typing'
@@ -278,9 +282,10 @@ async function safeDraftAction(pane, run) {
   return evidence;
 }
 
-async function runOpeningActions(run) {
-  const evidence = { draft: null, history: null, navigation: null, errors: [] };
+async function runOpeningActions(run, readSource) {
+  const evidence = { draft: null, history: null, navigation: null, returnLatest: null, errors: [] };
   const pane = activePane();
+  if (await pane.count() !== 1) { evidence.errors.push('No unique exact pane for opening actions'); return evidence; }
   if (!(await pane.count())) { evidence.errors.push('No visible pane for reader actions'); return evidence; }
   try { evidence.draft = await safeDraftAction(pane, run); }
   catch (error) { evidence.draft = { failure: `Draft action: ${error.name}` }; }
@@ -291,59 +296,115 @@ async function runOpeningActions(run) {
       const baseline = await page.evaluate(() => ({ at: performance.now(),
         intents: window.__hapiColdOpening.history?.intents ?? 0,
         requests: window.__hapiColdOpening.history?.requestRevision ?? 0,
-        commits: window.__hapiColdOpening.history?.commitRevision ?? 0 }));
-      const box = await port.boundingBox();
-      for (let gesture = 0; gesture < 48; gesture++) {
+        commits: window.__hapiColdOpening.history?.commitRevision ?? 0,
+        operationId: window.__hapiColdOpening.history?.operationRevision ?? 0 }));
+      if (mobile) {
+        for (let gesture = 0; gesture < 48; gesture++) {
+          await touchSwipe(port, 'older');
+          if (await port.evaluate(element => element.scrollTop) <= 1) break;
+          await page.waitForTimeout(80);
+        }
         await touchSwipe(port, 'older');
-        if (await port.evaluate(element => element.scrollTop) <= 1) break;
-        await page.waitForTimeout(80);
+      } else {
+        const box = await port.boundingBox();
+        if (!box) throw new Error('No conversation scrollport');
+        await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.4);
+        for (let gesture = 0; gesture < 60; gesture++) {
+          await page.mouse.wheel(0, -600);
+          if (await port.evaluate(element => element.scrollTop) <= 1) break;
+          await page.waitForTimeout(16);
+        }
+        await page.mouse.wheel(0, -140);
       }
-      await touchSwipe(port, 'older');
       try {
         await page.waitForFunction(base => {
           const h = window.__hapiColdOpening.history;
-          return (h?.intents ?? 0) > base.intents && (h?.requestRevision ?? 0) > base.requests
-            && (h?.commitRevision ?? 0) > base.commits;
+          const operations = h.operations.filter(operation => operation.id > base.operationId
+            && operation.intentAt !== null && operation.requestAt >= base.at);
+          return operations.some(operation => operation.status === 'committed')
+            && operations.every(operation => operation.status !== 'pending');
         }, baseline, { timeout: 15000 });
       } catch { evidence.errors.push('History action: no source request plus source commit after the baseline'); }
       evidence.history = await page.evaluate(base => {
         const h = window.__hapiColdOpening.history;
+        const operations = h.operations.filter(operation => operation.id > base.operationId
+          && operation.intentAt !== null && operation.requestAt >= base.at);
+        const drifts = operations.flatMap(operation => operation.anchorDriftPx === null ? [] : [operation.anchorDriftPx]);
         return { intents: h?.intents ?? 0, requests: h?.requestRevision ?? 0, commits: h?.commitRevision ?? 0,
-          requestAt: h?.requestAt ?? null, commitAt: h?.commitAt ?? null,
-          anchorRetained: h?.anchorRetained ?? null, anchorDriftPx: h?.anchorDriftPx ?? null };
+          operationIds: operations.map(operation => operation.id),
+          requested: operations.length > 0,
+          committed: operations.length > 0 && operations.every(operation => operation.status === 'committed'),
+          commitAfterRequest: operations.length > 0 && operations.every(operation => operation.commitAt !== null
+            && operation.commitAt >= operation.requestAt),
+          anchorRetained: operations.length > 0 && operations.every(operation => operation.domPrepend && operation.anchorRetained === true),
+          anchorDriftPx: drifts.length ? drifts.reduce((worst, drift) => Math.abs(drift) > Math.abs(worst) ? drift : worst) : null };
       }, baseline);
-      evidence.history.requested = evidence.history.requests > baseline.requests
-        && evidence.history.requestAt >= baseline.at - 100;
-      evidence.history.committed = evidence.history.commits > baseline.commits;
-      evidence.history.commitAfterRequest = evidence.history.requested && evidence.history.committed
-        && evidence.history.commitAt >= evidence.history.requestAt - 50;
       if (!evidence.history.requested) evidence.errors.push('History action: no source page request');
       if (!evidence.history.committed) evidence.errors.push('History action: no source page commit');
       if (!evidence.history.commitAfterRequest) evidence.errors.push('History action: commit did not follow request');
     } else evidence.errors.push('No conversation scrollport for the history action');
   } catch (error) { evidence.errors.push(`History action: ${error.name}`); }
+  if (!mobile) {
+    try {
+      const firstFullAt = await page.evaluate(() => window.__hapiColdOpening.first.full);
+      if (firstFullAt === null) throw new Error('Navigation baseline cannot precede the first full opening');
+      const startedAt = await page.evaluate(() => performance.now());
+      const outline = await readSource('sourceHistoryOutline');
+      const target = selectSourceNavigationTarget(outline);
+      const contextPage = await readSource('sourceHistoryWindowPage', { messageId: target.messageId, radius: 1 });
+      const text = sourceNavigationText(contextPage.records, target);
+      if (!await page.evaluate(text => window.__hapiColdOpening.setNavigationTarget(text), text))
+        throw new Error('Navigation target could not be pinned before the action');
+      evidence.navigation = { ...await exerciseOpeningUnvisitedTarget(page, pane, text, target.turn),
+        provenance: { source: 'exact resolved view outline plus exact source user message',
+          firstFullAt, baselineReadStartedAt: startedAt, targetTurn: target.turn,
+          contextRecords: contextPage.records.length, textCharacters: text.length,
+          cacheEffect: 'one radius-1 target context read after measured opening, before navigation' } };
+      if (evidence.navigation.failure) evidence.errors.push(`Navigation action: ${evidence.navigation.failure}`);
+    } catch (error) { evidence.errors.push(`Navigation target verification: ${error.name}`); }
+  }
   try {
+    let returnTarget = expectedSourceTarget ?? expectedText;
+    let provenance;
+    if (!mobile) {
+      const outline = await readSource('sourceHistoryOutline');
+      if (outline.complete === false || !outline.head?.messageId) throw new Error('No complete current source head');
+      const contextPage = await readSource('sourceHistoryWindowPage', { messageId: outline.head.messageId, radius: 99 });
+      const target = sourceOpeningTarget(contextPage.records, outline.head);
+      returnTarget = target.marker;
+      provenance = { source: 'frozen source text or completed tool at or before the exact head',
+        contextRecords: contextPage.records.length, markerKind: target.marker.kind,
+        sourceHead: target.sourceHead, visibleItem: { messageId: target.messageId, at: target.at, seq: target.seq },
+        targetAtHead: target.targetAtHead, targetEventType: target.eventType,
+        cacheEffect: 'one radius-99 head context read after measured opening, before return-latest' };
+      if (!await page.evaluate(target => window.__hapiColdOpening.setReturnLatestTarget(target), returnTarget))
+        throw new Error('Return-latest target could not be pinned before the action');
+    }
     const labels = await pane.locator('button[aria-label]').evaluateAll(nodes => nodes.map((node, index) => ({
       index, label: node.getAttribute('aria-label') ?? '', visible: Boolean(node.getClientRects().length) })));
     const toBottom = labels.find(row => row.visible && /to bottom|回到(?:底部|最新)/i.test(row.label));
     if (!toBottom) evidence.errors.push('Navigation action: no visible return-latest control');
-    else if (await pane.getByText(expectedText, { exact: true }).isVisible().catch(() => false))
+    else if (await page.evaluate(target => window.__hapiColdOpening.sourceTargetVisible(target), returnTarget))
       evidence.errors.push('Navigation action: latest marker already visible; return-latest not exercised');
     else {
       const baseline = await page.evaluate(() => window.__hapiColdOpening.navigation?.commitRevision ?? 0);
-      await pane.locator('button[aria-label]').nth(toBottom.index).click();
+      await pane.getByRole('button', { name: toBottom.label, exact: true }).click();
       try {
         await page.waitForFunction(({ base, text }) => {
           const n = window.__hapiColdOpening.navigation;
           return (n?.commitRevision ?? 0) > base && n?.targetVisible === true;
-        }, { base: baseline, text: expectedText }, { timeout: 12000 });
+        }, { base: baseline }, { timeout: 12000 });
       } catch { evidence.errors.push('Navigation action: return-latest did not commit'); }
-      evidence.navigation = await page.evaluate(() => ({
+      const returnEvidence = await page.evaluate(() => ({
         intents: window.__hapiColdOpening.navigation?.intents ?? 0,
         returnLatestIntents: window.__hapiColdOpening.navigation?.returnLatestIntents ?? 0,
         commits: window.__hapiColdOpening.navigation?.commitRevision ?? 0,
         kind: window.__hapiColdOpening.navigation?.clickedKind ?? null,
         targetVisible: window.__hapiColdOpening.navigation?.targetVisible ?? null }));
+      evidence.returnLatest = { ...returnEvidence, ...(provenance ? { provenance } : {}) };
+      if (mobile) evidence.navigation = returnEvidence;
+      if (!await page.evaluate(target => window.__hapiColdOpening.sourceTargetVisible(target), returnTarget))
+        evidence.errors.push('Navigation action: latest marker did not intersect the conversation viewport');
     }
   } catch (error) { evidence.errors.push(`Navigation action: ${error.name}`); }
   return evidence;
@@ -365,6 +426,20 @@ async function resolveDisplayView(origin, cookie) {
   return value.sessionId;
 }
 
+async function readExactSource(origin, cookie, sessionId, method, details = {}) {
+  if (!['sourceHistoryOutline', 'sourceHistoryWindowPage'].includes(method))
+    throw new Error('Unsupported read-only navigation baseline method');
+  const response = await page.request.post(`${origin}/api/hapi/${method}`, {
+    data: { type: 'client-request', rpcId: `probe-navigation-${randomUUID()}`, method: `hapi/${method}`,
+      payload: { args: { request: { ...details, sessionId } } } },
+    ...(cookie ? { headers: { cookie } } : {}),
+  });
+  if (!response.ok()) throw new Error('Source navigation baseline HTTP failed');
+  const wire = await response.json();
+  if (wire?.result?.ok !== true) throw new Error('Source navigation baseline RPC failed');
+  return wire.result.value;
+}
+
 try {
   const launch = new URL((await readFile(process.env.HAPI_DSH_LAUNCH_FILE ?? '/home/chris/.config/hapi-dsh/launch-url', 'utf8')).trim());
   const auth = await page.request.get(launch.href, { maxRedirects: 0 });
@@ -377,9 +452,14 @@ try {
   // The resolver is the real display-local target authority. A changed display
   // view is re-selected here, not accepted by title or older layout identity.
   openingOptions.expectedViewId = resolvedView;
-  report.target = { resolved: true, viewReselected: resolvedView !== expectedView };
+  report.target = { resolved: true, viewReselected: resolvedView !== expectedView,
+    ...(sourceOpeningProof?.marker ? { watermark: { kind: sourceOpeningProof.marker.kind,
+      sourceHead: sourceOpeningProof.sourceHead,
+      visibleItem: { messageId: sourceOpeningProof.messageId, at: sourceOpeningProof.at, seq: sourceOpeningProof.seq },
+      targetAtHead: sourceOpeningProof.targetAtHead, eventType: sourceOpeningProof.eventType } } : {}) };
   await page.addInitScript(installColdOpeningObserver, openingOptions);
   for (let i = 0; i < Number(process.env.HAPI_DSH_PROBE_RUNS ?? 2); i++) {
+    const errorsAtStart = errors.length;
     const network = [];
     const pending = new Map();
     const started = performance.now();
@@ -405,23 +485,26 @@ try {
         return probe?.verifiedFreshness ? probe.current?.ready && probe.current.stableForMs >= probe.stableMs
           : probe?.first.body && probe?.first.editor && probe?.first.title;
       }, null, { timeout: 90000 });
-      actions = await runOpeningActions(i);
+      actions = await runOpeningActions(i, (method, details) =>
+        readExactSource(launch.origin, admissionCookie, resolvedView, method, details));
       // Do not stop at first success. Wait for the observer's post-sync window;
       // its 6 s and 20 s checkpoints are retained even after a final recovery.
       try {
         await page.waitForFunction(() => window.__hapiColdOpening.observation.complete, null,
           { timeout: openingOptions.failureDeadlineMs + 10000 });
       } catch { failure = 'Observation did not complete within the diagnostic deadline'; }
-    } catch { failure = 'Timed out before the latest source body, title and usable editor stabilized'; }
+    } catch { failure = 'Timed out before the exact source item, title and usable editor stabilized'; }
     await page.evaluate(() => window.__hapiColdOpening.stop());
     const result = await page.evaluate(() => ({ ...window.__hapiColdOpening, workspace: window.__hapiColdOpening.first.workspace,
       body: window.__hapiColdOpening.first.body, editor: window.__hapiColdOpening.first.editor,
       latest: window.__hapiColdOpening.first.latest, stable: window.__hapiColdOpening.first.stable, actions: null,
-      paints: performance.getEntriesByType('paint').map(e => ({ name: e.name, at: e.startTime })), marks: performance.getEntriesByType('mark').filter(e => e.name.startsWith('hapi:')).map(e => ({ name: e.name, at: e.startTime })), resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/(sessions|machine)\/[^/]+/g, '/$1/[id]'), at: e.startTime, ms: e.duration, bytes: e.transferSize, encodedBytes: e.encodedBodySize, decodedBytes: e.decodedBodySize, responseStart: e.responseStart, responseEnd: e.responseEnd, protocol: e.nextHopProtocol })), nodes: document.querySelectorAll('*').length, views: [...document.querySelectorAll('[data-hapi-session-view]')].map(e => ({ visible: !!e.getBoundingClientRect().width, rows: e.querySelectorAll('[data-chat-node-key]').length })) }));
+      paints: performance.getEntriesByType('paint').map(e => ({ name: e.name, at: e.startTime })), marks: performance.getEntriesByType('mark').filter(e => e.name.startsWith('hapi:') || e.name.startsWith('hapi-dsh:')).map(e => ({ name: e.name, at: e.startTime })), resources: performance.getEntriesByType('resource').map(e => ({ path: new URL(e.name).pathname.replace(/\/(sessions|machine)\/[^/]+/g, '/$1/[id]'), at: e.startTime, ms: e.duration, bytes: e.transferSize, encodedBytes: e.encodedBodySize, decodedBytes: e.decodedBodySize, responseStart: e.responseStart, responseEnd: e.responseEnd, protocol: e.nextHopProtocol })), nodes: document.querySelectorAll('*').length, views: [...document.querySelectorAll('[data-hapi-session-view]')].map(e => ({ visible: !!e.getBoundingClientRect().width, rows: e.querySelectorAll('[data-chat-node-key]').length })) }));
     if (actions) result.actions = actions;
+    result.errors = errors.slice(errorsAtStart);
     const openingFailures = coldOpeningIssues(result);
     if (openingFailures.length) failure = [failure, ...openingFailures].filter(Boolean).join('; ');
     if (actions?.errors?.length) failure = [failure, ...actions.errors].filter(Boolean).join('; ');
+    if (result.errors.length) failure = [failure, `Renderer failure: ${[...new Set(result.errors)].join(', ')}`].filter(Boolean).join('; ');
     page.off('request', request); page.off('requestfinished', finished); page.off('requestfailed', failed);
     if (process.env.HAPI_DSH_PROFILE) {
       const { profile } = await cdp.send('Profiler.stop');
@@ -443,6 +526,9 @@ try {
   }
 } catch (e) { report.failure = e.name; process.exitCode = 1; }
 finally {
+  report.desktopMinimapExercised = !mobile && report.runs.length > 0 && report.runs.every(run =>
+    run.actions?.navigation?.attempted === true && run.actions.navigation.committed === true
+      && run.actions.navigation.targetVisible === true && !run.actions.navigation.failure);
   report.errors = errors;
   report.transport = transport;
   report.openedStreams = Object.fromEntries(openedStreams);
@@ -453,4 +539,4 @@ finally {
   console.log(path);
   await browser.close();
 }
-if (report.runs.some(r => r.failure)) process.exitCode = 1;
+if (report.runs.some(r => r.failure) || report.errors.length) process.exitCode = 1;

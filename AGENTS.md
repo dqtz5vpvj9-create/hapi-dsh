@@ -6,7 +6,8 @@ Build a distributable DSH plugin composition with one cross-machine session side
 
 ## Constraints
 
-- Do not edit, patch, monkey-patch, or vendor a modified DSH implementation. Use supported plugin registrations, providers, slots, and profile configuration.
+- **DSH 补丁授权（2026-10-26 用户决定，覆盖此前禁令）**：允许以 L2 源码补丁方式修改官方 DSH。只改需要的包；补丁必须是通用能力、默认路径不变、可独立关闭，并带 ADR、契约测试与上游 PR 草稿。禁止运行时拦截与对编译产物做字符串替换。每个上游 rc 一套补丁，全部存档；Host 与所有 Runner 必须使用同一套 ext 版本。详见 `dsh-ext` 仓库与 `docs/` 中的 ext 规格。
+- 其余情况下优先使用受支持的插件注册、provider、slot 与 profile 配置；不得用补丁绕过认证、审批最终裁决、执行所有权、队列或数据格式。
 - Preserve native Codex thread identity, original execution ownership, native queue, final approval resolution, and reconnection semantics.
 - Closing a pane releases a view and must not terminate its native execution.
 - Keep all engines and machines in one sidebar. Do not use separate machine applications or an iframe per machine.

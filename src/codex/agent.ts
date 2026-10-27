@@ -1,3 +1,5 @@
+import { withSourceAgentServices } from '../shared/source-agent-services.ts'
+import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
 import { checkedQueueMessage } from '../hapi/queue-receipt.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import {
@@ -6,7 +8,7 @@ import {
 } from '@deepseek-ai/dsh-agent'
 import { freezeMessage, MessageId, ReasoningEffortId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { createScope, type Scope } from '@deepseek-ai/dsh-scope'
-import { appendPluginRecord, SessionId, type Session, type SessionSeq } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord, Session, SessionId, type SessionSeq } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-api-session-controller/types'
 import {
@@ -16,13 +18,14 @@ import {
 } from './contracts.js'
 import { NativeApprovals } from './approvals.js'
 import { DeliveryJournal } from './delivery.js'
-import { NativeHistoryEpochChangedError, readNativeHistorySnapshot, readNativeHistoryTail, readNativeHistoryUpdate } from './history.js'
+import { NativeHistoryEpochChangedError, readNativeHistoryForward, readNativeHistorySnapshot, readNativeHistoryTail, readNativeHistoryUpdate } from './history.js'
 import { NativeHistoryCache } from './history-cache.js'
-import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, type HistoryCheckpoint } from './history-journal.js'
+import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, sourceHistoryKey, type HistoryCheckpoint } from './history-journal.js'
 import { SourceHistorySync } from './history-sync.js'
 import { NativeContent, type NativeArtifactImporter } from './content.js'
-import { assertBinding, bindingFor, nativeSessionId, parseNativeRow, type NativeBinding, type NativeRow } from './native.js'
+import { assertBinding, bindingFor, compareNativeMessages, nativeSessionId, parseNativeRow, type NativeBinding, type NativeRow } from './native.js'
 import { NativeHistoryChangedError, NativeProjector } from './projector.js'
+import { DISPLAY_TURN_BASE, isSourceTurnStart, sourcePosition, sourceTurnKey, type HistoryWindowAnchor, type RenderedHistoryPage } from './source-window.js'
 import type { DeliveryView, HapiProjectionState } from './projection-types.js'
 import { NativeObservations } from './observations.js'
 import { nativeThreadGoalSchema } from './observation-types.js'
@@ -35,6 +38,53 @@ import { parseObservedHistory, parseObservedMessage } from '../hapi-agent/parser
 import { sourceTeamProjection, acceptSourceStructuredState } from '../source-collaboration-types.js'
 import { queuedAttachments, queuedEditCandidate as readQueuedEditCandidate } from './queued-edit-candidate.js'
 import { SourceStatePublisher } from '../shared/source-state-publisher.ts'
+
+/** The first display window needs recent source context, not an archive walk.
+ * Three pages plus one epoch check is the bounded opening contract; older
+ * history is served by the source history window on demand. */
+const OPENING_TAIL_PAGES = 3
+
+/** HAPI epochs are snapshot revisions, including content edits and reconnects.
+ * Reuse an owner only after its source boundaries still name the same rows at
+ * the same positions. A cursor reset alone is not evidence of a rewind. */
+export async function readHistoryRevision(transport: HapiTransport, sessionId: string,
+  latest: HapiMessage | undefined, anchor: HistoryWindowAnchor | undefined): Promise<{
+    rows: HapiMessage[]; epoch: number; hasMore: boolean
+  } | null> {
+  const head = await transport.readMessages(sessionId, { limit: 32, bounded: true })
+  const epoch = head.page.epoch
+  const current = (page: typeof head): void => {
+    if (page.page.reset || page.page.epoch !== epoch)
+      throw new HistoryReadInvalidatedError('Source snapshot changed during bounded continuity validation')
+  }
+  current(head)
+  const boundary = async (expected: { id: string; at: number; seq: number }, key?: string): Promise<HapiMessage | undefined> => {
+    const matches = (row: HapiMessage): boolean => key === undefined ? row.id === expected.id : sourceHistoryKey(row) === key
+    let row = head.messages.find(matches)
+    if (!row) {
+      // The cursor is exclusive; advancing only seq includes exactly the
+      // known position, without relying on mutable message text or a hash.
+      const page = await transport.readMessages(sessionId, { limit: 1, bounded: true, epoch,
+        beforeAt: expected.at, beforeSeq: expected.seq + 1 })
+      current(page); row = page.messages.find(matches)
+    }
+    return row && sourcePosition(row).at === expected.at && sourcePosition(row).seq === expected.seq ? row : undefined
+  }
+  const latestRow = latest ? await boundary({ id: latest.id, ...sourcePosition(latest) }, sourceHistoryKey(latest)) : undefined
+  if (latest && !latestRow || anchor?.oldest && !await boundary(anchor.oldest)) return null
+  if (!latest || head.messages.some(row => sourceHistoryKey(row) === sourceHistoryKey(latest)))
+    return { rows: head.messages, epoch, hasMore: false }
+  // A reconnect may leave more than one latest page between the old owner and
+  // the new head. Preserve its cursor and bounded forward progress.
+  try {
+    const forward = await readNativeHistoryForward(transport, sessionId, epoch, sourcePosition(latest), 12)
+    return { rows: [latestRow!, ...forward.rows], epoch, hasMore: forward.hasMore }
+  } catch (error) {
+    if (error instanceof NativeHistoryEpochChangedError)
+      throw new HistoryReadInvalidatedError('Source snapshot changed during bounded continuity catch-up')
+    throw error
+  }
+}
 
 export interface NativeCodexOptions {
   stateDirectory: string
@@ -233,9 +283,13 @@ export class NativeCodexAgent implements Agent {
   private readonly historySync: SourceHistorySync
   private readonly liveSync: SourceHistorySync
   private historyEpoch: number | undefined
+  private historyAnchor: HistoryWindowAnchor | undefined
+  private structuralResetPending = false
+  private historyFallback = false
+  private historyPageId = 0
   private historyStale = false
   private rowWork: Promise<void> = Promise.resolve()
-
+  /** Live rows arriving during one forward read are merged, not committed early. */
   private constructor(
     parent: Context,
     readonly transport: HapiTransport,
@@ -254,9 +308,9 @@ export class NativeCodexAgent implements Agent {
     this.displayRevision = config.displayRevision ?? 0
     this.id = this.displayRevision === 0 ? this.logicalSessionId : SessionId(`${this.logicalSessionId}-r${this.displayRevision}`)
     this.scope = createScope(parent, this)
-    this.ctx = this.scope.ctx
+    this.ctx = withSourceAgentServices(this.scope.ctx, parent)
     this.currentSession = this.ctx.sessions.prepare(this.id, {
-      meta: { cwd: source.metadata?.path ?? '/', createdAt: source.createdAt },
+      meta: { cwd: sessionHeaderCwd(source.metadata?.path), createdAt: source.createdAt },
     })
     this.dispatch = agentEvents(this.ctx, this)
     this.inbox = new NativeInbox(this)
@@ -297,6 +351,7 @@ export class NativeCodexAgent implements Agent {
     })
     this.projector = new NativeProjector(this.session, {
       model: () => this.options.model ?? 'codex-native', provider: () => this.options.provider ?? 'codex-native',
+      turnBase: DISPLAY_TURN_BASE,
       submittedMessage: localId => this.journal.get(localId)?.message,
       content: row => this.content.get(row),
       stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }),
@@ -312,19 +367,24 @@ export class NativeCodexAgent implements Agent {
       let rows = initialRows
       let checkpoint = options.historyCheckpoint ?? agent.historyJournal.checkpoint()
       if (!rows) {
-        // An epoch proves structural identity, not cache freshness: ordinary
-        // appends keep it unchanged. Open the latest bounded source tail before
+        // A snapshot revision is not cache freshness. Open the bounded tail before
         // the archive backfill so an old cache cannot hide current messages.
         try {
           checkpoint = agent.historyJournal.checkpoint()
-          const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, 1)
+          const tail = options.fastHistorySeed ? await readNativeHistoryTail(transport, source.id, OPENING_TAIL_PAGES)
             : { ...await readNativeHistorySnapshot(transport, source.id), complete: true }
           agent.historyEpoch = tail.epoch
           rows = agent.historyJournal.merge(tail.rows, checkpoint)
-          agent.historyStale = !tail.complete
-          if (!tail.complete) {
-            agent.fault = 'The initial source history tail is incomplete; reconciling earlier history'
-            agent.historyReadFault = true
+          if (options.fastHistorySeed) {
+            const aligned = alignHistoryRows(rows, !tail.complete, ('epoch' in tail ? tail.epoch : undefined) ?? 0, 'before' in tail ? tail.before : undefined)
+            rows = aligned.rows
+            agent.historyAnchor = aligned.anchor ?? completeHistoryAnchor([], agent.historyEpoch ?? 0)
+            // Older history is not missing display data: the source window
+            // pages it on demand. Only a failed read leaves this stale.
+            agent.historyStale = false
+          } else {
+            agent.historyAnchor = completeHistoryAnchor(rows, agent.historyEpoch ?? 0)
+            agent.historyStale = !tail.complete
           }
         } catch (error) {
           options.assertSourceCurrent?.()
@@ -333,6 +393,13 @@ export class NativeCodexAgent implements Agent {
           const cached = (options.fastHistorySeed ? agent.cache.snapshot(true) : undefined) ?? agent.cache.snapshot()
           agent.historyEpoch = cached?.epoch
           rows = agent.historyJournal.overlayCache(cached?.rows ?? [])
+          const fallbackFirst = rows[0]
+          agent.historyAnchor = fallbackFirst
+            ? { epoch: cached?.epoch ?? 0, before: sourcePosition(fallbackFirst), firstTurn: DISPLAY_TURN_BASE + 1, hasOlder: true,
+              partial: !isSourceTurnStart(fallbackFirst),
+              oldest: { id: fallbackFirst.id, at: sourcePosition(fallbackFirst).at, seq: sourcePosition(fallbackFirst).seq } }
+            : completeHistoryAnchor([], 0)
+          agent.historyFallback = rows.length > 0
           agent.historyStale = true
           agent.historyReadFault = true
           agent.fault = `${error instanceof Error ? error.message : 'Source history is unavailable'}; cached history is stale and is being reconciled`
@@ -340,11 +407,20 @@ export class NativeCodexAgent implements Agent {
       } else if (options.initialRowsMerged !== true) {
         rows = agent.historyJournal.merge(rows, checkpoint)
       }
+      if (initialRows) {
+        // A replacement owns the complete authoritative rows. It must never be
+        // mistaken for an unseeded cache fallback and re-enter replacement.
+        if (options.historyEpoch !== undefined) agent.historyEpoch = options.historyEpoch
+        agent.historyAnchor = completeHistoryAnchor(rows, agent.historyEpoch ?? 0)
+        agent.historyStale = false
+      }
+      if (!rows) rows = []
+      if (agent.historyAnchor?.partial) agent.projector.setSuppressFirstTurnStart()
       agent.projector.beginHistorySeed()
       await agent.applyRows(rows, true, checkpoint)
       agent.currentSession = agent.ctx.sessions.prepare(agent.id, {
         seed: agent.projector.historySeed(),
-        meta: { cwd: source.metadata?.path ?? '/', createdAt: source.createdAt },
+        meta: { cwd: sessionHeaderCwd(source.metadata?.path), createdAt: source.createdAt },
       })
       agent.projector.finishHistorySeed(agent.session)
       agent.initializing = false
@@ -354,13 +430,20 @@ export class NativeCodexAgent implements Agent {
       agent.publishProjection()
       options.assertSourceCurrent?.()
       agent.historyJournal.assertCurrent(checkpoint)
-      if (options.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, !agent.historyStale, agent.historyEpoch)
+      // A fast opening seed is a bounded window, never a complete archive.
+      if (options.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, false, agent.historyEpoch)
       else agent.cache.write(rows, !agent.historyStale, agent.historyEpoch)
       agent.detachSession = agent.ctx.sessions.enter(agent.session)
       agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindNativeCommands(agent)
       agent.ctx.sessions.announce(agent.session)
-      await agent.ctx.agents.announce(agent, 'startup')
+      // Profile plugins may attach local prompt/team tooling in a startup
+      // listener. A source-owned Agent only mirrors remote execution, so a
+      // listener that cannot run here must not fail opening the session.
+      try { await agent.ctx.agents.announce(agent, 'startup') }
+      catch (error) {
+        console.warn('[hapi-dsh] agent startup listener failed; continuing with the source-owned agent:', error instanceof Error ? error.message : String(error))
+      }
       await agent.children.mount()
       return agent
     } catch (error) { await agent.dispose(); throw error }
@@ -370,6 +453,32 @@ export class NativeCodexAgent implements Agent {
   startHistorySync(): void { if (this.historyStale) this.historySync.request(true) }
   requestHistorySync(): void { this.historyStale = true; this.historySync.request(true) }
   async settled(): Promise<void> { await this.liveSync.settled(); await this.historySync.settled(); await this.rowWork }
+
+  historyWindowAnchor(): HistoryWindowAnchor | undefined { return this.historyAnchor }
+
+  /** Render one older source page in a detached Session; no live log changes. */
+  async renderHistoryPage(rows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
+    const detached = Session.create(SessionId(`hapi-history-${this.logicalSessionId}-${++this.historyPageId}`))
+    const parsed = rows.flatMap(message => {
+      const row = parseNativeRow(message, this.binding)
+      return row ? [row] : []
+    })
+    // Import rich user/tool content and attachments before the detached fold.
+    await this.content.prepare(parsed)
+    const history = new NativeProjector(detached, {
+      model: () => this.options.model ?? 'codex-native', provider: () => this.options.provider ?? 'codex-native',
+      submittedMessage: () => undefined, content: row => this.content.get(row), stream: () => {}, turnBase: 0,
+    })
+    if (!rows.length || !isSourceTurnStart(rows[0]!)) history.setSuppressFirstTurnStart()
+    history.beginHistorySeed()
+    history.apply(parsed)
+    return {
+      events: history.historySeed(), lastTurn: history.lastTurn,
+      sources: history.sourceSeqEntries(), rewinds: history.rewindSeqEntries(), forks: history.forkBoundaryEntries(),
+      turnAnchors: history.turnAnchorEntries(),
+      stepAnchors: history.stepAnchorEntries(),
+    }
+  }
 
   get options(): AgentOptions {
     return {
@@ -567,7 +676,12 @@ export class NativeCodexAgent implements Agent {
         this.syncInbox(); this.publishProjection()
         break
       case 'messages-invalidated':
-        if (event.reason === 'native-history') { this.liveSync.request(true); break }
+        if (event.reason === 'native-history') {
+          if (this.config.fastHistorySeed) { this.historyStale = true; this.historySync.request(true) }
+          else this.liveSync.request(true)
+          break
+        }
+        this.structuralResetPending = true
         this.historyEpoch = undefined
         this.historyStale = true; this.historySync.request(true); break
       case 'message-updated': case 'scheduled-matured':
@@ -580,6 +694,13 @@ export class NativeCodexAgent implements Agent {
   private async refreshLive(history: boolean): Promise<void> {
     await this.refreshSettings()
     if (!history || this.disposed) return
+    if (this.config.fastHistorySeed) {
+      // History catch-up has one serialized worker. The live edge only asks
+      // for it; it never starts a second bounded/full read concurrently.
+      this.historyStale = true
+      this.historySync.request(true)
+      return
+    }
     const epoch = this.historyEpoch
     if (epoch === undefined) { this.historySync.request(true); return }
     const checkpoint = this.historyJournal.checkpoint()
@@ -606,14 +727,15 @@ export class NativeCodexAgent implements Agent {
 
   private invalidateHistoryEpoch(): void {
     this.historyJournal.capture({ type: 'messages-invalidated', sessionId: this.binding.hapiSessionId, reason: 'rewind' })
-    this.historyEpoch = undefined; this.historyStale = true; this.historySync.request(true)
+    this.historyEpoch = undefined; this.historyStale = true; this.structuralResetPending = true
+    this.historySync.request(true)
   }
 
   /** Settings reads must not queue behind transcript loading or delivery reconciliation. */
-  async refreshSettings(): Promise<void> {
+  async refreshSettings(source?: HapiSession): Promise<void> {
     if (this.disposed) throw new Error('The native Codex observation was detached')
     this.config.assertSourceCurrent?.()
-    const snapshot = await this.transport.getSession(this.binding.hapiSessionId)
+    const snapshot = source ?? await this.transport.getSession(this.binding.hapiSessionId)
     if (this.disposed) throw new Error('The native Codex observation was detached')
     this.config.assertSourceCurrent?.()
     this.observe(snapshot)
@@ -631,6 +753,9 @@ export class NativeCodexAgent implements Agent {
       if (this.disposed) return
       this.observe(snapshot)
       if (history || this.historyStale) {
+        if (this.config.fastHistorySeed) {
+          await this.refreshBounded()
+        } else {
         const checkpoint = this.historyJournal.checkpoint()
         const snapshot = await readNativeHistorySnapshot(this.transport, this.binding.hapiSessionId)
         const rows = snapshot.rows
@@ -652,6 +777,7 @@ export class NativeCodexAgent implements Agent {
         }
         this.historyEpoch = snapshot.epoch
         this.cache.write(merged, true, this.historyEpoch)
+        }
       }
       await this.journal.reconcileSource()
       if (this.disposed) return
@@ -660,6 +786,133 @@ export class NativeCodexAgent implements Agent {
     })()
     this.pendingRefresh = work
     try { await work } finally { if (this.pendingRefresh === work) this.pendingRefresh = undefined }
+  }
+
+  /**
+   * Normal catch-up never reads the whole source archive. Older history is a
+   * source-window page, not a new display generation. Snapshot revisions need
+   * continuity validation; only structural changes request replacement.
+   */
+  private async refreshBounded(): Promise<void> {
+    if (this.disposed) return
+    if (this.structuralResetPending) { this.structuralResetPending = false; await this.replaceForStructuralChange(); return }
+    if (this.historyFallback) {
+      // Keep live activity independent. A delayed older source page is applied
+      // after the live row; the source-frame annotations preserve source order
+      // for the history window. Snapshot revisions require boundary validation.
+      this.historyFallback = false
+      try {
+        const latestRow = this.historyOrder.latestRow()
+        const latest = this.historyOrder.latestPosition()
+        const checkpoint = this.historyJournal.checkpoint()
+        const page = await this.transport.readMessages(this.binding.hapiSessionId, { limit: 32, bounded: true })
+        if (this.disposed) return
+        if (page.page.reset) { await this.refreshRevision(latestRow, checkpoint); return }
+        if (this.historyEpoch === undefined || page.page.epoch !== this.historyEpoch) {
+          await this.refreshRevision(latestRow, checkpoint); return
+        }
+        const overlaps = !latestRow || page.messages.some(row => sourceHistoryKey(row) === sourceHistoryKey(latestRow))
+        if (overlaps) {
+          await this.applyRows(page.messages, false, checkpoint)
+          this.historyEpoch = page.page.epoch; this.historyStale = false
+          if (this.historyAnchor) this.historyAnchor = { ...this.historyAnchor, epoch: page.page.epoch }
+          this.fault = null; this.historyReadFault = false
+          this.syncInbox(); this.publishProjection()
+          return
+        }
+        this.historyJournal.assertCurrent(checkpoint)
+        let forward: Awaited<ReturnType<typeof readNativeHistoryForward>>
+        try {
+          forward = await readNativeHistoryForward(this.transport, this.binding.hapiSessionId, this.historyEpoch, latest!, 12)
+        } catch (error) {
+          if (error instanceof NativeHistoryEpochChangedError) { await this.refreshRevision(latestRow, checkpoint); return }
+          throw error
+        }
+        if (this.disposed) return
+        await this.applyRows(forward.rows, false, this.historyJournal.checkpoint())
+        this.historyStale = forward.hasMore
+        this.fault = null; this.historyReadFault = false
+        this.syncInbox(); this.publishProjection()
+        if (forward.hasMore) this.historySync.request(true)
+        return
+      } catch (error) {
+        if (this.disposed) return
+        this.historyFallback = true; throw error
+      }
+    }
+    if (this.historyEpoch === undefined) {
+      const checkpoint = this.historyJournal.checkpoint()
+      const tail = await readNativeHistoryTail(this.transport, this.binding.hapiSessionId, OPENING_TAIL_PAGES)
+      if (this.disposed) return
+      const merged = this.historyJournal.merge(tail.rows, checkpoint)
+      const aligned = alignHistoryRows(merged, !tail.complete, ('epoch' in tail ? tail.epoch : undefined) ?? 0, 'before' in tail ? tail.before : undefined)
+      await this.applyRows(aligned.rows, false, checkpoint)
+      this.historyEpoch = tail.epoch
+      this.historyAnchor = aligned.anchor ?? completeHistoryAnchor(aligned.rows, this.historyEpoch ?? 0)
+      this.historyStale = false
+      this.fault = null; this.historyReadFault = false
+      this.cache.writeOpening(aligned.rows, false, this.historyEpoch)
+      this.syncInbox(); this.publishProjection()
+      return
+    }
+    const latest = this.historyOrder.latestPosition()
+    if (!latest) {
+      const tail = await readNativeHistoryTail(this.transport, this.binding.hapiSessionId, OPENING_TAIL_PAGES)
+      if (this.disposed) return
+      const checkpoint = this.historyJournal.checkpoint()
+      const merged = this.historyJournal.merge(tail.rows, checkpoint)
+      await this.applyRows(merged, false, checkpoint)
+      this.historyEpoch = tail.epoch
+      this.historyAnchor = alignHistoryRows(merged, !tail.complete, tail.epoch ?? 0, tail.before).anchor ?? completeHistoryAnchor(merged, tail.epoch ?? 0)
+      this.historyStale = false
+      this.fault = null; this.historyReadFault = false
+      this.syncInbox(); this.publishProjection()
+      return
+    }
+    const checkpoint = this.historyJournal.checkpoint()
+    const latestRow = this.historyOrder.latestRow()
+    let forward: Awaited<ReturnType<typeof readNativeHistoryForward>>
+    try {
+      forward = await readNativeHistoryForward(this.transport, this.binding.hapiSessionId, this.historyEpoch, latest, 12)
+    } catch (error) {
+      if (error instanceof NativeHistoryEpochChangedError) { await this.refreshRevision(latestRow, checkpoint); return }
+      throw error
+    }
+    if (this.disposed) return
+    await this.applyRows(forward.rows, false, this.historyJournal.checkpoint())
+    this.historyStale = forward.hasMore
+    this.fault = null; this.historyReadFault = false
+    this.syncInbox(); this.publishProjection()
+    if (forward.hasMore) this.historySync.request(true)
+  }
+
+  private async refreshRevision(latest: HapiMessage | undefined, checkpoint: HistoryCheckpoint): Promise<void> {
+    const revision = await readHistoryRevision(this.transport, this.binding.hapiSessionId,
+      latest, this.historyAnchor)
+    if (this.disposed) return
+    this.historyJournal.assertCurrent(checkpoint)
+    if (!revision) {
+      this.historyJournal.capture({ type: 'messages-invalidated', sessionId: this.binding.hapiSessionId, reason: 'rewind' })
+      await this.replaceForStructuralChange(); return
+    }
+    await this.applyRows(revision.rows, false, checkpoint)
+    this.historyEpoch = revision.epoch
+    if (this.historyAnchor) this.historyAnchor = { ...this.historyAnchor, epoch: revision.epoch }
+    this.historyStale = revision.hasMore
+    this.fault = null; this.historyReadFault = false
+    this.syncInbox(); this.publishProjection()
+    if (revision.hasMore) this.historySync.request(true)
+  }
+
+  /** A proven native rewind/fork may own a new display. */
+  private async replaceForStructuralChange(): Promise<void> {
+    const checkpoint = this.historyJournal.checkpoint()
+    const snapshot = await readNativeHistorySnapshot(this.transport, this.binding.hapiSessionId)
+    if (this.disposed) return
+    if (!this.config.onHistoryChanged) throw new NativeHistoryChangedError('The native source history changed structurally')
+    const merged = this.historyJournal.merge(snapshot.rows, checkpoint)
+    this.historyAnchor = undefined
+    await this.config.onHistoryChanged(this, merged, checkpoint, snapshot.epoch)
   }
 
   private observe(snapshot: HapiSession): void {
@@ -713,7 +966,7 @@ export class NativeCodexAgent implements Agent {
       if (this.disposed) return
       this.historyJournal.assertCurrent(checkpoint)
       const rows = merged ? messages : authoritative ? this.historyJournal.merge(messages, checkpoint, !this.historyStale) : messages
-      if (!this.initializing && authoritative && this.historyOrder.needsReseed(rows)) {
+      if (!this.initializing && authoritative && !this.config.fastHistorySeed && this.historyOrder.needsReseed(rows)) {
         throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
       }
       await this.applyRowsNow(rows, authoritative, checkpoint)
@@ -750,7 +1003,7 @@ export class NativeCodexAgent implements Agent {
       this.queued.clear()
     }
     // Project the transcript before retiring optimistic/native pending input.
-    this.projector.apply(parsed.map(item => item.row))
+    this.projector.apply(parsed.map(item => item.row), !authoritative)
     await this.children.apply(children, this.childScopes.scopes(), authoritative)
     for (const { row, message } of parsed) {
       if (row.kind !== 'user' || !row.localId) continue
@@ -843,4 +1096,50 @@ function acceptExecution(previous: HapiSession, next: HapiSession): HapiNativeRu
   if (current && candidate && current.owner === candidate.owner && current.generation === candidate.generation
     && candidate.sequence < current.sequence) return current
   return candidate
+}
+
+
+/** Start a bounded live seed at an invoked human turn boundary. */
+function completeHistoryAnchor(rows: readonly HapiMessage[], epoch: number): HistoryWindowAnchor {
+  const sorted = rows.length ? [...rows].sort(compareNativeMessages) : []
+  // HAPI appends unpositioned queued prompts to every message page. They have
+  // old creation times but no source seq; they are not transcript positions and
+  // must not become the window's oldest anchor (which drives outline mapping).
+  const first = sorted.find(row => typeof row.seq === 'number') ?? sorted[0]
+  const position = first ? sourcePosition(first) : { at: 0, seq: 0 }
+  return { epoch, before: position, firstTurn: DISPLAY_TURN_BASE + 1, hasOlder: false,
+    ...(first ? { oldest: { id: first.id, at: position.at, seq: position.seq },
+      partial: !isSourceTurnStart(first) } : {}) }
+}
+
+function alignHistoryRows(rows: readonly HapiMessage[], sourceHasOlder: boolean, epoch: number,
+  authoritativeBefore?: { at: number; seq: number }): {
+  rows: HapiMessage[]; anchor: HistoryWindowAnchor | undefined
+} {
+  const sorted = [...rows].sort(compareNativeMessages)
+  if (!sorted.length) return { rows: [], anchor: sourceHasOlder ? undefined : completeHistoryAnchor([], epoch) }
+  const starts = sorted.flatMap((row, index) => isSourceTurnStart(row) ? [index] : [])
+  const firstPositioned = sorted.findIndex(row => typeof row.seq === 'number')
+  const oldest = firstPositioned >= 0 ? sorted[firstPositioned]! : sorted[0]!
+  if (authoritativeBefore) {
+    const partial = starts[0] !== firstPositioned
+    const oldestPosition = sourcePosition(oldest)
+    return { rows: sorted, anchor: { epoch, before: authoritativeBefore, firstTurn: DISPLAY_TURN_BASE + 1,
+      hasOlder: sourceHasOlder || partial, partial,
+      oldest: { id: oldest.id, at: oldestPosition.at, seq: oldestPosition.seq } } }
+  }
+  const cut = starts.length ? starts[0]! : 0
+  const aligned = sorted.slice(cut)
+  if (!aligned.length) return { rows: [], anchor: undefined }
+  return {
+    rows: aligned,
+    anchor: {
+      epoch,
+      before: sourcePosition(aligned[0]!),
+      firstTurn: DISPLAY_TURN_BASE + 1,
+      hasOlder: sourceHasOlder || cut > 0,
+      partial: false,
+      oldest: { id: aligned[0]!.id, at: sourcePosition(aligned[0]!).at, seq: sourcePosition(aligned[0]!).seq },
+    },
+  }
 }

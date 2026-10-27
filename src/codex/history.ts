@@ -19,7 +19,11 @@ function uniqueNewestFirst(rows: readonly HapiMessage[]): HapiMessage[] {
 
 interface Pass { rows: HapiMessage[]; complete: boolean; epoch?: number }
 
-export interface NativeHistoryTail extends Pass { context: 'previous-turn' | 'history-start' | 'limited' }
+export interface NativeHistoryTail extends Pass {
+  context: 'previous-turn' | 'history-start' | 'limited'
+  /** Authoritative cursor immediately before this window's oldest row. */
+  before?: { at: number; seq: number }
+}
 export class NativeHistoryEpochChangedError extends Error {}
 
 /** Native turn identities distinguish steering inputs from a previous turn.
@@ -67,7 +71,12 @@ export async function readNativeHistoryTail(transport: HapiTransport, sessionId:
       if (check.page.reset || check.page.epoch !== epoch) continue
     }
     rows = uniqueNewestFirst(rows)
-    return { rows, epoch, complete: !page.page.hasMore, context: includesPreviousTurn(rows) ? 'previous-turn' : !page.page.hasMore ? 'history-start' : 'limited' }
+    const oldest = rows[0]
+    const before = page.page.nextBeforeAt !== null && page.page.nextBeforeSeq !== null
+      ? { at: page.page.nextBeforeAt, seq: page.page.nextBeforeSeq }
+      : oldest ? { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq ?? 0 } : undefined
+    return { rows, epoch, ...(before === undefined ? {} : { before }),
+      complete: !page.page.hasMore, context: includesPreviousTurn(rows) ? 'previous-turn' : !page.page.hasMore ? 'history-start' : 'limited' }
   }
   throw new Error('Native history changed repeatedly while reading the initial Turn context; refresh when the source snapshot is available')
 }
@@ -146,6 +155,33 @@ export async function readNativeHistorySnapshot(transport: HapiTransport, sessio
     if (pass.complete) return { rows: uniqueNewestFirst(pass.rows), epoch: pass.epoch! }
   }
   throw new Error('Native history changed repeatedly during pagination; refresh when the source snapshot is available')
+}
+
+/**
+ * Read forward from the last displayed source position in bounded pages.
+ *
+ * A long disconnect can exceed the backwards overlap walk; it is a catch-up,
+ * not a structural rewrite. Each pass applies rows in source order and can be
+ * continued by the next scheduled refresh without reading the full archive.
+ */
+export async function readNativeHistoryForward(transport: HapiTransport, sessionId: string, epoch: number,
+  after: { at: number; seq: number }, maxPages = 12): Promise<{ rows: HapiMessage[]; hasMore: boolean; next: { at: number; seq: number } | null }> {
+  let cursor = after
+  let hasMore = false
+  const rows: HapiMessage[] = []
+  for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+    const page = await transport.readMessages(sessionId, { limit: PAGE_SIZE, bounded: true, epoch,
+      afterAt: cursor.at, afterSeq: cursor.seq })
+    if (page.page.reset || page.page.epoch !== epoch) throw new NativeHistoryEpochChangedError('Native source history changed structurally during catch-up')
+    rows.push(...page.messages)
+    hasMore = page.page.hasMore
+    if (!hasMore || page.page.nextAfterAt === null || page.page.nextAfterSeq === null) {
+      return { rows: uniqueNewestFirst(rows), hasMore: false, next: null }
+    }
+    if (page.page.nextAfterAt === cursor.at && page.page.nextAfterSeq === cursor.seq) break
+    cursor = { at: page.page.nextAfterAt, seq: page.page.nextAfterSeq }
+  }
+  return { rows: uniqueNewestFirst(rows), hasMore, next: cursor }
 }
 
 /** An append notification is not a rewind. Read only back to the last observed

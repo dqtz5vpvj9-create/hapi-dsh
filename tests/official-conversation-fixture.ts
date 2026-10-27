@@ -32,6 +32,8 @@ export interface OfficialChatSnapshot {
 }
 export interface OfficialChatAssembler {
     replaceWindow(entries: readonly { type: 'event'; event: SessionEvent }[], hasMore: boolean): unknown
+    prepend(entries: readonly { type: 'event'; event: SessionEvent }[], hasMore: boolean): unknown
+    flush(): boolean
     activateTarget(target: string): unknown
     snapshot(target: string): OfficialChatSnapshot
     grouped(target: string): { entries: readonly { kind: 'node' | 'group'; key: string; groupPart?: string }[] } | undefined
@@ -52,7 +54,7 @@ function browserModule(name: string): Record<string, unknown> {
 
 /** Register the real Chat business definitions through its public plugin entry.
  * Stop only when it reaches the unrelated React session-hook installation. */
-export function officialChat(): { assembler: OfficialChatAssembler; close(): Promise<void> } {
+export function officialChat(options: { trajectory?: boolean } = {}): { assembler: OfficialChatAssembler; close(): Promise<void> } {
     const core = browserModule('@deepseek-ai/dsh-client-ui-conversation') as unknown as BrowserModule
     const chat = browserModule('@deepseek-ai/dsh-client-ui-chat') as { apply(ctx: unknown): void }
     const ctx = new Context(), events = new core.ConversationEventRegistry(ctx), views = new core.ConversationViewRegistry(ctx)
@@ -61,6 +63,13 @@ export function officialChat(): { assembler: OfficialChatAssembler; close(): Pro
         groups: { register(value: { target: string }) { groups.push(value) } } },
         uiSession: { provide() { throw registered } },
     }), error => error === registered)
+    if (options.trajectory) {
+        const trajectory = browserModule('@deepseek-ai/dsh-client-ui-trajectory') as { apply(ctx: unknown): void }
+        assert.throws(() => trajectory.apply({ effect: () => () => {}, locale: { bind: () => () => '' },
+            uiConversation: { events, views, groups: { register(value: { target: string }) { groups.push(value) } } },
+            uiSession: { provide() { throw registered } },
+        }), error => error === registered)
+    }
     assert.ok(events.entries().length >= 15)
     const assembler = new core.ConversationNodeAssembler(events, views, { forTarget: target => groups.find(value => value.target === target) })
     return { assembler, close: () => ctx.fiber.dispose() }
@@ -81,8 +90,12 @@ export async function officialHistoryPage(session: Session) {
         const controller = new SessionController(ctx, { nativeOpen: false })
         // Re-prepare the detached source log through the official store; a cwd
         // is required by the public cold-safe history route.
-        const attached = ctx.sessions.prepare(session.id, { seed: session.snapshotEvents(), meta: { cwd: '/synthetic/source' } })
-        ctx.sessions.enter(attached)
+        // Client tests also augment Context.sessions with its browser face.
+        // This fixture installed the Host store above, whose public methods
+        // prepare the detached log for the actual controller.
+        const store = ctx.sessions as unknown as SessionStore
+        const attached = store.prepare(session.id, { seed: session.snapshotEvents(), meta: { cwd: '/synthetic/source' } })
+        store.enter(attached)
         const page = await controller.page({ address: { kind: 'session', sessionId: attached.id },
             throughSeq: SessionSeq(attached.seq - 1), maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }, new AbortController().signal)
         return { hasMore: page.hasMore, entries: page.records.map(value => {

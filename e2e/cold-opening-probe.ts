@@ -1,6 +1,10 @@
 import type { CDPSession, Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { installColdOpeningObserver, type ColdOpeningOptions, type ColdOpeningResult } from '../scripts/cold-opening-observer.mjs'
+import { textInConversationViewport } from '../scripts/probe-navigation.mjs'
+export { exerciseOpeningUnvisitedTarget } from '../scripts/probe-navigation.mjs'
+export type { NavigationActionEvidence } from '../scripts/probe-navigation.mjs'
+import type { NavigationActionEvidence } from '../scripts/probe-navigation.mjs'
 export { coldOpeningIssues } from '../scripts/cold-opening-observer.mjs'
 
 /**
@@ -19,6 +23,7 @@ export async function readColdOpeningProbe(page: Page, stop = false): Promise<Co
         return { first: probe.first, states: probe.states, titles: probe.titles, tasks: probe.tasks,
             current: probe.current, startedAt: probe.startedAt, stoppedAt: probe.stoppedAt,
             verifiedFreshness: probe.verifiedFreshness, verifiedTitle: probe.verifiedTitle,
+            sourceTargetKind: probe.sourceTargetKind,
             verifiedView: probe.verifiedView, verifiedTarget: probe.verifiedTarget,
             expectedViewSupplied: probe.expectedViewSupplied, navigationAction: probe.navigationAction,
             expectedNavigationTextSupplied: probe.expectedNavigationTextSupplied,
@@ -137,6 +142,7 @@ export interface HistoryActionEvidence {
     requests: number
     commits: number
     failure: string | null
+    operationIds: number[]
 }
 
 /**
@@ -155,6 +161,7 @@ export async function exerciseOpeningHistory(page: Page, pane: Locator, mode: 'w
         intents: window.__hapiColdOpening.history?.intents ?? 0,
         requests: window.__hapiColdOpening.history?.requestRevision ?? 0,
         commits: window.__hapiColdOpening.history?.commitRevision ?? 0,
+        operationId: window.__hapiColdOpening.history?.operationRevision ?? 0,
     }))
     const beforeHeight = await port.evaluate(element => element.scrollHeight)
     let failure: string | null = null
@@ -180,8 +187,10 @@ export async function exerciseOpeningHistory(page: Page, pane: Locator, mode: 'w
     try {
         await page.waitForFunction(base => {
             const h = window.__hapiColdOpening.history
-            return (h?.intents ?? 0) > base.intents && (h?.requestRevision ?? 0) > base.requests
-                && (h?.commitRevision ?? 0) > base.commits
+            const operations = h.operations.filter(operation => operation.id > base.operationId
+                && operation.intentAt !== null && operation.requestAt >= base.at)
+            return operations.some(operation => operation.status === 'committed')
+                && operations.every(operation => operation.status !== 'pending')
         }, baseline, { timeout: 15_000 })
     } catch {
         failure = 'This gesture produced no source request plus source commit after the baseline'
@@ -190,83 +199,35 @@ export async function exerciseOpeningHistory(page: Page, pane: Locator, mode: 'w
     const evidence = await page.evaluate(base => {
         const h = window.__hapiColdOpening.history
         return {
-            intents: h?.intents ?? 0, requests: h?.requestRevision ?? 0, commits: h?.commitRevision ?? 0,
-            requestAt: h?.requestAt ?? null, commitAt: h?.commitAt ?? null,
-            anchorRetained: h?.anchorRetained ?? null, anchorDriftPx: h?.anchorDriftPx ?? null,
+            intents: h.intents, requests: h.requestRevision, commits: h.commitRevision,
+            operations: h.operations.filter(operation => operation.id > base.operationId
+                && operation.intentAt !== null && operation.requestAt >= base.at),
+            violations: h.violations,
         }
     }, baseline)
-    const requested = evidence.requests > baseline.requests && evidence.requestAt !== null
-        && evidence.requestAt >= baseline.at - 100
-    const committed = evidence.commits > baseline.commits && evidence.commitAt !== null
-    const commitAfterRequest = requested && committed && evidence.commitAt! >= evidence.requestAt! - 50
+    const operations = evidence.operations
+    const requested = operations.length > 0
+    const committed = requested && operations.every(operation => operation.status === 'committed' && operation.commitAt !== null)
+    const commitAfterRequest = committed && operations.every(operation => operation.commitAt! >= operation.requestAt)
+    const anchorRetained = committed ? operations.every(operation => operation.anchorRetained === true && operation.domPrepend) : null
+    const drifts = operations.flatMap(operation => operation.anchorDriftPx === null ? [] : [operation.anchorDriftPx])
+    const anchorDriftPx = drifts.length ? drifts.reduce((worst, drift) => Math.abs(drift) > Math.abs(worst) ? drift : worst) : null
     if (!requested && failure === null) failure = 'No source page request was observed for this gesture'
-    else if (!committed && failure === null) failure = 'No source page commit was observed for this gesture'
-    else if (!commitAfterRequest && failure === null) failure = 'The source commit did not follow this source request'
+    else if (!committed && failure === null) failure = 'A source page request from this gesture did not commit'
+    else if (!commitAfterRequest && failure === null) failure = 'A source commit did not follow its own source request'
+    else if (evidence.violations.length && failure === null) failure = evidence.violations.join('; ')
     return {
         mode,
         requested, committed, commitAfterRequest,
-        anchorRetained: evidence.anchorRetained,
-        anchorDriftPx: evidence.anchorDriftPx,
+        anchorRetained,
+        anchorDriftPx,
+        operationIds: operations.map(operation => operation.id),
         scrollHeightGrew: afterHeight > beforeHeight + 8,
         intents: evidence.intents - baseline.intents,
         requests: evidence.requests - baseline.requests,
         commits: evidence.commits - baseline.commits,
         failure,
     }
-}
-
-async function findTurnRail(pane: Locator): Promise<Locator | undefined> {
-    const named = pane.locator('nav[aria-label="Turn navigation"], nav[aria-label="轮次导航"]').first()
-    if (await named.count() && await named.isVisible()) return named
-    const navs = pane.locator('nav[aria-label]')
-    const count = await navs.count()
-    for (let index = 0; index < count; index++) {
-        if (!await navs.nth(index).isVisible()) continue
-        const labels = await navs.nth(index).locator('button').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label') ?? ''))
-        if (labels.some(label => /jump to turn|load and jump|跳转到第|加载并跳转/i.test(label))) return navs.nth(index)
-    }
-    return undefined
-}
-
-export interface NavigationActionEvidence {
-    attempted: boolean
-    kind: string | null
-    committed: boolean
-    targetVisible: boolean | null
-    failure: string | null
-}
-
-/** Click an unvisited official TurnNavigator target and require its exact text. */
-export async function exerciseOpeningUnvisitedTarget(page: Page, pane: Locator, expectedText: string, targetTurn: number): Promise<NavigationActionEvidence> {
-    const rail = await findTurnRail(pane)
-    if (!rail || !await rail.count() || !await rail.isVisible())
-        return { attempted: false, kind: null, committed: false, targetVisible: null, failure: 'No visible official TurnNavigator rail' }
-    const buttons = rail.locator('button')
-    const labels = await buttons.evaluateAll(nodes => nodes.map((node, index) => ({
-        index, label: node.getAttribute('aria-label') ?? '',
-        current: node.getAttribute('aria-current') === 'true',
-        disabled: (node as HTMLButtonElement).disabled,
-        turn: Number(/(?:turn|第)\s*(\d+)/i.exec(node.getAttribute('aria-label') ?? '')?.[1] ?? Number.NaN),
-    })))
-    const eligible = labels.filter(row => row.turn === targetTurn)
-    const selected = eligible.find(row => !row.disabled && /load and jump|加载并跳转/.test(row.label))
-        ?? eligible.find(row => !row.disabled && !row.current && /jump to turn|跳转到第/.test(row.label))
-    if (!selected)
-        return { attempted: false, kind: null, committed: false, targetVisible: null, failure: `Expected navigation turn ${targetTurn} was not present in the official rail` }
-    if (await pane.getByText(expectedText, { exact: true }).isVisible().catch(() => false))
-        return { attempted: false, kind: 'target', committed: false, targetVisible: true,
-            failure: 'The navigation target was already visible; the action did not exercise navigation' }
-    const baseline = await page.evaluate(() => window.__hapiColdOpening.navigation?.commitRevision ?? 0)
-    const kind = /load and jump|加载并跳转/.test(selected.label) ? 'load-jump' : 'jump'
-    await buttons.nth(selected.index).click()
-    let failure: string | null = null
-    try {
-        await expect(pane.getByText(expectedText, { exact: true })).toBeVisible({ timeout: 12_000 })
-        await page.waitForFunction(base => (window.__hapiColdOpening.navigation?.commitRevision ?? 0) > base, baseline, { timeout: 12_000 })
-    } catch { failure = 'Unvisited navigation target did not commit the exact text' }
-    const committed = await page.evaluate(base => (window.__hapiColdOpening.navigation?.commitRevision ?? 0) > base, baseline)
-    const targetVisible = await pane.getByText(expectedText, { exact: true }).isVisible().catch(() => false)
-    return { attempted: true, kind, committed, targetVisible, failure }
 }
 
 /** Return to the latest source marker. This is a distinct mobile action. */
@@ -277,18 +238,18 @@ export async function exerciseOpeningReturnLatest(page: Page, pane: Locator, lat
     const toBottom = labels.find(row => row.visible && /to bottom|回到(?:底部|最新)/i.test(row.label))
     if (toBottom === undefined)
         return { attempted: false, kind: null, committed: false, targetVisible: null, failure: 'No visible return-latest control' }
-    if (await pane.getByText(latestText, { exact: true }).isVisible().catch(() => false))
+    if (await textInConversationViewport(pane, latestText))
         return { attempted: false, kind: 'to-bottom', committed: false, targetVisible: true,
             failure: 'The latest marker was already visible; return-latest was not exercised' }
     const baseline = await page.evaluate(() => window.__hapiColdOpening.navigation?.commitRevision ?? 0)
     await pane.locator('button[aria-label]').nth(toBottom.index).click()
     let failure: string | null = null
     try {
-        await expect(pane.getByText(latestText, { exact: true })).toBeVisible({ timeout: 12_000 })
+        await expect.poll(() => textInConversationViewport(pane, latestText), { timeout: 12_000 }).toBe(true)
         await page.waitForFunction(base => (window.__hapiColdOpening.navigation?.commitRevision ?? 0) > base, baseline, { timeout: 12_000 })
     } catch { failure = 'Return-latest did not expose the latest marker and commit' }
     const committed = await page.evaluate(base => (window.__hapiColdOpening.navigation?.commitRevision ?? 0) > base, baseline)
-    return { attempted: true, kind: 'to-bottom', committed, targetVisible: await pane.getByText(latestText, { exact: true }).isVisible().catch(() => false), failure }
+    return { attempted: true, kind: 'to-bottom', committed, targetVisible: await textInConversationViewport(pane, latestText), failure }
 }
 
 /** Hashed evidence only; no transcript text or source node ids in artifacts. */

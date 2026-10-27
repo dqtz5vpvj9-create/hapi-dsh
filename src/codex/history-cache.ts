@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { writeDurableJson } from './durable-file.ts'
 import { z } from 'zod'
 import type { HapiMessage } from './contracts.js'
 import { record } from './native.js'
@@ -8,6 +8,18 @@ import { record } from './native.js'
 /** A larger disposable cache must not create a second unseen full history or
  * a multi-hundred-MiB synchronous JSON string on the Host main thread. */
 export const MAX_HISTORY_CACHE_BYTES = 8 * 1024 * 1024
+
+/** Atomically replace a disposable snapshot without waiting for disk flushes.
+ * Source reconciliation remains authoritative if a crash loses the cache. */
+function writeCacheJson(filename: string, value: unknown): void {
+  const encoded = JSON.stringify(value)
+  const temporary = `${filename}.${randomUUID()}.tmp`
+  try {
+    const file = openSync(temporary, 'wx', 0o600)
+    try { writeFileSync(file, encoded) } finally { closeSync(file) }
+    renameSync(temporary, filename)
+  } finally { rmSync(temporary, { force: true }) }
+}
 
 /** Keep a contiguous newest tail under a byte budget; one oversized newest row
  * is preserved whole because replacing it with a truncated row would be wrong. */
@@ -64,7 +76,7 @@ export class NativeHistoryCache {
     // newest tail remains useful for a stale fallback, while dropping older
     // cached rows is safe because the source remains authoritative.
     const bounded = cacheTail(rows, maxBytes, epoch), truncated = bounded.length !== rows.length
-    writeDurableJson(this.filename, { version: 1, complete: complete && !truncated, rows: bounded, ...(epoch === undefined ? {} : { epoch }) })
+    writeCacheJson(this.filename, { version: 1, complete: complete && !truncated, rows: bounded, ...(epoch === undefined ? {} : { epoch }) })
     this.writeOpening(bounded, complete && !truncated, epoch, maxBytes)
   }
   writeOpening(rows: readonly HapiMessage[], complete = false, epoch?: number, maxBytes = MAX_HISTORY_CACHE_BYTES): void {
@@ -72,7 +84,7 @@ export class NativeHistoryCache {
     // slice. Both are disposable, identity-scoped caches; source epoch checks
     // and reconciliation remain authoritative if the process stops between writes.
     const opening = cacheTail(rows, maxBytes, epoch, 200)
-    writeDurableJson(this.openingFile, { version: 1, complete: complete && rows.length === opening.length,
+    writeCacheJson(this.openingFile, { version: 1, complete: complete && rows.length === opening.length,
       rows: opening, ...(epoch === undefined ? {} : { epoch }) })
   }
 }

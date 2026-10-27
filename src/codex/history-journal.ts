@@ -164,6 +164,12 @@ export class SourceHistoryOrder {
   private readonly keys = new Set<string>()
   private latest: HapiMessage | undefined
   overlapsLatest(row: HapiMessage): boolean { return !!this.latest && sourceHistoryKey(row) === sourceHistoryKey(this.latest) }
+  /** Newest source position accepted by this display journal. */
+  latestPosition(): { at: number; seq: number } | undefined {
+    return this.latest ? { at: this.latest.invokedAt ?? this.latest.createdAt, seq: this.latest.seq ?? 0 } : undefined
+  }
+  /** Newest accepted source row; continuity is proved against this identity. */
+  latestRow(): HapiMessage | undefined { return this.latest }
   needsReseed(rows: readonly HapiMessage[]): boolean {
     const latest = this.latest
     if (!latest) return false

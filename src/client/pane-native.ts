@@ -15,6 +15,8 @@ import { installWorkspaceStyles } from './styles.ts'
 import { installNativeIntegration } from './native-integration.tsx'
 import { installHapiTabs } from './hapi-tabs.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
+import { installPaneMountedChatConsumer, type MountedChatPane } from './mounted-chat-control.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 
 /** Marker attribute `installWorkspaceStyles` writes on its style element. */
 const STYLE_MARKER = 'style[data-hapi-workspace-styles]'
@@ -48,11 +50,28 @@ async function disposeAll(disposers: Array<() => void | Promise<void>>): Promise
  * @returns asynchronous disposer owned by the caller's pane lifetime.
  */
 export function installPaneNative(ctx: Context): () => Promise<void> {
+    return installPaneNativeInternal(ctx, null)
+}
+
+function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): () => Promise<void> {
+    try { performance.mark(pane ? 'hapi-dsh:pane-native:with-pane' : 'hapi-dsh:pane-native:no-pane') } catch { /* diagnostics are optional */ }
     if (ctx.get('hapiPaneNative')) throw new Error('Pane HAPI surfaces are already installed on this Context')
     const api = ctx.remote.hapi
     const disposers: Array<() => void | Promise<void>> = []
     try {
         disposers.push(installPaneDocumentStyles(document))
+        // One consumer per Pane graph: the mounted Chat control is published
+        // under this Pane's own element, so other panes never share or clear it.
+        if (pane) {
+            // `toLatest` asks this consumer to fetch the newest source window
+            // before landing, so the control stays the single scroll owner.
+            disposers.push(installPaneMountedChatConsumer(ctx, pane, async (sessionId, signal) => {
+                const session = ctx.sessions.binding(sessionId as SessionId)?.session as
+                    { returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } | undefined
+                const landed = await session?.returnToLive?.(signal)
+                if (landed !== true) throw new Error('The source has no newer window to land on')
+            }))
+        }
         const unlocale = ctx.locale.register('hapiWorkspace', { en, zh })
         disposers.push(unlocale)
         const integration = installNativeIntegration(ctx, api, sessionId => {
@@ -78,11 +97,11 @@ export function installPaneNative(ctx: Context): () => Promise<void> {
  * @param ctx - the activated pane graph Context.
  * @returns asynchronous disposer that removes the surfaces, then the namespace.
  */
-export async function mountPaneNative(ctx: Context): Promise<() => Promise<void>> {
+export async function mountPaneNative(ctx: Context, pane?: MountedChatPane | null): Promise<() => Promise<void>> {
     const unmount = await ctx.remote.$mount(HAPI_REMOTE)
     let dispose: (() => Promise<void>) | undefined
     try {
-        dispose = installPaneNative(ctx)
+        dispose = installPaneNativeInternal(ctx, pane ?? null)
     } catch (error) {
         await unmount()
         throw error

@@ -1,7 +1,30 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DisplayLeases } from '../src/codex/display-leases.ts'
-import { createDisplayLeaseRegistry, type DisplayLeaseOptions } from '../src/client/surface/display-leases.ts'
+import { createDisplayLeaseRegistry, displayLeaseIdentity, type DisplayLeaseOptions } from '../src/client/surface/display-leases.ts'
+
+test('ordinary DSH catalog identity never creates a HAPI lease', async () => {
+  const h = harness()
+  try {
+    const row = { sourceSessionId: 'session-ordinary', projectionValues: {} }
+    const identity = displayLeaseIdentity({}, row)
+    if (identity) h.registry.remember('session-ordinary', identity)
+    h.registry.retain('session-ordinary'); await h.registry.flush()
+    assert.deepEqual(h.actions, [])
+    assert.deepEqual(h.errors, [])
+  } finally { h.registry.dispose() }
+})
+
+test('leases preserve exact saved or projected HAPI identities without guessing a Hub', () => {
+  const row = { projectionValues: { hapi: { hubId: 'source-hub', hapiSessionId: 'source-uuid' } } } as never
+  assert.deepEqual(displayLeaseIdentity({}, row), { hubId: 'source-hub', sourceSessionId: 'source-uuid' })
+  assert.deepEqual(displayLeaseIdentity({ sourceHubId: 'saved-hub', sourceSessionId: 'saved-source' }, undefined),
+    { hubId: 'saved-hub', sourceSessionId: 'saved-source' })
+  assert.equal(displayLeaseIdentity({ sourceSessionId: 'other-source' }, row), undefined)
+  assert.equal(displayLeaseIdentity({ sourceSessionId: 'source-uuid' }, undefined), undefined)
+  assert.equal(displayLeaseIdentity({}, { projectionValues: { hapi: { hapiSessionId: 'source-uuid' } } } as never), undefined)
+  assert.equal(displayLeaseIdentity({}, { projectionValues: { hapiObserved: { hubId: 'hub', hapiSessionId: 'child', sidechain: true } } } as never), undefined)
+})
 
 const deferred = () => {
   let resolve!: () => void, reject!: (error: unknown) => void

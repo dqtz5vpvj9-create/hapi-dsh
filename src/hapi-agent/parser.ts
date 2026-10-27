@@ -14,6 +14,8 @@ export type SourcePart = { type: 'text'; text: string } | { type: 'reasoning'; t
 
 interface ObservedBase {
   key: string; rowId: string; localId: string | null; seq: number | null; createdAt: number
+  /** Indexed source cursor time, independent of the item's display timestamp. */
+  sourceAt?: number
   scopeId: string | null; parentToolCallId: string | null; fingerprint: string; model: string | null
   nativeExecution?: NativeExecution
 }
@@ -117,7 +119,7 @@ function usageOf(value: unknown, base: ObservedBase, inclusive: boolean): Observ
 
 function fingerprint(item: ObservedItem): ObservedItem {
   item.fingerprint = createHash('sha256').update(canonicalJson({
-    ...item, rowId: undefined, localId: undefined, seq: undefined, createdAt: undefined, fingerprint: undefined,
+    ...item, rowId: undefined, localId: undefined, seq: undefined, createdAt: undefined, sourceAt: undefined, fingerprint: undefined,
     nativeExecution: item.nativeExecution ? { ...item.nativeExecution, turn: undefined } : undefined,
     ...(item.kind === 'assistant' ? { live: undefined } : {}), ...(item.kind === 'tool-call' ? { progress: undefined } : {}),
   })).digest('hex')
@@ -143,6 +145,7 @@ function parseObservedBody(row: HapiMessage, scopes: ObservedScopeIndex): Observ
   const sourceKey = childTrace ? str(data?.id) ?? row.id : row.id
   const nativeExecution = nativeExecutionFor(childTrace ? data?.nativeExecution : record(envelope.meta)?.nativeExecution ?? data?.nativeExecution)
   const base: ObservedBase = { key: `${namespace}${sourceKey}`, rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt,
+    sourceAt: row.invokedAt ?? row.createdAt,
     scopeId, parentToolCallId,
     fingerprint: '', model: str(record(data?.message)?.model) ?? str(data?.model) ?? null,
     ...(nativeExecution ? { nativeExecution } : {}) }
@@ -287,13 +290,13 @@ export function parseObservedMessage(row: HapiMessage, scopes?: ObservedScopeInd
     // Every indexed item may repeat these source lifecycle facts. One stable
     // terminal identity is shared by the explicit event and the metadata.
     values.push(fingerprint({ key: `${scopeId ?? 'root'}:native-end:${nativeExecution.threadId}:${nativeExecution.turnId}`,
-      rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt, scopeId, parentToolCallId,
+      rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt, sourceAt: row.invokedAt ?? row.createdAt, scopeId, parentToolCallId,
       model: null, fingerprint: '', kind: 'end', reason: nativeExecution.turn.status === 'completed' ? 'completed'
         : nativeExecution.turn.status === 'interrupted' ? 'aborted' : 'error', error: null,
       nativeExecution: { threadId: nativeExecution.threadId, turnId: nativeExecution.turnId, turn: nativeExecution.turn } }))
   }
   for (const completion of scopes.completionsForRow(row)) values.push(fingerprint({
-    ...completion, rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt,
+    ...completion, rowId: row.id, localId: row.localId, seq: row.seq, createdAt: row.createdAt, sourceAt: row.invokedAt ?? row.createdAt,
     kind: 'end', model: null, fingerprint: '',
   }))
   return values

@@ -12,7 +12,7 @@
  * 1. the reader explicitly moved toward earlier content (`up` intent);
  * 2. the conversation view is open and its window actually has older history;
  * 3. no page is already loading;
- * 4. the view owns the tail (do not pull history while pinned to the bottom);
+ * 4. tail following blocks prefetch until the reader reaches the actual top;
  * 5. the reader has no active selection/fixation to interrupt;
  * 6. the scrollport is within the lead distance from the top;
  * 7. the request budget allows it (single flight, burst, backoff, cap).
@@ -35,6 +35,8 @@ export interface EarlierViewState {
     readonly scrollTop: number
     /** The conversation scrollport's client height. */
     readonly clientHeight: number
+    /** The full rendered scroll height, including the current short window. */
+    readonly scrollHeight: number
     /** A text selection or equivalent reader fixation must not be interrupted. */
     readonly fixated: boolean
 }
@@ -132,7 +134,11 @@ export class EarlierLoadPolicy {
         if (!state.open) return { request: false, reason: 'not-open' }
         if (!state.hasMore) return { request: false, reason: 'exhausted' }
         if (state.loading) return { request: false, reason: 'loading' }
-        if (state.followingTail) return { request: false, reason: 'following-tail' }
+        // A short window can remain within official bottom-follow tolerance
+        // even at its top. An explicit upward gesture there may use the
+        // official Load earlier action, which owns follow release and anchoring.
+        if (state.followingTail && state.scrollTop > 1)
+            return { request: false, reason: 'following-tail' }
         if (state.fixated) return { request: false, reason: 'fixated' }
         if (!this.eligible(state)) return { request: false, reason: 'not-open' }
         const lead = this.nearTop(state.clientHeight)

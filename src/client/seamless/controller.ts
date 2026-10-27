@@ -45,6 +45,7 @@ import type { EarlierLoadBudgetLimits } from './budget.ts'
 import { keyIntent, scrollIntent, touchIntent, wheelIntent, type ReaderIntent } from './intent.ts'
 import { EarlierLoadPolicy, nearTopPixels, type EarlierViewState } from './policy.ts'
 import { automaticHistoryBounds, automaticHistoryIdentity } from './shared.ts'
+import { activateOfficialLatest, registerLatestCancellation } from '../reading-view.ts'
 
 /** Diagnostics event emitted by one pane controller. */
 export interface SeamlessHistoryEvent {
@@ -88,6 +89,17 @@ export interface SeamlessHistoryOptions {
     readonly maxAutomaticPagesPerSession?: number
     /** Monotonic clock override; defaults to the document's performance clock. */
     readonly now?: () => number
+    /**
+     * Programmatic older-page request through the mounted Chat control. Returns
+     * false (or rejects) when the control cannot serve the page; the official
+     * DOM control is then clicked as before.
+     */
+    readonly loadOlderProgrammatically?: (pane: HTMLElement, sessionId: string | null, signal: AbortSignal) => Promise<boolean>
+    /** Data-only forward page at the bottom of a detached source window. */
+    readonly loadAfter?: (pane: HTMLElement, sessionId: string | null) => boolean | Promise<boolean>
+    /** False synchronously keeps the normal official action. A Promise resolves
+     * only after this source's latest window commits; false cancels placement. */
+    readonly returnToLive?: (pane: HTMLElement, sessionId: string | null, signal: AbortSignal) => boolean | Promise<boolean>
 }
 
 /** How long a scroll/hit sample stays attributable to a real reader input. */
@@ -124,6 +136,8 @@ interface ProgressProbe {
     readonly firstKey: string | null
     /** Number of anchored flow rows currently mounted. */
     readonly count: number
+    /** Position of the requested head in this window; -1 means it was removed. */
+    readonly retainedHeadIndex?: number
 }
 
 /** One measurement of the pane's chat surface. */
@@ -156,33 +170,39 @@ interface PendingLoad {
  * @param column - outer chat column.
  * @returns stable measurements used to prove a prepend happened.
  */
-export function probeHistoryWindow(column: HTMLElement): ProgressProbe {
+export function probeHistoryWindow(column: HTMLElement, retainedHead?: string | null): ProgressProbe {
     const rows = column.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')
+    let firstKey: string | null = null
+    let retainedHeadIndex = -1
+    let index = 0
     for (const row of rows) {
         if (row.closest('[hidden]') !== null) continue
         const key = row.getAttribute('data-chat-anchor-key')
-        if (key !== null && key !== '') return { firstKey: key, count: rows.length }
+        if (key === null || key === '') continue
+        firstKey ??= key
+        if (key === retainedHead) retainedHeadIndex = index
+        index++
+        if (retainedHead == null || retainedHeadIndex >= 0) break
     }
-    return { firstKey: null, count: rows.length }
+    return { firstKey, count: rows.length, ...(retainedHead == null ? {} : { retainedHeadIndex }) }
 }
 
 /**
  * Whether the probe proves older rows were prepended.
  *
- * A prepend inserts rows above the retained window: the topmost anchored row
- * becomes a different row *and* the mounted row set grows. Appends from a live
- * turn grow the row set but leave the top row alone; a window replace changes
- * the top row but is not progress. Requiring both keeps streaming and resyncs
- * out of the success/failure decision.
+ * A prepend puts an older head before the retained original head. The bounded
+ * source window may evict tail rows in the same batch, so its total count need
+ * not grow. A live append keeps the original head at index zero; a replacement
+ * which removes it is not proof of an earlier page.
  *
  * @param before - probe captured when the request started.
  * @param after - probe read after the request settled.
  * @returns whether the loaded window moved toward older history.
  */
-function progressed(before: ProgressProbe, after: ProgressProbe): boolean {
-    if (after.count <= before.count || after.firstKey === null) return false
-    if (before.firstKey === null) return true
-    return before.firstKey !== after.firstKey
+export function historyWindowProgressed(before: ProgressProbe, after: ProgressProbe): boolean {
+    if (after.firstKey === null) return false
+    if (before.firstKey === null) return after.count > 0
+    return after.firstKey !== before.firstKey && after.retainedHeadIndex !== undefined && after.retainedHeadIndex > 0
 }
 
 /**
@@ -198,6 +218,13 @@ function progressed(before: ProgressProbe, after: ProgressProbe): boolean {
  */
 export function historyWindowWasReset(before: ProgressProbe, after: ProgressProbe): boolean {
     return after.count < before.count && after.firstKey !== before.firstKey
+        && (after.retainedHeadIndex === undefined || after.retainedHeadIndex < 0)
+}
+
+/** Scroll compensation cannot renew or reverse the last real reader gesture. */
+export function historyScrollBelongsToReader(intent: ReaderIntent, gesture: ReaderIntent,
+    gestureAge: number, draggingScrollbar: boolean): boolean {
+    return intent !== 'none' && (draggingScrollbar || (intent === gesture && gestureAge <= FRESH_INPUT_MS))
 }
 
 /**
@@ -274,16 +301,23 @@ class ConversationHistoryController {
     private disposed = false
     private attached = false
     private sessionId: string | null = null
+    private pendingProgrammatic: AbortController | undefined
     private identity: string | null = null
     private lastScrollTop: number | null = null
     private lastUserInputAt = Number.NEGATIVE_INFINITY
+    private lastUserIntent: ReaderIntent = 'none'
     private quietUntil = Number.NEGATIVE_INFINITY
     private touchY: number | null = null
     private touchActive = false
     private touchMotion = false
     private touchScrolling = false
     private touchWantsEarlier = false
+    private touchWantsLater = false
     private touchCancelled = false
+    private forwarding = false
+    private latestNavigation: AbortController | undefined
+    private readonly unwatchReadingIntent: () => void
+    private lastForwardAt = Number.NEGATIVE_INFINITY
     private touchSettleTimer: ReturnType<typeof setTimeout> | undefined
     private touchEndFrame: number | undefined
     private pending: PendingLoad | null = null
@@ -322,6 +356,7 @@ class ConversationHistoryController {
             ...(options.nearTop === undefined ? {} : { nearTop: options.nearTop }),
         })
         this.sessionId = content.getAttribute('data-conversation-session')
+        this.unwatchReadingIntent = registerLatestCancellation(content, () => this.cancelLatest())
         this.listen('scroll', this.onScroll, { capture: true, passive: true })
         this.listen('scrollend', this.onScrollEnd, { capture: true, passive: true })
         this.listen('wheel', this.onWheel, { passive: true })
@@ -331,6 +366,7 @@ class ConversationHistoryController {
         this.listen('touchcancel', this.onTouchEnd, { passive: true })
         this.listen('keydown', this.onKeyDown, { passive: true })
         this.listen('pointerdown', this.onPointerDown, { passive: true })
+        this.listen('click', this.onClick, { capture: true })
     }
 
     /** The clock shared by every controller of this document. */
@@ -338,7 +374,7 @@ class ConversationHistoryController {
         return this.shared.clock()
     }
 
-    /** Attach one passive, non-intercepting listener. */
+    /** Attach one listener; only an asynchronous latest action is intercepted. */
     private listen<T extends Event>(type: string, listener: (event: T) => void, options: AddEventListenerOptions): void {
         const installed = listener as EventListener
         this.content.addEventListener(type, installed, options)
@@ -382,8 +418,8 @@ class ConversationHistoryController {
     }
 
     /** Read the transcript probe used to prove a prepend; only while watching. */
-    private probeOf(measured: Measured): ProgressProbe {
-        return probeHistoryWindow(measured.column)
+    private probeOf(measured: Measured, retainedHead?: string | null): ProgressProbe {
+        return probeHistoryWindow(measured.column, retainedHead)
     }
 
     /** Read the official state the policy needs, including reader fixation. */
@@ -395,6 +431,7 @@ class ConversationHistoryController {
             followingTail: measured.followingTail,
             scrollTop: measured.scroller.scrollTop,
             clientHeight: measured.scroller.clientHeight,
+            scrollHeight: measured.scroller.scrollHeight,
             fixated: this.fixated(measured.scroller),
         }
     }
@@ -436,12 +473,14 @@ class ConversationHistoryController {
         const next = this.content.getAttribute('data-conversation-session')
         if (next === this.sessionId) return
         const previous = this.sessionId
+        this.cancelLatest()
         this.cancelPending('session-changed')
         this.policy.reset()
         this.sessionId = next
         this.identity = next === null ? null : this.identityOf(this.content)
         this.lastScrollTop = null
         this.lastUserInputAt = Number.NEGATIVE_INFINITY
+        this.lastUserIntent = 'none'
         this.quietUntil = Number.NEGATIVE_INFINITY
         this.touchY = null
         this.cancelTouchPaging()
@@ -527,15 +566,18 @@ class ConversationHistoryController {
     }
 
     /** Record reader input and, when it asks for earlier content, run the policy. */
-    private input(intent: ReaderIntent, now: number): void {
+    private input(intent: ReaderIntent, now: number, gesture = true): void {
         if (intent !== 'up' && intent !== 'down') return
-        this.lastUserInputAt = now
+        if (gesture) { this.lastUserInputAt = now; this.lastUserIntent = intent }
         if (this.touchMotion) {
             const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+            const atBottom = scroller !== null && scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 2
             this.touchWantsEarlier = !this.touchCancelled && intent === 'up' && scroller !== null
                 && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)
+            this.touchWantsLater = !this.touchCancelled && intent === 'down' && atBottom
             return
         }
+        if (intent === 'down') { this.requestLater(now); return }
         if (intent !== 'up') return
         this.requestEarlier(now)
     }
@@ -552,7 +594,8 @@ class ConversationHistoryController {
         const now = this.now()
         if (this.touchMotion) {
             this.touchScrolling = true
-            if (previous !== null) this.input(scrollIntent(previous, current), now)
+            if (previous !== null && scrollIntent(previous, current) === this.lastUserIntent)
+                this.input(this.lastUserIntent, now, false)
             this.scheduleTouchFallback(target)
             return
         }
@@ -563,13 +606,22 @@ class ConversationHistoryController {
         // fresh wheel/touch/key sample, or a scrollbar drag whose press target
         // is the scrollport itself.
         const draggingScrollbar = this.shared.pointerTarget === target
-        if (now - this.lastUserInputAt > FRESH_INPUT_MS && !draggingScrollbar) {
+        if (!historyScrollBelongsToReader(intent, this.lastUserIntent, now - this.lastUserInputAt, draggingScrollbar)) {
             if (Math.abs(current - previous) > Math.max(64, target.clientHeight)) {
                 this.quietUntil = now + QUIET_AFTER_JUMP_MS
             }
             return
         }
-        this.input(intent, now)
+        this.input(intent, now, false)
+        if (this.pending !== null && intent !== 'none') {
+            // A reader scroll can start a page itself, or arrive after its
+            // originating wheel has clicked loadEarlier. The official reader
+            // sample releases that newly retained anchor in either case, even
+            // when no second wheel arrives before the page commits.
+            this.releaseInterruptedAnchor()
+            this.interruptedAnchor = captureInterruptedPrepend(target)
+            if (intent === 'up') this.interruptedAnchor?.retainAtUpperEdge()
+        }
     }
 
     /** A wheel sample is the primary desktop gesture; respect nested scrollports. */
@@ -585,6 +637,7 @@ class ConversationHistoryController {
         if (!(target instanceof Element) || !scroller.contains(target)) return
         if (this.innerScrollConsumes(target, scroller, intent)) return
         if (event.isTrusted) {
+            this.cancelLatest()
             // Wheel input also releases the official paging anchor. At zero
             // another upward wheel may produce no scroll/scrollend at all,
             // leaving an in-flight prepend with no reading-position owner.
@@ -607,6 +660,7 @@ class ConversationHistoryController {
         this.touchY = null
         const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
         if (event.touches.length !== 1 || !(event.target instanceof Element) || !scroller?.contains(event.target)) return
+        if (event.isTrusted) this.cancelLatest()
         this.touchActive = true
         this.touchMotion = true
         this.touchY = event.touches[0]?.clientY ?? null
@@ -709,9 +763,11 @@ class ConversationHistoryController {
         this.ensureSession()
         if (!this.touchMotion) return
         const requested = this.touchWantsEarlier
+        const requestedLater = this.touchWantsLater
         if (!this.interruptedAnchor?.waitingAtUpperEdge) this.releaseInterruptedAnchor()
         this.resetTouchPaging()
         if (requested && this.usable()) this.requestEarlier(this.now())
+        if (requestedLater && this.usable()) this.requestLater(this.now())
     }
 
     private cancelTouchPaging(): void {
@@ -728,6 +784,7 @@ class ConversationHistoryController {
         this.touchMotion = false
         this.touchScrolling = false
         this.touchWantsEarlier = false
+        this.touchWantsLater = false
         this.touchCancelled = false
     }
 
@@ -737,6 +794,8 @@ class ConversationHistoryController {
     }
 
     private readonly onPointerDown = (event: PointerEvent): void => {
+        if (event.isTrusted && event.target instanceof Element
+            && event.target.closest(SCROLLER_SELECTOR) !== null && !isEditable(event.target)) this.cancelLatest()
         if (event.isTrusted && event.target instanceof Element
             && event.target.closest('button, a, input, textarea, select, [contenteditable]') !== null) {
             this.releaseInterruptedAnchor()
@@ -758,7 +817,90 @@ class ConversationHistoryController {
         const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
         if (scroller === null) return
         if (this.innerScrollConsumes(target, scroller, intent)) return
+        if (event.isTrusted) this.cancelLatest()
         this.input(intent, this.now())
+    }
+
+    /**
+     * Normal downward reading at the bottom of a detached source window.
+     * This is a data page only: one in-flight request, no scroll ownership.
+     * Tail-following panes skip it; the official to-bottom control is the
+     * explicit latest intent handled by {@link onClick}.
+     */
+    private requestLater(now: number): void {
+        if (this.disposed || this.forwarding || this.pending !== null || now - this.lastForwardAt < 400) return
+        const loadAfter = this.options.loadAfter
+        if (loadAfter === undefined || !this.usable()) return
+        const measured = this.measure()
+        if (measured === null) return
+        const max = measured.scroller.scrollHeight - measured.scroller.clientHeight
+        if (measured.scroller.scrollTop < max - 2) return
+        const pane = this.content.closest<HTMLElement>(PANE_SELECTOR) ?? this.content
+        this.forwarding = true
+        this.lastForwardAt = now
+        let result: boolean | Promise<boolean>
+        try { result = loadAfter(pane, this.sessionId) } catch (error) {
+            this.forwarding = false
+            this.emit('failed', `forward: ${String(error)}`)
+            return
+        }
+        void Promise.resolve(result).then(loaded => {
+            if (loaded) this.emit('committed', 'forward')
+        }, error => { this.emit('failed', `forward: ${String(error)}`) }).finally(() => { this.forwarding = false })
+    }
+
+    /** Explicit latest: the official to-bottom button, not normal scrolling. */
+    private readonly onClick = (event: MouseEvent): void => {
+        if (!event.isTrusted || this.options.returnToLive === undefined) return
+        const target = event.target
+        if (!(target instanceof Element)) return
+        const button = target.closest('button')
+        if (!(button instanceof HTMLButtonElement) || !this.content.contains(button)) return
+        // A newer official turn/reading action must win over an older request.
+        this.cancelLatest()
+        const className = typeof button.className === 'string' ? button.className : ''
+        if (!className.includes('toBottom')) return
+        if (!this.usable()) return
+        this.ensureSession()
+        this.cancelPending('latest-navigation')
+        this.cancelTouchPaging()
+        this.lastUserIntent = 'none'
+        this.lastUserInputAt = Number.NEGATIVE_INFINITY
+        const pane = this.content.closest<HTMLElement>(PANE_SELECTOR) ?? this.content
+        const operation = new AbortController(), sessionId = this.sessionId
+        let returned: boolean | Promise<boolean>
+        try { returned = this.options.returnToLive(pane, sessionId, operation.signal) } catch (error) {
+            event.preventDefault(); event.stopPropagation()
+            this.emit('failed', `latest: ${String(error)}`)
+            return
+        }
+        if (returned === false) return
+        // The original event must not move the OLD window to bottom while its
+        // replacement is in flight. Replaying the official control after commit
+        // invokes the same ChatReading owner and does not restart this request.
+        event.preventDefault(); event.stopPropagation()
+        this.latestNavigation = operation
+        void Promise.resolve(returned).then(async committed => {
+            if (operation.signal.aborted || this.latestNavigation !== operation) return
+            if (!committed) throw new Error('The latest source window could not be opened.')
+            if (!this.usable() || this.content.getAttribute('data-conversation-session') !== sessionId) {
+                this.cancelLatest(); return
+            }
+            await activateOfficialLatest(this.content, operation.signal)
+        }).catch(error => {
+            if (!operation.signal.aborted) this.emit('failed', `latest: ${String(error)}`)
+        }).finally(() => { if (this.latestNavigation === operation) this.latestNavigation = undefined })
+    }
+
+    private cancelLatest(): void {
+        this.latestNavigation?.abort()
+        this.latestNavigation = undefined
+    }
+
+    /** Visibility/session changes invalidate a pending destination immediately. */
+    refresh(): void {
+        this.ensureSession()
+        if (!this.usable()) this.cancelLatest()
     }
 
     /** Evaluate policy and, when approved, click the official control once. */
@@ -812,6 +954,7 @@ class ConversationHistoryController {
             return
         }
         this.policy.requested(now)
+        this.lastScrollTop = measured.scroller.scrollTop
         this.pending = { origin: 'automatic', identity, probe: this.probeOf(measured), startedAt: now }
         this.awaitingRecovery = false
         this.recoveryProbe = null
@@ -819,7 +962,28 @@ class ConversationHistoryController {
         this.emit('requested', null)
         this.observe(measured.column)
         this.setPendingTimers()
-        try { control.click() } catch { this.settle('error', now) }
+        const programmatic = this.options.loadOlderProgrammatically
+        if (programmatic === undefined) {
+            try { control.click() } catch { this.settle('error', now) }
+        } else {
+            // The mounted control commits the page without a synthetic click;
+            // any refusal falls back to the official DOM control.
+            const operation = new AbortController()
+            this.pendingProgrammatic = operation
+            void Promise.resolve()
+                .then(() => programmatic(measured.column, this.sessionId, operation.signal))
+                .then((handled) => {
+                    // A settle/dispose cancels this attempt; a late resolution
+                    // must not click the control for a page we no longer track.
+                    if (operation.signal.aborted) return
+                    if (handled !== true) { try { control.click() } catch { this.settle('error', this.now()) } }
+                })
+                .catch(() => {
+                    if (operation.signal.aborted) return
+                    try { control.click() } catch { this.settle('error', this.now()) }
+                })
+                .finally(() => { if (this.pendingProgrammatic === operation) this.pendingProgrammatic = undefined })
+        }
     }
 
     /** Watch an upstream page only when a reader gesture interrupts its anchor. */
@@ -856,9 +1020,9 @@ class ConversationHistoryController {
         const measured = this.measure()
         if (measured === null) { this.settle('reset', now, 'view-unmounted'); return }
         if (!this.usable() || measured.followingTail) this.releaseInterruptedAnchor()
-        const after = this.probeOf(measured)
+        const after = this.probeOf(measured, pending.probe.firstKey)
         if (historyWindowWasReset(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
-        if (progressed(pending.probe, after)) { this.commitPending(now); return }
+        if (historyWindowProgressed(pending.probe, after)) { this.commitPending(now); return }
         this.interruptedAnchor?.refresh()
         // The official control re-enabling means the fetch settled with nothing
         // prepended. A control still disabled means upstream is still loading:
@@ -876,8 +1040,8 @@ class ConversationHistoryController {
         const now = this.now()
         const measured = this.measure()
         if (measured !== null) {
-            const after = this.probeOf(measured)
-            if (progressed(pending.probe, after)) { this.commitPending(now); return }
+            const after = this.probeOf(measured, pending.probe.firstKey)
+            if (historyWindowProgressed(pending.probe, after)) { this.commitPending(now); return }
             if (historyWindowWasReset(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
         }
         this.failPending('timeout', now)
@@ -929,6 +1093,8 @@ class ConversationHistoryController {
 
     /** Record a reset/replace: cancel the generation and drop local budgets. */
     private settle(kind: 'error' | 'reset', now: number, detail = 'error'): void {
+        this.pendingProgrammatic?.abort(new Error('The earlier page settled'))
+        this.pendingProgrammatic = undefined
         this.releaseInterruptedAnchor()
         const pending = this.pending
         if (pending === null) return
@@ -957,7 +1123,7 @@ class ConversationHistoryController {
     private checkRecovery(measured: Measured): void {
         const baseline = this.recoveryProbe
         if (baseline === null) return
-        if (!progressed(baseline, this.probeOf(measured))) return
+        if (!historyWindowProgressed(baseline, this.probeOf(measured, baseline.firstKey))) return
         this.policy.resume()
         this.awaitingRecovery = false
         this.recoveryProbe = null
@@ -981,8 +1147,12 @@ class ConversationHistoryController {
 
     /** Remove every listener, observer, timer, and diagnostic attribute. */
     dispose(): void {
+        this.pendingProgrammatic?.abort(new Error('The pane was disposed'))
+        this.pendingProgrammatic = undefined
         if (this.disposed) return
         this.disposed = true
+        this.cancelLatest()
+        this.unwatchReadingIntent()
         this.cancelPending('disposed')
         this.cancelTouchPaging()
         this.unlisten()
@@ -1023,11 +1193,9 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
     const interruptedStyle = root.createElement('style')
     interruptedStyle.textContent = INTERRUPTED_PREPEND_STYLE
     root.head.append(interruptedStyle)
-    let scheduled = false
     let disposed = false
 
     const scan = (): void => {
-        scheduled = false
         if (disposed) return
         const contents = new Set(root.querySelectorAll<HTMLElement>(CONTENT_SELECTOR))
         for (const [element, controller] of [...controllers]) {
@@ -1037,17 +1205,11 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
             }
         }
         for (const content of contents) {
-            if (controllers.has(content)) continue
+            const current = controllers.get(content)
+            if (current) { current.refresh(); continue }
             controllers.set(content, new ConversationHistoryController(root, content, options, shared, gate, ledger))
         }
     }
-    const schedule = (): void => {
-        if (scheduled || disposed) return
-        scheduled = true
-        if (view === null) { scan(); return }
-        view.requestAnimationFrame(() => scan())
-    }
-
     const pointerDown = (event: Event): void => { shared.pointerTarget = event.target instanceof Element ? event.target : null }
     const pointerUp = (): void => { shared.pointerTarget = null }
     root.addEventListener('pointerdown', pointerDown, { capture: true, passive: true })
@@ -1056,12 +1218,22 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
 
     const observer = new MutationObserver(records => {
         for (const record of records) {
-            if (record.type === 'attributes') { schedule(); return }
+            if (record.type === 'attributes') {
+                const target = record.target
+                // Only this occurrence or a visibility ancestor can invalidate
+                // its pending latest action. Disclosure aria changes inside a
+                // transcript do not require another document-wide scan.
+                if (target instanceof Element && (target.matches(CONTENT_SELECTOR)
+                    || [...controllers.keys()].some(content => target.contains(content)))) {
+                    scan(); return
+                }
+                continue
+            }
             for (const node of [...record.addedNodes, ...record.removedNodes]) {
                 if (!(node instanceof Element)) continue
                 if (node.matches(CONTENT_SELECTOR) || node.querySelector(CONTENT_SELECTOR) !== null
                     || node.matches(PANE_SELECTOR) || node.querySelector(PANE_SELECTOR) !== null) {
-                    schedule()
+                    scan()
                     return
                 }
             }
@@ -1071,7 +1243,7 @@ export function installSeamlessHistory(root: Document, options: SeamlessHistoryO
         childList: true,
         subtree: true,
         attributes: true,
-        attributeFilter: ['data-conversation-session'],
+        attributeFilter: ['data-conversation-session', 'data-hapi-pane-visible', 'aria-hidden'],
     })
 
     const dispose = (): void => {

@@ -8,6 +8,7 @@ import { DSH_VERSION } from '../cli/config.ts';
 import { CHUNK_BYTES, MACHINE_PREFIX, MACHINES_PATH, MAX_CHANNELS, MAX_FRAME_BYTES, MAX_SOCKET_BYTES, RUNNER_PATH, SOCKET_PATH,
     filterHeaders, safeSocketClose, validateUpstreamPath, validIdentifier, type FederatedMachine, type FederationFrame, type WireHeaders } from '../runner/protocol.ts';
 import { bytes, Tunnel } from '../runner/tunnel.ts';
+import { identityMatches, runtimeIdentity, RUNTIME_PROTOCOL, type RuntimeIdentityV1 } from '../runner/identity.ts';
 import { matchesPairingToken, readPairingStore, type PairedMachine } from './federation-credentials.ts';
 
 export type { FederatedMachine } from '../runner/protocol.ts';
@@ -95,7 +96,11 @@ export class FederationHub {
     private mounted = false;
     private closed = false;
 
-    constructor(private readonly options: { credentialsFile: string; httpIdleTimeoutMs?: number }) {}
+    private readonly identity: RuntimeIdentityV1;
+
+    constructor(private readonly options: { credentialsFile: string; httpIdleTimeoutMs?: number; identity?: RuntimeIdentityV1 }) {
+        this.identity = options.identity ?? runtimeIdentity({ dshVersion: DSH_VERSION });
+    }
 
     subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
     private changed(): void { for (const listener of this.listeners) { try { listener(); } catch { /* observers cannot break transport cleanup */ } } }
@@ -170,7 +175,8 @@ export class FederationHub {
             timeout.unref();
             const tunnel = new Tunnel(ws, async (frame) => {
                 if (!established) {
-                    if (frame.type !== 'hello' || frame.protocol !== 1 || frame.machineId !== paired.id || frame.dshVersion !== DSH_VERSION
+                    if (frame.type !== 'hello' || frame.protocol !== RUNTIME_PROTOCOL || frame.machineId !== paired.id
+                        || frame.dshVersion !== DSH_VERSION || !identityMatches(frame.identity, this.identity)
                         || this.runners.has(paired.id) || this.paired.get(paired.id)?.tokenHash !== paired.tokenHash || this.closed) {
                         tunnel.close(1008); return;
                     }
@@ -180,7 +186,7 @@ export class FederationHub {
                         generation: frame.generation, connectedAt: Date.now(), baseUrl: `${MACHINE_PREFIX}/${encodeURIComponent(paired.id)}/`,
                         socketUrl: `${SOCKET_PATH}?machine=${encodeURIComponent(paired.id)}` };
                     this.runners.set(paired.id, { machine, tunnel, credentialHash: paired.tokenHash });
-                    await tunnel.send({ type: 'welcome', protocol: 1 });
+                    await tunnel.send({ type: 'welcome', protocol: RUNTIME_PROTOCOL, identity: this.identity });
                     this.changed();
                     return;
                 }

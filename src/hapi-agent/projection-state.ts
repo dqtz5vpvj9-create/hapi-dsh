@@ -8,8 +8,9 @@ declare module '@deepseek-ai/dsh-session/types' {
     'plugin:hapi-dsh-observed/status': Omit<NonNullable<HapiObservedProjection>, 'notices'>
     'plugin:hapi-dsh-observed/notices': NonNullable<HapiObservedProjection>['notices']
     'plugin:hapi-dsh-observed/item': {
-      sourceRowId: string; sourceLocalId: string | null; sourceSeq: number | null;
+      sourceRowId: string; sourceLocalId: string | null; sourceSeq: number | null; sourceAt?: number;
       key: string; scopeId: string | null; parentToolCallId: string | null; surfaceSeq: number;
+      sourceStepId?: string; displayTurn?: number; displayStep?: number;
     }
   }
 }

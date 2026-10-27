@@ -5,7 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import type { PaneReadingIntent } from '../src/client/reading-intent.ts'
-import { bindPaneReading } from '../src/client/reading-view.ts'
+import { bindPaneReading, registerLatestCancellation } from '../src/client/reading-view.ts'
 
 function store<T>(initial: T) {
     let value = initial
@@ -26,12 +26,13 @@ class Events {
 }
 async function microtasks() { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
-function fixture(options: { scrollend?: boolean } = {}) {
+function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>;
+    latestControl?: 'button' | 'following' | 'missing' } = {}) {
     const observer = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver')
     Object.defineProperty(globalThis, 'MutationObserver', { configurable: true, value: class { observe() {} disconnect() {} } })
     let now = 0, id = 0, top = 300, rowTop = 500, rowPresent = true
     const timers = new Map<number, { at: number; run: () => void }>(), frames = new Map<number, FrameRequestCallback>()
-    const storage = new Map<string, string>(), writes: number[] = [], loads: number[] = []
+    const storage = new Map<string, string>(), writes: number[] = [], loads: number[] = [], officialClicks: number[] = []
     const window = Object.assign(new Events(), {
         innerWidth: 390, innerHeight: 844,
         performance: { getEntriesByType: () => [] },
@@ -44,18 +45,23 @@ function fixture(options: { scrollend?: boolean } = {}) {
     })
     const root = Object.assign(new Events(), {
         dataset: {} as Record<string, string>, isConnected: true, hidden: false,
-        closest: () => root,
+        closest: (selector: string) => selector.includes('aria-hidden') ? null : root,
         querySelector: (selector: string) => selector === '[data-conversation-scroll]' ? port : null,
-        querySelectorAll: (selector: string) => selector.includes('data-chat-anchor-key') && rowPresent ? [row] : [],
+        querySelectorAll: (selector: string) => selector === 'button[aria-label]' ? (!options.latestControl || options.latestControl === 'button' ? [latestButton] : [])
+            : selector.includes('data-chat-anchor-key') && rowPresent ? [row] : [],
+        prepend: () => {},
     })
-    const document = { defaultView: window, elementFromPoint: () => rowPresent ? row : null }
+    const document = { defaultView: window, elementFromPoint: () => rowPresent ? row : null,
+        createElement: () => ({ className: '', textContent: '', type: '', onclick: undefined, setAttribute() {}, append() {}, remove() {} }) }
     const port = {
         ...(options.scrollend === false ? {} : { onscrollend: null }), ownerDocument: document,
         scrollHeight: 5000, clientHeight: 660,
         get scrollTop() { return top }, set scrollTop(value: number) { writes.push(value); top = value },
         getBoundingClientRect: () => ({ top: 40, bottom: 700, left: 0, right: 390, height: 660 }),
         contains: (element: unknown) => element === row,
-        closest: (selector: string) => selector === '[data-conversation-scroll]' ? port : null,
+        closest: (selector: string) => selector === '[data-conversation-scroll]'
+            || selector === '[data-chat-following-tail]' && options.latestControl === 'following' ? port : null,
+        querySelector: () => null,
         querySelectorAll: () => rowPresent ? [row] : [],
     }
     const row = {
@@ -65,21 +71,26 @@ function fixture(options: { scrollend?: boolean } = {}) {
         closest: (selector: string) => selector === '[data-chat-node-key]' ? row : selector === '[data-conversation-scroll]' ? port : null,
         getAttribute: () => null, hasAttribute: () => false,
     }
+    const latestButton = {
+        className: 'official_toBottom', disabled: false, getClientRects: () => [{}],
+        click() { officialClicks.push(port.scrollHeight); port.scrollTop = port.scrollHeight - port.clientHeight },
+    }
     Object.assign(root, { ownerDocument: document })
     const state = store({ visible: true, focused: true }), reading = store<PaneReadingIntent | undefined>(undefined)
     const events = store({ revision: 0, change: { kind: 'append' } })
     const history = store({ openState: 'open', loadingOlder: false, removed: false })
     let completeLoad: (() => void) | undefined
     const reference = { sessionId: 'session', ready: Promise.resolve(), binding: { eventSource: events,
-        session: { ...history, loadThrough(seq: number) { loads.push(seq); return new Promise<void>(resolve => { completeLoad = resolve }) } } } } as unknown as SessionReference
+        session: { ...history, returnToLive: options.returnToLive,
+            loadThrough(seq: number) { loads.push(seq); return new Promise<void>(resolve => { completeLoad = resolve }) } } } } as unknown as SessionReference
     const ctx = { sessions: { list: { getSnapshot: () => ({ byId: { session: {} } }) } },
-        locale: { bind: () => () => 'To bottom' },
+        locale: { bind: () => () => 'To bottom', getSnapshot: () => ({ active: 'en' }) },
         uiConversation: { binding: () => ({ target: () => ({ getSnapshot: () => ({ nodes: new Map([['message-50', { anchorSeq: 50 }]]) }) }) }) } } as unknown as Context
     const navigation = { hostId: 'host', paneId: 'pane', state, reading } as unknown as WorkspacePaneNavigation
     const dispose = bindPaneReading(ctx, root as unknown as HTMLElement, reference, navigation)
     const framesNow = () => { const current = [...frames.values()]; frames.clear(); for (const run of current) run(now) }
     return {
-        root, document, window, port, row, writes, loads, state, reading,
+        root, document, window, port, row, writes, loads, officialClicks, state, reading,
         async ready() { await microtasks(); root.emit('scroll', port); framesNow() },
         replace() { events.set({ revision: events.getSnapshot().revision + 1, change: { kind: 'replace' } }) },
         gesture(type: string, values: Record<string, unknown> = {}) { root.emit(type, row, values) },
@@ -187,12 +198,112 @@ test('explicit latest navigation supersedes a deferred reconnect bookmark', asyn
     const f = fixture(); t.after(() => f.dispose()); await f.ready()
     f.gesture('touchstart', { touches: [{}] }); f.replace()
     f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
-    await microtasks()
+    await microtasks(); f.flushFrames(); await microtasks()
     assert.deepEqual(f.loads, [])
-    assert.deepEqual(f.writes, [5000], 'a deliberate latest action is not held behind implicit recovery')
+    assert.deepEqual(f.officialClicks, [5000], 'a deliberate latest action reaches the existing official scroll owner')
+    assert.deepEqual(f.writes, [4340], 'the original owner places the tail; the plugin does not write scrollTop')
     f.gesture('touchend', { touches: [] }); f.end(); f.advance(500); await microtasks()
     assert.deepEqual(f.loads, [], 'settling does not resurrect the replaced recovery request')
 })
+
+test('latest source commit precedes the official tail action on its replacement window', async t => {
+    let commit!: (value: boolean) => void
+    const committed = new Promise<boolean>(resolve => { commit = resolve })
+    const f = fixture({ returnToLive: () => committed }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    await microtasks(); f.flushFrames()
+    assert.deepEqual(f.officialClicks, [], 'the old history window must not jump to its obsolete bottom')
+    f.port.scrollHeight = 9000; f.replace(); commit(true)
+    await microtasks()
+    assert.deepEqual(f.officialClicks, [], 'source completion must first reach the mounted Chat commit')
+    f.flushFrames(); await microtasks()
+    assert.deepEqual(f.loads, [], 'latest replacement must not revive the previous reading bookmark')
+    assert.deepEqual(f.officialClicks, [9000])
+    assert.deepEqual(f.writes, [8340])
+})
+
+for (const cancel of ['reader', 'hidden'] as const) {
+    test(`a pending latest landing is cancelled by ${cancel} before its source finishes`, async t => {
+        let commit!: (value: boolean) => void, signal: AbortSignal | undefined
+        const committed = new Promise<boolean>(resolve => { commit = resolve })
+        const f = fixture({ returnToLive: current => { signal = current; return committed } })
+        t.after(() => f.dispose()); await f.ready()
+        f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+        await microtasks()
+        if (cancel === 'reader') f.gesture('wheel', { deltaY: -100 })
+        else f.state.set({ visible: false, focused: false })
+        assert.equal(signal?.aborted, true, 'the source operation must receive cancellation, not only its final scroll')
+        commit(true); await microtasks(); f.flushFrames(); await microtasks()
+        assert.deepEqual(f.officialClicks, [])
+        assert.deepEqual(f.writes, [])
+    })
+}
+
+test('failed latest source preparation retains the old window without an official tail action', async t => {
+    const f = fixture({ returnToLive: () => Promise.resolve(false) }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    await microtasks(); f.flushFrames(); await microtasks()
+    assert.deepEqual(f.officialClicks, [])
+    assert.deepEqual(f.writes, [])
+    assert.equal(f.root.dataset.hapiReading, 'error')
+})
+
+test('an existing official smooth tail owner needs no second scroll action', async t => {
+    const f = fixture({ latestControl: 'following' }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    await microtasks(); f.flushFrames(); await microtasks()
+    assert.deepEqual(f.officialClicks, [])
+    assert.deepEqual(f.writes, [], 'only the original owner completes its ongoing motion')
+    assert.equal(f.root.dataset.hapiReading, 'ready')
+    f.replace(); await microtasks()
+    assert.deepEqual(f.loads, [], 'a mid-follow position must not become a reconnect bookmark')
+})
+
+test('a missing official latest action fails without a plugin scroll fallback', async t => {
+    const f = fixture({ latestControl: 'missing' }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    await microtasks(); f.flushFrames(); await microtasks()
+    assert.deepEqual(f.officialClicks, [])
+    assert.deepEqual(f.writes, [])
+    assert.equal(f.root.dataset.hapiReading, 'error')
+})
+
+test('reader input after latest commit cancels its queued official action', async t => {
+    const f = fixture({ returnToLive: () => Promise.resolve(true) }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    await microtasks()
+    f.gesture('wheel', { deltaY: -100 }); f.flushFrames(); await microtasks()
+    assert.deepEqual(f.officialClicks, [])
+    assert.deepEqual(f.writes, [])
+})
+
+test('a new pane destination cancels only that occurrence\'s pending official latest', async t => {
+    const f = fixture(); t.after(() => f.dispose()); await f.ready()
+    const current = new AbortController(), sibling = new AbortController()
+    const unregister = registerLatestCancellation(f.root as unknown as HTMLElement, () => current.abort())
+    const other = registerLatestCancellation({} as HTMLElement, () => sibling.abort())
+    t.after(unregister); t.after(other)
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
+    assert.equal(current.signal.aborted, true, 'explicit destinations cancel before any source fetch')
+    assert.equal(sibling.signal.aborted, false, 'another pane retains its own action')
+    unregister()
+    await microtasks(); f.flushFrames(); await microtasks()
+})
+
+for (const control of ['latest', 'turn'] as const) {
+    test(`official ${control} navigation abandons the prior reconnect bookmark`, async t => {
+        const f = fixture(); t.after(() => f.dispose()); await f.ready()
+        const nav = { getAttribute: () => 'To bottom' }
+        const button = { className: control === 'latest' ? 'official_toBottom' : 'official_mark',
+            getAttribute: (name: string) => name === 'data-index' && control === 'turn' ? '20' : null,
+            closest: (selector: string) => selector === 'button' ? button : selector === 'nav[aria-label]' && control === 'turn' ? nav : null }
+        f.root.emit('click', button)
+        f.shift(120); f.replace(); await microtasks()
+        assert.deepEqual(f.loads, [], 'an intentional official navigation cannot restore the old source anchor')
+        await f.complete()
+        assert.deepEqual(f.writes, [], 'the official navigator alone places the new window')
+    })
+}
 
 test('hiding a moving pane does not leave reconnect recovery permanently waiting for its old scrollend', async t => {
     const f = fixture(); t.after(() => f.dispose()); await f.ready()

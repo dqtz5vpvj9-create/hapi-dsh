@@ -1,6 +1,8 @@
 import type { SessionFollowRequest, SessionListValue } from '@deepseek-ai/dsh-api-session-controller/types';
 
 export const OPENING_MESSAGES = 20;
+/** Source history pages precede the bounded original display seed. */
+export const DISPLAY_SEQ_OFFSET = 1_000_000_000;
 
 /** An initial viewport does not need the official 500-message ceiling. The
  * official pager chooses a contiguous cut and owns hasMore/live continuity. */

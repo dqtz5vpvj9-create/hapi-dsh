@@ -22,6 +22,8 @@ export interface CodexServiceOptions extends Omit<NativeCodexOptions, 'displayRe
   discovery?: 'eager' | 'on-demand'
   onDisplayReset?: (oldDisplayId: SessionId, newDisplayId: SessionId) => void | Promise<void>
   onError?: (error: Error, sourceSessionId?: string) => void
+  /** A retired display's virtual source window must release its agent/cache. */
+  onDisplayRetired?: (displayId: string, sourceId: string) => void
   /** Browser reference leases; absent leases keep the old retain-until-removal behavior. */
   displayLeaseTtlMs?: number
   displayReleaseGraceMs?: number
@@ -118,6 +120,7 @@ export class CodexService {
         if (!current) { this.suspended.delete(sourceId); return false }
         this.agents.delete(sourceId); this.errors.delete(sourceId)
         await current.dispose()
+        this.options.onDisplayRetired?.(current.id, sourceId)
         // A future open is a new official Session generation, never a reused
         // event namespace or an old browser-draft owner.
         this.advanceRevision(sourceId)
@@ -162,18 +165,20 @@ export class CodexService {
   failures(): ReadonlyMap<string, string> { return this.errors }
 
   /** Opening an existing view verifies its owner without re-reading the archive.
-   * Lifecycle changes still enter the serialized generation replacement path. */
-  async openSource(sourceId: string): Promise<NativeCodexAgent | undefined> {
+   * The resolver may pass its identity-checked reply for this operation only;
+   * a release boundary or identity change still requires the normal fresh read. */
+  async openSource(sourceId: string, snapshot?: HapiSession): Promise<NativeCodexAgent | undefined> {
+    if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     const releasing = this.releasing.get(sourceId)
-    if (releasing) await releasing
+    if (releasing) { await releasing; snapshot = undefined }
     const existing = this.agents.get(sourceId)
-    if (!existing) return this.attach(sourceId)
-    const source = await this.transport.getSession(sourceId)
+    if (!existing) return this.attach(sourceId, snapshot)
+    const source = snapshot ?? await this.transport.getSession(sourceId)
     if (source.metadata?.flavor !== 'codex' || source.metadata.codexNativeSession !== true
       || !source.metadata.codexSessionId || canonicalJson(bindingFor(this.transport.hubId, source)) !== canonicalJson(existing.binding)) {
       return this.reconcileSource(sourceId)
     }
-    await existing.refreshSettings()
+    await existing.refreshSettings(source)
     return this.agents.get(sourceId) === existing ? existing : this.openSource(sourceId)
   }
 
@@ -237,11 +242,12 @@ export class CodexService {
     try { await work } finally { if (this.catalogRefresh === work) this.catalogRefresh = undefined }
   }
 
-  async attach(sourceId: string): Promise<NativeCodexAgent | undefined> {
+  async attach(sourceId: string, snapshot?: HapiSession): Promise<NativeCodexAgent | undefined> {
+    if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined
     const releasing = this.releasing.get(sourceId)
-    if (releasing) await releasing
+    if (releasing) { await releasing; snapshot = undefined }
     const existing = this.agents.get(sourceId)
     if (existing) return existing
     const pending = this.attaching.get(sourceId)
@@ -252,7 +258,9 @@ export class CodexService {
     }
     const version = this.lifetimes.version(sourceId)
     const task = (async () => {
-      const source = await this.transport.getSession(sourceId)
+      // Keep attachment publication ahead of constructor hooks even when the
+      // resolver already owns the source reply.
+      const source = await (snapshot ?? this.transport.getSession(sourceId))
       if (this.disposed || !this.lifetimes.current(sourceId, version)) return undefined
       if (!(source.metadata?.flavor === 'codex' && source.metadata.codexNativeSession === true && !!source.metadata.codexSessionId)) { this.excluded.add(sourceId); this.historyJournals.delete(sourceId); return undefined }
       this.excluded.delete(sourceId)
@@ -324,6 +332,7 @@ export class CodexService {
         // service retry below survives disposal of its history sync worker.
         this.pendingResets.set(sourceId, this.pendingResets.get(sourceId) ?? previous.id)
         await previous.dispose(); this.agents.delete(sourceId)
+        this.options.onDisplayRetired?.(previous.id, sourceId)
         current = await this.createAgent(source ?? await this.transport.getSession(sourceId), rows, checkpoint, version, epoch)
         journal.assertCurrent(checkpoint); this.lifetimes.assertCurrent(sourceId, version)
         if (this.disposed) { await current.dispose(); return undefined }
@@ -423,7 +432,9 @@ export class CodexService {
         if (removedAgent && this.agents.get(sourceId) === removedAgent) {
           this.agents.delete(sourceId); this.errors.delete(sourceId)
         }
-        await removedAgent?.dispose(); return
+        await removedAgent?.dispose()
+        if (removedAgent) this.options.onDisplayRetired?.(removedAgent.id, sourceId)
+        return
       }
       if (!this.lifetimes.current(sourceId, version)) return
       const pending = this.attaching.get(sourceId)
@@ -462,7 +473,7 @@ export class CodexService {
     this.attachRetries.clear()
     this.unsubscribe?.()
     await Promise.allSettled([...this.attaching.values(), ...[...this.eventWork.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
-    await Promise.allSettled(this.list().map(agent => agent.dispose()))
+    await Promise.allSettled(this.list().map(agent => { this.options.onDisplayRetired?.(agent.id, agent.binding.hapiSessionId); return agent.dispose() }))
     this.agents.clear()
     this.eventWork.clear()
     this.reconciling.clear()

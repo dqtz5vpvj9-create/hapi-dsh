@@ -114,6 +114,10 @@ export interface OfficialEnvironment {
     directory: string;
     /** Sanitized local fixture process output for failed official-plugin activation diagnostics. */
     diagnostics(): string;
+    /** Test-only public Node inspector URLs for Host heap/external sampling. */
+    hostInspectorUrls?: string[];
+    /** The spawned Host process pid, when available. */
+    hostPid?: number | undefined;
     /** Restart only this synthetic Host, preserving its profile, source and port. */
     restartHost(): Promise<void>;
     close(): Promise<void>;
@@ -147,6 +151,7 @@ export async function startOfficialEnvironment(remote = false, options: { compan
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-browser-'));
     const children: ChildProcess[] = [];
     const processOutput: Array<() => string> = [];
+    const hostInspectorUrls: string[] = [];
     const hapi = new HapiWireFixture();
     const stopChild = async (child: ChildProcess): Promise<void> => {
         if (child.exitCode !== null || child.signalCode !== null) return;
@@ -176,11 +181,21 @@ export async function startOfficialEnvironment(remote = false, options: { compan
         stage('hub: profile copied');
         const command = await resolveDshCommand(config);
         const start = async (runtime: Command, args: string[], env: NodeJS.ProcessEnv, runner = false): Promise<string> => {
-            const child = spawn(runtime.executable, [...runtime.args, ...args], { env: { ...env, NO_COLOR: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+            const inspector = !runner && process.env.HAPI_DSH_MEMORY_HOST_INSPECTOR === '1';
+            const hasInspectorFlag = /--inspect(?:-brk)?(?:\s|=|$)/u.test(env.NODE_OPTIONS ?? '');
+            const childEnv = { ...env, NO_COLOR: '1',
+                ...(inspector && !hasInspectorFlag ? { NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --inspect=127.0.0.1:0`.trim() } : {}) };
+            const child = spawn(runtime.executable, [...runtime.args, ...args], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
             children.push(child);
             let output = '';
             processOutput.push(() => sanitize(output, [hapi.accessToken, ...(pairToken ? [pairToken] : [])]));
-            const capture = (chunk: Buffer): void => { output = (output + chunk.toString()).slice(-100_000); };
+            const capture = (chunk: Buffer): void => {
+                output = (output + chunk.toString()).slice(-100_000);
+                if (!inspector) return;
+                for (const match of output.matchAll(/Debugger listening on (wss?:\/\/[^\s]+)/gu)) {
+                    if (match[1] && !hostInspectorUrls.includes(match[1])) hostInspectorUrls.push(match[1]);
+                }
+            };
             child.stdout!.on('data', capture); child.stderr!.on('data', capture);
             child.on('exit', (code, signal) => {
                 output = (output + `\n[official fixture process exited: code=${code ?? 'none'}, signal=${signal ?? 'none'}]\n`).slice(-100_000);
@@ -201,12 +216,16 @@ export async function startOfficialEnvironment(remote = false, options: { compan
         const client = await rpcClient(launchUrl);
         const result: OfficialEnvironment = { hapi, launchUrl, origin: client.origin, rpc: client.rpc, directory,
             diagnostics: () => processOutput.map(read => read()).join('\n'), close,
+            hostInspectorUrls, hostPid: hostChild.pid,
             async restartHost() {
                 if (remote) throw new Error('Cold Host restart fixture is only supported without a remote Runner');
                 await stopChild(hostChild);
+                hostInspectorUrls.length = 0;
                 const url = await start(command, ['--profile', config.dsh.profile, '--host', '127.0.0.1',
                     '--port', new URL(result.origin).port, '--no-open'], env);
                 hostChild = children.at(-1)!;
+                result.hostInspectorUrls = hostInspectorUrls;
+                result.hostPid = hostChild.pid;
                 const client = await rpcClient(url);
                 result.launchUrl = url; result.origin = client.origin; result.rpc = client.rpc;
             },

@@ -30,6 +30,8 @@ export interface SourceLifecycleAgent {
 }
 export interface SourceLifecycleSessions {
   get(id: string): SourceLifecycleAgent | undefined
+  /** Resolve a display seq, including a paged historical row. */
+  resolveRewind?(sessionId: string, seq: number): string | undefined
   reconcileSource(sourceId: string): Promise<SourceLifecycleAgent | undefined>
   detachSource(sourceId: string): Promise<void>
 }
@@ -149,7 +151,10 @@ export class SourceLifecycle {
       const enabled = action.kind === 'fork' ? hasBoundary ? capabilities.forkAtMessage : capabilities.forkCurrent : capabilities[action.kind]
       if (!enabled) throw new Error(`The original source does not currently permit ${action.kind}`)
       const boundary = hasBoundary && (action.kind === 'rewind' || action.kind === 'fork')
-        ? action.displayMessageId === undefined ? agent.resolveRewindLocalIdAtSeq(action.displayMessageSeq!) : agent.resolveRewindLocalId(action.displayMessageId) : undefined
+        ? action.displayMessageId === undefined
+          ? (() => { const seq = (action as { displayMessageSeq?: number }).displayMessageSeq!
+            return this.sessions.resolveRewind?.(agent.id, seq) ?? agent.resolveRewindLocalIdAtSeq(seq) })()
+          : agent.resolveRewindLocalId(action.displayMessageId) : undefined
       if (hasBoundary && !boundary) throw new Error('Only an invoked original user message can be a source history boundary')
       if (action.kind === 'resume' && action.permissionMode !== undefined) {
         const modes: readonly string[] = agent.binding.flavor === 'codex' ? ['default', 'read-only', 'safe-yolo', 'yolo']

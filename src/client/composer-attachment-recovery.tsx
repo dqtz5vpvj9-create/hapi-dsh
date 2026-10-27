@@ -77,7 +77,7 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
     const style = document.createElement('style');
     style.textContent = '.hapi-attachment-recovery{font-size:12px;padding:8px 12px;border:1px solid var(--border-secondary,#8885);border-radius:8px;overflow-wrap:anywhere}.hapi-attachment-recovery p{margin:4px 0 8px}.hapi-attachment-recovery button{font:inherit;border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,Canvas);color:inherit;border-radius:5px;padding:4px 8px;margin:2px;cursor:pointer}.hapi-attachment-recovery button:disabled{opacity:.5;cursor:default}.hapi-attachment-recovery pre{white-space:pre-wrap;max-height:120px;overflow:auto}.hapi-attachment-recovery [role=alert]{color:var(--text-error,#d45d62)}';
     document.head.append(style);
-    const scope = ctx.inject(['hapiWorkspaceUi'], owner => {
+    const scope = ctx.inject(['hapiWorkspaceUi', 'sessions'], owner => {
         const Recovery = ({ props, identity, legacyIdentity }: { props: InputProps; identity: string; legacyIdentity: string }) => {
             const state = props.useInput(value => value), pending = props.useSession(value => value.pendingSubmissions), current = useRef(props); current.current = props;
             const [backup, setBackup] = useState<SavedAttachments | null>(null), [error, setError] = useState<string | null>(null);

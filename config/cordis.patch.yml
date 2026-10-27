@@ -40,6 +40,8 @@
       name: hapi-dsh/file-references
     - id: hapi-dsh-subagent-controller
       name: hapi-dsh/subagent-controller
+    - id: hapi-dsh-session-provider
+      name: ../dist/session-provider/index.js
     - id: hapi-dsh
       name: hapi-dsh
       config:

@@ -1125,6 +1125,150 @@ test('indexed native output and running state advance during blocked archival re
   } finally { release(page(fake.rows)); await archive.catch(() => {}); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
+test('native turn completion and reconnect snapshot revisions keep the original display and refresh its anchor', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-'), fake = new FakeHapi()
+  const state = (message: HapiMessage, status: 'inProgress' | 'completed'): HapiMessage => {
+    const envelope = message.content as { meta?: Record<string, unknown>; content: { data?: { nativeExecution?: object } } }
+    const execution = (envelope.meta?.nativeExecution ?? envelope.content.data?.nativeExecution) as object
+    return { ...message, content: { ...envelope, meta: { ...envelope.meta,
+      nativeExecution: { ...execution, turn: { status, started: true, ended: status === 'completed' } } } } }
+  }
+  fake.rows = [state(user(), 'inProgress'), state(agentBody('message', { message: 'Committed native answer' }, 'revision-answer'), 'inProgress')]
+  let epoch = 1
+  fake.readHook = query => page(fake.rows, { epoch, reset: query.epoch !== undefined && query.epoch !== epoch })
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!, anchor = initial.historyWindowAnchor()!, start = fake.reads.length
+    fake.rows = fake.rows.map(message => state(message, 'completed')); epoch = 2
+    await initial.refresh(true); await app.service.settled()
+    assert.equal(app.service.list()[0], initial)
+    assert.equal(initial.displayRevision, 0)
+    assert.equal(initial.historyWindowAnchor()?.epoch, 2)
+    assert.deepEqual(initial.historyWindowAnchor()?.oldest, anchor.oldest)
+    assert.ok(initial.session.snapshotEvents().some(event => event.type === 'turn/end'), 'native metadata completion reaches the existing official turn')
+    assert.equal(initial.projection.error, null)
+    epoch = 3
+    await initial.refresh(true); await app.service.settled()
+    assert.equal(app.service.list()[0], initial, 'reconnect revision alone cannot replace the owner')
+    assert.equal(initial.historyWindowAnchor()?.epoch, 3)
+    assert.ok(fake.reads.slice(start).every(query => query.afterAt !== undefined || query.limit === 32 || query.limit === 1),
+      'ordinary revisions never enter the full-history snapshot reader')
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native revision missing the known oldest source identity still replaces structurally', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-delete-'), fake = new FakeHapi()
+  const oldest = user(), latest = agentBody('message', { message: 'Retained answer' }, 'retained-revision')
+  fake.rows = [oldest, latest]
+  let epoch = 1
+  fake.readHook = query => page(fake.rows, { epoch, reset: query.epoch !== undefined && query.epoch !== epoch })
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    fake.rows = [latest]; epoch = 2
+    await initial.refresh(true); await app.service.settled()
+    const current = app.service.list()[0]!
+    assert.notEqual(current, initial)
+    assert.equal(current.binding.hapiSessionId, initial.binding.hapiSessionId)
+    assert.equal(current.resolveSourceMessageDisplaySeq(oldest.id), undefined)
+    assert.equal(current.historyWindowAnchor()?.epoch, 2)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native legacy cache recovery updates the existing anchor to its validated source revision', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-legacy-'), fake = new FakeHapi()
+  fake.rows = [user(), agentBody('message', { message: 'Legacy cached answer' }, 'legacy-revision')]
+  const logicalId = nativeSessionId(fake.hubId, fake.source.id)
+  new NativeHistoryCache(nativeStateDirectory(directory, logicalId, bindingFor(fake.hubId, fake.source)), logicalId)
+    .write(fake.rows, true)
+  let reads = 0
+  fake.readHook = query => {
+    if (++reads === 1) throw new Error('First bounded read unavailable')
+    return page(fake.rows, { epoch: 7, reset: query.epoch !== undefined && query.epoch !== 7 })
+  }
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    await app.service.settled()
+    assert.equal(app.service.list()[0], initial)
+    assert.equal(initial.displayRevision, 0)
+    assert.equal(initial.historyWindowAnchor()?.epoch, 7)
+    assert.equal(initial.historyWindowAnchor()?.oldest?.id, fake.rows[0]!.id)
+    assert.equal(initial.projection.error, null)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native long disconnect catches up forward without a full-archive replacement', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-forward-gap-')), fake = new FakeHapi()
+  fake.rows = [user(), agentBody('message', { message: 'Before disconnect' }, 'before')]
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    const start = fake.reads.length
+    const additions: HapiMessage[] = []
+    for (let turn = 1; turn <= 30; turn++) {
+      const at = 1300 + turn * 10
+      const turnId = `gap-turn-${turn}`
+      additions.push({ id: `gap-user-${turn}`, localId: `gap-input-${turn}`, seq: 100 + turn * 3, createdAt: at, invokedAt: at,
+        content: { role: 'user', content: { type: 'text', text: `Gap question ${turn}` },
+          meta: { nativeExecution: { threadId: THREAD, turnId, itemId: `gap-input-${turn}` } } } })
+      additions.push({ id: `gap-answer-${turn}`, localId: `gap-answer-${turn}`, seq: 101 + turn * 3, createdAt: at + 1,
+        content: { role: 'agent', content: { type: 'codex', data: { type: 'message', id: `gap-answer-${turn}`,
+          message: `Gap answer ${turn}`, streamSnapshot: true,
+          nativeExecution: { threadId: THREAD, turnId, itemId: `gap-answer-${turn}` } } } } })
+    }
+    fake.rows.push(...additions)
+    const ordered = [...fake.rows].sort((a, b) => (a.invokedAt ?? a.createdAt) - (b.invokedAt ?? b.createdAt))
+    fake.readHook = query => {
+      if (query.limit === 32) throw new Error('a forward gap must not use the 32-row overlap walk')
+      if (query.afterAt === undefined && query.afterSeq === undefined) return page(ordered)
+      const after = { at: query.afterAt ?? 0, seq: query.afterSeq ?? 0 }
+      const pool = ordered.filter(row => { const at = row.invokedAt ?? row.createdAt, seq = row.seq ?? 0
+        return at > after.at || at === after.at && seq > after.seq })
+      const selected = pool.slice(0, 20), next = selected.at(-1), newest = ordered.at(-1)
+      return { messages: structuredClone(selected), page: { direction: 'after', limit: 20, epoch: 1, reset: false,
+        nextAfterSeq: next?.seq ?? null, nextAfterAt: next ? next.invokedAt ?? next.createdAt : null,
+        nextBeforeSeq: null, nextBeforeAt: null, snapshotHeadSeq: newest?.seq ?? null,
+        snapshotHeadAt: newest ? newest.invokedAt ?? newest.createdAt : null, hasMore: pool.length > selected.length } }
+    }
+    await initial.refresh(true)
+    await app.service.settled()
+    assert.equal(app.service.list()[0], initial, 'long catch-up keeps the same display owner')
+    assert.equal(initial.displayRevision, 0)
+    assert.notEqual(initial.resolveSourceMessageDisplaySeq(additions.at(-1)!.id), undefined)
+    assert.ok(fake.reads.slice(start).every(query => query.afterAt !== undefined), 'recovery uses forward cursors')
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
+test('native empty opening accepts a first prompt without archive replacement', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-native-empty-first-')), fake = new FakeHapi()
+  fake.rows = []
+  const app = await mount(fake, directory, { fastHistorySeed: true })
+  try {
+    const initial = app.service.list()[0]!
+    assert.equal(initial.displayRevision, 0)
+    const before = fake.reads.length
+    const inputRow: HapiMessage = { id: 'first-input', localId: 'first-input', seq: 2, createdAt: 2000, invokedAt: 2000,
+      content: { role: 'user', content: { type: 'text', text: 'First input' }, meta: { nativeExecution: { threadId: THREAD, turnId: 'first-turn' } } } }
+    const answer = agentBody('message', { message: 'First answer' }, 'first-answer')
+    answer.createdAt = 2001; answer.seq = 3
+    answer.content = { role: 'agent', content: { type: 'codex', data: { type: 'message', id: answer.localId!,
+      message: 'First answer', streamSnapshot: true, nativeExecution: { threadId: THREAD, turnId: 'first-turn', itemId: 'first-answer' } } } }
+    fake.rows = [inputRow, answer]
+    fake.emit({ type: 'messages-consumed', sessionId: fake.source.id, localIds: ['first-input'], invokedAt: 2000 })
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: inputRow })
+    fake.emit({ type: 'message-received', sessionId: fake.source.id, message: answer })
+    await eventuallyNative(() => initial.resolveSourceMessageDisplaySeq(answer.id) !== undefined)
+    await app.service.settled()
+    assert.equal(app.service.list()[0], initial, 'the first prompt keeps its display owner')
+    assert.equal(initial.displayRevision, 0)
+    assert.ok(fake.reads.slice(before).length <= 2, 'the first prompt performs only bounded catch-up reads')
+    assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})
+
 test('native failed opening read falls back to explicitly stale cache and live output survives older backfill', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-live-first-')), fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Cached answer' }, 'cached')]
@@ -1155,10 +1299,29 @@ test('native failed opening read falls back to explicitly stale cache and live o
     await app.service.settled()
     const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
-    assert.deepEqual(answers, ['Cached answer', 'Between cache and attach', 'Live during backfill'])
+    // The official log is append-only: the live row was committed first and
+    // the delayed older row follows. Source order belongs to the annotated
+    // history surface, not to the arrival-order Session log.
+    assert.ok(answers.includes('Live during backfill'))
+    assert.ok(answers.includes('Between cache and attach'))
+    const sourceItems = current.session.snapshotEvents().flatMap(event => {
+      if ((event.type as string) !== 'plugin:hapi-dsh/native-item') return []
+      const data = (event as unknown as { data?: { sourceSeq?: unknown; nativeItemId?: unknown } }).data
+      if (!data) return []
+      return typeof data.sourceSeq === 'number' && typeof data.nativeItemId === 'string'
+        ? [{ seq: data.sourceSeq, item: data.nativeItemId }] : []
+    }).sort((left, right) => left.seq - right.seq)
+    assert.ok(sourceItems.findIndex(value => value.item === 'missing') < sourceItems.findIndex(value => value.item === 'live'),
+      'the annotated history surface retains source order for the late row')
+    assert.equal(current, initial, 'the live-first fallback keeps the same display owner')
     assert.equal(current.binding.threadId, initial.binding.threadId)
-    assert.equal(current.displayRevision, initial.displayRevision + 1)
+    assert.equal(current.displayRevision, initial.displayRevision)
     assert.equal(current.projection.error, null)
+    const revision = current.displayRevision
+    await current.refresh(true)
+    await app.service.settled()
+    assert.equal(app.service.list()[0], current, 'a fully seeded display never re-enters full-archive replacement')
+    assert.equal(current.displayRevision, revision)
     assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
   } finally { release?.(page(fake.rows)); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -1184,12 +1347,12 @@ for (const epoch of [1, 2]) test(`native opening fallback resumes bounded indexe
     app = await mount(fake, directory, { fastHistorySeed: true })
     const initial = app.service.list()[0]!
     await eventuallyNative(() => reads >= 2)
-    assert.match(initial.projection.error ?? '', /Temporary opening read failure/)
     const refreshing = initial as unknown as { liveSync: { settled(): Promise<void> } }
     await initial.handleEvent({ type: 'messages-invalidated', sessionId: fake.source.id, reason: 'native-history' })
     await refreshing.liveSync.settled()
     assert.ok(fake.reads.some(query => query.limit === 32), 'an epoch-bearing fallback must try the independent bounded live path')
-    assert.equal(initial.projection.error, null)
+    if (epoch === 1) assert.equal(initial.projection.error, null)
+    else assert.match(initial.projection.error ?? '', /Temporary opening read failure/)
     if (epoch === 1) {
       assert.notEqual(initial.resolveSourceMessageDisplaySeq(indexed.id), undefined)
       assert.equal(app.service.list()[0]!, initial, 'a same-epoch append does not wait for the archive or replace its owner')
@@ -1240,17 +1403,23 @@ for (const cacheEpoch of [null, undefined, 1, 2]) test(`native opening with ${ca
       'an unrelated cache must not replace or be merged into the validated latest source page')
     assert.equal(fake.reads[0]?.limit, 200)
     assert.equal(fake.reads[0]?.bounded, true)
-    assert.match(initial.projection.error ?? '', /initial source history tail is incomplete/)
+    // Older history is a source-window page, not a stale/faulted opening.
+    assert.equal(initial.projection.error, null)
     const live = agentBody('message', { message: 'Same epoch output during archive loading' }, 'tail-live')
     live.createdAt = 1400; live.seq = 4
     fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
     await eventuallyNative(() => initial.resolveSourceMessageDisplaySeq(live.id) !== undefined)
     release(page([older, tail])); await app.service.settled()
     const current = app.service.list()[0]!
+    // No archive replacement: the bounded live seed keeps its owner and only
+    // the live suffix is appended. Older rows stay available to the source
+    // history window instead of being replayed as a new display generation.
+    assert.equal(current, initial)
     assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
     assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 2)
     assert.notEqual(current.resolveSourceMessageDisplaySeq(live.id), undefined)
     assert.equal(current.binding.threadId, initial.binding.threadId)
+    assert.equal(current.displayRevision, 0)
     assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
   } finally { release(page([older, tail])); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -1280,7 +1449,9 @@ test('native cached opening retries an epoch-invalidated tail before publishing 
     assert.notEqual(initial.resolveSourceMessageDisplaySeq(latest.id), undefined)
     assert.equal(initial.resolveSourceMessageDisplaySeq(removed.id), undefined)
     assert.equal(initial.resolveSourceMessageDisplaySeq(cached.id), undefined)
-    assert.deepEqual(fake.reads.filter(query => query.limit === 1).map(query => query.epoch), [1, 2])
+    // The first failed pass is retried from the new source epoch; the cache
+    // epoch never becomes a published display.
+    assert.ok(fake.reads.filter(query => query.limit === 1).every(query => query.epoch === 2))
     release(page([user(), latest], { epoch: 2 })); await app.service.settled()
     const current = app.service.list()[0]!
     assert.notEqual(current.resolveSourceMessageDisplaySeq(latest.id), undefined)

@@ -653,7 +653,13 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
     }
     const sourceFilters = { query, engine, machine, archived, activeOnly: showActiveSessionsOnly, timeRange }
     const discovered = showRows ? sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, sourceFilters) : []
-    const discoveredMatching = showRows ? sourceDiscoveryRows(snapshot.sourceDiscovery, rows, snapshot.machines, { ...sourceFilters, filter }) : []
+    const discoveredMatching = filter === 'all' ? discovered : discovered.filter(({ source }) => {
+        const pending = (source.pendingRequestsCount ?? 0) > 0 || source.waitingOn.length > 0
+        if (filter === 'running') return source.thinking && !pending
+        if (filter === 'attention') return pending || source.binding === 'failed'
+        // An unbound source has no authoritative unread state in this view.
+        return false
+    })
     counts.all += discovered.length
     counts.running += discovered.filter(({ source }) => source.thinking && !source.waitingOn.length && !(source.pendingRequestsCount ?? 0)).length
     counts.attention += discovered.filter(({ source }) => source.binding === 'failed' || source.waitingOn.length || (source.pendingRequestsCount ?? 0) > 0).length

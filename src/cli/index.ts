@@ -4,6 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { createConfig, defaultConfigPath, parseConfig, publicConfig, readConfig, writeConfig, type RuntimeConfig } from './config.ts';
 import { doctor } from './doctor.ts';
+import { bundleCommand } from './bundle.ts';
 import { findPackageRoot, installProfile, startProfile } from './runtime.ts';
 import { createInvitation, runnerCommand } from './federation.ts';
 import { revokePairing } from '../hub/federation-credentials.ts';
@@ -22,6 +23,8 @@ Usage:
   hapi-dsh revoke --machine-id ID [--config FILE]
   hapi-dsh runner init --pairing-file PRIVATE_FILE [--config FILE] [--dsh-home DIR] [--profile NAME] [--config-only]
   hapi-dsh runner install|start|config [--config FILE]
+  hapi-dsh bundle status|verify|rollback|prune [--json]
+  hapi-dsh bundle install|upgrade (--bundle-root DIR | --tgz FILE) [--role host|runner] [--dry-run]
   hapi-dsh --version
 
 hub is an alias for start. Pairing invitations contain a credential and are written
@@ -48,11 +51,11 @@ Credentials are never accepted as command-line arguments. init refuses
 to replace an existing config. install preserves an existing Web profile and its plugins.
 `;
 
-type CommandName = 'init' | 'install' | 'login' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'help' | 'version';
-type FlagName = 'config' | 'hapi-url' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'token-env' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file' | 'stdin';
+type CommandName = 'init' | 'install' | 'login' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'bundle' | 'help' | 'version';
+type FlagName = 'config' | 'hapi-url' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'token-env' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file' | 'stdin' | 'bundle-root' | 'tgz' | 'role' | 'style' | 'keep-previous' | 'dry-run';
 export interface ParsedArguments { command: CommandName; action?: string; flags: Partial<Record<FlagName, string | true>> }
-const valueFlags = new Set(['config', 'hapi-url', 'dsh-home', 'profile', 'host', 'port', 'public-url', 'trusted-host', 'tls-cert', 'tls-key', 'token-env', 'dsh-command']);
-const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open', 'stdin']);
+const valueFlags = new Set(['config', 'hapi-url', 'dsh-home', 'profile', 'host', 'port', 'public-url', 'trusted-host', 'tls-cert', 'tls-key', 'token-env', 'dsh-command', 'bundle-root', 'tgz', 'role', 'style', 'keep-previous']);
+const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open', 'stdin', 'dry-run']);
 const allowed: Record<Exclude<CommandName, 'help' | 'version'>, ReadonlySet<string>> = {
     init: new Set([...valueFlags, 'config-only']),
     install: new Set(['config']), doctor: new Set(['config', 'offline', 'json']),
@@ -60,6 +63,7 @@ const allowed: Record<Exclude<CommandName, 'help' | 'version'>, ReadonlySet<stri
     start: new Set(['config', 'no-open']), config: new Set(['config']),
     pair: new Set(['config', 'name', 'hub-url', 'output', 'machine-id']), revoke: new Set(['config', 'machine-id']),
     runner: new Set(['config']),
+    bundle: new Set(['config', 'bundle-root', 'tgz', 'role', 'style', 'keep-previous', 'dry-run', 'json']),
 };
 
 export function parseArguments(argv: readonly string[]): ParsedArguments {
@@ -68,12 +72,13 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
     const first = argv[0] === 'hub' ? 'start' : argv[0];
     if (!first || !Object.hasOwn(allowed, first)) throw new Error('Unknown command; run hapi-dsh --help');
     const command = first as Exclude<CommandName, 'help' | 'version'>;
-    const action = command === 'runner' ? argv[1] : undefined;
+    const action = command === 'runner' || command === 'bundle' ? argv[1] : undefined;
     if (command === 'runner' && !['init', 'install', 'start', 'config'].includes(action ?? '')) throw new Error('runner requires init, install, start, or config');
+    if (command === 'bundle' && !['status', 'verify', 'install', 'upgrade', 'rollback', 'prune', 'help'].includes(action ?? '')) throw new Error('bundle requires status, verify, install, upgrade, rollback, prune, or help');
     const validFlags = command === 'runner' && action === 'init'
         ? new Set(['config', 'pairing-file', 'dsh-home', 'profile', 'port', 'dsh-command', 'config-only']) : allowed[command];
     const flags: ParsedArguments['flags'] = {};
-    for (let index = command === 'runner' ? 2 : 1; index < argv.length; index++) {
+    for (let index = command === 'runner' || command === 'bundle' ? 2 : 1; index < argv.length; index++) {
         const argument = argv[index]!;
         if (!argument.startsWith('--')) throw new Error('Unexpected positional argument; run hapi-dsh --help');
         const separator = argument.indexOf('=');
@@ -179,6 +184,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
     if (command === 'config') {
         process.stdout.write(`${JSON.stringify(publicConfig(config), null, 2)}\n`);
         return 0;
+    }
+    if (command === 'bundle') {
+        return bundleCommand(action, flags, { config, configFile, json: flags.json === true });
     }
     if (command === 'install') {
         await installProfile(config, configFile, await findPackageRoot());

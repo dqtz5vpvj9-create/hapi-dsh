@@ -13,6 +13,8 @@ import type {
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { officialProviderContext } from '../shared/official-provider.ts'
 import { openingWindow, sessionListHints } from '../shared/history-window.ts'
+import { boundedSourceFollow } from './bounded-follow.ts'
+import { DISPLAY_SEQ_OFFSET, translateFollowFrame, translateProjectionBaseline, translateProjectionValues, type SourceHistoryWindow } from './source-window.ts'
 import { isNativeDisplayId, isObservedDisplayId, isSourceChildDisplayId } from '../shared/source-display-id.ts'
 import type {} from '../index.ts'
 
@@ -135,16 +137,52 @@ export class NativeAwareSessionController extends TypertRemoteService {
   cancel(request: SessionCancelRequest): SessionCancelValue { return this.ordinary.cancel(request) }
 
   @Remote({ name: 'page', resources: { session: addressedSession } })
-  page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage> { return this.ordinary.page(request, signal) }
+  page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage> {
+    const window = this.ctx.hapi.sourceHistoryWindow(addressedSession(request))
+    if (!window) return this.ordinary.page(request, signal)
+    return window.page(request, signal, next => this.ordinary.page(next, signal))
+  }
 
   @Remote({ mode: 'stream', resources: { session: addressedSession } })
-  follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> { return this.ordinary.follow(openingWindow(request), signal) }
+  follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
+    const source = this.ordinary.follow(openingWindow(request), signal)
+    const window = this.ctx.hapi.sourceHistoryWindow(addressedSession(request))
+    return window ? boundedSourceFollow(this.historyFrames(source, window)) : source
+  }
+
+  private async *historyFrames(source: AsyncIterable<SessionFollowFrame>, window: SourceHistoryWindow): AsyncIterable<SessionFollowFrame> {
+    for await (const frame of source) {
+      const translated = translateFollowFrame(frame)
+      yield translated.type === 'snapshot' && window.hasOlder() && !translated.hasMore
+        ? { ...translated, hasMore: true } : translated
+    }
+  }
 
   @Remote('projections')
-  projections(request: SessionProjectionsRequest, signal: AbortSignal): Promise<SessionProjectionsValue> { return this.ordinary.projections(request, signal) }
+  async projections(request: SessionProjectionsRequest, signal: AbortSignal): Promise<SessionProjectionsValue> {
+    const value = await this.ordinary.projections(request, signal)
+    if (!value || value.kind !== 'sequenced' || !this.ctx.hapi.historyWindowBound(request.sessionId)) return value
+    return { ...value, asOfSeq: value.asOfSeq < 0 ? -1 : value.asOfSeq + DISPLAY_SEQ_OFFSET,
+      values: translateProjectionValues(value.values) }
+  }
 
   @Remote({ mode: 'stream' })
-  control(signal: AbortSignal): AsyncIterable<SessionControlFrame> { return this.ordinary.control(signal) }
+  control(signal: AbortSignal): AsyncIterable<SessionControlFrame> { return this.historyControl(this.ordinary.control(signal)) }
+
+  private async *historyControl(source: AsyncIterable<SessionControlFrame>): AsyncIterable<SessionControlFrame> {
+    for await (const frame of source) {
+      if (frame.type === 'baseline') {
+        const projections = Object.fromEntries(Object.entries(frame.value.projections).map(([id, baseline]) => [
+          id, this.ctx.hapi.historyWindowBound(id) ? translateProjectionBaseline(baseline) : baseline,
+        ]))
+        yield { type: 'baseline', value: { projections } }
+        continue
+      }
+      if (!this.ctx.hapi.historyWindowBound(frame.sessionId)) { yield frame; continue }
+      const values = translateProjectionValues({ [frame.key]: frame.value } as never) as Record<string, unknown>
+      yield { ...frame, seq: frame.seq < 0 ? frame.seq : frame.seq + DISPLAY_SEQ_OFFSET, value: values[frame.key] as never }
+    }
+  }
 }
 
 export default NativeAwareSessionController

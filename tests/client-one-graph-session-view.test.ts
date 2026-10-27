@@ -72,6 +72,7 @@ async function fixture(t: TestContext) {
         else Reflect.deleteProperty(globalThis, 'MutationObserver')
     })
     const root = new Context()
+    root.reflect.provide('sessions', { list: { getSnapshot: () => ({ byId: {} }) } } as unknown as Context['sessions'])
     new SlotRegistry(root)
     const declaration = root.plugin({ name: 'test-official-shell-declaration', inject: ['slots'], apply(ctx: Context) {
         ctx.slots.register({ name: 'root', children: { 'shell.overlay': { kind: 'list', scope: 'root' } } },
@@ -79,25 +80,52 @@ async function fixture(t: TestContext) {
     } })
     await declaration
     let host!: ReturnType<typeof installSessionViewHost>
-    const plugin = root.plugin({ name: 'test-shared-host-view', inject: ['slots'], apply(ctx: Context) {
+    const plugin = root.plugin({ name: 'test-shared-host-view', inject: ['slots', 'sessions'], apply(ctx: Context) {
         host = installSessionViewHost(ctx)
         return () => host.dispose()
     } })
     await plugin
-    const document = { defaultView: null } as Document
+    const windowListeners = new Set<EventListenerOrEventListenerObject>()
+    const document = {
+        visibilityState: 'visible',
+        addEventListener(_type: string, listener: EventListenerOrEventListenerObject) { windowListeners.add(listener) },
+        removeEventListener(_type: string, listener: EventListenerOrEventListenerObject) { windowListeners.delete(listener) },
+        defaultView: {
+        performance: { getEntriesByType: () => [], now: () => performance.now() },
+        sessionStorage: { getItem: () => null, removeItem() {} },
+        requestAnimationFrame(callback: FrameRequestCallback) { queueMicrotask(() => callback(0)); return 1 },
+        cancelAnimationFrame() {},
+        addEventListener(_type: string, listener: EventListenerOrEventListenerObject) { windowListeners.add(listener) },
+        removeEventListener(_type: string, listener: EventListenerOrEventListenerObject) { windowListeners.delete(listener) },
+    } } as unknown as Document
     const surfaces: Array<{ attributes: Map<string, string>; listeners: Set<EventListenerOrEventListenerObject>;
         state: ReturnType<typeof observable<{ focused: boolean; visible: boolean }>>;
-        reading: ReturnType<typeof observable<undefined>> }> = []
+        reading: ReturnType<typeof observable<undefined>>; measures: () => number }> = []
     const surface = (paneId: string) => {
         const attributes = new Map<string, string>([['data-hapi-host', 'fixture-host']])
         const listeners = new Set<EventListenerOrEventListenerObject>()
         const state = observable({ focused: true, visible: true })
         const reading = observable(undefined)
+        let measures = 0
+        const port = { scrollHeight: 600, clientHeight: 600, clientWidth: 800, scrollTop: 0,
+            querySelector: () => null, closest: () => null }
+        const editor = {
+            getAttribute: (name: string) => name === 'contenteditable' ? 'true' : null,
+            hasAttribute: () => false,
+            getClientRects: () => [{ width: 500, height: 36 }],
+            getBoundingClientRect: () => ({ width: 500, height: 36 }),
+            closest: () => null,
+        }
         // The protocol target is connected, with no real DOM rendering/layout.
         // Distinct event kinds may share a callback, as in the browser helper.
         const byType = new Map<string, EventListenerOrEventListenerObject>()
         const target = {
-            ownerDocument: document, isConnected: true, hidden: false,
+            ownerDocument: document, isConnected: true, hidden: false, dataset: {},
+            querySelector: (selector: string) => {
+                if (selector !== '[data-conversation-scroll]') return null
+                measures++; return port
+            },
+            querySelectorAll: (selector: string) => selector === '[data-composer-card] [data-composer-input]' ? [editor] : [],
             closest: () => target,
             getAttribute: (name: string) => attributes.get(name) ?? null,
             setAttribute: (name: string, value: string) => { attributes.set(name, value) },
@@ -108,14 +136,14 @@ async function fixture(t: TestContext) {
                 if (![...byType.values()].includes(listener)) listeners.delete(listener)
             },
         } as unknown as HTMLElement
-        surfaces.push({ attributes, listeners, state, reading })
+        surfaces.push({ attributes, listeners, state, reading, measures: () => measures })
         return { paneId, target, navigation: { paneId, state, reading } as unknown as WorkspacePaneNavigation }
     }
     const mount = (paneId: string, ref: SessionReference, onError?: (error: unknown) => void) => host.mount({
         ...surface(paneId), reference: ref,
         ...(onError ? { onError } : {}),
     })
-    return { root, host, mount, surface, surfaces, observers, plugin, close: () => root.fiber.dispose() }
+    return { root, host, mount, surface, surfaces, observers, windowListeners, plugin, close: () => root.fiber.dispose() }
 }
 
 test('one Host adds one official shell contribution and independent explicit view lifetimes', async t => {
@@ -170,17 +198,19 @@ test('Host teardown leaves borrowed references untouched and ignores outstanding
         const one = f.mount('pane-one', shared.ref, error => failures.push(error))
         f.mount('pane-two', shared.ref, error => failures.push(error))
         assert.equal(f.host.size(), 2, 'same-session occurrences are valid separate views')
-        assert.equal(shared.source.state.subscriptions(), 2)
+        assert.equal(shared.source.state.subscriptions(), 0, 'viewport admission reads the shared public face without another paging owner')
         assert.equal(shared.source.events.subscriptions(), 2)
         assert.ok(f.surfaces.every(surface => surface.state.subscriptions() === 1 && surface.listeners.size > 0))
         assert.ok(f.surfaces.every(surface => surface.reading.subscriptions() === 1))
-        assert.equal(f.observers.size, 2)
+        assert.equal(f.observers.size, 0, 'no DOM navigation observer is needed without a reading destination')
+        assert.ok(f.windowListeners.size > 0)
         f.host.dispose(); f.host.dispose()
         assert.equal(shared.source.state.subscriptions(), 0)
         assert.equal(shared.source.events.subscriptions(), 0)
         assert.ok(f.surfaces.every(surface => surface.state.subscriptions() === 0 && surface.listeners.size === 0))
         assert.ok(f.surfaces.every(surface => surface.reading.subscriptions() === 0))
         assert.equal(f.observers.size, 0)
+        assert.equal(f.windowListeners.size, 0)
         assert.ok(f.surfaces.every(surface => !surface.attributes.has('data-hapi-initial-history')))
         shared.reject(new Error('read cancelled on Host departure')); await tick()
         one.dispose()
@@ -217,9 +247,9 @@ test('a closed loading occurrence cannot poison a surviving reference to the sam
         old.reject(new Error('the closed occurrence released its waiting reference'))
         current.resolve()
         await tick(); await new Promise(resolve => setTimeout(resolve, 1))
-        assert.equal(f.surfaces[0]!.attributes.has('data-hapi-initial-history'), false)
-        assert.equal(f.surfaces[1]!.attributes.get('data-hapi-initial-history'), 'exhausted')
-        assert.equal(source.state.subscriptions(), 1)
+        assert.equal(f.surfaces[0]!.measures(), 0, 'a closed loading view must not measure or page later')
+        assert.ok(f.surfaces[1]!.measures() > 0, 'the survivor still prepares its initial viewport')
+        assert.equal(source.state.subscriptions(), 0)
         assert.equal(source.events.subscriptions(), 1)
         assert.equal(f.host.size(), 1)
         assert.equal(current.releases(), 0)
