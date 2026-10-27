@@ -126,6 +126,7 @@ function attachSourceSessions(ctx: Context, api: HapiRemoteApi): void {
         sourceHistoryOutline: request => api.sourceHistoryOutline(request),
         sourceHistoryOutlinePage: request => api.sourceHistoryOutlinePage(request),
         sourceHistoryWindowPage: request => api.sourceHistoryWindowPage(request),
+        sourceHistoryHead: request => api.sourceHistoryHead(request),
         sourceHistoryAttachment: request => api.sourceHistoryAttachment(request),
         sourceReadingAnchor: request => api.sourceReadingAnchor(request),
     })

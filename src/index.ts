@@ -14,7 +14,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver';
 import type {} from '@deepseek-ai/dsh-client-modules';
 import type { SessionRenameValue } from '@deepseek-ai/dsh-api-session-controller/types';
 import { DisplayHistoryWindows, isSourceTurnStart, SourceHistoryWindow, sourcePosition, uniqueSourceRows, DISPLAY_SEQ_OFFSET } from './codex/source-window.ts';
-import type { SourceHistoryWindowRequest, SourceHistoryWindowValue, SourceHistoryOutlineValue, SourceHistoryOutlinePageRequest, SourceHistoryOutlinePageValue } from './source-window-types.ts';
+import type { SourceHistoryHeadRequest, SourceHistoryHeadValue, SourceHistoryWindowRequest, SourceHistoryWindowValue, SourceHistoryOutlineValue, SourceHistoryOutlinePageRequest, SourceHistoryOutlinePageValue } from './source-window-types.ts';
 import type { SourceHistoryAttachmentRequest, SourceHistoryAttachmentValue } from './source-attachment-types.ts';
 import { sourceAttachmentErrorOf } from './source-window-attachments.ts';
 import { isSourceChildDisplayId, isSourceDisplayId } from './shared/source-display-id.ts';
@@ -512,6 +512,23 @@ export class HapiController extends TypertRemoteService {
                 ...(head ? { head } : {}) };
         });
     }
+    /** Minimal newest-message identity for the open path; no directory page. */
+    sourceHistoryHead(request: SourceHistoryHeadRequest): Promise<SourceHistoryHeadValue> {
+        return this.sourceCall(async () => {
+            await this.ensureDisplayAgent(request.sessionId);
+            const window = this.requireHistoryWindow(request.sessionId);
+            const agent = this.sourceAgent(request.sessionId);
+            const latest = await this.options.client.readMessages(agent.binding.hapiSessionId, { limit: 1, bounded: true });
+            if (latest.page.reset) window.invalidateSnapshot(latest.page.epoch);
+            window.observeSnapshotEpoch(latest.page.epoch);
+            const row = latest.messages.filter(message => message.invokedAt != null).at(-1) ?? latest.messages.at(-1);
+            if (!row) throw new RemoteError('hapi/request', 'The source head is not available for this display yet', {
+                outcome: 'rejected', status: 409, sourceCode: 'source_head_unavailable' });
+            return { messageId: row.id, at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0,
+                ...(latest.page.epoch === undefined ? {} : { epoch: latest.page.epoch }) };
+        });
+    }
+
     sourceHistoryWindowPage(request: SourceHistoryWindowRequest): Promise<SourceHistoryWindowValue> {
         return this.sourceCall(async () => {
             await this.ensureDisplayAgent(request.sessionId);
@@ -838,7 +855,28 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     const config = await readConfig(input.configFile);
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
     const hapiToken = resolveHapiToken(config);
-    const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken });
+    const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken })
+    // Temporary production breakdown: log HAPI upstream calls that dominate an
+    // opening. Ids are masked so the log stays content-free.
+    {
+        const rawRequest = client.request.bind(client)
+        const maskPath = (path: string): string => path
+            .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/giu, '<id>')
+            .replace(/\?.*$/u, '')
+        ;(client as unknown as { request: typeof client.request }).request = async (path, options) => {
+            const at = performance.now()
+            try {
+                const value = await rawRequest(path, options)
+                const ms = Math.round(performance.now() - at)
+                if (ms >= 40) console.warn(`[hapi-dsh] timing HAPI ${options?.method ?? 'GET'} ${maskPath(path)} ${ms}ms`)
+                return value
+            } catch (error) {
+                const ms = Math.round(performance.now() - at)
+                console.warn(`[hapi-dsh] timing HAPI ${options?.method ?? 'GET'} ${maskPath(path)} ${ms}ms error=${error instanceof Error ? error.message.slice(0, 80) : 'unknown'}`)
+                throw error
+            }
+        }
+    };
     const historyWindows = new DisplayHistoryWindows();
     let hapiController: HapiController;
     const companion = new SourceCompanionService({ hubId: config.hapi.id, sourceUrl: config.hapi.url,
@@ -959,6 +997,25 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     notifications.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     ctx.effect(() => mountShareTarget({ webServer: ctx.webServer }), 'hapi-dsh: browser share target');
     hapiController = new HapiController(ctx, { config, client, codex, observed, observedControl, federation, nativeControl, nativeCreation, sourceCreation, sourceLifecycle, initialTasks, sourceHistory, administration, companion, voice, notifications, bulk, queuedEdits, nativePlan, nativeLibrary, workbench, legacyTerminals, extras, historyWindows, workspace: new WorkspaceRepository(join(dataDirectory, 'workspace.json')) });
+    // Temporary production breakdown for opening a display: one line per call
+    // that takes long enough to matter.
+    for (const name of ['sourceHistoryWindowPage', 'sourceHistoryOutlinePage', 'sourceHistoryOutline'] as const) {
+        const target = hapiController as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>
+        const original = target[name]!.bind(hapiController)
+        target[name] = async (...args: unknown[]) => {
+            const at = performance.now()
+            try {
+                const value = await original(...args)
+                const ms = Math.round(performance.now() - at)
+                if (ms >= 100) console.warn(`[hapi-dsh] timing RPC ${name} ${ms}ms`)
+                return value
+            } catch (error) {
+                const ms = Math.round(performance.now() - at)
+                console.warn(`[hapi-dsh] timing RPC ${name} ${ms}ms error=${error instanceof Error ? error.message.slice(0, 100) : 'unknown'}`)
+                throw error
+            }
+        }
+    }
     const startup = await startSourceCatalogs([{ name: 'Native Codex', start: () => codex.start() }, { name: 'HAPI', start: () => observed.start() }],
         (source, error) => { ctx.logger.warn(`${source} catalog synchronization failed; source sessions will reconnect: ${error instanceof Error ? error.message : 'connection failed'}`); });
     if (startup === 'background') ctx.logger.info('The initial HAPI catalog is still loading. The Host is ready; all source sessions continue synchronizing in the background.');

@@ -79,3 +79,15 @@ export const sourceHistoryWindowValueSchema = z.object({
     afterMessageId: z.string().min(1).max(512).optional(),
 })
 export type SourceHistoryWindowValue = z.infer<typeof sourceHistoryWindowValueSchema>
+
+/** Minimal newest-window head probe: the open path needs no directory page. */
+export const sourceHistoryHeadRequestSchema = z.object({ sessionId: z.string().min(1).max(512) }).strict()
+export type SourceHistoryHeadRequest = z.infer<typeof sourceHistoryHeadRequestSchema>
+
+export const sourceHistoryHeadValueSchema = z.object({
+    messageId: z.string().min(1).max(512),
+    at: z.number().finite(),
+    seq: z.number().int().nonnegative(),
+    epoch: z.number().int().nonnegative().optional(),
+}).strict()
+export type SourceHistoryHeadValue = z.infer<typeof sourceHistoryHeadValueSchema>

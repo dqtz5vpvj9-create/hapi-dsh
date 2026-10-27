@@ -6,7 +6,7 @@ import type { InvocationDescriptor, RemoteResult, TypertRemoteContribution } fro
 import type { HapiApprovalAnswer, HapiCancelResult, HapiSteerResult, HapiRetryResult } from './codex/contracts.ts';
 import { deliveryViewSchema, type DeliveryView } from './codex/projection-types.ts';
 import { parseWorkspaceState, type WorkspaceState } from './client/model.ts';
-import { sourceHistoryOutlinePageRequestSchema, sourceHistoryOutlinePageValueSchema, sourceHistoryOutlineValueSchema, sourceHistoryWindowRequestSchema, sourceHistoryWindowValueSchema, type SourceHistoryOutlinePageRequest, type SourceHistoryOutlinePageValue, type SourceHistoryOutlineValue, type SourceHistoryWindowRequest, type SourceHistoryWindowValue } from './source-window-types.ts';
+import { sourceHistoryHeadRequestSchema, sourceHistoryHeadValueSchema, sourceHistoryOutlinePageRequestSchema, sourceHistoryOutlinePageValueSchema, sourceHistoryOutlineValueSchema, sourceHistoryWindowRequestSchema, sourceHistoryWindowValueSchema, type SourceHistoryHeadRequest, type SourceHistoryHeadValue, type SourceHistoryOutlinePageRequest, type SourceHistoryOutlinePageValue, type SourceHistoryOutlineValue, type SourceHistoryWindowRequest, type SourceHistoryWindowValue } from './source-window-types.ts';
 import {
     sourceHistoryAttachmentRequestSchema, sourceHistoryAttachmentValueSchema,
     type SourceHistoryAttachmentRequest, type SourceHistoryAttachmentValue,
@@ -153,6 +153,7 @@ export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, Ses
     sourceReadingAnchor(request: { sessionId: string; seq: number }): Promise<RemoteResult<{ sourceMessageId: string | null }>>;
     /** Lightweight source-wide outline in display turn coordinates. */
     sourceHistoryOutline(request: { sessionId: string }): Promise<RemoteResult<SourceHistoryOutlineValue>>;
+    sourceHistoryHead(request: SourceHistoryHeadRequest): Promise<RemoteResult<SourceHistoryHeadValue>>;
     /** One bounded outline page; the preview reflects every page read so far. */
     sourceHistoryOutlinePage(request: SourceHistoryOutlinePageRequest): Promise<RemoteResult<SourceHistoryOutlinePageValue>>;
     /** Direct bounded source window at a message, or a contiguous older/newer page. */
@@ -247,6 +248,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/sourceReadingAnchor': HapiRemoteApi['sourceReadingAnchor'];
         'hapi/sourceLocateMessage': HapiRemoteApi['sourceLocateMessage'];
         'hapi/sourceHistoryOutline': HapiRemoteApi['sourceHistoryOutline'];
+        'hapi/sourceHistoryHead': HapiRemoteApi['sourceHistoryHead'];
         'hapi/sourceHistoryOutlinePage': HapiRemoteApi['sourceHistoryOutlinePage'];
         'hapi/sourceHistoryWindowPage': HapiRemoteApi['sourceHistoryWindowPage'];
         'hapi/sourceHistoryAttachment': HapiRemoteApi['sourceHistoryAttachment'];
@@ -331,6 +333,7 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     nativeScheduleRead: z.strictObject({ sessionId: id, operationId: z.string().uuid() }),
     sourceReadingAnchor: z.strictObject({ sessionId: id, seq: z.number().int().nonnegative() }),
     sourceHistoryOutline: z.strictObject({ sessionId: id }),
+    sourceHistoryHead: sourceHistoryHeadRequestSchema,
     sourceHistoryOutlinePage: sourceHistoryOutlinePageRequestSchema,
     sourceHistoryWindowPage: sourceHistoryWindowRequestSchema,
     sourceHistoryAttachment: sourceHistoryAttachmentRequestSchema,
@@ -388,6 +391,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     nativeScheduleRead: deliveryViewSchema.nullable(),
     sourceReadingAnchor: z.object({ sourceMessageId: id.nullable() }),
     sourceHistoryOutline: sourceHistoryOutlineValueSchema,
+    sourceHistoryHead: sourceHistoryHeadValueSchema,
     sourceHistoryOutlinePage: sourceHistoryOutlinePageValueSchema,
     sourceHistoryWindowPage: sourceHistoryWindowValueSchema,
     sourceHistoryAttachment: sourceHistoryAttachmentValueSchema,

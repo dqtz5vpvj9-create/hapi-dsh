@@ -51,6 +51,7 @@ export interface SourceSessionsApi {
   sourceHistoryOutline(request: { sessionId: string }): Promise<{ ok: true; value: SourceHistoryOutlineValue } | { ok: false; error: unknown }>
   sourceHistoryOutlinePage(request: { sessionId: string; beforeAt?: number; beforeSeq?: number; epoch?: number; limit?: number }): Promise<{ ok: true; value: SourceHistoryOutlinePageValue } | { ok: false; error: unknown }>
   sourceHistoryWindowPage(request: SourceHistoryWindowRequest): Promise<{ ok: true; value: SourceHistoryWindowValue } | { ok: false; error: unknown }>
+  sourceHistoryHead?(request: { sessionId: string }): Promise<{ ok: true; value: { messageId: string; at: number; seq: number } } | { ok: false; error: unknown }>
   sourceHistoryAttachment?(request: { sessionId: string; attachmentId: string }): Promise<RemoteResult<SourceHistoryAttachmentValue>>
   sourceReadingAnchor?(request: { sessionId: string; seq: number }): Promise<{ ok: true; value: { sourceMessageId: string | null } } | { ok: false; error: unknown }>
 }
@@ -927,6 +928,10 @@ class SourceRecord {
     }
   }
 
+  private capacityMark(label: string, at: number): void {
+    try { performance.mark(`hapi-dsh:${label}:${Math.round(performance.now() - at)}`) } catch { /* optional */ }
+  }
+
   private pruneTurnMaps(): void {
     const entries = this.eventSource.getSnapshot().entries
     const turns = new Set<number>()
@@ -1026,7 +1031,9 @@ class SourceRecord {
     prepare?: (value: SourceHistoryWindowValue) => Promise<PreparedWindowValue | undefined>, allowEmpty = false): Promise<boolean> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const coveredChanges = capture.changes.length
+      const rpcAt = performance.now()
       const result = await api.sourceHistoryWindowPage(request)
+      try { performance.mark(`hapi-dsh:rpc:window:${Math.round(performance.now() - rpcAt)}`) } catch { /* optional */ }
       if (this.disposed || token !== this.jump || !result.ok) return false
       const value = prepare ? await prepare(result.value) : preparedWindowValue(result.value)
       if (!value || this.disposed || token !== this.jump) return false
@@ -1163,8 +1170,11 @@ class SourceRecord {
     request: { sessionId: string; beforeAt?: number; beforeSeq?: number; epoch?: number; limit?: number },
     signal: AbortSignal,
   ): Promise<{ ok: true; value: SourceHistoryOutlinePageValue } | { ok: false; error: unknown }> {
-    if (typeof api.sourceHistoryOutlinePage === 'function')
-      return untilAborted(api.sourceHistoryOutlinePage(request), signal)
+    const rpcAt = performance.now()
+    if (typeof api.sourceHistoryOutlinePage === 'function') {
+      try { return await untilAborted(api.sourceHistoryOutlinePage(request), signal) }
+      finally { try { performance.mark(`hapi-dsh:rpc:outline:${Math.round(performance.now() - rpcAt)}`) } catch { /* optional */ } }
+    }
     const full = await untilAborted(api.sourceHistoryOutline({ sessionId: request.sessionId }), signal)
     if (!full.ok) return full
     return { ok: true, value: { ...full.value, hasMore: false, cursor: null, pageSize: 1 } }
@@ -1919,6 +1929,7 @@ class SourceRecord {
   }
 
   private async loadNewest(entry?: SourceOutlineValue, signal?: AbortSignal): Promise<boolean> {
+    try { performance.mark('hapi-dsh:open:start') } catch { /* optional */ }
     const api = this.owner.api ?? await this.owner.whenAttached()
     if (this.disposed || signal?.aborted) return false
     const token = this.beginJump()
@@ -1938,18 +1949,35 @@ class SourceRecord {
       // the bounded source outline/head now; never poll, never read the archive.
       // A failed/incomplete refresh must preserve the current reading window and
       // must not present the old head as latest.
-      try {
-        const fresh = await this.readOutlinePage(api, { sessionId: this.sessionId }, signal ?? new AbortController().signal)
-        if (this.disposed || token !== this.jump) return false
-        if (!fresh.ok) throw fresh.error
-        // A partial directory still carries the authoritative head and the
-        // newest labels; only global jump/search stays unavailable.
-        this.applyOutline(fresh.value)
-      } catch (error) {
-        if (this.disposed || token !== this.jump) return false
-        diagnosticMark('hapi-dsh:facade:latest-refresh-failed')
-        console.warn('[hapi-dsh] latest source head refresh failed; preserving the current window', error)
-        return false
+      // The open path only needs the newest message identity. Prefer the cheap
+      // head probe so the directory page (and its admission budget) stays off
+      // the critical path; fall back to the outline for older hosts.
+      if (typeof api.sourceHistoryHead === 'function') {
+        try {
+          const head = await untilAborted(api.sourceHistoryHead({ sessionId: this.sessionId }), signal ?? new AbortController().signal)
+          if (this.disposed || token !== this.jump) return false
+          if (!head.ok) throw head.error
+          this.sourceHead = head.value
+        } catch (error) {
+          if (this.disposed || token !== this.jump) return false
+          diagnosticMark('hapi-dsh:facade:latest-head-failed')
+          console.warn('[hapi-dsh] latest source head probe failed; preserving the current window', error)
+          return false
+        }
+      } else {
+        try {
+          const fresh = await this.readOutlinePage(api, { sessionId: this.sessionId }, signal ?? new AbortController().signal)
+          if (this.disposed || token !== this.jump) return false
+          if (!fresh.ok) throw fresh.error
+          // A partial directory still carries the authoritative head and the
+          // newest labels; only global jump/search stays unavailable.
+          this.applyOutline(fresh.value)
+        } catch (error) {
+          if (this.disposed || token !== this.jump) return false
+          diagnosticMark('hapi-dsh:facade:latest-refresh-failed')
+          console.warn('[hapi-dsh] latest source head refresh failed; preserving the current window', error)
+          return false
+        }
       }
       const messageId = this.sourceHead?.messageId
       if (!messageId) return false
