@@ -323,6 +323,7 @@ class SourceRecord {
   private outlineRecoveryAttempt = 0
   private trimTimer: ReturnType<typeof setTimeout> | undefined
   private officialPagerWorks = false
+  private readonly nullDataWarned = new Set<string>()
   private adoptingOlderCursor = false
   private outlineFailure: { phase: 'first' | 'continuation'; attempt: number; pages: number; durationMs: number; code: string } | undefined
   private jump = 0
@@ -459,7 +460,7 @@ class SourceRecord {
     // replacing the window would remount every row and lose the reading anchor.
     if (pageAppendOnly) {
       try { performance.mark('hapi-dsh:flush:page-append') } catch { /* diagnostics are optional */ }
-      for (const change of changes) applyChange(this.eventSource, change, this.tail.hasMore)
+      for (const change of changes) applyChange(this.eventSource, this.normalizeChange(change), this.tail.hasMore)
       const mergedSnapshot = this.eventSource.getSnapshot()
       const merged = mergedSnapshot.entries
       const sources = merged.flatMap(row => {
@@ -498,7 +499,7 @@ class SourceRecord {
           return
       }
       try { performance.mark(`hapi-dsh:flush:replace:${records.length}`) } catch { /* diagnostics are optional */ }
-      this.eventSource.replace(records, this.tail.hasMore)
+      this.eventSource.replace(this.normalizeEventData(records), this.tail.hasMore)
       const replacedSnapshot = this.eventSource.getSnapshot()
       if (this.trimTimer !== undefined) { clearTimeout(this.trimTimer); this.trimTimer = undefined }
       this.tailNeedsResync = false
@@ -524,6 +525,27 @@ class SourceRecord {
     }
     this.hasMore = this.target?.hasMoreBefore ?? this.tail.hasMore
     this.session.publish()
+  }
+
+  /**
+   * The official conversation assembler reads `event.data.turn`; an event that
+   * arrives with null/undefined data crashes the event-feed subscriber and the
+   * pane can never mount. Normalize the payload at this emission boundary and
+   * report each offending event type once.
+   */
+  private normalizeEventData(entries: readonly SessionEventLikeEntry[]): SessionEventLikeEntry[] {
+    const normalized: SessionEventLikeEntry[] = []
+    for (const entry of entries) {
+      const event = entry.event as unknown as { type?: unknown; data?: unknown }
+      if (event.data !== null && event.data !== undefined) { normalized.push(entry); continue }
+      const type = String(event.type ?? 'unknown')
+      if (!this.nullDataWarned.has(type)) {
+        this.nullDataWarned.add(type)
+        console.warn(`[hapi-dsh] normalized emitted event with null data: type=${type}`)
+      }
+      normalized.push({ ...entry, event: { ...(entry.event as object), data: {} } } as unknown as SessionEventLikeEntry)
+    }
+    return normalized
   }
 
   private appendLive(_binding: SessionBinding, change: SessionEventChange, entriesOverride?: readonly SessionEventLikeEntry[]): void {
@@ -561,6 +583,15 @@ class SourceRecord {
   }
 
   /** Drain one synchronous projector burst after its trailing native-item annotations arrived. */
+  /** Normalize a change payload before the official event source publishes it. */
+  private normalizeChange(change: SessionEventChange): SessionEventChange {
+    if (change.kind === 'append' || change.kind === 'prepend' || change.kind === 'replace') {
+      return { ...change, entries: this.normalizeEventData(change.entries) }
+    }
+    if (change.kind === 'settle-assistant' && change.entry) return { ...change, entry: this.normalizeEventData([change.entry])[0]! } as SessionEventChange
+    return change
+  }
+
   private flushLive(overlap?: readonly SessionEventLikeEntry[], winners?: ReadonlyMap<string, 'http' | 'capture'>): void {
     try { performance.mark(`hapi-dsh:live:flush-start:${String(this.liveQueue.length)}`) } catch { /* optional */ }
     if (this.disposed || this.target === undefined) { this.liveQueue.length = 0; return }
@@ -1054,7 +1085,8 @@ class SourceRecord {
       return false
     }
     const retention = this.preparePageRetention(records)
-    this.eventSource.prepend(records, value.hasMoreBefore)
+    const pageRecords = this.normalizeEventData(records)
+    this.eventSource.prepend(pageRecords, value.hasMoreBefore)
     this.hasMore = value.hasMoreBefore
     const priorAfter = this.target?.after, priorAfterEpoch = this.target?.afterEpoch
     const priorAfterMessageId = this.target?.afterMessageId
@@ -1347,7 +1379,7 @@ class SourceRecord {
     }
     const keep = entries.slice(first, last)
     const dropped = first > 0 || last < entries.length
-    if (dropped) this.eventSource.replace(keep, this.eventSource.getSnapshot().hasMore)
+    if (dropped) this.eventSource.replace(this.normalizeEventData(keep), this.eventSource.getSnapshot().hasMore)
     if (!this.target) return
     this.target.firstSeq = keep[0]?.event.seq ?? null
     this.target.lastSeq = keep[keep.length - 1]?.event.seq ?? null

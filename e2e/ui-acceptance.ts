@@ -116,6 +116,10 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
     const page = await session.page()
     activePage = page
     page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => {
+      if (message.type() === 'error' && /event feed subscriber failed|conversation Context .*received/.test(message.text()))
+        errors.push(message.text().slice(0, 300))
+    })
     await installUiProbe(page)
     const cdp = await page.context().newCDPSession(page)
     await cdp.send('Performance.enable')
@@ -470,6 +474,10 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       const page = await session.page({ width, height: 844 }, true)
       activePage = page
       page.on('pageerror', error => errors.push(error.message))
+    page.on('console', message => {
+      if (message.type() === 'error' && /event feed subscriber failed|conversation Context .*received/.test(message.text()))
+        errors.push(message.text().slice(0, 300))
+    })
       await installUiProbe(page); await session.admit(page)
       // Mobile picker is the public entry point; use its normal session button.
       const picker = page.locator('.hapi-mobile-back')
