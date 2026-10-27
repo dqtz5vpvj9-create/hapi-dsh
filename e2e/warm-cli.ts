@@ -84,7 +84,9 @@ async function serve(): Promise<void> {
       if (restartRequired) throw new Error('Host/shared source changed; restart the fixture first')
       const revision = (await stat(join(warmRepository, 'e2e/ui-acceptance.ts'))).mtimeMs
       const { runUiAcceptance } = await import(`./ui-acceptance.ts?revision=${revision}`) as typeof import('./ui-acceptance.ts')
-      const report = await runUiAcceptance(fixture, action === 'perf' ? 5 : 1)
+      const configured = Number(process.env.HAPI_DSH_UI_REPETITIONS ?? '')
+      const repetitions = Number.isInteger(configured) && configured > 0 ? configured : action === 'perf' ? 5 : 1
+      const report = await runUiAcceptance(fixture, repetitions)
       const reportPath = join(warmDirectory, `${action}-${Date.now()}.json`)
       await writeFile(reportPath, JSON.stringify(report, null, 2), { mode: 0o600 })
       return { ...report, reportPath }
