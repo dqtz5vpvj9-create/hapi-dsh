@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import type { AttachmentStore, ImageMediaType } from '@deepseek-ai/dsh-attachment';
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm';
 import type { HapiClient } from './client.ts';
@@ -16,6 +18,38 @@ function decodeNativeBytes(base64: string): Uint8Array {
     if (bytes.byteLength > MAX_NATIVE_ATTACHMENT) throw new HapiRequestError('Native attachment exceeds 32 MiB', 'rejected', 413);
     return bytes;
 }
+
+/**
+ * HAPI keeps queued uploads in per-session blob directories that can rotate
+ * (temporary upload dir removed while the message stays in the transcript).
+ * The same original filename is usually still retained under a sibling
+ * `<sessionId>-*` directory; recover those bytes instead of failing the import.
+ */
+function recoverLocalUpload(path: string, sourceSessionId: string, filename: string): { bytes: Buffer; mimeType: string } | undefined {
+    if (!path.startsWith('/') || path.includes('\0') || sourceSessionId.includes('/') || sourceSessionId.includes('..')) return undefined
+    const missingDirectory = dirname(path), root = dirname(missingDirectory)
+    if (!root.endsWith('hapi-blobs')) return undefined
+    const want = basename(path)
+    let directories: string[]
+    try { directories = readdirSync(root) } catch { return undefined }
+    const suffix = `-${filename}`
+    for (const directory of directories) {
+        if (!directory.startsWith(`${sourceSessionId}-`)) continue
+        const full = join(root, directory)
+        let files: string[]
+        try { if (!statSync(full).isDirectory()) continue; files = readdirSync(full) } catch { continue }
+        const match = files.find(file => file === want)
+            ?? files.find(file => file === filename || file.endsWith(suffix))
+        if (match === undefined) continue
+        try {
+            const bytes = readFileSync(join(full, match))
+            if (bytes.byteLength === 0 || bytes.byteLength > MAX_NATIVE_ATTACHMENT) continue
+            return { bytes, mimeType: nativeAttachmentMediaType(match, bytes) }
+        } catch { continue }
+    }
+    return undefined
+}
+
 async function saveNativeBytes(store: AttachmentStore, name: string, mimeType: string, data: Uint8Array): Promise<NativeArtifactBlock> {
     if (imageMediaTypes.has(mimeType)) return { type: 'image', attachment: await store.saveImage({ data, mediaType: mimeType as ImageMediaType, name }) };
     return { type: 'file', attachment: await store.saveFile({ data, name }) };
@@ -27,9 +61,20 @@ export function sourceUploadImporter(store: AttachmentStore, client: HapiClient)
         const source = await client.getSession(sourceSessionId);
         if (source.id !== sourceSessionId) throw new HapiRequestError('Attachment source identity changed', 'rejected', 409);
         if (!attachment.path || attachment.path.includes('\0') || attachment.size > MAX_NATIVE_ATTACHMENT) throw new HapiRequestError('Invalid native attachment reference', 'rejected', 400);
-        const result = z.object({ success: z.boolean(), content: z.string().optional(), error: z.string().optional() }).parse(await client.request(
-            `/api/sessions/${encodeURIComponent(sourceSessionId)}/file?${new URLSearchParams({ path: attachment.path })}`));
-        if (!result.success || result.content === undefined) throw new HapiRequestError(result.error ?? 'The source attachment is unavailable', 'rejected', 404);
+        let result: { success: boolean; content?: string | undefined; error?: string | undefined }
+        try {
+            result = z.object({ success: z.boolean(), content: z.string().optional(), error: z.string().optional() }).parse(await client.request(
+                `/api/sessions/${encodeURIComponent(sourceSessionId)}/file?${new URLSearchParams({ path: attachment.path })}`));
+        } catch (error) {
+            const recovered = recoverLocalUpload(attachment.path, sourceSessionId, attachment.filename);
+            if (recovered === undefined) throw error;
+            return saveNativeBytes(store, attachment.filename, recovered.mimeType, recovered.bytes);
+        }
+        if (!result.success || result.content === undefined) {
+            const recovered = recoverLocalUpload(attachment.path, sourceSessionId, attachment.filename);
+            if (recovered === undefined) throw new HapiRequestError(result.error ?? 'The source attachment is unavailable', 'rejected', 404);
+            return saveNativeBytes(store, attachment.filename, recovered.mimeType, recovered.bytes);
+        }
         return saveNativeBytes(store, attachment.filename, attachment.mimeType, decodeNativeBytes(result.content));
     };
 }

@@ -204,7 +204,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         : paneTitle(pane, snapshot.catalog.byId, t('newPane'), snapshot.sourcePaneTitles)
     const activity = sessionActivity(summary)
     const zoomed = snapshot.layout.zoomed[window.id] === true && focused
-    return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { visibility: 'hidden', pointerEvents: 'none', ...(lastVisibleSize.current ?? {}) } : {}) }}
+    return <section ref={element} className={`hapi-pane${focused ? ' hapi-pane-focused' : ''}`} style={{ ...style, ...(hidden ? { display: 'none' } : {}) }}
         data-pane-id={pane.id} data-session-id={pane.resource.kind === 'chat' ? pane.resource.sessionId : ''} aria-hidden={hidden}
         data-hapi-pane-state={pane.resource.kind === 'empty' ? 'empty' : hidden && !lease?.reference ? 'deferred' : lease?.status ?? 'opening'}
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}

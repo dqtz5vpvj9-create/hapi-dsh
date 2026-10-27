@@ -90,7 +90,11 @@ export class ObservedContent {
       catch (error) { this.refs.delete(key); throw error }
       return value
     } catch (error) {
-      return { type: 'text', text: `[Source resource unavailable: ${name}; ${error instanceof Error ? error.message : 'resource could not be imported'}]` }
+      // Never surface filesystem paths or transport details in the transcript.
+      // The full error stays in the Host log for diagnosis; the reader sees a
+      // concise, translatable marker for the missing resource.
+      console.warn(`[hapi-dsh] source resource unavailable: ${name}: ${error instanceof Error ? error.message : String(error)}`)
+      return { type: 'text', text: `[Source resource unavailable: ${name}]` }
     }
   }
 }

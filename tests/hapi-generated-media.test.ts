@@ -128,7 +128,9 @@ test('expired or offline media stays visibly unavailable and can be read later w
     try {
         const content = new ObservedContent(app.directory, 'display-one', 'one', { importGeneratedMedia: app.import })
         const missing = parseObservedMessage(row('late')); await content.prepare(missing)
-        assert.match(JSON.stringify(content.get(missing[0]!)), /Source resource unavailable.*HTTP 404/)
+        const placeholder = JSON.stringify(content.get(missing[0]!))
+        assert.match(placeholder, /Source resource unavailable: [^\]]+\.png/)
+        assert.doesNotMatch(placeholder, /HTTP 404|\/mnt\/|ENOENT/, 'the transcript must not leak transport or filesystem details')
         app.set('one', 'late', { bytes: PNG, mimeType: 'image/png', fileName: 'late.png' })
         app.unavailable(true)
         const offline = parseObservedMessage(row('late')); await content.prepare(offline)
