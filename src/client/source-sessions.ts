@@ -830,12 +830,11 @@ class SourceRecord {
         try { performance.mark(`hapi-dsh:live:commit:replace:${accepted.length}:${replaced.size}`) } catch { /* optional */ }
         this.eventSource.replace([...retained, ...accepted], resident.hasMore)
       } else {
-        // The official mutable source silently ignores an append whose seq does
-        // not continue its internal journal, which drops streamed chunks. A
-        // replace always publishes the exact retained window and never loses
-        // live output; the batch is small relative to the retained window.
-        try { performance.mark(`hapi-dsh:live:commit:replace-all:${accepted.length}:${this.eventSource.getSnapshot().entries.length}`) } catch { /* optional */ }
-        this.eventSource.replace([...retained, ...accepted], resident.hasMore)
+        // Appends are cheap and keep the conversation streaming. The follow-up
+        // trim restores any row a pinned plan drops, so an append cannot lose
+        // streamed output even when the retained window is at its budget.
+        try { performance.mark(`hapi-dsh:live:commit:append:${accepted.length}:${this.eventSource.getSnapshot().entries.length}`) } catch { /* optional */ }
+        for (const entry of this.normalizeEventData(accepted)) this.eventSource.append(entry)
       }
     } catch (error) {
       try { performance.mark(`hapi-dsh:live:commit-error:${(error instanceof Error ? error.message : String(error)).slice(0, 80)}`) } catch { /* optional */ }
