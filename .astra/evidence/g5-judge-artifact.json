@@ -1,0 +1,37 @@
+{
+ "gate": "G5",
+ "verdict": "PASS",
+ "failures": [],
+ "checks": [],
+ "metrics": {
+  "installRuns": 3,
+  "hostNodes": 1,
+  "runnerNodes": 2,
+  "tamperedFields": [
+   "capabilities",
+   "compositionVersion",
+   "extRelease",
+   "packageSetSha256",
+   "patchSetSha256",
+   "protocol",
+   "upstreamCommit",
+   "upstreamVersion"
+  ],
+  "expectedTamperFields": [
+   "upstreamVersion",
+   "upstreamCommit",
+   "extRelease",
+   "patchSetSha256",
+   "packageSetSha256",
+   "capabilities",
+   "compositionVersion",
+   "protocol"
+  ],
+  "preActivationCases": [
+   "bad-checksum",
+   "missing-ext-package",
+   "original-mixed-load"
+  ]
+ },
+ "frameSamples": []
+}

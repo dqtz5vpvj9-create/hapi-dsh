@@ -1,0 +1,174 @@
+{
+ "schema": 1,
+ "gate": "G5",
+ "environment": "bundle-installed Host + Runner handshake against a synthetic HAPI hub",
+ "installRuns": [
+  {
+   "run": 1,
+   "kind": "clean",
+   "ok": true,
+   "exitCode": 0
+  },
+  {
+   "run": 2,
+   "kind": "repeat",
+   "ok": true,
+   "exitCode": 0,
+   "diff": ""
+  },
+  {
+   "run": 3,
+   "kind": "repeat",
+   "ok": true,
+   "exitCode": 0,
+   "diff": ""
+  }
+ ],
+ "nodes": [
+  {
+   "role": "host",
+   "matched": true,
+   "identity": {
+    "upstreamVersion": "0.2.1-rc.3",
+    "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "extRelease": "7",
+    "patchSetSha256": "d8218aab753fa2fa4eb68fc80e4fae60f9c55e8f7a6c511d2c113f053169c98f",
+    "packageSetSha256": "0eb327d826995119543f881f9c0b67d0b5eed6de04ba81a8aa15de381e02ce0d",
+    "capabilities": {
+     "historySource": 1,
+     "mountedChat": 1,
+     "windowCommit": 1
+    },
+    "compositionVersion": "0.2.1-rc.3+ext.7",
+    "protocol": 2
+   }
+  },
+  {
+   "role": "runner",
+   "id": "runner-one",
+   "matched": true,
+   "identity": {
+    "upstreamVersion": "0.2.1-rc.3",
+    "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "extRelease": "7",
+    "patchSetSha256": "d8218aab753fa2fa4eb68fc80e4fae60f9c55e8f7a6c511d2c113f053169c98f",
+    "packageSetSha256": "0eb327d826995119543f881f9c0b67d0b5eed6de04ba81a8aa15de381e02ce0d",
+    "capabilities": {
+     "historySource": 1,
+     "mountedChat": 1,
+     "windowCommit": 1
+    },
+    "compositionVersion": "0.2.1-rc.3+ext.7",
+    "protocol": 2
+   },
+   "attempts": 0
+  },
+  {
+   "role": "runner",
+   "id": "runner-two",
+   "matched": true,
+   "identity": {
+    "upstreamVersion": "0.2.1-rc.3",
+    "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "extRelease": "7",
+    "patchSetSha256": "d8218aab753fa2fa4eb68fc80e4fae60f9c55e8f7a6c511d2c113f053169c98f",
+    "packageSetSha256": "0eb327d826995119543f881f9c0b67d0b5eed6de04ba81a8aa15de381e02ce0d",
+    "capabilities": {
+     "historySource": 1,
+     "mountedChat": 1,
+     "windowCommit": 1
+    },
+    "compositionVersion": "0.2.1-rc.3+ext.7",
+    "protocol": 2
+   },
+   "attempts": 0
+  }
+ ],
+ "expectedIdentity": {
+  "upstreamVersion": "0.2.1-rc.3",
+  "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+  "extRelease": "7",
+  "patchSetSha256": "d8218aab753fa2fa4eb68fc80e4fae60f9c55e8f7a6c511d2c113f053169c98f",
+  "packageSetSha256": "0eb327d826995119543f881f9c0b67d0b5eed6de04ba81a8aa15de381e02ce0d",
+  "capabilities": {
+   "historySource": 1,
+   "mountedChat": 1,
+   "windowCommit": 1
+  },
+  "compositionVersion": "0.2.1-rc.3+ext.7",
+  "protocol": 2
+ },
+ "tampers": [
+  {
+   "field": "upstreamVersion",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "upstreamCommit",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "extRelease",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "patchSetSha256",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "packageSetSha256",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "capabilities",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "compositionVersion",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  },
+  {
+   "field": "protocol",
+   "handshakeDiagnosed": true,
+   "businessForwarded": 0,
+   "firstFrame": "closed"
+  }
+ ],
+ "preActivationFailures": [
+  {
+   "case": "missing-ext-package",
+   "failedBeforeActivation": true,
+   "exitCode": 1,
+   "stateCreated": false,
+   "stderrTail": "hapi-dsh-bundle: SHA256SUMS lists a file that is not in the bundle: payload/dsh-ext/deepseek-ai-dsh-api-session-controller-0.2.1-rc.3-ext.7.tgz\n"
+  },
+  {
+   "case": "bad-checksum",
+   "failedBeforeActivation": true,
+   "exitCode": 1,
+   "stateCreated": false,
+   "stderrTail": "hapi-dsh-bundle: Checksum mismatch for payload/dsh-ext/deepseek-ai-dsh-api-session-controller-0.2.1-rc.3-ext.7.tgz\n"
+  },
+  {
+   "case": "original-mixed-load",
+   "failedBeforeActivation": true,
+   "exitCode": 1,
+   "stateCreated": false,
+   "stderrTail": ""
+  }
+ ]
+}

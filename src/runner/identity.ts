@@ -31,6 +31,8 @@ function upstreamCommitFromPackage(): string {
 }
 
 interface BundleReleaseIdentity {
+    upstreamVersion?: string;
+    upstreamCommit?: string;
     extRelease: string;
     patchSetSha256: string;
     packageSetSha256: string;
@@ -44,25 +46,40 @@ function bundleIdentity(dshHome: string | undefined, profile: string | undefined
     try {
         const state = JSON.parse(readFileSync(join(dshHome, 'hapi-dsh', 'state.json'), 'utf8')) as {
             profiles?: Record<string, { active?: { releaseId?: string } }>;
-            releases?: Record<string, { directory?: string }>;
+            releases?: Record<string, { directory?: string; identity?: {
+                upstreamVersion?: unknown; upstreamCommit?: unknown;
+                extRelease?: unknown; patchSetSha256?: unknown; packageSetSha256?: unknown;
+                capabilities?: unknown; compositionVersion?: unknown;
+            } }>;
         };
         const profiles = state.profiles ?? {};
         // Never borrow another profile's release identity.
         const entry = profile === undefined ? undefined : profiles[profile];
         const releaseId = entry?.active?.releaseId;
-        const directory = releaseId === undefined ? undefined : state.releases?.[releaseId]?.directory;
-        if (directory === undefined) return undefined;
-        const manifest = JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8')) as {
-            release?: {
+        const stored = releaseId === undefined ? undefined : state.releases?.[releaseId];
+        // Modern installer state seals the release identity directly; older
+        // states only kept the release directory, so both shapes are accepted.
+        const sealed = stored?.identity;
+        const directory = stored?.directory;
+        const release = (sealed ?? (directory === undefined ? undefined
+            : (JSON.parse(readFileSync(join(directory, 'manifest.json'), 'utf8')) as {
+                release?: {
+                    upstreamVersion?: unknown; upstreamCommit?: unknown;
+                    extRelease?: unknown; patchSetSha256?: unknown; packageSetSha256?: unknown;
+                    capabilities?: unknown; compositionVersion?: unknown;
+                };
+            }).release)) as {
+                upstreamVersion?: unknown; upstreamCommit?: unknown;
                 extRelease?: unknown; patchSetSha256?: unknown; packageSetSha256?: unknown;
                 capabilities?: unknown; compositionVersion?: unknown;
-            };
-        };
-        const release = manifest.release ?? {};
+            } | undefined;
+        if (release === undefined) return undefined;
         const capabilities = typeof release.capabilities === 'object' && release.capabilities !== null
             ? Object.fromEntries(Object.entries(release.capabilities as Record<string, unknown>)
                 .filter((entry): entry is [string, number] => typeof entry[1] === 'number')) : {};
         return {
+            ...(typeof release.upstreamVersion === 'string' ? { upstreamVersion: release.upstreamVersion } : {}),
+            ...(typeof release.upstreamCommit === 'string' ? { upstreamCommit: release.upstreamCommit } : {}),
             extRelease: typeof release.extRelease === 'string' ? release.extRelease : 'source',
             patchSetSha256: typeof release.patchSetSha256 === 'string' ? release.patchSetSha256 : '',
             packageSetSha256: typeof release.packageSetSha256 === 'string' ? release.packageSetSha256 : '',
@@ -78,8 +95,8 @@ function bundleIdentity(dshHome: string | undefined, profile: string | undefined
 export function runtimeIdentity(input: { dshVersion: string; dshHome?: string; profile?: string }): RuntimeIdentityV1 {
     const bundle = bundleIdentity(input.dshHome, input.profile);
     return {
-        upstreamVersion: input.dshVersion,
-        upstreamCommit: upstreamCommitFromPackage(),
+        upstreamVersion: bundle?.upstreamVersion ?? input.dshVersion,
+        upstreamCommit: bundle?.upstreamCommit ?? upstreamCommitFromPackage(),
         extRelease: bundle?.extRelease ?? 'source',
         patchSetSha256: bundle?.patchSetSha256 ?? '',
         packageSetSha256: bundle?.packageSetSha256 ?? '',

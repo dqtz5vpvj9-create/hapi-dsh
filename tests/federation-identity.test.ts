@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { identityMatches, runtimeIdentity, validRuntimeIdentity, RUNTIME_PROTOCOL, type RuntimeIdentityV1 } from '../src/runner/identity.ts';
 import { FEDERATION_PROTOCOL, parseFrame } from '../src/runner/protocol.ts';
@@ -20,6 +22,22 @@ test('runtime identity reports the pinned upstream and a source ext fallback', (
     assert.equal(value.compositionVersion, '0.2.1-rc.3+source');
     assert.deepEqual(value.capabilities, {});
     assert.equal(FEDERATION_PROTOCOL, RUNTIME_PROTOCOL, 'the federation frames and the identity share one protocol revision');
+});
+
+test('identity reads the sealed release identity from the bundle state', () => {
+  const home = mkdtempSync(join(tmpdir(), 'identity-state-'));
+  mkdirSync(join(home, 'hapi-dsh'), { recursive: true });
+  writeFileSync(join(home, 'hapi-dsh', 'state.json'), JSON.stringify({ version: 1,
+    profiles: { hapi: { active: { releaseId: 'r1' } } },
+    releases: { r1: { releaseId: 'r1', dirName: 'r-r1', identity: { upstreamVersion: '0.2.1-rc.3', upstreamCommit: 'e'.repeat(40), extRelease: '7', patchSetSha256: 'a'.repeat(64),
+      packageSetSha256: 'b'.repeat(64), capabilities: { historySource: 1, mountedChat: 1, windowCommit: 1 },
+      compositionVersion: '0.2.1-rc.3+ext.7' } } } }));
+  const value = runtimeIdentity({ dshVersion: '0.2.1-rc.3', dshHome: home, profile: 'hapi' });
+  assert.equal(value.upstreamCommit, 'e'.repeat(40), 'the sealed release pins the upstream commit inside the installed runtime too');
+  assert.equal(value.extRelease, '7');
+  assert.equal(value.patchSetSha256, 'a'.repeat(64));
+  assert.deepEqual(value.capabilities, { historySource: 1, mountedChat: 1, windowCommit: 1 });
+  assert.equal(value.compositionVersion, '0.2.1-rc.3+ext.7');
 });
 
 test('identity matching is exact across every field and capability value', () => {
