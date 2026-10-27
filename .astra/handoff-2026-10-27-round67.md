@@ -76,3 +76,30 @@ assertions limited to mirroring/retention/anchor. Keep test names meaningful.
   fails under the warm HOME.
 - Do not add bottom-follow logic in the seamless controller: it breaks cached-history
   accounting and disconnected anchor stability.
+
+## ext 0004 plan (round 70 findings)
+
+Repository: `/mnt/cache/src/dsh-ext` (full DSH fork), branch `ext/0.2.1-rc.3`,
+HEAD `dcdf7e9d`. Series lives in `ext/patches/0.2.1-rc.3/`:
+- `0001-history-source.patch`
+- `0002-mounted-chat.patch`
+- `0003-window-commit.patch`
+- plus `series`; release/artifact metadata in `ext/releases/0.2.1-rc.3/`,
+  `ext/releases/active-rc.json`, compatibility matrix templates.
+
+Live-follow source files (the patch target for 0004):
+- `packages/client/ui-chat/src/client/chat/use-chat-scroll.ts`
+- `packages/client/ui-chat/src/client/chat/use-chat-reading.ts`
+- `packages/client/ui-chat/src/client/chat/ChatView.tsx` (writes `data-chat-following-tail`)
+- tests: `packages/client/ui-chat/tests/fold-follow.client.spec.ts`
+
+Change shape for 0004: a scroll sample that lands on the live edge but was not
+produced by a reader gesture should re-enter `followingTail`. Today that path is
+gated on `movedByReader`; keep the default path byte-identical behind an opt-in
+switch (ext capability flag, default off) and enable it from the hapi-dsh
+composition. Add an ext contract test for:
+1. programmatic `scrollTop = scrollHeight` then append -> new row mounted/visible;
+2. reader scrolled away -> append must not move the reading position;
+3. default-off behavior unchanged.
+Then rebuild ext artifacts/manifests and reinstall into the hapi-dsh runtime
+before rerunning warm acceptance.
