@@ -597,12 +597,19 @@ class SourceRecord {
     if (this.disposed || this.target === undefined) { this.liveQueue.length = 0; return }
     let entries = this.liveQueue.splice(0)
     if (!entries.length) return
+    try {
+      const queueTypes = [...new Set(entries.map(entry => String(entry.event.type)))].join('|')
+      performance.mark(`hapi-dsh:live:queue:${entries.length}:${queueTypes.slice(0, 90)}`)
+    } catch { /* optional */ }
     const pins = this.readerPins(true)
     const observedLast = Math.max(this.liveSeqBase, ...entries.map(row => Number(row.event.seq)))
     // Once a source gap exists, a later live row cannot jump across it. Keep
     // resident-item revisions; the authoritative forward pager owns filling
     // the gap, even if the reader has since reached this window's bottom.
-    if (this.liveGap || (pins.length > 0 && pins.every(pin => !pin.followingTail && !pin.unknownGeometry))) {
+    // Only a real source gap may withhold live rows. A reader that is merely
+    // not attached to the tail still receives appended output below its
+    // viewport; dropping it would make streamed answers disappear entirely.
+    if (this.liveGap) {
       const resident = new Set(sourceGroups(this.eventSource.getSnapshot().entries).map(group => group.key))
       const groups = sourceGroups(entries)
       const present = groups.filter(group => resident.has(group.key))
@@ -654,6 +661,7 @@ class SourceRecord {
     }
     const accepted: SessionEventLikeEntry[] = []
     const replaced = new Map<number, SessionEventLikeEntry>()
+    let liveSkipped = 0
     const seqMap = this.originalSeqs
     const committed = new Map<string, SessionEventLikeEntry>()
     for (const row of overlap ?? []) {
@@ -662,7 +670,7 @@ class SourceRecord {
     }
     for (const entry of entries) {
       const originalSeq = Number(entry.event.seq)
-      if (originalSeq <= this.liveSeqBase) continue
+      if (originalSeq <= this.liveSeqBase) { liveSkipped++; continue }
       this.liveSeqBase = originalSeq
       const data = entry.event.data as Record<string, unknown> | null
       const originalTurn = data && typeof data.turn === 'number' ? data.turn
@@ -720,20 +728,58 @@ class SourceRecord {
       if (existing) replaced.set(nextSeq, mapped)
       else accepted.push(mapped)
     }
+    try {
+      const mappedTypes = [...new Set(accepted.map(entry => String(entry.event.type)))].join('|')
+      performance.mark(`hapi-dsh:live:mapped:${accepted.length}:${replaced.size}:${liveSkipped}:${mappedTypes.slice(0, 90)}`)
+    } catch { /* optional */ }
     this.liveSeqBase = Math.max(this.liveSeqBase, observedLast)
     // Append in one synchronous batch; each accepted record keeps its source
     // annotation so a later eviction can restore the exact source edge.
     const resident = this.eventSource.getSnapshot()
     const retained = replaced.size ? resident.entries.map(row => replaced.get(Number(row.event.seq)) ?? row) : resident.entries
-    if (!this.retentionFits([...retained, ...accepted], pins, 'newer')) {
-      this.target.lastSeq = this.lastSeq()
-      const turns = recordTurns(resident.entries)
-      this.target.lastTurn = turns.last ?? this.target.firstTurn
-      this.target.hasMoreAfter = true
-      this.liveGap = true
-      this.pruneTurnMaps()
-      this.session.publish()
-      return
+    const combined = [...retained, ...accepted]
+    if (!this.retentionFits(combined, pins, 'newer')) {
+      const plan = this.retentionPlan(combined, [], 'newer')
+      try { performance.mark(`hapi-dsh:live:retention-plan:${String(plan.fits)}:${plan.first}:${plan.last}:${combined.length}`) } catch { /* optional */ }
+      if (plan.fits && plan.first > 0) {
+        // Live output outranks retained history: evict the older side so the
+        // streaming row still lands, keeping a before cursor so the reader can
+        // page the evicted interval back in later.
+        const keep = combined.slice(plan.first, plan.last)
+        const firstKept = plan.groups.find(group => group.start >= plan.first)?.source
+        const lastKept = [...plan.groups].reverse().find(group => group.end <= plan.last)?.source
+        this.eventSource.replace(this.normalizeEventData(keep), resident.hasMore)
+        this.target.before = firstKept ? { at: firstKept.at, seq: firstKept.seq } : null
+        this.target.beforeEpoch = (firstKept as unknown as { epoch?: number } | undefined)?.epoch
+        this.target.beforeMessageId = firstKept?.messageId
+        this.target.after = lastKept ? { at: lastKept.at, seq: lastKept.seq } : null
+        this.target.afterEpoch = (lastKept as unknown as { epoch?: number } | undefined)?.epoch
+        this.target.afterMessageId = lastKept?.messageId
+        this.target.hasMoreBefore = firstKept !== undefined
+        this.target.hasMoreAfter = false
+        this.target.firstSeq = keep[0]?.event.seq ?? null
+        this.target.lastSeq = keep.at(-1)?.event.seq ?? null
+        this.liveGap = false
+        try { performance.mark(`hapi-dsh:live:evicted-older:${keep.length}`) } catch { /* optional */ }
+        this.learnTargetTurns(accepted)
+        this.pruneTurnMaps()
+        this.session.publish()
+        return
+      }
+      if (!plan.fits) {
+        this.target.lastSeq = this.lastSeq()
+        const turns = recordTurns(resident.entries)
+        this.target.lastTurn = turns.last ?? this.target.firstTurn
+        this.target.hasMoreAfter = true
+        this.liveGap = true
+        try { performance.mark('hapi-dsh:live:retention-fail') } catch { /* optional */ }
+        this.pruneTurnMaps()
+        this.session.publish()
+        return
+      }
+      // The full window fits without reader pins: a stale pin conflict must not
+      // withhold live output, so fall through and append normally.
+      try { performance.mark('hapi-dsh:live:retention-pin-ignored') } catch { /* optional */ }
     }
     if (hasLateSourceRows(retained, accepted)) {
       this.eventSource.replace(orderSourceWindow([...retained, ...accepted]), resident.hasMore)

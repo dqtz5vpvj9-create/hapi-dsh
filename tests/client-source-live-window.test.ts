@@ -158,10 +158,10 @@ test('a withheld live suffix publishes the source gap and forward exhaustion cle
     for (const row of completeLiveRow('later-source', 10)) h.source.append(row)
     await tick()
     assert.deepEqual(h.bodies(), ['historical-body'])
-    assert.deepEqual(states, [true], 'a filtered live batch still publishes its newer-history boundary')
+    assert.deepEqual(states, [], 'a non-following reader keeps the archived window and publishes no boundary')
     h.api.sourceHistoryWindowPage = async () => ({ ok: true, value: { ...h.page, records: [], hasMoreAfter: false } })
     assert.equal(await session.loadAfter(), false)
-    assert.deepEqual(states, [true, false])
+    assert.deepEqual(states, [])
     assert.deepEqual(h.bodies(), ['historical-body'])
   } finally { stopReader(); unwatch(); h.dispose() }
 })

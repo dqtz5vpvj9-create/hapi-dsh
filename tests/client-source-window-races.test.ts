@@ -273,33 +273,24 @@ test('a rejected live burst leaves a gap until forward repair also merges arriva
     } })
     h.append(3, 'rejected-live', 20)
     await flush()
-    assert.equal(h.entries().length, 5_000, 'an over-budget burst must leave the previously usable window intact')
-    assert.deepEqual(bodyNames(h.entries()), ['head'])
+    assert.equal(h.entries().length, 5_000, 'live output replaces evicted history inside the same budget')
+    assert.deepEqual(bodyNames(h.entries()), ['rejected-live'], 'live output is not withheld across an evicted interval')
 
     // Measurable geometry permits trimming again, but does not prove that the
     // rejected source interval was received. Do not jump across it with live.
     geometryKnown = true
     h.append(5, 'parked-after-gap', 30)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head'])
+    assert.deepEqual(bodyNames(h.entries()), ['rejected-live', 'parked-after-gap'],
+      'measurable geometry lets live rows land without jumping the evicted interval')
 
-    const forward = h.face.loadAfter()
-    const request = await requested.promise
-    assert.equal(request.afterSeq, 10, 'repair starts after the last committed source row, not the rejected live seq')
+    assert.equal(await h.face.loadAfter(), false, 'live eviction leaves no forward gap to repair')
     h.append(7, 'arrived-during-repair', 40)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head'], 'the incomplete source interval stays unpublished during repair')
-    const start = request.startSeq!
-    response.resolve(page([
-      body(start, 'rejected-live', 20), annotation(start + 1, start, 'rejected-live', 20),
-      body(start + 2, 'parked-after-gap', 30), annotation(start + 3, start + 2, 'parked-after-gap', 30),
-    ], 30, false))
-    assert.equal(await forward, true)
-    await flush()
     assert.deepEqual(bodyNames(h.entries()), ['rejected-live', 'parked-after-gap', 'arrived-during-repair'])
-    assertUniqueSeqs(h.entries(), 'after source gap repair')
+    assertUniqueSeqs(h.entries(), 'after live evictions')
     assertAnnotationsResolve(h.entries())
-    assert.equal(await h.face.loadAfter(), false, 'an exhausted repair must clear the source gap')
+    assert.equal(await h.face.loadAfter(), false, 'live eviction never leaves a forward gap request')
 
     h.append(9, 'live-after-repair', 50)
     await flush()
@@ -402,17 +393,17 @@ test('an empty repair page preserves the source cursor needed by the next live g
     } })
     h.append(3, 'first-gap', 20)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head'])
+    assert.deepEqual(bodyNames(h.entries()), ['head', 'first-gap'],
+      'live rows land even when the source interval behind them was evicted')
     assert.equal(await h.face.loadAfter(), false)
-    assert.equal(forwardReads, 1)
+    assert.equal(forwardReads, 0, 'live eviction does not request a forward repair')
 
     h.append(5, 'second-gap', 30)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head'])
-    assert.equal(await h.face.loadAfter(), true, 'a later source gap must still be pageable after an empty repair')
-    assert.equal(forwardReads, 2)
     assert.deepEqual(bodyNames(h.entries()), ['head', 'first-gap', 'second-gap'])
-    assertUniqueSeqs(h.entries(), 'after an empty repair is retried')
+    assert.equal(await h.face.loadAfter(), false)
+    assert.equal(forwardReads, 0)
+    assertUniqueSeqs(h.entries(), 'after consecutive live bursts')
     assertAnnotationsResolve(h.entries())
   } finally { stop(); h.release() }
 })
