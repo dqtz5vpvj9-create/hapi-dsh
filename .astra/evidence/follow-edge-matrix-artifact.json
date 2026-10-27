@@ -1,0 +1,273 @@
+{
+ "summary": [
+  {
+   "mode": "marker",
+   "samples": 3,
+   "followedTail": 3,
+   "stayedAway": 3,
+   "followingMarkerAtFloor": 3,
+   "errors": []
+  },
+  {
+   "mode": "setter",
+   "samples": 3,
+   "followedTail": 3,
+   "stayedAway": 3,
+   "followingMarkerAtFloor": 3,
+   "errors": []
+  },
+  {
+   "mode": "off",
+   "samples": 3,
+   "followedTail": 3,
+   "stayedAway": 3,
+   "followingMarkerAtFloor": 3,
+   "errors": []
+  }
+ ],
+ "results": [
+  {
+   "mode": "marker",
+   "sample": 1,
+   "errors": [],
+   "marker": "1",
+   "awayBefore": {
+    "top": 582,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 582,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 622,
+    "floor": 622
+   },
+   "afterTailStream": {
+    "top": 622,
+    "floor": 622,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "marker",
+   "sample": 2,
+   "errors": [],
+   "marker": "1",
+   "awayBefore": {
+    "top": 828,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 828,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 868,
+    "floor": 868
+   },
+   "afterTailStream": {
+    "top": 868,
+    "floor": 868,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "marker",
+   "sample": 3,
+   "errors": [],
+   "marker": "1",
+   "awayBefore": {
+    "top": 444,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 444,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 484,
+    "floor": 484
+   },
+   "afterTailStream": {
+    "top": 484,
+    "floor": 484,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "setter",
+   "sample": 1,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 690,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 690,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 730,
+    "floor": 730
+   },
+   "afterTailStream": {
+    "top": 730,
+    "floor": 730,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "setter",
+   "sample": 2,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 936,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 936,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 976,
+    "floor": 976
+   },
+   "afterTailStream": {
+    "top": 976,
+    "floor": 976,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "setter",
+   "sample": 3,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 1182,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 1182,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 1222,
+    "floor": 1222
+   },
+   "afterTailStream": {
+    "top": 1222,
+    "floor": 1222,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "off",
+   "sample": 1,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 1428,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 1428,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 1468,
+    "floor": 1468
+   },
+   "afterTailStream": {
+    "top": 1468,
+    "floor": 1468,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "off",
+   "sample": 2,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 1044,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 1044,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 1084,
+    "floor": 1084
+   },
+   "afterTailStream": {
+    "top": 1084,
+    "floor": 1084,
+    "remaining": 0
+   },
+   "followedTail": true
+  },
+  {
+   "mode": "off",
+   "sample": 3,
+   "errors": [],
+   "marker": null,
+   "awayBefore": {
+    "top": 1044,
+    "remaining": 40
+   },
+   "followingWhileAway": 0,
+   "awayAfter": {
+    "top": 1044,
+    "remaining": 40
+   },
+   "awayDelta": 0,
+   "followingAfterProgrammaticFloor": 1,
+   "before": {
+    "top": 1084,
+    "floor": 1084
+   },
+   "afterTailStream": {
+    "top": 1084,
+    "floor": 1084,
+    "remaining": 0
+   },
+   "followedTail": true
+  }
+ ]
+}

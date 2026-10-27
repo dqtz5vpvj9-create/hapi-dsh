@@ -1,0 +1,1242 @@
+{
+  "schema": 1,
+  "passed": true,
+  "environment": "pinned official DSH + synthetic HAPI wire; local Chromium",
+  "repetitions": 1,
+  "durationMs": 25971.185270999995,
+  "budgets": {
+    "warmBodyMs": 150,
+    "cachedBodyMs": 500,
+    "firstBodyMs": 1500,
+    "coldWorkspaceMs": 6000,
+    "scrollP95Ms": 50,
+    "frameTimestampToleranceMs": 0.2,
+    "maxFrameMs": 200,
+    "anchorPx": 1,
+    "mobileComposerPx": 160,
+    "mobileHeaderPx": 0,
+    "mobileBottomPx": 52
+  },
+  "checks": [
+    {
+      "name": "ordinary DSH fixture via official AgentLoop",
+      "passed": true,
+      "elapsedMs": 159.65874200000053
+    },
+    {
+      "name": "desktop 1: cold document ready",
+      "passed": true,
+      "elapsedMs": 2253.9424520000002,
+      "metrics": {
+        "documentMs": 2224.2000002861023,
+        "admissionAndAutomationMs": 2252.711929,
+        "Nodes": 962,
+        "LayoutDuration": 0.103051,
+        "ScriptDuration": 0.361995,
+        "TaskDuration": 1.616409,
+        "JSHeapUsedSize": 40911124
+      }
+    },
+    {
+      "name": "desktop 1: first body and editor",
+      "passed": true,
+      "elapsedMs": 317.5559519999988,
+      "metrics": {
+        "bodyMs": 292.1000003814697,
+        "composerMs": 292.1000003814697
+      }
+    },
+    {
+      "name": "desktop 1: short content starts at top",
+      "passed": true,
+      "elapsedMs": 41.47899999999936,
+      "metrics": {
+        "gap": 16
+      }
+    },
+    {
+      "name": "desktop 1: sidebar hover cannot freeze the page",
+      "passed": true,
+      "elapsedMs": 747.9817490000005
+    },
+    {
+      "name": "desktop 1: cached opens and drafts",
+      "passed": true,
+      "elapsedMs": 570.7183379999988,
+      "metrics": [
+        {
+          "bodyMs": 32.30000019073486,
+          "composerMs": 32.30000019073486
+        },
+        {
+          "bodyMs": 29.799999713897705,
+          "composerMs": 29.799999713897705
+        },
+        {
+          "bodyMs": 30.699999809265137,
+          "composerMs": 30.699999809265137
+        },
+        {
+          "bodyMs": 37.90000009536743,
+          "composerMs": 37.90000009536743
+        }
+      ]
+    },
+    {
+      "name": "desktop 1: navigation to restored body and editor, with draft",
+      "passed": true,
+      "elapsedMs": 900.1954330000008,
+      "metrics": {
+        "body": 840.4000000953674,
+        "editor": 840.4000000953674
+      }
+    },
+    {
+      "name": "desktop 1: long history first paint",
+      "passed": true,
+      "elapsedMs": 285.2476809999989,
+      "metrics": {
+        "bodyMs": 265.69999980926514,
+        "composerMs": 265.69999980926514,
+        "Nodes": 3956,
+        "LayoutDuration": 0.016128,
+        "ScriptDuration": 0.321926,
+        "TaskDuration": 0.966975,
+        "JSHeapUsedSize": 97134308
+      }
+    },
+    {
+      "name": "desktop 1: stationary prepend all frames <= 1px",
+      "passed": true,
+      "elapsedMs": 1814.3263140000017,
+      "metrics": {
+        "drift": 0,
+        "frames": [
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.700000000000273,
+          16.699999999999818,
+          16.59999999999991,
+          216.60000000000036,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.699999999999818,
+          16.59999999999991,
+          16.800000000000182,
+          16.59999999999991,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364
+        ],
+        "pages": 1
+      }
+    },
+    {
+      "name": "desktop 1: continuous up and down",
+      "passed": true,
+      "elapsedMs": 1931.4498139999996,
+      "metrics": {
+        "sample": {
+          "frames": [
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.700000000000273,
+            16.59999999999991,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.700000000000273,
+            16.59999999999991,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.700000000000273,
+            16.59999999999991,
+            16.59999999999991,
+            16.800000000000182,
+            16.59999999999991,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            33.29999999999973,
+            16.700000000000273,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.59999999999991,
+            16.800000000000182,
+            16.59999999999991,
+            16.59999999999991,
+            16.700000000000273,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.59999999999991,
+            16.700000000000273,
+            16.699999999999818,
+            16.59999999999991,
+            16.700000000000273,
+            16.699999999999818,
+            16.59999999999991,
+            16.800000000000182,
+            16.59999999999991,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.799999999999272,
+            16.5,
+            16.700000000000728,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.599999999999454,
+            16.800000000000182,
+            16.600000000000364,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.599999999999454,
+            16.800000000000182,
+            16.600000000000364,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364
+          ],
+          "tasks": [],
+          "anchorOffsets": [],
+          "missingAnchors": 0,
+          "nodes": 8777,
+          "longTasks": [],
+          "marks": []
+        },
+        "p95": 16.800000000000182,
+        "maximum": 33.29999999999973,
+        "before": {
+          "Nodes": 13074,
+          "LayoutDuration": 0.041036,
+          "ScriptDuration": 0.620552,
+          "TaskDuration": 1.682031,
+          "JSHeapUsedSize": 104228336
+        },
+        "after": {
+          "Nodes": 13074,
+          "LayoutDuration": 0.041036,
+          "ScriptDuration": 0.749337,
+          "TaskDuration": 2.296347,
+          "JSHeapUsedSize": 107865676
+        }
+      }
+    },
+    {
+      "name": "desktop 1: cached history reversal does not reload",
+      "passed": true,
+      "elapsedMs": 695.5793239999985,
+      "metrics": {
+        "additionalPages": 0,
+        "additionalSourceReads": 0,
+        "sample": {
+          "frames": [
+            16.699999999999818,
+            16.700000000000728,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.699999999999818,
+            16.600000000000364,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728,
+            16.599999999999454,
+            16.699999999999818,
+            16.700000000000728,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728,
+            16.699999999999818,
+            16.599999999999454,
+            16.700000000000728
+          ],
+          "tasks": [],
+          "anchorOffsets": [],
+          "missingAnchors": 0,
+          "nodes": 8777,
+          "longTasks": [],
+          "marks": []
+        }
+      }
+    },
+    {
+      "name": "desktop 1: live updates preserve reader and editor",
+      "passed": true,
+      "elapsedMs": 1803.9938880000009
+    },
+    {
+      "name": "desktop 1: disconnected source retains visible body and draft",
+      "passed": true,
+      "elapsedMs": 968.0996650000016
+    },
+    {
+      "name": "desktop 1: 2 and 4 independent panes",
+      "passed": true,
+      "elapsedMs": 2541.0545390000007,
+      "metrics": [
+        {
+          "panes": 2,
+          "scroll": {
+            "frames": [
+              16.69999999999891,
+              16.600000000000364,
+              16.80000000000109,
+              16.599999999998545,
+              16.600000000000364,
+              16.80000000000109,
+              16.599999999998545,
+              16.700000000000728,
+              16.600000000000364,
+              16.69999999999891,
+              16.700000000000728,
+              16.700000000000728,
+              16.599999999998545,
+              16.700000000000728,
+              16.600000000000364,
+              16.69999999999891,
+              16.700000000000728,
+              16.600000000000364,
+              150,
+              16.69999999999891
+            ],
+            "tasks": [
+              165
+            ],
+            "anchorOffsets": [],
+            "missingAnchors": 0,
+            "nodes": 7148,
+            "longTasks": [
+              {
+                "start": 298,
+                "duration": 165,
+                "container": "window:"
+              }
+            ],
+            "marks": [
+              {
+                "name": "hapi-dsh:loadOlder:called",
+                "start": 204
+              },
+              {
+                "name": "hapi-dsh:loadOlder:requesting",
+                "start": 204
+              },
+              {
+                "name": "hapi-dsh:live:flush-start:0",
+                "start": 204
+              },
+              {
+                "name": "hapi-dsh:loadOlder:delegate",
+                "start": 204
+              },
+              {
+                "name": "hapi-dsh:live:change",
+                "start": 218
+              },
+              {
+                "name": "hapi-dsh:live:append:prepend",
+                "start": 218
+              }
+            ]
+          },
+          "p95": 16.80000000000109,
+          "Nodes": 10150,
+          "LayoutDuration": 0.066087,
+          "ScriptDuration": 1.245791,
+          "TaskDuration": 4.118549,
+          "JSHeapUsedSize": 102143292
+        },
+        {
+          "panes": 3,
+          "Nodes": 10537,
+          "LayoutDuration": 0.074265,
+          "ScriptDuration": 1.334138,
+          "TaskDuration": 4.449053,
+          "JSHeapUsedSize": 110591424
+        },
+        {
+          "panes": 4,
+          "scroll": {
+            "frames": [
+              16.600000000000364,
+              16.799999999999272,
+              16.600000000000364,
+              16.600000000000364,
+              16.700000000000728,
+              16.69999999999891,
+              16.700000000000728,
+              16.69999999999891,
+              16.5,
+              16.700000000000728,
+              16.700000000000728,
+              16.69999999999891,
+              16.600000000000364,
+              16.700000000000728,
+              16.69999999999891,
+              16.700000000000728,
+              16.600000000000364,
+              16.599999999998545,
+              16.700000000000728
+            ],
+            "tasks": [],
+            "anchorOffsets": [],
+            "missingAnchors": 0,
+            "nodes": 8185,
+            "longTasks": [],
+            "marks": []
+          },
+          "p95": 16.799999999999272,
+          "Nodes": 11637,
+          "LayoutDuration": 0.085668,
+          "ScriptDuration": 1.515959,
+          "TaskDuration": 5.082192,
+          "JSHeapUsedSize": 120309904
+        }
+      ]
+    },
+    {
+      "name": "desktop 1: isolated approval and close only view",
+      "passed": true,
+      "elapsedMs": 475.1461489999965
+    },
+    {
+      "name": "desktop 1: queued edit preserves the other draft",
+      "passed": true,
+      "elapsedMs": 395.7971870000001
+    },
+    {
+      "name": "desktop 1: ordinary DSH body and editor",
+      "passed": true,
+      "elapsedMs": 138.60703700000158,
+      "metrics": {
+        "bodyMs": 86.30000019073486,
+        "composerMs": 86.30000019073486
+      }
+    },
+    {
+      "name": "voice and PNG capture load only on use",
+      "passed": true,
+      "elapsedMs": 5269.154779
+    },
+    {
+      "name": "mobile 360: full width, compact controls, keyboard and rotation",
+      "passed": true,
+      "elapsedMs": 2205.4612669999988,
+      "metrics": {
+        "portrait": {
+          "left": 0,
+          "width": 360,
+          "viewport": 360,
+          "overflow": 0,
+          "composer": 154,
+          "header": 0,
+          "bottom": 45,
+          "scrollBoundary": {
+            "root": "none",
+            "body": "none",
+            "transcript": "contain"
+          }
+        },
+        "restored": {
+          "left": 0,
+          "width": 360,
+          "viewport": 360,
+          "overflow": 0,
+          "composer": 154,
+          "header": 0,
+          "bottom": 45,
+          "scrollBoundary": {
+            "root": "none",
+            "body": "none",
+            "transcript": "contain"
+          }
+        },
+        "device": "Chromium mobile emulation; viewport resize is not a physical soft keyboard"
+      }
+    },
+    {
+      "name": "mobile 390: full width, compact controls, keyboard and rotation",
+      "passed": true,
+      "elapsedMs": 1940.0952069999985,
+      "metrics": {
+        "portrait": {
+          "left": 0,
+          "width": 390,
+          "viewport": 390,
+          "overflow": 0,
+          "composer": 98,
+          "header": 0,
+          "bottom": 45,
+          "scrollBoundary": {
+            "root": "none",
+            "body": "none",
+            "transcript": "contain"
+          }
+        },
+        "restored": {
+          "left": 0,
+          "width": 390,
+          "viewport": 390,
+          "overflow": 0,
+          "composer": 98,
+          "header": 0,
+          "bottom": 45,
+          "scrollBoundary": {
+            "root": "none",
+            "body": "none",
+            "transcript": "contain"
+          }
+        },
+        "device": "Chromium mobile emulation; viewport resize is not a physical soft keyboard"
+      }
+    },
+    {
+      "name": "browser errors",
+      "passed": true,
+      "elapsedMs": 0.40709500000230037
+    },
+    {
+      "name": "warm body p95",
+      "passed": true,
+      "elapsedMs": 0.22316699999646517,
+      "metrics": {
+        "samples": [
+          {
+            "bodyMs": 32.30000019073486,
+            "composerMs": 32.30000019073486
+          },
+          {
+            "bodyMs": 29.799999713897705,
+            "composerMs": 29.799999713897705
+          },
+          {
+            "bodyMs": 30.699999809265137,
+            "composerMs": 30.699999809265137
+          },
+          {
+            "bodyMs": 37.90000009536743,
+            "composerMs": 37.90000009536743
+          }
+        ],
+        "p95": 37.90000009536743
+      }
+    }
+  ],
+  "observations": {
+    "desktop 1: first body and editor": {
+      "bodyMs": 292.1000003814697,
+      "composerMs": 292.1000003814697
+    },
+    "desktop 1: sidebar hover cannot freeze the page": {
+      "frames": [
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.59999999999991,
+        16.800000000000182,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364
+      ],
+      "tasks": [],
+      "anchorOffsets": [],
+      "missingAnchors": 0,
+      "nodes": 778,
+      "longTasks": [],
+      "marks": [
+        {
+          "name": "hapi-dsh:facade:original-ready",
+          "start": 16
+        },
+        {
+          "name": "hapi-dsh:facade:ready",
+          "start": 16
+        }
+      ]
+    },
+    "desktop 1: navigation to restored body and editor, with draft": {
+      "body": 840.4000000953674,
+      "editor": 840.4000000953674
+    },
+    "desktop 1: long history first paint": {
+      "bodyMs": 265.69999980926514,
+      "composerMs": 265.69999980926514
+    },
+    "desktop 1: stationary prepend all frames <= 1px": {
+      "drift": 0,
+      "sample": {
+        "frames": [
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.700000000000273,
+          16.699999999999818,
+          16.59999999999991,
+          216.60000000000036,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.799999999999727,
+          16.59999999999991,
+          16.600000000000364,
+          16.699999999999818,
+          16.59999999999991,
+          16.800000000000182,
+          16.59999999999991,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364
+        ],
+        "tasks": [
+          216
+        ],
+        "anchorOffsets": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "missingAnchors": 0,
+        "nodes": 8777,
+        "longTasks": [
+          {
+            "start": 90,
+            "duration": 216,
+            "container": "window:"
+          }
+        ],
+        "marks": [
+          {
+            "name": "hapi-dsh:loadOlder:called",
+            "start": 32
+          },
+          {
+            "name": "hapi-dsh:loadOlder:requesting",
+            "start": 32
+          },
+          {
+            "name": "hapi-dsh:live:flush-start:0",
+            "start": 32
+          },
+          {
+            "name": "hapi-dsh:loadOlder:delegate",
+            "start": 33
+          },
+          {
+            "name": "hapi-dsh:live:change",
+            "start": 43
+          },
+          {
+            "name": "hapi-dsh:live:append:prepend",
+            "start": 43
+          }
+        ]
+      },
+      "pages": 1
+    },
+    "desktop 1: continuous up and down": {
+      "sample": {
+        "frames": [
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.700000000000273,
+          16.59999999999991,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.700000000000273,
+          16.59999999999991,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.700000000000273,
+          16.59999999999991,
+          16.59999999999991,
+          16.800000000000182,
+          16.59999999999991,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          33.29999999999973,
+          16.700000000000273,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.59999999999991,
+          16.800000000000182,
+          16.59999999999991,
+          16.59999999999991,
+          16.700000000000273,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.59999999999991,
+          16.700000000000273,
+          16.699999999999818,
+          16.59999999999991,
+          16.700000000000273,
+          16.699999999999818,
+          16.59999999999991,
+          16.800000000000182,
+          16.59999999999991,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.799999999999272,
+          16.5,
+          16.700000000000728,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.599999999999454,
+          16.800000000000182,
+          16.600000000000364,
+          16.599999999999454,
+          16.700000000000728,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.599999999999454,
+          16.700000000000728,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364,
+          16.699999999999818,
+          16.599999999999454,
+          16.700000000000728,
+          16.699999999999818,
+          16.599999999999454,
+          16.700000000000728,
+          16.699999999999818,
+          16.599999999999454,
+          16.800000000000182,
+          16.600000000000364,
+          16.599999999999454,
+          16.700000000000728,
+          16.699999999999818,
+          16.699999999999818,
+          16.600000000000364
+        ],
+        "tasks": [],
+        "anchorOffsets": [],
+        "missingAnchors": 0,
+        "nodes": 8777,
+        "longTasks": [],
+        "marks": []
+      },
+      "p95": 16.800000000000182,
+      "maximum": 33.29999999999973,
+      "before": {
+        "Nodes": 13074,
+        "LayoutDuration": 0.041036,
+        "ScriptDuration": 0.620552,
+        "TaskDuration": 1.682031,
+        "JSHeapUsedSize": 104228336
+      },
+      "after": {
+        "Nodes": 13074,
+        "LayoutDuration": 0.041036,
+        "ScriptDuration": 0.749337,
+        "TaskDuration": 2.296347,
+        "JSHeapUsedSize": 107865676
+      }
+    },
+    "desktop 1: live updates preserve reader and editor": {
+      "before": {
+        "key": "13:input-messagehapi:codex-native:codex-thread-accept-history:synthetic-turn-179:input",
+        "text": "Synthetic original input 180.2025-10-9 04:52Rewind here",
+        "offset": -78,
+        "scrollTop": 641
+      },
+      "after": {
+        "offset": -78,
+        "scrollTop": 641,
+        "scrollHeight": 1550,
+        "rowTop": -39
+      },
+      "latencyMs": [
+        315.72739999999976,
+        112.7772960000002,
+        105.07623599999715,
+        104.35961999999927,
+        104.93136299999969,
+        103.83456300000034
+      ],
+      "drift": 0,
+      "marks": [
+        "hapi-dsh:live:mapped:1:0:0:plugin:hapi-dsh/execution",
+        "hapi-dsh:live:commit:append:1:133",
+        "hapi-dsh:live:flush-end:134",
+        "hapi-dsh:live:mapped:1:0:0:turn/start",
+        "hapi-dsh:live:commit:append:1:134",
+        "hapi-dsh:live:flush-end:135",
+        "hapi-dsh:live:mapped:1:0:0:user/message",
+        "hapi-dsh:live:commit:append:1:135",
+        "hapi-dsh:live:flush-end:136",
+        "hapi-dsh:live:mapped:1:0:0:plugin:hapi-dsh/native-item",
+        "hapi-dsh:live:retention-plan:true:0:137:137",
+        "hapi-dsh:live:retention-pin-ignored",
+        "hapi-dsh:live:commit:append:1:136",
+        "hapi-dsh:live:flush-end:137",
+        "hapi-dsh:live:mapped:1:0:0:step/start",
+        "hapi-dsh:live:commit:append:1:137",
+        "hapi-dsh:live:flush-end:138",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:138",
+        "hapi-dsh:live:flush-end:139",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:139",
+        "hapi-dsh:live:flush-end:140",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:136",
+        "hapi-dsh:live:flush-end:137",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:137",
+        "hapi-dsh:live:flush-end:138",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:138",
+        "hapi-dsh:live:flush-end:139",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:139",
+        "hapi-dsh:live:flush-end:140",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:140",
+        "hapi-dsh:live:flush-end:141",
+        "hapi-dsh:live:mapped:1:0:0:assistant/live-chunk",
+        "hapi-dsh:live:commit:append:1:141",
+        "hapi-dsh:live:flush-end:142",
+        "hapi-dsh:live:mapped:1:0:0:assistant/message",
+        "hapi-dsh:live:commit:append:1:142",
+        "hapi-dsh:live:flush-end:143",
+        "hapi-dsh:live:mapped:1:0:0:step/end",
+        "hapi-dsh:live:commit:append:1:143",
+        "hapi-dsh:live:flush-end:144",
+        "hapi-dsh:live:mapped:1:0:0:plugin:hapi-dsh/native-item",
+        "hapi-dsh:live:retention-plan:true:0:145:145",
+        "hapi-dsh:live:retention-pin-ignored",
+        "hapi-dsh:live:commit:append:1:144",
+        "hapi-dsh:live:flush-end:145",
+        "hapi-dsh:live:mapped:1:0:0:turn/end",
+        "hapi-dsh:live:commit:append:1:145",
+        "hapi-dsh:live:flush-end:146"
+      ],
+      "identityBefore": "hapi-codex-ea295edbc497f57deee2b2bcae792dc5",
+      "identityAfter": "hapi-codex-ea295edbc497f57deee2b2bcae792dc5",
+      "reading": {
+        "states": [
+          "reader"
+        ],
+        "errors": [],
+        "anchors": [
+          "12:turn-process1000007",
+          "group:[\"process\",\"14:assistant-step1000007:20\",\"reasoning\"]",
+          "[\"14:assistant-step1000007:20\",\"reasoning\"]",
+          "[\"14:assistant-step1000007:21\",\"reasoning\"]",
+          "[\"14:assistant-step1000007:22\",\"reasoning\"]",
+          "[\"14:assistant-step1000007:23\",\"reasoning\"]",
+          "[\"14:assistant-step1000007:24\",\"reasoning\"]",
+          "14:assistant-step1000007:25",
+          "9:turn-tail1000007",
+          "13:input-messagehapi:codex-native:codex-thread-accept-history:synthetic-turn-179:input",
+          "12:turn-process1000008",
+          "group:[\"process\",\"14:assistant-step1000008:1000000194\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000194\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000195\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000196\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000197\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000198\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000199\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000200\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000201\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000202\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000203\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000204\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000205\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000206\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000207\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000208\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000209\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000210\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000211\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000212\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000213\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000214\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000215\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000216\",\"reasoning\"]",
+          "[\"14:assistant-step1000008:1000000217\",\"reasoning\"]",
+          "14:assistant-step1000008:1000000218",
+          "9:turn-tail1000008",
+          "13:input-messagehapi:accept-live-1793100288467-input",
+          "12:turn-process1000009",
+          "14:assistant-step1000009:1500000001",
+          "9:turn-tail1000009"
+        ]
+      }
+    },
+    "desktop 1: disconnected source retains visible body and draft": {
+      "anchor": {
+        "key": "13:input-messagehapi:codex-native:codex-thread-accept-history:synthetic-turn-179:input",
+        "text": "Synthetic original input 180.2025-10-9 04:52Rewind here",
+        "offset": -78,
+        "scrollTop": 641
+      },
+      "after": {
+        "offset": -78,
+        "scrollTop": 641,
+        "scrollHeight": 1497,
+        "rowTop": -39
+      },
+      "readingBefore": {
+        "state": [
+          "reader"
+        ],
+        "bookmarks": {},
+        "errors": []
+      },
+      "readingAfter": {
+        "state": [
+          "reader"
+        ],
+        "bookmarks": {
+          "hapi-dsh:reload-reading:[\"local\",\"warm-layout-2\",[\"e2e-native-hub\",\"native-accept-history\"]]": "{\"key\":\"13:input-messagehapi:codex-native:codex-thread-accept-history:synthetic-turn-179:input\",\"seq\":1000000705,\"offset\":-78,\"displayId\":\"hapi-codex-ea295edbc497f57deee2b2bcae792dc5\",\"sourceMessageId\":\"native:codex-thread-accept-history:synthetic-turn-179:input:codex-native%3Acodex-thread-accept-history%3Asynthetic-turn-179%3Ainput\"}"
+        },
+        "errors": []
+      }
+    },
+    "desktop 1: ordinary DSH body and editor": {
+      "bodyMs": 86.30000019073486,
+      "composerMs": 86.30000019073486
+    }
+  },
+  "openingSamples": [
+    {
+      "bodyMs": 32.30000019073486,
+      "composerMs": 32.30000019073486
+    },
+    {
+      "bodyMs": 29.799999713897705,
+      "composerMs": 29.799999713897705
+    },
+    {
+      "bodyMs": 30.699999809265137,
+      "composerMs": 30.699999809265137
+    },
+    {
+      "bodyMs": 37.90000009536743,
+      "composerMs": 37.90000009536743
+    }
+  ],
+  "scrollSamples": [
+    {
+      "frames": [
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.700000000000273,
+        16.59999999999991,
+        16.59999999999991,
+        16.800000000000182,
+        16.59999999999991,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        33.29999999999973,
+        16.700000000000273,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.59999999999991,
+        16.800000000000182,
+        16.59999999999991,
+        16.59999999999991,
+        16.700000000000273,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.59999999999991,
+        16.700000000000273,
+        16.699999999999818,
+        16.59999999999991,
+        16.700000000000273,
+        16.699999999999818,
+        16.59999999999991,
+        16.800000000000182,
+        16.59999999999991,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.799999999999272,
+        16.5,
+        16.700000000000728,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.599999999999454,
+        16.800000000000182,
+        16.600000000000364,
+        16.599999999999454,
+        16.700000000000728,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.599999999999454,
+        16.700000000000728,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364,
+        16.699999999999818,
+        16.599999999999454,
+        16.700000000000728,
+        16.699999999999818,
+        16.599999999999454,
+        16.700000000000728,
+        16.699999999999818,
+        16.599999999999454,
+        16.800000000000182,
+        16.600000000000364,
+        16.599999999999454,
+        16.700000000000728,
+        16.699999999999818,
+        16.699999999999818,
+        16.600000000000364
+      ],
+      "tasks": [],
+      "anchorOffsets": [],
+      "missingAnchors": 0,
+      "nodes": 8777,
+      "longTasks": [],
+      "marks": []
+    }
+  ],
+  "errors": [],
+  "runtime": {
+    "pid": 1352060,
+    "origin": "http://127.0.0.1:36209",
+    "startedAt": "2026-10-27T11:24:31.784Z",
+    "hostStarts": 1,
+    "browserStarts": 1,
+    "checks": 1,
+    "coldHostMs": 2986
+  },
+  "hostLoad": {
+    "availableCpus": 12,
+    "loadAverage": [
+      7.29,
+      7.46,
+      7.74
+    ]
+  }
+}
