@@ -107,6 +107,9 @@ export class HapiWireFixture {
     readonly forkRequests: Array<{ sessionId: string; body: Record<string, unknown> }> = [];
     readonly planRequests: Array<{ sessionId: string; planId: string }> = [];
     readonly cancelled: string[] = [];
+    /** G4 matrix: ordered source-API calls and emitted events during one scenario. */
+    readonly requestLog: Array<{ method: string, path: string }> = [];
+    readonly emittedLog: Array<{ type: string, sessionId?: string }> = [];
     dropNextCancelReply = false;
     suppressNextCancelEvent = false;
     beforeCancel: ((sessionId: string) => Promise<void>) | undefined;
@@ -213,6 +216,9 @@ export class HapiWireFixture {
         return row;
     }
     emit(event: HapiEvent | { type: 'machine-updated'; machineId: string }): void {
+        const sessionId = (event as { sessionId?: unknown }).sessionId;
+        this.emittedLog.push({ type: String((event as { type?: unknown }).type ?? 'unknown'),
+            ...(typeof sessionId === 'string' ? { sessionId } : {}) });
         const record = `id: fixture-${++this.cursor}\ndata: ${JSON.stringify(event)}\n\n`;
         for (const stream of this.streams) stream.write(record);
     }
@@ -431,6 +437,7 @@ export class HapiWireFixture {
             if (url.pathname === '/api/auth') { send(body.accessToken === token ? { token: jwt } : { error: 'fixture authentication failed' }, body.accessToken === token ? 200 : 401); return; }
             if (url.pathname === '/health') { send({ status: 'ok', capabilities: { titleSuggestion: this.extras.titleSuggestionAvailable, workGraph: this.collaboration.available } }); return; }
             if (request.headers.authorization !== `Bearer ${jwt}`) { send({ error: 'unauthorized' }, 401); return; }
+            this.requestLog.push({ method: request.method ?? 'GET', path: url.pathname });
             if (this.notifications.handle(url, request, response, body)) return;
             if (this.collaboration.handle(url, request, response)) return;
             if (this.admin.handle(this, url, request, response, body)) return;
