@@ -998,6 +998,82 @@ class SourceRecord {
   }
 
   /**
+   * Direct source-window page read. Used when the official pager owns no page
+   * for a synthetic or detached session; the facade then acts as its own page
+   * provider and mirrors the page into the retained window.
+   * @returns whether a page was merged.
+   */
+  private async loadOlderDirect(): Promise<boolean> {
+    const api = this.owner.api ?? await this.owner.whenAttached()
+    if (this.disposed || !api) return false
+    const endSeq = this.firstSeq() ?? SOURCE_WINDOW_SEQ_BASE
+    const head = this.eventSource.getSnapshot().entries[0] as unknown as { source?: SourcePosition } | undefined
+    const request = head?.source
+      ? { sessionId: this.sessionId, beforeAt: head.source.at, beforeSeq: head.source.seq, endSeq,
+        ...(this.target?.beforeEpoch === undefined ? {} : { epoch: this.target.beforeEpoch }),
+        ...(this.target?.beforeMessageId === undefined ? {} : { cursorMessageId: this.target.beforeMessageId }) }
+      : { sessionId: this.sessionId, fromOldest: true, endSeq }
+    const result = await api.sourceHistoryWindowPage(request)
+    if (this.disposed) return false
+    if (!result.ok) throw result.error
+    const value = result.value
+    if (!value.records.length) {
+      this.hasMore = false
+      if (this.target) this.target.hasMoreBefore = false
+      return false
+    }
+    // A seedless synthetic pager can return the already resident suffix; a
+    // page that adds no new event is not progress and must not be replayed.
+    const current = this.eventSource.getSnapshot().entries
+    const resident = new Set(current.map(entry => Number(entry.event.seq)))
+    const residentSources = new Set(current.flatMap(entry => {
+      const source = (entry as unknown as { source?: SourcePosition }).source
+      return source ? [`${source.messageId}@${source.seq}`] : []
+    }))
+    const records = (value.records as SessionEventLikeEntry[]).filter(entry => {
+      if (resident.has(Number(entry.event.seq))) return false
+      const source = (entry as unknown as { source?: SourcePosition }).source
+      return !(source && residentSources.has(`${source.messageId}@${source.seq}`))
+    })
+    if (!records.length) {
+      this.hasMore = false
+      if (this.target) this.target.hasMoreBefore = false
+      return false
+    }
+    const retention = this.preparePageRetention(records)
+    this.eventSource.prepend(records, value.hasMoreBefore)
+    this.hasMore = value.hasMoreBefore
+    const priorAfter = this.target?.after, priorAfterEpoch = this.target?.afterEpoch
+    const priorAfterMessageId = this.target?.afterMessageId
+    const merged = this.eventSource.getSnapshot().entries
+    const sources = merged.flatMap(entry => {
+      const source = (entry as unknown as { source?: SourcePosition }).source
+      return source ? [source] : []
+    })
+    const first = sources[0], last = sources.at(-1)
+    this.mode = 'target'
+    this.target = {
+      before: value.before,
+      after: priorAfter ?? (last ? { at: last.at, seq: last.seq } : value.after),
+      beforeEpoch: value.epoch,
+      afterEpoch: priorAfterEpoch ?? last?.epoch ?? value.epoch,
+      beforeMessageId: value.beforeMessageId,
+      afterMessageId: priorAfterMessageId ?? last?.messageId ?? value.afterMessageId,
+      hasMoreBefore: value.hasMoreBefore,
+      hasMoreAfter: value.hasMoreAfter,
+      firstSeq: merged[0]?.event.seq ?? null,
+      lastSeq: merged.at(-1)?.event.seq ?? null,
+      firstTurn: 0,
+      lastTurn: this.maxTailTurn(),
+    }
+    void first
+    this.pendingPage = retention.pending
+    this.flushTail()
+    this.trimWindow('older', retention.pins)
+    return true
+  }
+
+  /**
    * The official pager discards the source cursor of the page it just merged.
    * Adopt it once from the same source page so the next Load earlier can cross
    * that page instead of early-returning on a null boundary. Cache-complete
@@ -1325,9 +1401,11 @@ class SourceRecord {
       // Older paging stays owned by the official ClientSession so the public
       // /api/session/page contract remains the single paging path; this facade
       // only mirrors, retains and anchors the resulting window.
+      const beforeCount = this.eventSource.getSnapshot().entries.length
       await this.originalFace.loadOlder()
       if (this.disposed || token !== this.jump) return
       this.flushTail()
+      if (this.eventSource.getSnapshot().entries.length === beforeCount && this.hasMore) await this.loadOlderDirect()
       this.adoptOlderCursor()
     } catch (error) {
       if (this.disposed || token !== this.jump) return
@@ -1551,7 +1629,10 @@ class SourceRecord {
   async loadAfterPage(): Promise<boolean> {
     if (this.disposed || (this.mode !== 'target' && this.mode !== 'latest') || !this.target) return false
     const target = this.target
-    if (!target.after || !target.hasMoreAfter || this.loadingOlder) return false
+    if (!target.after || !target.hasMoreAfter || this.loadingOlder) {
+      if (process.env.HAPI_DSH_DEBUG_PAGING) console.warn(`[paging] loadAfter blocked mode=${this.mode} after=${Boolean(target.after)} hasMoreAfter=${String(target.hasMoreAfter)} entries=${this.eventSource.getSnapshot().entries.length}`)
+      return false
+    }
     const token = this.beginJump()
     this.loadingOlder = true
     this.session.publish()

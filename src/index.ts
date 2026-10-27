@@ -786,9 +786,13 @@ export class HapiController extends TypertRemoteService {
      */
     private async ensureDisplayAgent(displayId: string): Promise<void> {
         if (!isSourceDisplayId(displayId) || isSourceChildDisplayId(displayId)) return;
+        // Window-only Host fixtures may not compose the native/observed engines;
+        // no display can be reattached there, and reads must still work.
+        const codex = this.options.codex, observed = this.options.observed;
+        if (!codex || !observed) return;
         const logical = logicalDisplayId(displayId);
-        if (this.options.codex.get(displayId) ?? this.options.observed.get(displayId)
-            ?? this.options.codex.get(logical) ?? this.options.observed.get(logical)) return;
+        if (codex.get(displayId) ?? observed.get(displayId)
+            ?? codex.get(logical) ?? observed.get(logical)) return;
         try {
             const catalog = await this.catalog();
             // `sessions` lists attached agents; the Hub catalog is sourceDiscovery.
