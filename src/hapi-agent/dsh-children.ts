@@ -123,7 +123,17 @@ export class HapiDshChildAgent implements Agent {
       child.readCache()
       try {
         child.observeParent(await child.transport.getSession(child.binding.sourceSessionId))
-        child.history = await readSourceDshChildHistory(transport, child.binding)
+        // A cached transcript is the incremental base: opening a previously
+        // seen session only fetches the rows added since the cache. When the
+        // source epoch/identity changed, discard the cache and re-read the
+        // transcript from the authoritative source instead of seeding stale
+        // rows into the new display generation.
+        try {
+          child.history = await readSourceDshChildHistory(transport, child.binding, child.history)
+        } catch (error) {
+          if (!(error instanceof NativeHistoryChangedError)) throw error
+          child.history = await readSourceDshChildHistory(transport, child.binding)
+        }
         child.observeParent(await child.transport.getSession(child.binding.sourceSessionId))
         child.lastReadAt = Date.now(); child.persistHistory(); child.historyError = null
       } catch (error) { child.historyError = describe(error) }
@@ -317,7 +327,19 @@ export class SourceDshChildren {
   list(): readonly HapiDshChildAgent[] { return [...this.children.values()] }
   get(sessionId: string): HapiDshChildAgent | undefined { return this.list().find(child => child.id === sessionId) }
   get summaries(): ObservedSidechainSummary[] { return this.list().map(child => child.summary) }
-  async mount(): Promise<void> { if (this.mounted || this.disposed) return; this.mounted = true; await this.refresh(true) }
+  async mount(): Promise<void> {
+    if (this.mounted || this.disposed) return
+    this.mounted = true
+    // A parent display can own dozens of children whose complete transcripts
+    // cost seconds each. Seed what is ready within a short budget and let the
+    // rest hydrate in the background instead of blocking the parent open.
+    const task = this.refresh(true).catch(error => {
+      console.warn('[hapi-dsh] DSH child seeding failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
+    })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    await Promise.race([task, new Promise<void>(resolve => { timer = setTimeout(resolve, 400) })])
+    if (timer !== undefined) clearTimeout(timer)
+  }
   refresh(authoritative = false): Promise<void> {
     if (this.disposed || !this.mounted || this.owner.source().metadata?.flavor !== 'dsh') return Promise.resolve()
     if (this.pendingRefresh) return this.pendingRefresh
@@ -328,19 +350,27 @@ export class SourceDshChildren {
         const descriptor = ids.get(child.binding.childDshSessionId)
         if (!descriptor || descriptor.createdAt !== child.binding.childCreatedAt) throw new NativeHistoryChangedError('The original DSH child membership changed; acquire the current display generation')
       }
-      for (const descriptor of descriptors) {
-        if (this.disposed) return
-        let child = this.children.get(descriptor.sessionId)
-        if (!child) {
-          child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor)
+      // Child transcripts are independent; opening a parent with dozens of
+      // children must not serialize all of their history reads. Keep a small
+      // concurrency pool so the HAPI hub stays responsive while errors still
+      // propagate in order.
+      const queue = [...descriptors]
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const descriptor = queue.shift()
+          if (!descriptor || this.disposed) return
+          const existing = this.children.get(descriptor.sessionId)
+          if (existing) {
+            existing.update(descriptor)
+            await existing.refresh(authoritative, false)
+            continue
+          }
+          const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor)
           if (this.disposed) { await child.dispose(); return }
           this.children.set(descriptor.sessionId, child)
-        } else {
-          child.update(descriptor)
-          try { await child.refresh(authoritative, false) }
-          catch (error) { if (error instanceof NativeHistoryChangedError) throw error }
         }
       }
+      await Promise.all(Array.from({ length: Math.min(6, Math.max(1, descriptors.length)) }, worker))
       this.owner.changed()
     })()
     this.pendingRefresh = task
