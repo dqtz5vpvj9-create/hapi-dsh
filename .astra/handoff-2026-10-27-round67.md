@@ -358,3 +358,31 @@ Astra review, ext.4 wiring.
   conversation publishes `assistant/live-chunk` updates on animation frames that
   are starved in the warm harness; otherwise force a cheap render nudge after
   appending, then run three consecutive 22/22 and move to ext.4 wiring + Astra.
+
+## rounds 131-84: ext.5/ext.6 distribution closed loop, Astra gate verdict
+
+- ext 0004 gained a generic composition opt-in: exported setter OR
+  `document.documentElement.dataset.dshFollowEdge = "1"` (renamed from the
+  HAPI-specific name after Astra's architecture review). ext contract 4/4.
+- Packed real releases ext.5 (93372e19) and ext.6 (9d02dba0), repacked bundles
+  with `bundle:pack --ext-release ...` and verified the full isolated-home
+  lifecycle: install healthy → repeat install `changed:false` → rollback to the
+  previous ext → re-upgrade healthy; runtime identity seals 306 files and the
+  served private-runtime ui-chat bundle contains the setter + generic marker
+  (no HAPI-string in patch or served bundle).
+- Installer fix `d23626785`: release re-verification skips generated symlinked
+  trees (`runtime/`, `package/`, unpacked ext) while still enforcing SHA256SUMS
+  on every copied file; previous idempotent reinstall failed there.
+- Final artifact evidence: bundle sha
+  `fbeaeaa0c2eb44b5c6c604d9712eb7e4fbe0a708ce61b3e9c2e918c7b2ebd9b2`,
+  release `a0b65898d1037406`, extRelease 6. hapi-dsh marker commit `c877d277a`.
+- Astra round 10: six gates all NOT_EXECUTED; acknowledged sub-evidence is
+  real-artifact isolated install + idempotent reinstall + rollback/upgrade
+  chain. Remaining: behaviour-level on/off on the installed artifact
+  (setter-only/marker-only/both-off ×3), 3 consecutive warm 22/22 on the final
+  artifact, then G1–G6 samplers (20 cold opens, paging matrix, capacity,
+  dynamic composition matrix, Host+2Runner tamper, 3-round upgrade/rollback
+  with fault injection).
+- Warm on repo runtime: intermittent 22/22; remaining flake is the second live
+  chunk's 1500 ms visibility and load-dependent cold-open variance. Dev warm is
+  not yet the final-artifact run Astra requires.
