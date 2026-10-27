@@ -451,7 +451,8 @@ class SourceRecord {
     if (!locality.fits) { this.tailNeedsResync = true; return }
     const overBudget = this.tail.entries.length > MAX_SOURCE_EVENTS
       || this.tail.entries.reduce((bytes, row) => bytes + bytesOfEntry(row), 0) > MAX_SOURCE_BYTES
-    const pageAppendOnly = page?.pending !== undefined && !this.tailNeedsResync && !overBudget
+    const prependPage = direction === 'older' && this.mode !== 'tail' && changes.some(change => change.kind === 'prepend')
+    const pageAppendOnly = (page?.pending !== undefined || prependPage) && !this.tailNeedsResync && !overBudget
       && locality.first === 0 && locality.last === this.tail.entries.length
       && !hasLateSourceRows([], this.tail.entries)
     // A clean page that fits the whole proposed window is merged in place:
@@ -542,13 +543,13 @@ class SourceRecord {
       }
       // A replacement snapshot can repeat rows this paged window already
       // retained; only its unseen suffix (or a changed payload) belongs here.
-      const residentSeqs = new Set(this.eventSource.getSnapshot().entries.map(row => Number(row.event.seq)))
-      const residentPayloads = new Map(this.eventSource.getSnapshot().entries.map(row => [Number(row.event.seq), JSON.stringify(row.event)]))
+      const resident = new Map(this.eventSource.getSnapshot().entries.map(row => [Number(row.event.seq), row.event]))
       entries = change.entries.filter(row => {
         const seq = Number(row.event.seq)
         if (seq <= this.liveSeqBase) return false
-        if (!residentSeqs.has(seq)) return true
-        return residentPayloads.get(seq) !== JSON.stringify(row.event)
+        const prior = resident.get(seq)
+        if (prior === undefined) return true
+        return JSON.stringify(prior) !== JSON.stringify(row.event)
       })
     }
     if (!entries.length) return
