@@ -92,6 +92,10 @@ export function normalizeState(input) {
                 active: value.active ?? null,
                 previous: Array.isArray(value.previous) ? value.previous : [],
                 managedOverrides: isRecord(value.managedOverrides) ? { ...value.managedOverrides } : {},
+                // The pinned runtime pointer must survive every state read: a
+                // failed upgrade/health rollback otherwise persists a profile
+                // without a runtime and the old active release cannot boot.
+                ...(isRecord(value.runtime) ? { runtime: { ...value.runtime } } : {}),
             };
         }
     }

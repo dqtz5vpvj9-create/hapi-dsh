@@ -1,0 +1,179 @@
+{
+ "schema": 1,
+ "gate": "G6",
+ "environment": "bundle-installed Home with HAPI fixture and Chromium reload checks",
+ "rounds": [
+  {
+   "round": 1,
+   "steps": [
+    {
+     "from": "e1",
+     "to": "e2",
+     "activeVersion": "e2",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.7",
+     "healthCheckMs": 189,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    },
+    {
+     "from": "e2",
+     "to": "e1",
+     "activeVersion": "e1",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.6",
+     "healthCheckMs": 170,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    }
+   ]
+  },
+  {
+   "round": 2,
+   "steps": [
+    {
+     "from": "e1",
+     "to": "e2",
+     "activeVersion": "e2",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.7",
+     "healthCheckMs": 136,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    },
+    {
+     "from": "e2",
+     "to": "e1",
+     "activeVersion": "e1",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.6",
+     "healthCheckMs": 145,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    }
+   ]
+  },
+  {
+   "round": 3,
+   "steps": [
+    {
+     "from": "e1",
+     "to": "e2",
+     "activeVersion": "e2",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.7",
+     "healthCheckMs": 165,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    },
+    {
+     "from": "e2",
+     "to": "e1",
+     "activeVersion": "e1",
+     "actualOnlineVersion": "0.2.1-rc.3+ext.6",
+     "healthCheckMs": 191,
+     "healthy": true,
+     "releaseManifestMatches": true,
+     "oldProcessExitProtected": true,
+     "nativeLogsOverwritten": false,
+     "queueActions": 0,
+     "approvalActions": 0,
+     "draftsPreserved": true,
+     "readableHistoryPreserved": true,
+     "reconnectDraftPreserved": true,
+     "oldReleasesRetained": 2
+    }
+   ]
+  }
+ ],
+ "injections": [
+  {
+   "point": "staging",
+   "failed": true,
+   "activeBefore": "e1",
+   "activeAfter": "e1",
+   "oldReleaseIntact": true,
+   "nativeLogsOverwritten": false,
+   "hostAlive": true,
+   "exitCode": 1
+  },
+  {
+   "point": "switch",
+   "failed": true,
+   "activeBefore": "e1",
+   "activeAfter": "e1",
+   "oldReleaseIntact": true,
+   "nativeLogsOverwritten": false,
+   "hostAlive": true,
+   "exitCode": 1
+  },
+  {
+   "point": "health-check",
+   "failed": true,
+   "activeBefore": "e1",
+   "activeAfter": "e1",
+   "rolledBack": true,
+   "rollbackWithinMs": 10921,
+   "healthAttempts": 5,
+   "oldReleaseIntact": true,
+   "nativeLogsOverwritten": false,
+   "hostAlive": true,
+   "durationMs": 10921,
+   "exitCode": 1
+  }
+ ],
+ "onlineVersion": {
+  "version": "e1",
+  "actualVersion": "0.2.1-rc.3+ext.6",
+  "releaseManifestMatches": true
+ },
+ "expectedIdentity": {
+  "upstreamVersion": "0.2.1-rc.3",
+  "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+  "extRelease": "6",
+  "patchSetSha256": "e5421e3e18acea1e9a7df1b468ff6a5b7b8032b1c76fde2e9ba4145a91eb1680",
+  "packageSetSha256": "65ab70c9f82483d08aeeac29b53aa548868eea3fb7112b2b923c50f2fd1aab63",
+  "capabilities": {
+   "historySource": 1,
+   "mountedChat": 1,
+   "windowCommit": 1
+  },
+  "compositionVersion": "0.2.1-rc.3+ext.6",
+  "protocol": 2
+ }
+}

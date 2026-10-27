@@ -1,0 +1,47 @@
+{
+ "gate": "G6",
+ "verdict": "PASS",
+ "failures": [],
+ "checks": [
+  {
+   "name": "upgrade/rollback rounds",
+   "passed": true,
+   "detail": {
+    "rounds": 3,
+    "versions": [
+     [
+      "e1",
+      "e2",
+      "e1"
+     ],
+     [
+      "e1",
+      "e2",
+      "e1"
+     ],
+     [
+      "e1",
+      "e2",
+      "e1"
+     ]
+    ]
+   }
+  }
+ ],
+ "metrics": {
+  "rounds": 3,
+  "injectionPoints": [
+   "health-check",
+   "staging",
+   "switch"
+  ],
+  "expectedInjectionPoints": [
+   "staging",
+   "switch",
+   "health-check"
+  ],
+  "retainedReleases": 2,
+  "onlineVersion": "e1"
+ },
+ "frameSamples": []
+}

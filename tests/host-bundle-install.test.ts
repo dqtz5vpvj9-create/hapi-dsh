@@ -279,3 +279,13 @@ test('override merging preserves user keys, replaces its own and reports conflic
     assert.deepEqual(removed.overrides, {})
     assert.deepEqual(removed.removed, ['@deepseek-ai/dsh-client-ui-chat'])
 })
+
+test('state normalization keeps the pinned runtime pointer across failed installs', async () => {
+    const { normalizeState } = await import('../scripts/bundle/lib/release.mjs')
+    const normalized = normalizeState({ version: 1, profiles: { hapi: { role: 'host', active: null, previous: [],
+        managedOverrides: {}, runtime: { dshBinary: '/tmp/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js',
+            dshVersion: '0.2.1-rc.3', extRelease: '7', releaseId: 'r1' } } }, releases: {}, attempt: null, history: [] })
+    const profile = (normalized.profiles as Record<string, { runtime?: unknown }>).hapi
+    assert.deepEqual(profile?.runtime, { dshBinary: '/tmp/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js',
+        dshVersion: '0.2.1-rc.3', extRelease: '7', releaseId: 'r1' })
+})
