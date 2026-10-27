@@ -602,7 +602,6 @@ class ConversationHistoryController {
             return
         }
         if (previous === null) return
-        markReaderActivity(now)
         const intent = scrollIntent(previous, current)
         // Restore, jump, follow, and anchor compensation also move scrollTop.
         // Only a sample attributable to a reader gesture may page history: a
@@ -615,6 +614,7 @@ class ConversationHistoryController {
             }
             return
         }
+        markReaderActivity(now)
         this.input(intent, now, false)
         if (this.pending !== null && intent !== 'none') {
             // A reader scroll can start a page itself, or arrive after its

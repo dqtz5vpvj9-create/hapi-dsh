@@ -626,6 +626,13 @@ class SourceRecord {
     // viewport; dropping it would make streamed answers disappear entirely.
     // A batch that opens a fresh turn is explicit new live output, not a
     // continuation behind an evicted interval: it may jump the gap and reset it.
+    const opensRun = entries.some(entry => String(entry.event.type) === 'plugin:hapi-dsh/execution')
+    if (opensRun) {
+      // A fresh execution marker is authoritative new activity: the reader must
+      // see it even if an older interval was evicted or omitted.
+      this.liveGap = false
+      this.liveGapFromEviction = false
+    }
     const opensTurn = entries.some(entry => String(entry.event.type) === 'turn/start')
     if (opensTurn && this.liveGapFromEviction) { this.liveGap = false; this.liveGapFromEviction = false }
     if (this.liveGap) {
@@ -681,6 +688,13 @@ class SourceRecord {
     const accepted: SessionEventLikeEntry[] = []
     const replaced = new Map<number, SessionEventLikeEntry>()
     let liveSkipped = 0
+    // Allocate display seqs from the actual resident tail: target.lastSeq can be
+    // stale after a replace, and an append with a non-increasing seq is dropped
+    // by the official event source (the stream then never reaches the DOM).
+    let nextLiveSeq = Math.max(
+      this.target.lastSeq ?? SOURCE_WINDOW_SEQ_BASE,
+      Number(this.eventSource.getSnapshot().entries.at(-1)?.event.seq ?? SOURCE_WINDOW_SEQ_BASE),
+    ) + 1
     const seqMap = this.originalSeqs
     const committed = new Map<string, SessionEventLikeEntry>()
     for (const row of overlap ?? []) {
@@ -724,7 +738,7 @@ class SourceRecord {
       // Identity proves placement, not equal content. A captured settlement or
       // replacement overlays the HTTP row at its original coordinate instead
       // of either duplicating the item or silently discarding its newer body.
-      const nextSeq = existing ? Number(existing.event.seq) : (this.target.lastSeq ?? SOURCE_WINDOW_SEQ_BASE) + 1
+      const nextSeq = existing ? Number(existing.event.seq) : nextLiveSeq++
       if (!existing) this.target.lastSeq = nextSeq
       seqMap.set(originalSeq, nextSeq)
       if (existing && (key === undefined || winners?.get(key) !== 'capture')) continue
@@ -809,7 +823,7 @@ class SourceRecord {
     }
     this.learnTargetTurns(accepted)
     this.target.lastSeq = this.lastSeq()
-    this.trimWindow('newer', pins)
+    this.trimWindow('newer', pins, true)
     this.pruneTurnMaps()
     this.session.publish()
     try { performance.mark(`hapi-dsh:live:flush-end:${String(this.eventSource.getSnapshot().entries.length)}`) } catch { /* optional */ }
@@ -1433,7 +1447,7 @@ class SourceRecord {
     return false
   }
 
-  private trimWindow(direction: 'older' | 'newer', pins = this.readerPins()): void {
+  private trimWindow(direction: 'older' | 'newer', pins = this.readerPins(), keepLive = false): void {
     const entries = this.eventSource.getSnapshot().entries
     if (entries.length === 0) return
     const plan = this.retentionPlan(entries, pins, direction)
@@ -1460,8 +1474,10 @@ class SourceRecord {
       this.target.afterEpoch = edge?.epoch
       this.target.afterMessageId = edge?.messageId
       this.target.hasMoreAfter = edge !== undefined
-      this.liveGap = true
-      this.liveGapFromEviction = true
+      if (!keepLive) {
+        this.liveGap = true
+        this.liveGapFromEviction = true
+      }
     }
     if (first > 0) {
       let edge: SourcePosition | undefined

@@ -3,7 +3,7 @@
  * heavy synchronous updates while a wheel/touch/key gesture is moving the
  * transcript. DSH keeps one scroll owner; this only defers our own commits.
  */
-let lastActivityAt = 0
+let lastActivityAt = Number.NEGATIVE_INFINITY
 
 /** Record that the reader is actively moving the transcript. */
 export function markReaderActivity(now = performance.now()): void {
