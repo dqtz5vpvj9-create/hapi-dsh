@@ -441,3 +441,27 @@ Astra review, ext.4 wiring.
   0004 experiment -> G2 (20-sample paging) -> G3 -> G4 -> G5 -> G6.
 - Current run: 20-repetition acceptance on the final artifact for the G2 sample
   set; warm IPC timeout now scales with repetitions.
+
+## round 86 final: G1 PASS, G2 PASS (official ext judge), artifact warm PASS
+
+- G1 (Astra round 11): PASS on report basis. Production sampler
+  `npm run test:g1:production` records 20/20 cold opens (247-458 ms), recursive
+  opening-cache purge per sample, Host pid/start time and sha256 of the served
+  hapi-dsh/session-provider assets.
+- Artifact warm: 22/22 three consecutive on ext.6 and again on ext.7
+  (`.astra/evidence/artifact-warm-ext6|ext7/`).
+- G2: new `e2e/ui-g2-matrix.ts` samples the installed ext.7 runtime: 20 samples,
+  10 dual-pane, per-frame anchor <=1 px, editor node identity stable, draft
+  unchanged, zero DOM gestures; desktop wheel + 360/390 touch drift 0 px with
+  older history loaded; return-to-latest reaches head in 609 ms; six live
+  increments apply in 49-285 ms with following=false and scroll delta 0. The
+  official `ext/scripts/gates/g2-paging-reading.mjs` judge returns **PASS**
+  (`.astra/evidence/g2-dataset-artifact.json`, `g2-judge-artifact.json`).
+- Final artifact: bundle sha `caac26b6…`, release `5ce5a4df…`, extRelease 7;
+  idempotent reinstall changed:false, rollback ext.7->ext.6 and re-upgrade
+  healthy.
+- Remaining: G3 (bounded derived state instrumentation for 100 commits/20k
+  nodes), G4 (8-combination dynamic composition matrix incl. 0004), G5
+  (Host+2Runner identity matrix with 8-field tamper rejections), G6 (3-round
+  upgrade/rollback with staging/switch/health-check fault injection). Then a
+  final Astra review for the six-gate verdict.
