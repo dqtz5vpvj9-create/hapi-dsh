@@ -142,7 +142,7 @@ export class HapiDshChildAgent implements Agent {
         child.lastReadAt = Date.now(); child.persistHistory(); child.historyError = null
       } catch (error) { child.historyError = describe(error) }
       child.projector.beginHistorySeed()
-      if (child.history) child.projector.apply(sourceDshChildItems(child.history, child.binding.childDshSessionId))
+      if (child.history && options.cacheOnly !== true) child.projector.apply(sourceDshChildItems(child.history, child.binding.childDshSessionId))
       child.current = child.ctx.sessions.prepare(child.id, { seed: child.projector.historySeed(), meta: child.meta() })
       child.projector.finishHistorySeed(child.current)
       child.session.append('model/selection', { provider: 'hapi-observed', model: 'dsh' })
@@ -351,7 +351,7 @@ export class SourceDshChildren {
       void this.refresh(true).catch(error => {
         console.warn('[hapi-dsh] background DSH child hydration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
       })
-    }, 1500)
+    }, 4000)
     timer.unref?.()
   }
 
