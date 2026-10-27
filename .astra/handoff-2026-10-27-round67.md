@@ -145,3 +145,21 @@ ext 0004 is now complete at the source level and tested inside dsh-ext:
      placeholder ext fixture; live is the only failure).
 - Also still open: rewrite the 11 source-session contracts to the
   official-pager-owner semantics (46/57 today).
+
+## round 79-80: publication truth check
+
+- Both worktrees clean: hapi-dsh `f8409e819`, dsh-ext `259a5279`.
+- Production is NOT running the latest client: served bundle hash
+  `15c5f258683044c3` vs local `5c4f7a034ae72fc2` (`same: false`).
+- `npm run deploy` fails (exit 1) because it gates on typecheck + the full test
+  suite, and 55 tests currently fail. Main groups: the 11 source-session
+  contracts changed by the official-pager-owner decision, plus related history
+  window/live tests (`pending loadOlder…`, `actual viewport admission…`,
+  `a rejected tail loadOlder…`, `opening 8-turn seed…`, `live append is
+  bounded…`).
+- Therefore earlier "client-only published" statements were wrong: only the
+  local dist changed; production still serves the previous bundle.
+- Order to finish: (1) rewrite/repair those tests until the full suite is green;
+  (2) `npm run deploy` and verify served == local; (3) build real rc.3 ext
+  release with 0004, `pack.mjs --ext-release`, install runtime; (4) real-Host
+  live verification and warm 22/22; (5) Astra six-gate review.
