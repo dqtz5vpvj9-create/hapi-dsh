@@ -406,3 +406,18 @@ Astra review, ext.4 wiring.
   stream is active and correct at idle), re-run artifact acceptance to 22/22,
   then three consecutive final-artifact warm runs, the 0004 on/off matrix and
   the G1-G6 samplers.
+
+## round 86: artifact anchor drift narrowed down
+
+- Trim now happens before the live append (committed 533bf2008); all client
+  window suites stay green (31/57/14/5) and the full suite is 1695/0.
+- Artifact acceptance still 20/22. Live renders all six chunks, but during the
+  stream scrollTop moves 681 -> 728 (+47 px) and the reader anchor shifts by the
+  same amount; the reconnect check repeats the +47 pattern. The 47 px equals one
+  appended row height, so the leading suspect is a second reader correction from
+  the extra `session.publish()` after each live append. Next: drop the redundant
+  publish (eventSource append already notifies), rebuild/repack/reinstall, and
+  re-run the artifact acceptance; if drift goes to 0, run the on/off matrix and
+  three consecutive final-artifact warm runs.
+- Latest artifact bundle: sha `59c117c220fc2b7e916454ee29861a5999ae8e5515449eeabd5408833b2747ad`,
+  release `7c770d1691568e85…`, extRelease 6 (contains the pre-append trim build).
