@@ -328,6 +328,15 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
         const catalog = await session.environment.rpc<{ items: Array<{ sessionId: string; running: boolean; projections: unknown }> }>('session/list', { _request: {} })
         const id = await history.getAttribute('data-session-id')
         record({ failure: safe(error), before, identityBefore, id, latencyMs,
+          domText: await history.evaluate(pane => {
+            const text = pane instanceof HTMLElement ? pane.innerText : String(pane.textContent ?? '')
+            return {
+              tail: text.slice(-600),
+              hasStreaming: /streaming content/.test(text),
+              anchorKeys: pane.querySelectorAll('[data-chat-anchor-key]').length,
+              nodes: pane.querySelectorAll('*').length,
+            }
+          }),
           marks: (await page.evaluate(() => performance.getEntriesByType('mark').map(entry => entry.name)))
             .filter(name => /hapi-dsh:(live|loadOlder|flush)/.test(name)).slice(-20),
           state: catalog.items.find(row => row.sessionId === id),
