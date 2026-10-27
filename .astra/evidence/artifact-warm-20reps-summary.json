@@ -1,0 +1,115 @@
+{
+ "report": ".astra/evidence/artifact-warm-20reps.json",
+ "repetitions": 20,
+ "durationMs": 412008.625551,
+ "checks": {
+  "ordinary DSH fixture via official AgentLoop": [
+   1,
+   1
+  ],
+  "cold document ready": [
+   20,
+   20
+  ],
+  "first body and editor": [
+   19,
+   20
+  ],
+  "short content starts at top": [
+   19,
+   19
+  ],
+  "sidebar hover cannot freeze the page": [
+   19,
+   19
+  ],
+  "cached opens and drafts": [
+   19,
+   19
+  ],
+  "navigation to restored body and editor, with draft": [
+   19,
+   19
+  ],
+  "long history first paint": [
+   19,
+   19
+  ],
+  "stationary prepend all frames <= 1px": [
+   19,
+   19
+  ],
+  "continuous up and down": [
+   17,
+   19
+  ],
+  "cached history reversal does not reload": [
+   19,
+   19
+  ],
+  "live updates preserve reader and editor": [
+   14,
+   19
+  ],
+  "disconnected source retains visible body and draft": [
+   14,
+   19
+  ],
+  "2 and 4 independent panes": [
+   19,
+   19
+  ],
+  "isolated approval and close only view": [
+   19,
+   19
+  ],
+  "queued edit preserves the other draft": [
+   19,
+   19
+  ],
+  "ordinary DSH body and editor": [
+   19,
+   19
+  ],
+  "voice and PNG capture load only on use": [
+   1,
+   1
+  ],
+  "full width, compact controls, keyboard and rotation": [
+   2,
+   2
+  ],
+  "browser errors": [
+   1,
+   1
+  ],
+  "warm body p95": [
+   1,
+   1
+  ]
+ },
+ "g2": {
+  "stationaryPrependAnchor": [
+   19,
+   19
+  ],
+  "dualPanes": [
+   19,
+   19
+  ],
+  "continuousScroll": [
+   17,
+   19
+  ]
+ },
+ "live": {
+  "liveUpdates": [
+   14,
+   19
+  ],
+  "disconnectReconnect": [
+   14,
+   19
+  ]
+ }
+}

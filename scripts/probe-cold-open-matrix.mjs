@@ -1,4 +1,6 @@
 import { chromium } from 'playwright'
+import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 const launchPath = process.env.HAPI_DSH_LAUNCH_URL_FILE ?? '/home/chris/.config/hapi-dsh/launch-url'
@@ -21,8 +23,37 @@ function clearOpeningCaches(dir = cacheRoot, depth = 0) {
   }
   return removed
 }
+function hostProcessInfo() {
+  try {
+    const pid = Number(execFileSync('/usr/bin/pgrep', ['-f', 'dist/cli.js start --config /home/chris/.config/hapi-dsh/config.json'],
+      { encoding: 'utf8' }).trim().split('\n')[0])
+    if (!Number.isInteger(pid) || pid <= 0) return { pid: null }
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const startTicks = Number(fields[19])
+    const btime = Number(/btime (\d+)/.exec(readFileSync('/proc/stat', 'utf8'))?.[1])
+    const startedAt = btime ? new Date((btime + startTicks / 100) * 1000).toISOString() : null
+    return { pid, startedAt }
+  } catch { return { pid: null } }
+}
+async function loadedAssets(page) {
+  const urls = await page.evaluate(() => [...new Set(performance.getEntriesByType('resource')
+    .map(entry => entry.name)
+    .filter(name => name.includes('/plugins/') && (/hapi-dsh/.test(name) || /session-provider/.test(name))))])
+  const assets = []
+  for (const url of urls.slice(0, 6)) {
+    try {
+      const response = await page.request.get(url)
+      const body = await response.body()
+      assets.push({ url: url.slice(0, 240), bytes: body.length, sha256: createHash('sha256').update(body).digest('hex') })
+    } catch { /* asset may be CORS-blocked */ }
+  }
+  return assets
+}
+const host = hostProcessInfo()
 const browser = await chromium.launch({ headless: true })
 const results = []
+const assets = []
 for (let i = 0; i < SAMPLES; i++) {
   const cleared = clearOpeningCaches()
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } })
@@ -33,6 +64,7 @@ for (let i = 0; i < SAMPLES; i++) {
     await page.goto(launch, { waitUntil: 'domcontentloaded', timeout: 90000 })
     await page.locator('button.hapi-session-open').first().waitFor({ timeout: 60000 })
     await page.waitForTimeout(600)
+    if (assets.length === 0) assets.push(...await loadedAssets(page))
     // Close any restored pane so every sample starts from a cold admission.
     const close = page.getByRole('button', { name: /Close pane/i }).first()
     if (await close.count()) {
@@ -82,7 +114,7 @@ const times = results.map(r => r.complete ? r.firstScreenMs : 15000)
 const passed = times.filter(t => t <= 1500).length
 const sorted = [...times].sort((a, b) => a - b)
 const reportPath = process.env.HAPI_DSH_G1_REPORT ?? '/mnt/cache/src/hapi-dsh/.tmp/gates/prod-g1-cold20.json'
-const report = { schema: 1, gate: 'G1', target: TARGET, passed: passed === SAMPLES, passCount: passed, samples: SAMPLES,
+const report = { schema: 1, gate: 'G1', target: TARGET, passed: passed === SAMPLES, passCount: passed, samples: SAMPLES, host, loadedAssets: assets,
   times, p95: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))], complete: results.filter(r => r.complete).length,
   clearedCaches: results.map(r => r.cleared), details: results }
 writeFileSync(reportPath, JSON.stringify(report, null, 1))
