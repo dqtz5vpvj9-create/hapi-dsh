@@ -371,6 +371,7 @@ class SourceRecord {
     this.hostOutline = undefined
     this.outline.set(mergeOutline(undefined, this.tailOutline))
     this.session = new SourceSession(this)
+    this.instrumentCapacityProbe()
     this.bindingValue = { sessionId: this.sessionId, session: this.session, eventSource: this.eventSource, ctx: base.ctx }
     this.watch(base)
     this.session.publish()
@@ -852,6 +853,72 @@ class SourceRecord {
     // second session publish after the DOM commit made the patched official
     // reader apply its scroll correction twice (one row height of drift).
     try { performance.mark(`hapi-dsh:live:flush-end:${String(this.eventSource.getSnapshot().entries.length)}`) } catch { /* optional */ }
+  }
+
+  /**
+   * Opt-in capacity instrumentation for the G3 artifact sampler. A page can
+   * install `globalThis.__hapiDshCapacityProbe = { commits: [] }` before the
+   * composition boots; every published window then reports the derived-context
+   * count, event count and body bytes of the committed window. Without the
+   * marker this wrapper does nothing beyond a global read.
+   */
+  private instrumentCapacityProbe(): void {
+    const source = this.eventSource
+    const probeOf = (): { commits: Array<Record<string, unknown>>, seen?: Set<number>, window?: Record<string, unknown> } | undefined => {
+      const probe = Reflect.get(globalThis, '__hapiDshCapacityProbe') as { commits?: unknown[], seen?: unknown } | undefined
+      if (!probe || !Array.isArray(probe.commits)) return undefined
+      if (!(probe.seen instanceof Set)) probe.seen = new Set<number>()
+      return probe as { commits: Array<Record<string, unknown>>, seen: Set<number>, window?: Record<string, unknown> }
+    }
+    const record = (applied: readonly SessionEventLikeEntry[]): void => {
+      const probe = probeOf()
+      if (!probe) return
+      const entries = source.getSnapshot().entries
+      for (const entry of entries) probe.seen!.add(Number(entry.event.seq))
+      for (const entry of applied) probe.seen!.add(Number(entry.event.seq))
+      const nodes = new Set<string>()
+      let bodyBytes = 0
+      for (const entry of entries) {
+        const data = entry.event.data as Record<string, unknown> | null
+        const type = String(entry.event.type)
+        bodyBytes += JSON.stringify(data ?? {}).length
+        const turn = data && typeof data.turn === 'number' ? data.turn : undefined
+        const step = data && typeof data.step === 'number' ? data.step : undefined
+        const item = data && typeof data.itemId === 'string' ? data.itemId : undefined
+        const message = data && typeof (data as { message?: { id?: unknown } }).message?.id === 'string'
+          ? (data as { message: { id: string } }).message.id : undefined
+        const call = data && typeof (data as { callId?: unknown }).callId === 'string' ? (data as { callId: string }).callId : undefined
+        let key: string
+        if (type === 'assistant/live-chunk') key = `assistant:${String(turn)}:${String(step)}`
+        else if (type === 'assistant/message') key = `assistant-message:${String(message ?? item ?? turn)}`
+        else if (type === 'user/message') key = `user:${String((data as { message?: { id?: unknown } } | null)?.message?.id ?? turn ?? item)}`
+        else if (type === 'turn/start') key = `turn-start:${String(turn ?? item ?? entry.event.seq)}`
+        else if (call !== undefined) key = `tool:${call}`
+        else if (item !== undefined) key = `item:${item}`
+        else key = `${type}:${String(entry.event.seq)}`
+        nodes.add(key)
+      }
+      const assistantBodies = new Set<string>()
+      for (const entry of entries) {
+        if (String(entry.event.type) !== 'assistant/message') continue
+        const data = entry.event.data as { message?: { id?: unknown } } | null
+        assistantBodies.add(String(data?.message?.id ?? entry.event.seq))
+      }
+      probe.window = { assistantMessages: assistantBodies.size, events: entries.length }
+      probe.commits.push({ index: probe.commits.length, liveDerivedNodes: nodes.size, events: entries.length,
+        bodyBytes, candidatePeakNodes: nodes.size, applied: applied.length })
+      if (probe.commits.length > 5000) probe.commits.splice(0, probe.commits.length - 5000)
+    }
+    const replace = source.replace.bind(source)
+    const append = source.append.bind(source)
+    source.replace = (entries: readonly SessionEventLikeEntry[], hasMore: boolean) => {
+      replace(entries, hasMore)
+      record(entries)
+    }
+    source.append = (entry: SessionEventLikeEntry) => {
+      append(entry)
+      record([entry])
+    }
   }
 
   private pruneTurnMaps(): void {

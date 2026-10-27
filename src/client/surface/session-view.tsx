@@ -573,7 +573,12 @@ function ViewFrame({ entry, children }: { entry: Entry; children: ReactNode }): 
     }, [entry.phase, entry.onReady])
     return <div data-hapi-session-view={entry.reference.sessionId} data-hapi-session-pane={entry.paneId}
         style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
-        {entry.phase === 'error' ? <Failure error={entry.error}/> : children}
+        {entry.phase === 'error' ? <Failure error={entry.error}/>
+            : entry.phase === 'ready' ? children
+                : <div className="hapi-session-loading" role="status" aria-live="polite" data-hapi-session-loading={entry.phase}>
+                    <span className="hapi-session-loading-spinner" aria-hidden="true"/>
+                    <p>{entry.phase === 'loading' ? '正在打开会话…' : '正在准备可读窗口…'}</p>
+                </div>}
     </div>
 }
 
