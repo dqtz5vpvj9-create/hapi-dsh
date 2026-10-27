@@ -382,6 +382,10 @@ export class SourceDshChildren {
       // concurrency pool so the HAPI hub stays responsive while errors still
       // propagate in order.
       const queue = [...descriptors]
+      // Background hydration of a large parent stays deliberately gentle: the
+      // child reads are seconds long, so a burst of six would compete with the
+      // conversation the reader just opened.
+      const gap = descriptors.length > 8 ? 200 : 0
       const worker = async (): Promise<void> => {
         for (;;) {
           const descriptor = queue.shift()
@@ -390,11 +394,12 @@ export class SourceDshChildren {
           if (existing) {
             existing.update(descriptor)
             await existing.refresh(authoritative, false)
-            continue
+          } else {
+            const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor)
+            if (this.disposed) { await child.dispose(); return }
+            this.children.set(descriptor.sessionId, child)
           }
-          const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor)
-          if (this.disposed) { await child.dispose(); return }
-          this.children.set(descriptor.sessionId, child)
+          if (gap) await new Promise(resolve => setTimeout(resolve, gap))
         }
       }
       await Promise.all(Array.from({ length: Math.min(6, Math.max(1, descriptors.length)) }, worker))
