@@ -235,3 +235,33 @@ event-feed/ordering errors, no normalization warnings in that run.
 Also deployed earlier this round: widened initial viewport admission retries
 (`975ff07e4`) so restored/split panes get up to a bounded minute instead of
 failing after two seconds.
+
+## rounds 87-100: live output reaches the DOM; suite green; deploy green
+
+Root cause chain for `live updates` (diagnosed with performance marks + data
+mining, not guessing):
+1. every live event arrived (7x `live:queue:1:<type>` including
+   `assistant/live-chunk`), but the non-following reader filter dropped them;
+2. relaxing that alone was not enough: `flushLive` then hit
+   `live:retention-fail` — the retained window was at its budget, so the live
+   row could not be appended and the rest of the stream was withheld;
+3. stale reader pins caused the same failure even when the unpinned window fit.
+
+Fix (commit `9608390a8`):
+- only a real `liveGap` withholds live rows;
+- if the unpinned window fits, ignore the stale pin conflict and append;
+- if live output overflows, evict the older side (before/after cursors kept
+  recoverable) instead of dropping the stream;
+- `flushLive` no longer trims streaming rows away.
+Result: warm live check reached `hasStreaming: true` and the pane renders the
+streamed answer; contracts updated to live-visible semantics
+(live-window 31/31, races 14/14, full suite 1695 pass / 0 fail, deploy OK).
+
+Warm acceptance remains flaky on machine load: best run 21/22 (only
+`first body and editor` over its 1500 ms budget), other runs 20-21/22 with
+`continuous up and down` (max frame 400-1100 ms vs 200 budget) and occasionally
+the live check. Same bundle passes once and fails next, so these are
+timing/budget noise or remaining scheduling work, not a deterministic failure.
+Next: run warm repeatedly on an idle host, capture CPU profiles for the long
+frames, and only then judge; do not claim closure until three consecutive
+22/22 runs.
