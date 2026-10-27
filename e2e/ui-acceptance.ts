@@ -63,7 +63,14 @@ async function wheel(page: Page, pane: Locator, deltas: number[]): Promise<UiSam
 async function visibleAnchor(pane: Locator) {
   return pane.evaluate(pane => {
     const port = pane.querySelector('[data-conversation-scroll]')!, viewport = port.getBoundingClientRect()
+    // A turn-process footer legitimately moves when new streamed items are
+    // inserted into the process group above it, even while the reader's scroll
+    // position stays fixed. Reader-position stability is measured on content
+    // rows, not on those live-updating summaries.
+    const volatileAnchor = (key: string): boolean => /(?:turn-process|turn-tail)/.test(key) || key.startsWith('group:')
     const row = [...pane.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')].find(row => {
+      const key = row.dataset.chatAnchorKey ?? ''
+      if (volatileAnchor(key)) return false
       const box = row.getBoundingClientRect()
       return box.height > 0 && box.bottom > viewport.top && box.top < viewport.bottom && !row.closest('[hidden]')
     })
@@ -78,7 +85,10 @@ async function offsetOf(pane: Locator, anchor: { key: string; text: string }) {
     // unique per answer, so also verify semantic continuity across generations.
     const matches = [...pane.querySelectorAll('[data-chat-anchor-key]')].filter(row => row.textContent?.slice(0, 160) === anchor.text)
     const row = pane.querySelector(`[data-chat-anchor-key="${CSS.escape(anchor.key)}"]`) ?? (matches.length === 1 ? matches[0] : undefined)
-    return row ? row.getBoundingClientRect().top - pane.querySelector('[data-conversation-scroll]')!.getBoundingClientRect().top : null
+    if (!row) return null
+    const port = pane.querySelector('[data-conversation-scroll]')!
+    return { offset: row.getBoundingClientRect().top - port.getBoundingClientRect().top, scrollTop: port.scrollTop,
+      scrollHeight: port.scrollHeight, rowTop: row.getBoundingClientRect().top }
   }, anchor)
 }
 
@@ -362,14 +372,14 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       if (!before) throw new Error('The first live frame never became visible')
       await expect(history.getByText(`${text}: ${'streaming content '.repeat(6).trim()}`, { exact: true })).toHaveCount(1)
       const after = await offsetOf(history, before)
-      record({ before, after, latencyMs, drift: after === null ? null : Math.abs(after - before.offset), identityBefore,
+      record({ before, after, latencyMs, drift: after === null ? null : Math.abs(after.offset - before.offset), identityBefore,
         identityAfter: await history.getAttribute('data-session-id'), reading: await history.evaluate(pane => ({
           states: [...pane.querySelectorAll('[data-hapi-reading]')].map(e => e.getAttribute('data-hapi-reading')),
           errors: [...pane.querySelectorAll('.hapi-reading-error')].map(e => e.textContent),
           anchors: [...pane.querySelectorAll('[data-chat-anchor-key]')].map(e => e.getAttribute('data-chat-anchor-key')),
         })) })
       expect(after).not.toBeNull()
-      expect(Math.abs(after! - before.offset)).toBeLessThanOrEqual(1)
+      expect(Math.abs(after!.offset - before.offset)).toBeLessThanOrEqual(1)
       await expect(composer(history)).toHaveText('Draft while reading and streaming')
       expect(await input!.evaluate(element => element.isConnected)).toBe(true)
     })
@@ -388,7 +398,7 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       await expect.poll(() => offsetOf(history, anchor), { timeout: 10_000 }).not.toBeNull()
       const after = await offsetOf(history, anchor)
       record({ anchor, after, readingBefore, readingAfter: await reading() })
-      expect(after).not.toBeNull(); expect(Math.abs(after! - anchor.offset)).toBeLessThanOrEqual(1)
+      expect(after).not.toBeNull(); expect(Math.abs(after!.offset - anchor.offset)).toBeLessThanOrEqual(1)
       expect(session.environment.hapi.sent.length).toBe(before)
     })
     await check(`${prefix}: 2 and 4 independent panes`, async () => {
