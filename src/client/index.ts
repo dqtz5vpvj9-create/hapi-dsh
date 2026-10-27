@@ -82,6 +82,12 @@ export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'workspaces', 
 
 /** Mount the namespace first, then consume it in an explicit Cordis inject scope. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
+    // Composition opt-in for ext 0004 (programmatic live-edge following). The
+    // patched upstream ui-chat defaults to the stock behavior; only a shell that
+    // marks its document root enables the extra follow path.
+    if (typeof document !== 'undefined') {
+        try { document.documentElement.dataset.hapiDshFollowEdge = '1' } catch { /* non-DOM composition */ }
+    }
     // Pane graphs exclude this bundle; this branch only remains for the primary
     // graph and for profiles that still scan the row.
     if (Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true) {

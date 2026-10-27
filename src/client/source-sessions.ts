@@ -620,7 +620,7 @@ class SourceRecord {
         const size = typeof chunk?.text === 'string' ? chunk.text.length
           : typeof chunk?.delta === 'string' ? chunk.delta.length : 0
         const turn = data?.turn, step = data?.step
-        return `${String(chunk?.type ?? '?')}/${String(turn)}:${String(step)}:${size}`
+        return `${String(chunk?.type ?? '?')}/${String(turn)}:${String(step)}:${size}:i${String(data?.index)}r${String(data?.revision)}`
       }).join(',')
       performance.mark(`hapi-dsh:live:queue:${entries.length}:${queueTypes.slice(0, 60)}:${chunkInfo.slice(0, 100)}`)
     } catch { /* optional */ }
