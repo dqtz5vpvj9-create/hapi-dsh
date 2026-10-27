@@ -1,0 +1,295 @@
+{
+ "gate": "G1",
+ "target": "DSH 扩展架构与补丁部署排查",
+ "passed": true,
+ "passCount": 20,
+ "samples": 20,
+ "times": [
+  292,
+  282,
+  357,
+  275,
+  247,
+  336,
+  257,
+  256,
+  301,
+  249,
+  458,
+  278,
+  284,
+  288,
+  308,
+  341,
+  257,
+  349,
+  330,
+  271
+ ],
+ "p95": 458,
+ "complete": 20,
+ "clearedCaches": [
+  4,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0
+ ],
+ "details": [
+  {
+   "sample": 1,
+   "cleared": 4,
+   "at": {
+    "composer": 91,
+    "history": 264,
+    "body": 292
+   },
+   "complete": true,
+   "firstScreenMs": 292,
+   "errors": []
+  },
+  {
+   "sample": 2,
+   "cleared": 0,
+   "at": {
+    "composer": 202,
+    "history": 202,
+    "body": 282
+   },
+   "complete": true,
+   "firstScreenMs": 282,
+   "errors": []
+  },
+  {
+   "sample": 3,
+   "cleared": 0,
+   "at": {
+    "composer": 292,
+    "history": 292,
+    "body": 357
+   },
+   "complete": true,
+   "firstScreenMs": 357,
+   "errors": []
+  },
+  {
+   "sample": 4,
+   "cleared": 0,
+   "at": {
+    "composer": 220,
+    "history": 220,
+    "body": 275
+   },
+   "complete": true,
+   "firstScreenMs": 275,
+   "errors": []
+  },
+  {
+   "sample": 5,
+   "cleared": 0,
+   "at": {
+    "composer": 188,
+    "history": 188,
+    "body": 247
+   },
+   "complete": true,
+   "firstScreenMs": 247,
+   "errors": []
+  },
+  {
+   "sample": 6,
+   "cleared": 0,
+   "at": {
+    "composer": 253,
+    "history": 253,
+    "body": 336
+   },
+   "complete": true,
+   "firstScreenMs": 336,
+   "errors": []
+  },
+  {
+   "sample": 7,
+   "cleared": 0,
+   "at": {
+    "composer": 195,
+    "history": 195,
+    "body": 257
+   },
+   "complete": true,
+   "firstScreenMs": 257,
+   "errors": []
+  },
+  {
+   "sample": 8,
+   "cleared": 0,
+   "at": {
+    "composer": 195,
+    "history": 195,
+    "body": 256
+   },
+   "complete": true,
+   "firstScreenMs": 256,
+   "errors": []
+  },
+  {
+   "sample": 9,
+   "cleared": 0,
+   "at": {
+    "composer": 235,
+    "history": 235,
+    "body": 301
+   },
+   "complete": true,
+   "firstScreenMs": 301,
+   "errors": []
+  },
+  {
+   "sample": 10,
+   "cleared": 0,
+   "at": {
+    "composer": 196,
+    "history": 196,
+    "body": 249
+   },
+   "complete": true,
+   "firstScreenMs": 249,
+   "errors": []
+  },
+  {
+   "sample": 11,
+   "cleared": 0,
+   "at": {
+    "composer": 388,
+    "history": 388,
+    "body": 458
+   },
+   "complete": true,
+   "firstScreenMs": 458,
+   "errors": []
+  },
+  {
+   "sample": 12,
+   "cleared": 0,
+   "at": {
+    "composer": 217,
+    "history": 217,
+    "body": 278
+   },
+   "complete": true,
+   "firstScreenMs": 278,
+   "errors": []
+  },
+  {
+   "sample": 13,
+   "cleared": 0,
+   "at": {
+    "composer": 219,
+    "history": 219,
+    "body": 284
+   },
+   "complete": true,
+   "firstScreenMs": 284,
+   "errors": []
+  },
+  {
+   "sample": 14,
+   "cleared": 0,
+   "at": {
+    "composer": 221,
+    "history": 221,
+    "body": 288
+   },
+   "complete": true,
+   "firstScreenMs": 288,
+   "errors": []
+  },
+  {
+   "sample": 15,
+   "cleared": 0,
+   "at": {
+    "composer": 244,
+    "history": 244,
+    "body": 308
+   },
+   "complete": true,
+   "firstScreenMs": 308,
+   "errors": []
+  },
+  {
+   "sample": 16,
+   "cleared": 0,
+   "at": {
+    "composer": 256,
+    "history": 256,
+    "body": 341
+   },
+   "complete": true,
+   "firstScreenMs": 341,
+   "errors": []
+  },
+  {
+   "sample": 17,
+   "cleared": 0,
+   "at": {
+    "composer": 193,
+    "history": 193,
+    "body": 257
+   },
+   "complete": true,
+   "firstScreenMs": 257,
+   "errors": []
+  },
+  {
+   "sample": 18,
+   "cleared": 0,
+   "at": {
+    "composer": 286,
+    "history": 286,
+    "body": 349
+   },
+   "complete": true,
+   "firstScreenMs": 349,
+   "errors": []
+  },
+  {
+   "sample": 19,
+   "cleared": 0,
+   "at": {
+    "composer": 258,
+    "history": 258,
+    "body": 330
+   },
+   "complete": true,
+   "firstScreenMs": 330,
+   "errors": []
+  },
+  {
+   "sample": 20,
+   "cleared": 0,
+   "at": {
+    "composer": 190,
+    "history": 190,
+    "body": 271
+   },
+   "complete": true,
+   "firstScreenMs": 271,
+   "errors": []
+  }
+ ]
+}
