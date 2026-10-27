@@ -319,3 +319,26 @@ Next: (1) Host restart to activate upload recovery + placeholder, then purge
 `*.opening.json` observed caches so the affected conversation re-syncs and the
 screenshots import; (2) finish live DOM commit diagnosis; (3) warm 3x22/22 and
 Astra review, ext.4 wiring.
+
+## rounds 117-129: live streaming root causes and warm 22/22 milestone
+
+- Live commit diagnostics showed the official event source growth (append/replace)
+  and the retained window length at each step. The remaining live failure was
+  two-layered:
+  1. fast-seeded native displays treated indexed `messages-invalidated` as a
+     full archive sync; provisional snapshot updates were rejected as changed
+     durable rows, so only the first chunk ever reached the client. Fixed in
+     `src/codex/agent.ts`: native-history invalidations always use the
+     incremental live path (`readNativeHistoryUpdate` under the cached epoch),
+     and stale opening fallbacks skip the settings refresh so their read fault
+     stays visible until history succeeds.
+  2. the pinned retention plan could drop the row that was just streamed after
+     commit; the client now trims as before and restores any dropped accepted
+     row with fresh seqs, and live commits use cheap appends instead of a full
+     window replace.
+- Warm acceptance reached **22/22 (0 failures)** once with the replace-based
+  live commit; subsequent runs are 21/22 with only `live updates` failing at the
+  second cumulative chunk (first chunk always renders; scroll p95 16.8 / max
+  183-233 ms). Full suite 1695 pass / 0 fail; commits `6fff3d753`, `9998a5f1b`.
+- Host dist rebuilt and client deployed; production Host still needs a restart
+  to activate the host-side incremental live fix.
