@@ -386,3 +386,23 @@ Astra review, ext.4 wiring.
 - Warm on repo runtime: intermittent 22/22; remaining flake is the second live
   chunk's 1500 ms visibility and load-dependent cold-open variance. Dev warm is
   not yet the final-artifact run Astra requires.
+
+## round 85: artifact-level warm acceptance on the installed runtime
+
+- Warm harness supports `HAPI_DSH_E2E_MANAGED_HOME` (+ profile): copies the
+  bundle-managed profile and state, restores the absolute hapi-dsh link, adds
+  the fixture provider with the installing user's pnpm store, and records Host
+  diagnostics/page text on failure.
+- First artifact acceptance (ext.6) is 20/22: live streaming renders all six
+  chunks in 90-312 ms, openings 29-44 ms, continuous scroll and paging pass.
+  The two failures are anchor drift while streaming/reconnect on the patched
+  official Conversation (47 px / 53 px); dev (unpatched) passes the same checks.
+- Ext 0004 marker is default-on but has a kill switch
+  (`globalThis.__hapiDshFollowEdgeDisabled`, warm `HAPI_DSH_FOLLOW_EDGE=0`).
+  Marker-off runs show the same drift, so 0004 is not the cause.
+- Latest artifact: sha `4d880735c963047483265c4721da83e26fcfbf26afda69f281010ff527263b13`,
+  release `165b3806ac9df4ad…`, extRelease 6; repeat install `changed:false`.
+- Next: make live window accounting scroll-neutral (defer trim/eviction while a
+  stream is active and correct at idle), re-run artifact acceptance to 22/22,
+  then three consecutive final-artifact warm runs, the 0004 on/off matrix and
+  the G1-G6 samplers.
