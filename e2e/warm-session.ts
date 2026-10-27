@@ -53,12 +53,22 @@ export class WarmOfficialSession {
     }
     this.historyRequests = useBoundedSourceHistory(long).requests
     environment.hapi.emit({ type: 'session-added', sessionId: long.session.id })
+    // Opt-in capacity fixture: enough source events to traverse 20k+ history
+    // nodes for the G3 sampler without slowing the normal acceptance fixture.
+    const capacityTurns = Number(process.env.HAPI_DSH_CAPACITY_TURNS ?? '0')
+    if (Number.isInteger(capacityTurns) && capacityTurns > 0) {
+      const capacity = environment.hapi.add('capacity-history', 'Synthetic capacity fixture', 'machine-alpha')
+      capacity.rows = nativeIndexedHistory(capacity.session.metadata!.codexSessionId!, capacityTurns, 25)
+      useBoundedSourceHistory(capacity)
+      environment.hapi.emit({ type: 'session-added', sessionId: capacity.session.id })
+    }
     await expect.poll(async () => {
       const catalog = await environment.rpc<{ sourceDiscovery: { sessions: Array<{ sourceSessionId: string }> } }>('hapi/catalog')
       // Catalog readiness must not preload the test conversations. A first
       // click now measures real on-demand source admission and history work.
-      return ['native-alpha', 'native-beta', 'native-warm-history', 'native-accept-history']
-        .every(id => catalog.sourceDiscovery.sessions.some(row => row.sourceSessionId === id))
+      const expected = ['native-alpha', 'native-beta', 'native-warm-history', 'native-accept-history']
+      if (capacityTurns > 0) expected.push('native-capacity-history')
+      return expected.every(id => catalog.sourceDiscovery.sessions.some(row => row.sourceSessionId === id))
     }, { timeout: 30_000 }).toBe(true)
     this.coldHostMs = Math.round(performance.now() - started)
   }

@@ -898,11 +898,17 @@ class SourceRecord {
         else key = `${type}:${String(entry.event.seq)}`
         nodes.add(key)
       }
+      // Body markers are the retained assistant-answer bodies: one per turn
+      // that carries a visible committed answer, not every process row.
       const assistantBodies = new Set<string>()
       for (const entry of entries) {
         if (String(entry.event.type) !== 'assistant/message') continue
-        const data = entry.event.data as { message?: { id?: unknown } } | null
-        assistantBodies.add(String(data?.message?.id ?? entry.event.seq))
+        const data = entry.event.data as {
+          turn?: unknown, displayTurn?: unknown,
+          message?: { content?: Array<{ type?: string }> },
+        } | null
+        if (!data?.message?.content?.some(part => part?.type === 'text')) continue
+        assistantBodies.add(String(data.displayTurn ?? data.turn ?? entry.event.seq))
       }
       probe.window = { assistantMessages: assistantBodies.size, events: entries.length }
       probe.commits.push({ index: probe.commits.length, liveDerivedNodes: nodes.size, events: entries.length,

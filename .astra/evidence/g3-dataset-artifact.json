@@ -1,0 +1,813 @@
+{
+ "schema": 1,
+ "gate": "G3",
+ "environment": "artifact warm fixture + managed private runtime",
+ "windowBudgetB": 2000,
+ "traversedHistoryNodes": 20800,
+ "commits": [
+  {
+   "index": 0,
+   "liveDerivedNodes": 1485,
+   "events": 1499,
+   "bodyBytes": 352834,
+   "candidatePeakNodes": 1485,
+   "applied": 1499
+  },
+  {
+   "index": 1,
+   "liveDerivedNodes": 1486,
+   "events": 1500,
+   "bodyBytes": 352850,
+   "candidatePeakNodes": 1486,
+   "applied": 1
+  },
+  {
+   "index": 2,
+   "liveDerivedNodes": 1482,
+   "events": 1497,
+   "bodyBytes": 352055,
+   "candidatePeakNodes": 1482,
+   "applied": 1497
+  },
+  {
+   "index": 3,
+   "liveDerivedNodes": 1483,
+   "events": 1498,
+   "bodyBytes": 352418,
+   "candidatePeakNodes": 1483,
+   "applied": 1
+  },
+  {
+   "index": 4,
+   "liveDerivedNodes": 1484,
+   "events": 1499,
+   "bodyBytes": 352452,
+   "candidatePeakNodes": 1484,
+   "applied": 1
+  },
+  {
+   "index": 5,
+   "liveDerivedNodes": 1485,
+   "events": 1500,
+   "bodyBytes": 352601,
+   "candidatePeakNodes": 1485,
+   "applied": 1
+  },
+  {
+   "index": 6,
+   "liveDerivedNodes": 1481,
+   "events": 1497,
+   "bodyBytes": 351859,
+   "candidatePeakNodes": 1481,
+   "applied": 1497
+  },
+  {
+   "index": 7,
+   "liveDerivedNodes": 1481,
+   "events": 1498,
+   "bodyBytes": 352015,
+   "candidatePeakNodes": 1481,
+   "applied": 1
+  },
+  {
+   "index": 8,
+   "liveDerivedNodes": 1481,
+   "events": 1499,
+   "bodyBytes": 352171,
+   "candidatePeakNodes": 1481,
+   "applied": 1
+  },
+  {
+   "index": 9,
+   "liveDerivedNodes": 1481,
+   "events": 1500,
+   "bodyBytes": 352327,
+   "candidatePeakNodes": 1481,
+   "applied": 1
+  },
+  {
+   "index": 10,
+   "liveDerivedNodes": 1477,
+   "events": 1497,
+   "bodyBytes": 351528,
+   "candidatePeakNodes": 1477,
+   "applied": 1497
+  },
+  {
+   "index": 11,
+   "liveDerivedNodes": 1477,
+   "events": 1498,
+   "bodyBytes": 351684,
+   "candidatePeakNodes": 1477,
+   "applied": 1
+  },
+  {
+   "index": 12,
+   "liveDerivedNodes": 1477,
+   "events": 1499,
+   "bodyBytes": 351840,
+   "candidatePeakNodes": 1477,
+   "applied": 1
+  },
+  {
+   "index": 13,
+   "liveDerivedNodes": 1477,
+   "events": 1500,
+   "bodyBytes": 351996,
+   "candidatePeakNodes": 1477,
+   "applied": 1
+  },
+  {
+   "index": 14,
+   "liveDerivedNodes": 1473,
+   "events": 1497,
+   "bodyBytes": 351197,
+   "candidatePeakNodes": 1473,
+   "applied": 1497
+  },
+  {
+   "index": 15,
+   "liveDerivedNodes": 1473,
+   "events": 1498,
+   "bodyBytes": 351353,
+   "candidatePeakNodes": 1473,
+   "applied": 1
+  },
+  {
+   "index": 16,
+   "liveDerivedNodes": 1473,
+   "events": 1499,
+   "bodyBytes": 351509,
+   "candidatePeakNodes": 1473,
+   "applied": 1
+  },
+  {
+   "index": 17,
+   "liveDerivedNodes": 1473,
+   "events": 1500,
+   "bodyBytes": 351665,
+   "candidatePeakNodes": 1473,
+   "applied": 1
+  },
+  {
+   "index": 18,
+   "liveDerivedNodes": 1469,
+   "events": 1497,
+   "bodyBytes": 350866,
+   "candidatePeakNodes": 1469,
+   "applied": 1497
+  },
+  {
+   "index": 19,
+   "liveDerivedNodes": 1469,
+   "events": 1498,
+   "bodyBytes": 351022,
+   "candidatePeakNodes": 1469,
+   "applied": 1
+  },
+  {
+   "index": 20,
+   "liveDerivedNodes": 1469,
+   "events": 1499,
+   "bodyBytes": 351178,
+   "candidatePeakNodes": 1469,
+   "applied": 1
+  },
+  {
+   "index": 21,
+   "liveDerivedNodes": 1469,
+   "events": 1500,
+   "bodyBytes": 351334,
+   "candidatePeakNodes": 1469,
+   "applied": 1
+  },
+  {
+   "index": 22,
+   "liveDerivedNodes": 1465,
+   "events": 1497,
+   "bodyBytes": 350535,
+   "candidatePeakNodes": 1465,
+   "applied": 1497
+  },
+  {
+   "index": 23,
+   "liveDerivedNodes": 1465,
+   "events": 1498,
+   "bodyBytes": 350691,
+   "candidatePeakNodes": 1465,
+   "applied": 1
+  },
+  {
+   "index": 24,
+   "liveDerivedNodes": 1465,
+   "events": 1499,
+   "bodyBytes": 350847,
+   "candidatePeakNodes": 1465,
+   "applied": 1
+  },
+  {
+   "index": 25,
+   "liveDerivedNodes": 1465,
+   "events": 1500,
+   "bodyBytes": 351003,
+   "candidatePeakNodes": 1465,
+   "applied": 1
+  },
+  {
+   "index": 26,
+   "liveDerivedNodes": 1461,
+   "events": 1497,
+   "bodyBytes": 350204,
+   "candidatePeakNodes": 1461,
+   "applied": 1497
+  },
+  {
+   "index": 27,
+   "liveDerivedNodes": 1461,
+   "events": 1498,
+   "bodyBytes": 350360,
+   "candidatePeakNodes": 1461,
+   "applied": 1
+  },
+  {
+   "index": 28,
+   "liveDerivedNodes": 1461,
+   "events": 1499,
+   "bodyBytes": 350516,
+   "candidatePeakNodes": 1461,
+   "applied": 1
+  },
+  {
+   "index": 29,
+   "liveDerivedNodes": 1461,
+   "events": 1500,
+   "bodyBytes": 350672,
+   "candidatePeakNodes": 1461,
+   "applied": 1
+  },
+  {
+   "index": 30,
+   "liveDerivedNodes": 1457,
+   "events": 1497,
+   "bodyBytes": 349873,
+   "candidatePeakNodes": 1457,
+   "applied": 1497
+  },
+  {
+   "index": 31,
+   "liveDerivedNodes": 1457,
+   "events": 1498,
+   "bodyBytes": 350029,
+   "candidatePeakNodes": 1457,
+   "applied": 1
+  },
+  {
+   "index": 32,
+   "liveDerivedNodes": 1457,
+   "events": 1499,
+   "bodyBytes": 350185,
+   "candidatePeakNodes": 1457,
+   "applied": 1
+  },
+  {
+   "index": 33,
+   "liveDerivedNodes": 1457,
+   "events": 1500,
+   "bodyBytes": 350341,
+   "candidatePeakNodes": 1457,
+   "applied": 1
+  },
+  {
+   "index": 34,
+   "liveDerivedNodes": 1452,
+   "events": 1496,
+   "bodyBytes": 349531,
+   "candidatePeakNodes": 1452,
+   "applied": 1496
+  },
+  {
+   "index": 35,
+   "liveDerivedNodes": 1452,
+   "events": 1497,
+   "bodyBytes": 349687,
+   "candidatePeakNodes": 1452,
+   "applied": 1
+  },
+  {
+   "index": 36,
+   "liveDerivedNodes": 1452,
+   "events": 1498,
+   "bodyBytes": 349843,
+   "candidatePeakNodes": 1452,
+   "applied": 1
+  },
+  {
+   "index": 37,
+   "liveDerivedNodes": 1452,
+   "events": 1499,
+   "bodyBytes": 349999,
+   "candidatePeakNodes": 1452,
+   "applied": 1
+  },
+  {
+   "index": 38,
+   "liveDerivedNodes": 1452,
+   "events": 1500,
+   "bodyBytes": 350155,
+   "candidatePeakNodes": 1452,
+   "applied": 1
+  },
+  {
+   "index": 39,
+   "liveDerivedNodes": 1450,
+   "events": 1498,
+   "bodyBytes": 349611,
+   "candidatePeakNodes": 1450,
+   "applied": 1498
+  },
+  {
+   "index": 40,
+   "liveDerivedNodes": 1450,
+   "events": 1499,
+   "bodyBytes": 349767,
+   "candidatePeakNodes": 1450,
+   "applied": 1
+  },
+  {
+   "index": 41,
+   "liveDerivedNodes": 1450,
+   "events": 1500,
+   "bodyBytes": 349923,
+   "candidatePeakNodes": 1450,
+   "applied": 1
+  },
+  {
+   "index": 42,
+   "liveDerivedNodes": 1446,
+   "events": 1497,
+   "bodyBytes": 349131,
+   "candidatePeakNodes": 1446,
+   "applied": 1497
+  },
+  {
+   "index": 43,
+   "liveDerivedNodes": 1446,
+   "events": 1498,
+   "bodyBytes": 349287,
+   "candidatePeakNodes": 1446,
+   "applied": 1
+  },
+  {
+   "index": 44,
+   "liveDerivedNodes": 1446,
+   "events": 1499,
+   "bodyBytes": 349443,
+   "candidatePeakNodes": 1446,
+   "applied": 1
+  },
+  {
+   "index": 45,
+   "liveDerivedNodes": 1446,
+   "events": 1500,
+   "bodyBytes": 349599,
+   "candidatePeakNodes": 1446,
+   "applied": 1
+  },
+  {
+   "index": 46,
+   "liveDerivedNodes": 1442,
+   "events": 1497,
+   "bodyBytes": 348807,
+   "candidatePeakNodes": 1442,
+   "applied": 1497
+  },
+  {
+   "index": 47,
+   "liveDerivedNodes": 1442,
+   "events": 1498,
+   "bodyBytes": 348963,
+   "candidatePeakNodes": 1442,
+   "applied": 1
+  },
+  {
+   "index": 48,
+   "liveDerivedNodes": 1442,
+   "events": 1499,
+   "bodyBytes": 349119,
+   "candidatePeakNodes": 1442,
+   "applied": 1
+  },
+  {
+   "index": 49,
+   "liveDerivedNodes": 1442,
+   "events": 1500,
+   "bodyBytes": 349275,
+   "candidatePeakNodes": 1442,
+   "applied": 1
+  },
+  {
+   "index": 50,
+   "liveDerivedNodes": 1438,
+   "events": 1497,
+   "bodyBytes": 348483,
+   "candidatePeakNodes": 1438,
+   "applied": 1497
+  },
+  {
+   "index": 51,
+   "liveDerivedNodes": 1438,
+   "events": 1498,
+   "bodyBytes": 348639,
+   "candidatePeakNodes": 1438,
+   "applied": 1
+  },
+  {
+   "index": 52,
+   "liveDerivedNodes": 1438,
+   "events": 1499,
+   "bodyBytes": 348795,
+   "candidatePeakNodes": 1438,
+   "applied": 1
+  },
+  {
+   "index": 53,
+   "liveDerivedNodes": 1438,
+   "events": 1500,
+   "bodyBytes": 348951,
+   "candidatePeakNodes": 1438,
+   "applied": 1
+  },
+  {
+   "index": 54,
+   "liveDerivedNodes": 1434,
+   "events": 1497,
+   "bodyBytes": 348159,
+   "candidatePeakNodes": 1434,
+   "applied": 1497
+  },
+  {
+   "index": 55,
+   "liveDerivedNodes": 1434,
+   "events": 1498,
+   "bodyBytes": 348315,
+   "candidatePeakNodes": 1434,
+   "applied": 1
+  },
+  {
+   "index": 56,
+   "liveDerivedNodes": 1434,
+   "events": 1499,
+   "bodyBytes": 348471,
+   "candidatePeakNodes": 1434,
+   "applied": 1
+  },
+  {
+   "index": 57,
+   "liveDerivedNodes": 1434,
+   "events": 1500,
+   "bodyBytes": 348627,
+   "candidatePeakNodes": 1434,
+   "applied": 1
+  },
+  {
+   "index": 58,
+   "liveDerivedNodes": 1430,
+   "events": 1497,
+   "bodyBytes": 347835,
+   "candidatePeakNodes": 1430,
+   "applied": 1497
+  },
+  {
+   "index": 59,
+   "liveDerivedNodes": 1430,
+   "events": 1498,
+   "bodyBytes": 347991,
+   "candidatePeakNodes": 1430,
+   "applied": 1
+  },
+  {
+   "index": 60,
+   "liveDerivedNodes": 1430,
+   "events": 1499,
+   "bodyBytes": 348147,
+   "candidatePeakNodes": 1430,
+   "applied": 1
+  },
+  {
+   "index": 61,
+   "liveDerivedNodes": 1430,
+   "events": 1500,
+   "bodyBytes": 348303,
+   "candidatePeakNodes": 1430,
+   "applied": 1
+  },
+  {
+   "index": 62,
+   "liveDerivedNodes": 1426,
+   "events": 1497,
+   "bodyBytes": 347511,
+   "candidatePeakNodes": 1426,
+   "applied": 1497
+  },
+  {
+   "index": 63,
+   "liveDerivedNodes": 1426,
+   "events": 1498,
+   "bodyBytes": 347667,
+   "candidatePeakNodes": 1426,
+   "applied": 1
+  },
+  {
+   "index": 64,
+   "liveDerivedNodes": 1426,
+   "events": 1499,
+   "bodyBytes": 347823,
+   "candidatePeakNodes": 1426,
+   "applied": 1
+  },
+  {
+   "index": 65,
+   "liveDerivedNodes": 1426,
+   "events": 1500,
+   "bodyBytes": 347979,
+   "candidatePeakNodes": 1426,
+   "applied": 1
+  },
+  {
+   "index": 66,
+   "liveDerivedNodes": 1422,
+   "events": 1497,
+   "bodyBytes": 347187,
+   "candidatePeakNodes": 1422,
+   "applied": 1497
+  },
+  {
+   "index": 67,
+   "liveDerivedNodes": 1422,
+   "events": 1498,
+   "bodyBytes": 347343,
+   "candidatePeakNodes": 1422,
+   "applied": 1
+  },
+  {
+   "index": 68,
+   "liveDerivedNodes": 1422,
+   "events": 1499,
+   "bodyBytes": 347499,
+   "candidatePeakNodes": 1422,
+   "applied": 1
+  },
+  {
+   "index": 69,
+   "liveDerivedNodes": 1422,
+   "events": 1500,
+   "bodyBytes": 347655,
+   "candidatePeakNodes": 1422,
+   "applied": 1
+  },
+  {
+   "index": 70,
+   "liveDerivedNodes": 1418,
+   "events": 1497,
+   "bodyBytes": 346863,
+   "candidatePeakNodes": 1418,
+   "applied": 1497
+  },
+  {
+   "index": 71,
+   "liveDerivedNodes": 1418,
+   "events": 1498,
+   "bodyBytes": 347019,
+   "candidatePeakNodes": 1418,
+   "applied": 1
+  },
+  {
+   "index": 72,
+   "liveDerivedNodes": 1418,
+   "events": 1499,
+   "bodyBytes": 347175,
+   "candidatePeakNodes": 1418,
+   "applied": 1
+  },
+  {
+   "index": 73,
+   "liveDerivedNodes": 1418,
+   "events": 1500,
+   "bodyBytes": 347331,
+   "candidatePeakNodes": 1418,
+   "applied": 1
+  },
+  {
+   "index": 74,
+   "liveDerivedNodes": 1414,
+   "events": 1497,
+   "bodyBytes": 346539,
+   "candidatePeakNodes": 1414,
+   "applied": 1497
+  },
+  {
+   "index": 75,
+   "liveDerivedNodes": 1414,
+   "events": 1498,
+   "bodyBytes": 346695,
+   "candidatePeakNodes": 1414,
+   "applied": 1
+  },
+  {
+   "index": 76,
+   "liveDerivedNodes": 1414,
+   "events": 1499,
+   "bodyBytes": 346851,
+   "candidatePeakNodes": 1414,
+   "applied": 1
+  },
+  {
+   "index": 77,
+   "liveDerivedNodes": 1414,
+   "events": 1500,
+   "bodyBytes": 347007,
+   "candidatePeakNodes": 1414,
+   "applied": 1
+  },
+  {
+   "index": 78,
+   "liveDerivedNodes": 1410,
+   "events": 1497,
+   "bodyBytes": 346214,
+   "candidatePeakNodes": 1410,
+   "applied": 1497
+  },
+  {
+   "index": 79,
+   "liveDerivedNodes": 1410,
+   "events": 1498,
+   "bodyBytes": 346370,
+   "candidatePeakNodes": 1410,
+   "applied": 1
+  },
+  {
+   "index": 80,
+   "liveDerivedNodes": 1410,
+   "events": 1499,
+   "bodyBytes": 346526,
+   "candidatePeakNodes": 1410,
+   "applied": 1
+  },
+  {
+   "index": 81,
+   "liveDerivedNodes": 1410,
+   "events": 1500,
+   "bodyBytes": 346682,
+   "candidatePeakNodes": 1410,
+   "applied": 1
+  },
+  {
+   "index": 82,
+   "liveDerivedNodes": 1406,
+   "events": 1497,
+   "bodyBytes": 345883,
+   "candidatePeakNodes": 1406,
+   "applied": 1497
+  },
+  {
+   "index": 83,
+   "liveDerivedNodes": 1406,
+   "events": 1498,
+   "bodyBytes": 346039,
+   "candidatePeakNodes": 1406,
+   "applied": 1
+  },
+  {
+   "index": 84,
+   "liveDerivedNodes": 1406,
+   "events": 1499,
+   "bodyBytes": 346195,
+   "candidatePeakNodes": 1406,
+   "applied": 1
+  },
+  {
+   "index": 85,
+   "liveDerivedNodes": 1406,
+   "events": 1500,
+   "bodyBytes": 346351,
+   "candidatePeakNodes": 1406,
+   "applied": 1
+  },
+  {
+   "index": 86,
+   "liveDerivedNodes": 1402,
+   "events": 1497,
+   "bodyBytes": 345552,
+   "candidatePeakNodes": 1402,
+   "applied": 1497
+  },
+  {
+   "index": 87,
+   "liveDerivedNodes": 1402,
+   "events": 1498,
+   "bodyBytes": 345708,
+   "candidatePeakNodes": 1402,
+   "applied": 1
+  },
+  {
+   "index": 88,
+   "liveDerivedNodes": 1402,
+   "events": 1499,
+   "bodyBytes": 345864,
+   "candidatePeakNodes": 1402,
+   "applied": 1
+  },
+  {
+   "index": 89,
+   "liveDerivedNodes": 1402,
+   "events": 1500,
+   "bodyBytes": 346020,
+   "candidatePeakNodes": 1402,
+   "applied": 1
+  },
+  {
+   "index": 90,
+   "liveDerivedNodes": 1398,
+   "events": 1497,
+   "bodyBytes": 345221,
+   "candidatePeakNodes": 1398,
+   "applied": 1497
+  },
+  {
+   "index": 91,
+   "liveDerivedNodes": 1398,
+   "events": 1498,
+   "bodyBytes": 345377,
+   "candidatePeakNodes": 1398,
+   "applied": 1
+  },
+  {
+   "index": 92,
+   "liveDerivedNodes": 1398,
+   "events": 1499,
+   "bodyBytes": 345533,
+   "candidatePeakNodes": 1398,
+   "applied": 1
+  },
+  {
+   "index": 93,
+   "liveDerivedNodes": 1398,
+   "events": 1500,
+   "bodyBytes": 345689,
+   "candidatePeakNodes": 1398,
+   "applied": 1
+  },
+  {
+   "index": 94,
+   "liveDerivedNodes": 1394,
+   "events": 1497,
+   "bodyBytes": 344890,
+   "candidatePeakNodes": 1394,
+   "applied": 1497
+  },
+  {
+   "index": 95,
+   "liveDerivedNodes": 1394,
+   "events": 1498,
+   "bodyBytes": 345046,
+   "candidatePeakNodes": 1394,
+   "applied": 1
+  },
+  {
+   "index": 96,
+   "liveDerivedNodes": 1394,
+   "events": 1499,
+   "bodyBytes": 345202,
+   "candidatePeakNodes": 1394,
+   "applied": 1
+  },
+  {
+   "index": 97,
+   "liveDerivedNodes": 1394,
+   "events": 1500,
+   "bodyBytes": 345358,
+   "candidatePeakNodes": 1394,
+   "applied": 1
+  },
+  {
+   "index": 98,
+   "liveDerivedNodes": 1390,
+   "events": 1497,
+   "bodyBytes": 344559,
+   "candidatePeakNodes": 1390,
+   "applied": 1497
+  },
+  {
+   "index": 99,
+   "liveDerivedNodes": 1390,
+   "events": 1498,
+   "bodyBytes": 344715,
+   "candidatePeakNodes": 1390,
+   "applied": 1
+  }
+ ],
+ "windowMetrics": {
+  "domNodes": 9690,
+  "bodyMarkers": 14
+ }
+}

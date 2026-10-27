@@ -571,15 +571,16 @@ function ViewFrame({ entry, children }: { entry: Entry; children: ReactNode }): 
     useLayoutEffect(() => {
         if (entry.phase === 'ready' && !announced.current) { announced.current = true; entry.onReady?.() }
     }, [entry.phase, entry.onReady])
+    const settling = entry.phase === 'loading' || entry.phase === 'measuring'
     return <div data-hapi-session-view={entry.reference.sessionId} data-hapi-session-pane={entry.paneId}
-        style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', width: '100%', overflow: 'hidden' }}>
-        {entry.phase === 'error' ? <Failure error={entry.error}/>
-            : entry.phase === 'loading'
-                ? <div className="hapi-session-loading" role="status" aria-live="polite" data-hapi-session-loading="loading">
-                    <span className="hapi-session-loading-spinner" aria-hidden="true"/>
-                    <p>正在打开会话…</p>
-                </div>
-                : children}
+        style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', width: '100%', overflow: 'hidden', position: 'relative' }}>
+        {entry.phase === 'error' ? <Failure error={entry.error}/> : children}
+        {settling && <div className={`hapi-session-loading${entry.phase === 'measuring' ? ' hapi-session-loading-overlay' : ''}`}
+            role="status" aria-live="polite" data-hapi-session-loading={entry.phase}>
+            <span className="hapi-session-loading-spinner" aria-hidden="true"/>
+            <p>正在准备可读窗口…</p>
+            <p className="hapi-session-loading-hint">大型会话首次打开可能需要更久</p>
+        </div>}
     </div>
 }
 

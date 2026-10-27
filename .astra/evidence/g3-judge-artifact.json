@@ -1,0 +1,18 @@
+{
+ "gate": "G3",
+ "verdict": "PASS",
+ "failures": [],
+ "checks": [],
+ "metrics": {
+  "budgetB": 2000,
+  "traversedHistoryNodes": 20800,
+  "commits": 100,
+  "maxLiveDerivedNodes": 1486,
+  "maxCandidatePeakNodes": 1486,
+  "maxEvents": 1500,
+  "maxBodyBytes": 352850,
+  "domNodes": 9690,
+  "bodyMarkers": 14
+ },
+ "frameSamples": []
+}
