@@ -7,6 +7,8 @@ export interface UiSample {
   anchorOffsets: number[]
   missingAnchors: number
   nodes: number
+  longTasks?: Array<{ start: number; duration: number; container: string }>
+  marks?: Array<{ name: string; start: number }>
 }
 declare global {
   interface Window {
@@ -23,8 +25,15 @@ export async function installUiProbe(page: Page): Promise<void> {
     const empty = () => ({ frames: [] as number[], tasks: [] as number[], anchorOffsets: [] as number[], missingAnchors: 0, nodes: 0 })
     const probe: Window['__hapiUiProbe'] = {
       sample: empty(), active: false, start: 0, loadedChunks: [],
-      begin() { this.sample = empty(); this.active = true; this.start = performance.now(); delete this.anchor },
-      end() { this.active = false; this.sample.nodes = document.querySelectorAll('*').length; return this.sample },
+      begin() { this.sample = empty(); this.sample.longTasks = []; this.sample.marks = []; this.active = true; this.start = performance.now(); delete this.anchor },
+      end() {
+        this.active = false
+        this.sample.nodes = document.querySelectorAll('*').length
+        this.sample.marks = performance.getEntriesByType('mark')
+          .filter(entry => entry.startTime >= this.start && /hapi-dsh:/.test(entry.name))
+          .map(entry => ({ name: entry.name.slice(0, 80), start: Math.round(entry.startTime - this.start) }))
+        return this.sample
+      },
     }
     window.__hapiUiProbe = probe
     // Keep only the two lazy assets, independent of the browser's 250-entry
@@ -36,7 +45,16 @@ export async function installUiProbe(page: Page): Promise<void> {
       }
     }).observe({ type: 'resource', buffered: true })
     new PerformanceObserver(list => {
-      if (probe.active) for (const row of list.getEntries()) if (row.startTime >= probe.start) probe.sample.tasks.push(row.duration)
+      if (probe.active) for (const row of list.getEntries()) {
+        if (row.startTime < probe.start) continue
+        probe.sample.tasks.push(row.duration)
+        const attribution = (row as PerformanceEntry & { attribution?: Array<{ containerType?: string; containerName?: string }> }).attribution
+        probe.sample.longTasks?.push({
+          start: Math.round(row.startTime - probe.start),
+          duration: Math.round(row.duration),
+          container: `${attribution?.[0]?.containerType ?? '?'}:${(attribution?.[0]?.containerName ?? '').slice(0, 40)}`,
+        })
+      }
     }).observe({ type: 'longtask', buffered: true })
     let previous = 0
     const frame = (at: number) => {

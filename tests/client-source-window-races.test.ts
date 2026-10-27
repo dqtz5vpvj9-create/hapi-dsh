@@ -273,7 +273,7 @@ test('a rejected live burst leaves a gap until forward repair also merges arriva
     } })
     h.append(3, 'rejected-live', 20)
     await flush()
-    assert.equal(h.entries().length, 5_000, 'live output replaces evicted history inside the same budget')
+    assert.equal(h.entries().length, 1_500, 'live output replaces evicted history inside the same budget')
     assert.deepEqual(bodyNames(h.entries()), ['rejected-live'], 'live output is not withheld across an evicted interval')
 
     // Measurable geometry permits trimming again, but does not prove that the

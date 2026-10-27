@@ -13,6 +13,7 @@
  * Ordinary DSH sessions pass through unchanged. No upstream object, prototype,
  * private field, or node_modules file is mutated.
  */
+import { readerBusy } from './reader-activity.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { MutableSessionEventSource } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {
@@ -42,7 +43,7 @@ export const SOURCE_WINDOW_SEQ_BASE = 3_000_000_000
 /** Outline route ids begin here; they are never event seqs. */
 export const SOURCE_OUTLINE_SEQ_BASE = 2_000_000_000
 /** Active window budget; an indivisible oversized source row stays complete. */
-export const MAX_SOURCE_EVENTS = 5_000
+export const MAX_SOURCE_EVENTS = 1_500
 /** Active client transcript byte ceiling; trimming keeps the reading-direction side. */
 export const MAX_SOURCE_BYTES = 12 * 1024 * 1024
 
@@ -323,6 +324,7 @@ class SourceRecord {
   private outlineRecoveryAttempt = 0
   private trimTimer: ReturnType<typeof setTimeout> | undefined
   private officialPagerWorks = false
+  private deferredFlush: ReturnType<typeof setTimeout> | undefined
   private readonly nullDataWarned = new Set<string>()
   private adoptingOlderCursor = false
   private outlineFailure: { phase: 'first' | 'continuation'; attempt: number; pages: number; durationMs: number; code: string } | undefined
@@ -331,6 +333,7 @@ class SourceRecord {
   private liveTurnOffset = 0
   private liveSeqBase = -1
   private liveGap = false
+  private liveGapFromEviction = false
   private readonly nativeTurns = new Map<string, number>()
   private readonly originalTurns = new Map<number, number>()
   private readonly sourceSteps = new Map<string, number>()
@@ -424,6 +427,17 @@ class SourceRecord {
     try { performance.mark(`hapi-dsh:flush:changes:${changes.length}`) } catch { /* diagnostics are optional */ }
     const prefixSeqs = new Set(changes.slice(afterReplace).flatMap(change => change.kind === 'prepend'
       ? change.entries.map(row => Number(row.event.seq)) : []))
+    // Defer heavy window commits while the reader is actively scrolling: one
+    // synchronous replace of a large retained window costs hundreds of ms.
+    if (readerBusy()) {
+      if (!this.deferredFlush) {
+        this.deferredFlush = setTimeout(() => {
+          this.deferredFlush = undefined
+          this.flushTail()
+        }, 160)
+      }
+      return
+    }
     // Multiple prepends arrive newest-page first. Protect their final window
     // order, and exclude pages superseded by a later snapshot replacement.
     const prefix = this.tail.entries.filter(row => prefixSeqs.has(Number(row.event.seq)))
@@ -502,6 +516,7 @@ class SourceRecord {
       this.eventSource.replace(this.normalizeEventData(records), this.tail.hasMore)
       const replacedSnapshot = this.eventSource.getSnapshot()
       if (this.trimTimer !== undefined) { clearTimeout(this.trimTimer); this.trimTimer = undefined }
+    if (this.deferredFlush !== undefined) { clearTimeout(this.deferredFlush); this.deferredFlush = undefined }
       this.tailNeedsResync = false
       const sources = records.flatMap(row => {
         const source = (row as unknown as { source?: SourcePosition }).source
@@ -609,6 +624,10 @@ class SourceRecord {
     // Only a real source gap may withhold live rows. A reader that is merely
     // not attached to the tail still receives appended output below its
     // viewport; dropping it would make streamed answers disappear entirely.
+    // A batch that opens a fresh turn is explicit new live output, not a
+    // continuation behind an evicted interval: it may jump the gap and reset it.
+    const opensTurn = entries.some(entry => String(entry.event.type) === 'turn/start')
+    if (opensTurn && this.liveGapFromEviction) { this.liveGap = false; this.liveGapFromEviction = false }
     if (this.liveGap) {
       const resident = new Set(sourceGroups(this.eventSource.getSnapshot().entries).map(group => group.key))
       const groups = sourceGroups(entries)
@@ -878,6 +897,7 @@ class SourceRecord {
     // Reaching this context's physical bottom does not cover the omitted
     // source interval. Only forward paging or an explicit latest jump can.
     this.liveGap = this.target?.hasMoreAfter ?? false
+    this.liveGapFromEviction = false
     this.nativeTurns.clear(); this.originalTurns.clear(); this.sourceSteps.clear(); this.sourceStepTurns.clear(); this.originalSteps.clear(); this.originalSeqs.clear()
     this.learnTargetTurns(records)
     this.liveSeqBase = capture.boundary
@@ -1441,6 +1461,7 @@ class SourceRecord {
       this.target.afterMessageId = edge?.messageId
       this.target.hasMoreAfter = edge !== undefined
       this.liveGap = true
+      this.liveGapFromEviction = true
     }
     if (first > 0) {
       let edge: SourcePosition | undefined

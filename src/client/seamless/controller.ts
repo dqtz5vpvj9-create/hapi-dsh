@@ -39,6 +39,7 @@
  * manual control. The pinned dependency version is the compatibility contract.
  */
 
+import { markReaderActivity } from '../reader-activity.ts'
 import { captureInterruptedPrepend, INTERRUPTED_PREPEND_STYLE, type InterruptedPrependAnchor } from './interrupted-anchor.ts'
 import type { AggregateLoadGate, SessionPageLedger, AggregateLoadLimits } from './concurrency.ts'
 import type { EarlierLoadBudgetLimits } from './budget.ts'
@@ -304,6 +305,7 @@ class ConversationHistoryController {
     private pendingProgrammatic: AbortController | undefined
     private identity: string | null = null
     private lastScrollTop: number | null = null
+    private deferredEarlier: ReturnType<typeof setTimeout> | undefined
     private lastUserInputAt = Number.NEGATIVE_INFINITY
     private lastUserIntent: ReaderIntent = 'none'
     private quietUntil = Number.NEGATIVE_INFINITY
@@ -600,6 +602,7 @@ class ConversationHistoryController {
             return
         }
         if (previous === null) return
+        markReaderActivity(now)
         const intent = scrollIntent(previous, current)
         // Restore, jump, follow, and anchor compensation also move scrollTop.
         // Only a sample attributable to a reader gesture may page history: a
@@ -907,6 +910,18 @@ class ConversationHistoryController {
     private requestEarlier(now: number): void {
         if (this.pending !== null) return
         if (now < this.quietUntil) return
+        // Never commit a page while a wheel/key gesture is actively moving the
+        // transcript: one synchronous merge of a large retained window can cost
+        // most of a second. Resume once the gesture has been quiet for a beat.
+        if (this.lastUserIntent === 'up' && now - this.lastUserInputAt < 160) {
+            if (this.deferredEarlier === undefined) {
+                this.deferredEarlier = setTimeout(() => {
+                    this.deferredEarlier = undefined
+                    if (!this.disposed) this.requestEarlier(this.now())
+                }, 180)
+            }
+            return
+        }
         // Ordinary motion inside the retained window needs no control search,
         // tail-marker scan or selection measurement. Inspect paging only near
         // the same lead boundary used by the policy below.
@@ -1154,6 +1169,7 @@ class ConversationHistoryController {
         this.cancelLatest()
         this.unwatchReadingIntent()
         this.cancelPending('disposed')
+        if (this.deferredEarlier !== undefined) { clearTimeout(this.deferredEarlier); this.deferredEarlier = undefined }
         this.cancelTouchPaging()
         this.unlisten()
         this.observer?.disconnect()
