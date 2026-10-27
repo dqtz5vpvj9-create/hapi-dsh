@@ -333,8 +333,17 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
           if (chunk === 1) {
             // Prove visible streaming before completion, then leave the tail
             // and prove subsequent chunks cannot steal the reading position.
-            await scrollport(history).evaluate(port => { port.scrollTop = port.scrollHeight / 2 })
+            // A half-height landing clamps to the floor when the retained
+            // window is shorter than two viewports; that fires no scroll event,
+            // leaves followingTail true and the next appends legitimately
+            // follow the tail (artifact-only false failure). Detach a full
+            // small reader step above the floor (keeps the tail inside the mounted
+            // overscan so chunk visibility is still measurable) and prove detached.
+            await scrollport(history).evaluate(port => {
+              port.scrollTop = Math.max(0, port.scrollHeight - port.clientHeight - 40)
+            })
             await page.waitForTimeout(350)
+            await expect(history.locator('[data-chat-following-tail]')).toHaveCount(0)
             before = await visibleAnchor(history)
           }
         }
@@ -372,7 +381,9 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
       if (!before) throw new Error('The first live frame never became visible')
       await expect(history.getByText(`${text}: ${'streaming content '.repeat(6).trim()}`, { exact: true })).toHaveCount(1)
       const after = await offsetOf(history, before)
-      record({ before, after, latencyMs, drift: after === null ? null : Math.abs(after.offset - before.offset), identityBefore,
+      record({ before, after, latencyMs, drift: after === null ? null : Math.abs(after.offset - before.offset),
+        marks: (await page.evaluate(() => performance.getEntriesByType('mark').map(entry => entry.name)))
+          .filter(name => /hapi-dsh:live:(retention|evicted|commit|flush-end|mapped)/.test(name)), identityBefore,
         identityAfter: await history.getAttribute('data-session-id'), reading: await history.evaluate(pane => ({
           states: [...pane.querySelectorAll('[data-hapi-reading]')].map(e => e.getAttribute('data-hapi-reading')),
           errors: [...pane.querySelectorAll('.hapi-reading-error')].map(e => e.textContent),
