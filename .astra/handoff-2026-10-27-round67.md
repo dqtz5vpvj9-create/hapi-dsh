@@ -289,3 +289,33 @@ frames, and only then judge; do not claim closure until three consecutive
   bound to a different façade record.
 - Suite 1695 pass / 0 fail; deploy ok (commit `6ac9abe52`); warm best 21/22 with
   live the only deterministic-looking failure left (first body/scroll now pass).
+
+## rounds 113-116: mobile overlap, rotated upload recovery, clean placeholders
+
+Mobile screenshots (`sh.tail...`/`pi.tail...`) showed ghosted overlapping
+transcripts and a `会话不可用` composer, plus `[Source resource unavailable: …
+ENOENT … hapi-blobs/<sid>-3mPNEL/…]` inside the chat.
+
+Findings:
+- Two windows/panes were both laid out at inset 0 on mobile; hidden ones used
+  `visibility:hidden` with stored dimensions, so child compositing could leak.
+  Fix (`32d086081`): hidden panes use `display:none`; inactive mobile windows
+  use `display:none` in CSS. Verified on production layout: inactive window
+  `display:none`, active one block, composer normal.
+- The queued screenshots referenced a HAPI upload dir
+  `.../hapi-blobs/<sid>-3mPNEL/` that had rotated; the same original filenames
+  still exist under `<sid>-cxpChI/`. Host `sourceUploadImporter` now falls back
+  to sibling `<sessionId>-*` directories and imports those bytes; missing
+  resources render `[Source resource unavailable: <filename>]` without paths or
+  transport text (full error goes to the Host log).
+- Both Host-side changes (attachments.ts, content.ts) activate only on the next
+  Host restart. The client-side hiding fix is already deployed.
+- Warm after these changes: cold open 344-360 ms, scroll p95 16.8 / max 183 ms,
+  only `live updates` remains (see previous section: event source append count
+  stays 1187 despite mapped commits — next diagnostic is commit-kind/length
+  marks plus whether the visible pane is bound to a different facade record).
+
+Next: (1) Host restart to activate upload recovery + placeholder, then purge
+`*.opening.json` observed caches so the affected conversation re-syncs and the
+screenshots import; (2) finish live DOM commit diagnosis; (3) warm 3x22/22 and
+Astra review, ext.4 wiring.
