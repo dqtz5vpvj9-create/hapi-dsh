@@ -117,11 +117,15 @@ export class HapiDshChildAgent implements Agent {
       delegationDepth: (this.owner.agent.session.header.delegationDepth ?? 0) + 1, agentPreset: 'hapi-source-dsh-child' }
   }
   static async create(owner: SourceDshChildrenOwner, transport: HapiObservedTransport, directory: string,
-    descriptor: SourceDshChildDescriptor): Promise<HapiDshChildAgent> {
+    descriptor: SourceDshChildDescriptor, options: { cacheOnly?: boolean } = {}): Promise<HapiDshChildAgent> {
     const child = new HapiDshChildAgent(owner, transport, directory, descriptor)
     try {
       child.readCache()
-      try {
+      if (options.cacheOnly === true) {
+        // Large parents seed their children from cache first; the network
+        // refresh happens after the parent open interaction has settled.
+        if (child.history) { child.lastReadAt = Date.now(); child.historyError = null }
+      } else try {
         child.observeParent(await child.transport.getSession(child.binding.sourceSessionId))
         // A cached transcript is the incremental base: opening a previously
         // seen session only fetches the rows added since the cache. When the
@@ -330,15 +334,38 @@ export class SourceDshChildren {
   async mount(): Promise<void> {
     if (this.mounted || this.disposed) return
     this.mounted = true
-    // A parent display can own dozens of children whose complete transcripts
-    // cost seconds each. Seed what is ready within a short budget and let the
-    // rest hydrate in the background instead of blocking the parent open.
-    const task = this.refresh(true).catch(error => {
-      console.warn('[hapi-dsh] DSH child seeding failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
-    })
-    let timer: ReturnType<typeof setTimeout> | undefined
-    await Promise.race([task, new Promise<void>(resolve => { timer = setTimeout(resolve, 400) })])
-    if (timer !== undefined) clearTimeout(timer)
+    const descriptors = sourceDshChildCatalog(this.owner.source())
+    if (descriptors.length <= 4) {
+      // Small parents keep the precise synchronous seed that tests and child
+      // panes rely on.
+      try { await this.refresh(true) }
+      catch (error) { console.warn('[hapi-dsh] DSH child seeding failed; the parent display stays usable', error instanceof Error ? error.message : String(error)) }
+      return
+    }
+    // A large parent can own dozens of children whose complete transcripts cost
+    // seconds each. Seed cached children immediately, then hydrate the rest
+    // after the parent open has settled so the first paint is never blocked.
+    try { await this.seedCached(descriptors) }
+    catch (error) { console.warn('[hapi-dsh] DSH cached child seeding failed', error instanceof Error ? error.message : String(error)) }
+    const timer = setTimeout(() => {
+      void this.refresh(true).catch(error => {
+        console.warn('[hapi-dsh] background DSH child hydration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
+      })
+    }, 1500)
+    timer.unref?.()
+  }
+
+  /** Materialize children from their cached transcripts without any network read. */
+  private async seedCached(descriptors: readonly SourceDshChildDescriptor[]): Promise<void> {
+    for (const descriptor of descriptors) {
+      if (this.disposed) return
+      const existing = this.children.get(descriptor.sessionId)
+      if (existing) { existing.update(descriptor); continue }
+      const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor, { cacheOnly: true })
+      if (this.disposed) { await child.dispose(); return }
+      this.children.set(descriptor.sessionId, child)
+    }
+    this.owner.changed()
   }
   refresh(authoritative = false): Promise<void> {
     if (this.disposed || !this.mounted || this.owner.source().metadata?.flavor !== 'dsh') return Promise.resolve()

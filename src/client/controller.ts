@@ -307,6 +307,9 @@ export class WorkspaceController {
     private readonly hostMainIds = new Map<string, string | undefined>()
     private readonly sourceCatalog = new Map<string, CatalogSession>()
     private readonly sourcePaneTitles = new Map<string, { sourceKey: string; title: string }>()
+    /** Last known source titles, so restored window tabs never show "Untitled". */
+    private readonly titleCache = new Map<string, string>()
+    private titleSaveTimer: ReturnType<typeof setTimeout> | undefined
     private sourceCatalogRevision = 0
     private readonly aggregatedHosts = new Map<string, { inputs: readonly unknown[]; ids: SessionId[]; rows: WorkspaceCatalog['byId'] }>()
     private aggregateParts: readonly object[] = []
@@ -393,6 +396,7 @@ export class WorkspaceController {
             leases: new Map(), notice, persistence: 'local', conflict: null, hasLayoutRecovery: Boolean(this.recoveryLayout),
             creation: null, creationContext: null, pickingSession: false, machines: [], nativePanel: null,
         }
+        this.restoreCachedTitles()
         this.hostMainIds.set('local', this.selectedMain('local'))
         this.unsubscribers.push(this.store.subscribe(this.onLayout), options.sessions.list.subscribe(() => this.onCatalog('local')))
         if (options.workspaceState) this.unsubscribers.push(options.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
@@ -631,6 +635,48 @@ export class WorkspaceController {
         for (const listener of [...this.listeners]) listener()
     }
 
+    private titleCacheKey(): string { return `${this.options.storageKey}:pane-titles:v1` }
+
+    /** Seed restored panes with the last observed source titles before the catalog exists. */
+    private restoreCachedTitles(): void {
+        try {
+            const raw = this.options.storage?.getItem(this.titleCacheKey())
+            if (!raw) return
+            const saved = JSON.parse(raw) as { version?: unknown; titles?: unknown }
+            if (saved.version !== 1 || !saved.titles || typeof saved.titles !== 'object') return
+            for (const [sourceKey, title] of Object.entries(saved.titles as Record<string, unknown>)) {
+                if (typeof title === 'string' && title.trim()) this.titleCache.set(sourceKey, title.trim())
+            }
+        } catch { /* a corrupted cache simply falls back to the catalog */ }
+        const restored: Record<string, string> = {}
+        for (const pane of this.snapshot.layout.windows.flatMap(window => panes(window.root))) {
+            const resource = pane.resource
+            if (resource.kind === 'empty') continue
+            const hubId = resource.sourceHubId, sourceSessionId = resource.sourceSessionId
+            if (!hubId || !sourceSessionId) continue
+            const sourceKey = originalSourceKey({ hubId, sourceSessionId }), title = this.titleCache.get(sourceKey)
+            if (!title) continue
+            this.sourcePaneTitles.set(pane.id, { sourceKey, title })
+            restored[pane.id] = title
+        }
+        if (Object.keys(restored).length) this.snapshot = { ...this.snapshot, sourcePaneTitles: { ...restored } }
+    }
+
+    /** Persist the title cache off the interaction path. */
+    private scheduleTitleCacheSave(): void {
+        if (this.titleSaveTimer !== undefined) return
+        this.titleSaveTimer = setTimeout(() => {
+            this.titleSaveTimer = undefined
+            try {
+                const titles: Record<string, string> = {}
+                let count = 0
+                for (const [sourceKey, title] of this.titleCache) { titles[sourceKey] = title; if (++count >= 400) break }
+                this.options.storage?.setItem(this.titleCacheKey(), JSON.stringify({ version: 1, titles }))
+            } catch { /* storage is best effort */ }
+        }, 1500)
+        this.titleSaveTimer.unref?.()
+    }
+
     private rememberSourcePaneTitles(): void {
         const titles: Record<string, string> = {}, present = new Set<string>()
         for (const pane of this.snapshot.layout.windows.flatMap(window => panes(window.root))) {
@@ -652,8 +698,10 @@ export class WorkspaceController {
             const currentTitle = sameSource ? row?.title?.trim() : undefined
             const title = currentTitle || (previous?.sourceKey === sourceKey ? previous.title : undefined)
                 || (sourceTitle && sourceTitle !== sourceSessionId && sourceTitle !== source!.id ? sourceTitle : undefined)
-            if (title) { this.sourcePaneTitles.set(pane.id, { sourceKey, title }); titles[pane.id] = title }
-            else this.sourcePaneTitles.delete(pane.id)
+            if (title) {
+                this.sourcePaneTitles.set(pane.id, { sourceKey, title }); titles[pane.id] = title
+                if (this.titleCache.get(sourceKey) !== title) { this.titleCache.set(sourceKey, title); this.scheduleTitleCacheSave() }
+            } else this.sourcePaneTitles.delete(pane.id)
         }
         for (const paneId of this.sourcePaneTitles.keys()) if (!present.has(paneId)) this.sourcePaneTitles.delete(paneId)
         this.snapshot = { ...this.snapshot, sourcePaneTitles: titles }
