@@ -614,7 +614,15 @@ class SourceRecord {
     if (!entries.length) return
     try {
       const queueTypes = [...new Set(entries.map(entry => String(entry.event.type)))].join('|')
-      performance.mark(`hapi-dsh:live:queue:${entries.length}:${queueTypes.slice(0, 90)}`)
+      const chunkInfo = entries.filter(entry => String(entry.event.type) === 'assistant/live-chunk').map(entry => {
+        const data = entry.event.data as Record<string, unknown> | null
+        const chunk = data?.chunk as Record<string, unknown> | undefined
+        const size = typeof chunk?.text === 'string' ? chunk.text.length
+          : typeof chunk?.delta === 'string' ? chunk.delta.length : 0
+        const turn = data?.turn, step = data?.step
+        return `${String(chunk?.type ?? '?')}/${String(turn)}:${String(step)}:${size}`
+      }).join(',')
+      performance.mark(`hapi-dsh:live:queue:${entries.length}:${queueTypes.slice(0, 60)}:${chunkInfo.slice(0, 100)}`)
     } catch { /* optional */ }
     const pins = this.readerPins(true)
     const observedLast = Math.max(this.liveSeqBase, ...entries.map(row => Number(row.event.seq)))
@@ -814,16 +822,44 @@ class SourceRecord {
       // withhold live output, so fall through and append normally.
       try { performance.mark('hapi-dsh:live:retention-pin-ignored') } catch { /* optional */ }
     }
-    if (hasLateSourceRows(retained, accepted)) {
-      this.eventSource.replace(orderSourceWindow([...retained, ...accepted]), resident.hasMore)
-    } else if (replaced.size) {
-      this.eventSource.replace([...retained, ...accepted], resident.hasMore)
-    } else {
-      for (const entry of accepted) this.eventSource.append(entry)
+    try {
+      if (hasLateSourceRows(retained, accepted)) {
+        try { performance.mark(`hapi-dsh:live:commit:order:${accepted.length}:${retained.length}`) } catch { /* optional */ }
+        this.eventSource.replace(orderSourceWindow([...retained, ...accepted]), resident.hasMore)
+      } else if (replaced.size) {
+        try { performance.mark(`hapi-dsh:live:commit:replace:${accepted.length}:${replaced.size}`) } catch { /* optional */ }
+        this.eventSource.replace([...retained, ...accepted], resident.hasMore)
+      } else {
+        // The official mutable source silently ignores an append whose seq does
+        // not continue its internal journal, which drops streamed chunks. A
+        // replace always publishes the exact retained window and never loses
+        // live output; the batch is small relative to the retained window.
+        try { performance.mark(`hapi-dsh:live:commit:replace-all:${accepted.length}:${this.eventSource.getSnapshot().entries.length}`) } catch { /* optional */ }
+        this.eventSource.replace([...retained, ...accepted], resident.hasMore)
+      }
+    } catch (error) {
+      try { performance.mark(`hapi-dsh:live:commit-error:${(error instanceof Error ? error.message : String(error)).slice(0, 80)}`) } catch { /* optional */ }
+      throw error
     }
+    try { performance.mark(`hapi-dsh:live:after-commit:${this.eventSource.getSnapshot().entries.length}`) } catch { /* optional */ }
     this.learnTargetTurns(accepted)
     this.target.lastSeq = this.lastSeq()
+    // A pinned retention plan may exclude the row that was just streamed. Keep
+    // the plan for the retained history, then restore any accepted live row the
+    // plan dropped so streamed text never disappears from the feed.
     this.trimWindow('newer', pins, true)
+    const present = new Set(this.eventSource.getSnapshot().entries.map(entry => Number(entry.event.seq)))
+    const dropped = accepted.filter(entry => !present.has(Number(entry.event.seq)))
+    if (dropped.length) {
+      let sequence = Math.max(this.target.lastSeq ?? SOURCE_WINDOW_SEQ_BASE, this.lastSeq() ?? SOURCE_WINDOW_SEQ_BASE)
+      const restored = dropped.map(entry => {
+        const event = { ...(entry.event as unknown as Record<string, unknown>), seq: ++sequence }
+        return { ...entry, event } as unknown as SessionEventLikeEntry
+      })
+      const window = this.eventSource.getSnapshot()
+      this.eventSource.replace(this.normalizeEventData([...window.entries, ...restored]), window.hasMore)
+      this.target.lastSeq = sequence
+    }
     this.pruneTurnMaps()
     this.session.publish()
     try { performance.mark(`hapi-dsh:live:flush-end:${String(this.eventSource.getSnapshot().entries.length)}`) } catch { /* optional */ }

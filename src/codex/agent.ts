@@ -677,8 +677,9 @@ export class NativeCodexAgent implements Agent {
         break
       case 'messages-invalidated':
         if (event.reason === 'native-history') {
-          if (this.config.fastHistorySeed) { this.historyStale = true; this.historySync.request(true) }
-          else this.liveSync.request(true)
+          // Incremental live reads apply provisional snapshot updates; a full
+          // archive sync rejects them as a changed durable message.
+          this.historyStale = true; this.liveSync.request(true)
           break
         }
         this.structuralResetPending = true
@@ -692,17 +693,18 @@ export class NativeCodexAgent implements Agent {
   }
 
   private async refreshLive(history: boolean): Promise<void> {
-    await this.refreshSettings()
+    // A stale opening fallback keeps its read fault visible until a history
+    // read succeeds; a settings refresh must not hide it.
+    if (!this.historyStale) await this.refreshSettings()
     if (!history || this.disposed) return
-    if (this.config.fastHistorySeed) {
+    const epoch = this.historyEpoch
+    if (epoch === undefined) {
       // History catch-up has one serialized worker. The live edge only asks
       // for it; it never starts a second bounded/full read concurrently.
       this.historyStale = true
       this.historySync.request(true)
       return
     }
-    const epoch = this.historyEpoch
-    if (epoch === undefined) { this.historySync.request(true); return }
     const checkpoint = this.historyJournal.checkpoint()
     let rows: HapiMessage[] | null
     try { rows = await readNativeHistoryUpdate(this.transport, this.binding.hapiSessionId, epoch,

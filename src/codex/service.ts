@@ -443,6 +443,7 @@ export class CodexService {
       if (!agent) agent = await this.attach(sourceId)
       if (!agent || !this.lifetimes.current(sourceId, version)) return
       try { await agent.handleEvent(event, checkpoint) } catch (error) {
+        console.warn(`[hapi-dsh] native event sync failed type=${event.type}: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`)
         if (error instanceof NativeHistoryChangedError || error instanceof HistoryReadInvalidatedError) { agent.reportError(error); agent.requestHistorySync() }
         else throw error
       }
