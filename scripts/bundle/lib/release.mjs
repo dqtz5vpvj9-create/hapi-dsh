@@ -278,6 +278,25 @@ async function walkFiles(root, prefix = '') {
     return entries;
 }
 
+/**
+ * File list for an installed release. Generated trees are private and may hold
+ * pnpm symlinks (the pinned runtime is assembled on this machine), so they are
+ * excluded instead of being walked; every copied file still needs a checksum.
+ */
+async function walkReleaseFiles(root, prefix = '') {
+    const entries = [];
+    const items = await readdir(root, { withFileTypes: true });
+    for (const item of items.sort((left, right) => left.name.localeCompare(right.name))) {
+        const absolute = join(root, item.name);
+        const rel = prefix === '' ? item.name : `${prefix}/${item.name}`;
+        if (isGeneratedReleasePath(`${rel}/`)) continue;
+        if (item.isDirectory()) entries.push(...await walkReleaseFiles(absolute, rel));
+        else if (item.isFile()) entries.push(rel);
+        else throw new Error(`${rel} is not a regular file; the release must not contain links or devices`);
+    }
+    return entries;
+}
+
 export async function copyTree(source, destination) {
     await mkdir(destination, { recursive: true, mode: 0o755 });
     const items = await readdir(source, { withFileTypes: true });
@@ -386,7 +405,7 @@ export function isGeneratedReleasePath(path) {
 /** Verify an installed release directory (bundle copy + generated payloads). */
 export async function verifyReleaseDirectory(root) {
     const manifest = await readManifestFrom(root);
-    const files = await walkFiles(root);
+    const files = await walkReleaseFiles(root);
     const sums = parseSums(await readFile(join(root, BUNDLE_LAYOUT.sums), 'utf8'));
     const sumPaths = new Set(sums.map((entry) => entry.path));
     const copied = files.filter((path) => !isGeneratedReleasePath(path));
