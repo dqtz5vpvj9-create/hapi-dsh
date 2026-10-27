@@ -345,6 +345,9 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
             .filter(name => /hapi-dsh:(live|loadOlder|flush)/.test(name)).slice(-20),
           liveFlow: (await page.evaluate(() => performance.getEntriesByType('mark').map(entry => entry.name)))
             .filter(name => /hapi-dsh:live:(queue|accepted|mapped|retention|commit|after-commit|chunks)/.test(name)).slice(-16),
+          streamTexts: await history.evaluate(pane => [...pane.querySelectorAll('*')]
+            .filter(element => element.children.length === 0 && /streaming content|Acceptance live answer/.test(element.textContent ?? ''))
+            .slice(0, 8).map(element => ({ tag: element.tagName, cls: String(element.className).slice(0, 50), text: (element.textContent ?? '').slice(0, 180) }))),
           state: catalog.items.find(row => row.sessionId === id),
           text: (await history.innerText()).slice(-1600),
           anchors: await history.locator('[data-chat-anchor-key]').evaluateAll(rows => rows.map(e => e.getAttribute('data-chat-anchor-key'))) })
