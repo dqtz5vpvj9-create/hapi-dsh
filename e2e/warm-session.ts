@@ -91,6 +91,11 @@ export class WarmOfficialSession {
     })
     if (result.status !== 'applied') throw new Error('Warm fixture layout reset conflicted')
     this.context = await this.browser.newContext({ viewport, locale: 'en-US', isMobile: mobile, hasTouch: mobile })
+    if (process.env.HAPI_DSH_FOLLOW_EDGE === '0') {
+        // Artifact parity run: keep the stock official behavior while ext 0004
+        // is verified separately through the on/off matrix.
+        await this.context.addInitScript(() => { Reflect.set(globalThis, '__hapiDshFollowEdgeDisabled', true) })
+    }
     const page = await this.context.newPage()
     page.setDefaultTimeout(20_000)
     return page

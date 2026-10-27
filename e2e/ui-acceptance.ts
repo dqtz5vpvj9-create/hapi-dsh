@@ -527,8 +527,16 @@ export async function runUiAcceptance(session: WarmOfficialSession, repetitions:
     expect(p95).toBeLessThan(UI_BUDGETS.warmBodyMs); return { samples: opens, p95 }
   })
   session.checked()
-  return { schema: 1, passed: checks.every(row => row.passed), environment: 'pinned official DSH + synthetic HAPI wire; local Chromium',
+  const report = { schema: 1, passed: checks.every(row => row.passed), environment: 'pinned official DSH + synthetic HAPI wire; local Chromium',
     repetitions, durationMs: performance.now() - started, budgets: UI_BUDGETS, checks,
     observations, openingSamples: opens, scrollSamples: scrolls, errors, runtime: session.status(),
     hostLoad: { availableCpus: availableParallelism(), loadAverage: loadavg() } }
+  if (!report.passed) {
+    // Artifact acceptance needs the Host's own activation output when the UI
+    // shell renders but the workspace plugin does not become usable.
+    const withDiagnostics = report as typeof report & { hostDiagnostics?: string; pageText?: string | undefined }
+    withDiagnostics.hostDiagnostics = safe(session.environment.diagnostics()).slice(-8000)
+    withDiagnostics.pageText = await activePage?.evaluate(() => document.body.innerText.slice(0, 1200)).catch(() => undefined)
+  }
+  return report
 }

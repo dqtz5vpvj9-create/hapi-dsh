@@ -1,6 +1,6 @@
 import { cp, lstat, mkdtemp, mkdir, readFile, stat, writeFile, symlink, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -100,6 +100,7 @@ async function ensureTemplate(): Promise<E2eTemplate> {
             await cp(join(managedHome, 'profiles'), join(template.hubHome, 'profiles'), { recursive: true, force: true });
             await mkdir(join(template.hubHome, 'hapi-dsh'), { recursive: true });
             await cp(join(managedHome, 'hapi-dsh', 'state.json'), join(template.hubHome, 'hapi-dsh', 'state.json'));
+            await relinkInstalledPlugin(join(template.hubHome, 'profiles', managedProfile));
         }
         const hubConfig = createConfig('http://127.0.0.1:9', { DSH_HOME: template.hubHome });
         hubConfig.server.port = 0;
@@ -115,14 +116,13 @@ async function ensureTemplate(): Promise<E2eTemplate> {
         if (!managedHome) await installProfile(hubConfig, hubConfigFile, root);
         let addEnv = runtimeEnvironment(hubConfig, hubConfigFile);
         if (managedHome) {
-            // The installed profile's node_modules belong to the machine-wide
-            // pnpm store; with a test HOME the plugin manager would otherwise
-            // demand a reinstall ("Unexpected store location").
-            try {
-                const modules = await readFile(join(managedHome, 'profiles', managedProfile, 'node_modules', '.modules.yaml'), 'utf8');
-                const storeDir = /"storeDir":\s*"([^"]+)"/.exec(modules)?.[1];
-                if (storeDir) addEnv = { ...addEnv, npm_config_store_dir: storeDir };
-            } catch { /* a reinstall-only profile has no .modules.yaml */ }
+            // The installed profile links node_modules from the installing
+            // user's pnpm store; the harness HOME would make pnpm reject the
+            // copy ("Unexpected store location"). The owning user's home keeps
+            // the store layout identical.
+            const home = userInfo().homedir;
+            addEnv = { ...addEnv, HOME: home, XDG_DATA_HOME: join(home, '.local', 'share'),
+                XDG_CONFIG_HOME: join(home, '.config'), XDG_CACHE_HOME: join(home, '.cache') };
         }
         await addFixtureProvider(hubConfig.dsh.profile, template.provider, command, addEnv);
         const runner = createRunnerConfig('http://127.0.0.1:9', { id: 'template-runner', token: 'template-pair-token', dshHome: template.runnerHome });
@@ -148,7 +148,25 @@ async function materializeProfiles(templateHome: string, targetHome: string): Pr
     if (await lstat(state).then(() => true, () => false)) {
         await mkdir(join(targetHome, 'hapi-dsh'), { recursive: true });
         await cp(state, join(targetHome, 'hapi-dsh', 'state.json'));
+        await relinkInstalledPlugin(join(targetHome, 'profiles', managedProfile));
     }
+}
+
+/**
+ * A bundle-managed profile links hapi-dsh with a profile-relative symlink.
+ * Copying the profile elsewhere leaves that link dangling, so restore it from
+ * the absolute dependency spec while keeping the installed runtime as the one
+ * physical copy.
+ */
+async function relinkInstalledPlugin(profileDirectory: string): Promise<void> {
+    const manifest = JSON.parse(await readFile(join(profileDirectory, 'package.json'), 'utf8')) as { dependencies?: Record<string, string> };
+    const spec = manifest.dependencies?.['hapi-dsh'];
+    if (typeof spec !== 'string' || !spec.startsWith('link:')) return;
+    const target = resolve(spec.slice('link:'.length));
+    const link = join(profileDirectory, 'node_modules', 'hapi-dsh');
+    await rm(link, { force: true, recursive: true });
+    await mkdir(dirname(link), { recursive: true });
+    await symlink(target, link, 'dir');
 }
 export interface OfficialEnvironment {
     hapi: HapiWireFixture;

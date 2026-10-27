@@ -85,7 +85,8 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     // Composition opt-in for ext 0004 (programmatic live-edge following). The
     // patched upstream ui-chat defaults to the stock behavior; only a shell that
     // marks its document root with the generic attribute enables the extra path.
-    if (typeof document !== 'undefined') {
+    if (typeof document !== 'undefined'
+        && Reflect.get(globalThis, '__hapiDshFollowEdgeDisabled') !== true) {
         try { document.documentElement.dataset.dshFollowEdge = '1' } catch { /* non-DOM composition */ }
     }
     // Pane graphs exclude this bundle; this branch only remains for the primary
