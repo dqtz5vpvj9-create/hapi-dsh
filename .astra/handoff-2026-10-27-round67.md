@@ -214,3 +214,24 @@ Production probe after the latest deploy:
   events by `liveSeqBase`, dropping start rows while keeping updates; or win-
   dow trim dropping a start group). Reproduce deterministically in warm by
   asserting no `event feed subscriber failed` in console, then fix ordering.
+
+## round 86: production pane crash fixed (null event data)
+
+Reproduced on production with full stack:
+`[session-controller] event feed subscriber failed: TypeError: Cannot read
+properties of null (reading 'turn') at payloadCoordinates ←
+ConversationLocationIndex.rebuild ← ConversationNodeAssembler.prepend ←
+BoundConversation.accept`.
+An event with `event.data === null` reached the official conversation assembler
+from a source page prepend, crashing the feed subscriber so the pane could never
+mount; the UX symptom is exactly the HAPI Main screenshot error.
+
+Fix (commit `e205260ca`, deployed): every entry/change emitted into the official
+eventSource is normalized to an object payload (`data: {}` when null/undefined),
+with a one-time warning per offending event type. Verified on production:
+opening HAPI Main twice → `flow: true`, no "could not open its usable ...", no
+event-feed/ordering errors, no normalization warnings in that run.
+
+Also deployed earlier this round: widened initial viewport admission retries
+(`975ff07e4`) so restored/split panes get up to a bounded minute instead of
+failing after two seconds.
