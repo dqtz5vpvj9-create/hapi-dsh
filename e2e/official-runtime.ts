@@ -113,7 +113,18 @@ async function ensureTemplate(): Promise<E2eTemplate> {
         // An artifact-managed profile already links the installed plugin; a
         // development template still needs this checkout installed once.
         if (!managedHome) await installProfile(hubConfig, hubConfigFile, root);
-        await addFixtureProvider(hubConfig.dsh.profile, template.provider, command, runtimeEnvironment(hubConfig, hubConfigFile));
+        let addEnv = runtimeEnvironment(hubConfig, hubConfigFile);
+        if (managedHome) {
+            // The installed profile's node_modules belong to the machine-wide
+            // pnpm store; with a test HOME the plugin manager would otherwise
+            // demand a reinstall ("Unexpected store location").
+            try {
+                const modules = await readFile(join(managedHome, 'profiles', managedProfile, 'node_modules', '.modules.yaml'), 'utf8');
+                const storeDir = /"storeDir":\s*"([^"]+)"/.exec(modules)?.[1];
+                if (storeDir) addEnv = { ...addEnv, npm_config_store_dir: storeDir };
+            } catch { /* a reinstall-only profile has no .modules.yaml */ }
+        }
+        await addFixtureProvider(hubConfig.dsh.profile, template.provider, command, addEnv);
         const runner = createRunnerConfig('http://127.0.0.1:9', { id: 'template-runner', token: 'template-pair-token', dshHome: template.runnerHome });
         const runnerFile = join(directory, 'template-runner.json');
         await writeRunnerConfig(runnerFile, runner);
