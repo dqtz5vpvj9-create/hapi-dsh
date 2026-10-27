@@ -1,4 +1,4 @@
-import { cp, mkdtemp, mkdir, readFile, stat, writeFile, symlink, rm } from 'node:fs/promises';
+import { cp, lstat, mkdtemp, mkdir, readFile, stat, writeFile, symlink, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -14,6 +14,13 @@ import { addPairing } from '../src/hub/federation-credentials.ts';
 import { HapiWireFixture } from './hapi-fixture.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * Artifact acceptance: run the warm fixture against one bundle-managed DSH home
+ * (installed profile + verified private runtime) instead of installing this
+ * checkout into a fresh profile. Unset keeps the development flow.
+ */
+const managedHome = process.env.HAPI_DSH_E2E_MANAGED_HOME ? resolve(process.env.HAPI_DSH_E2E_MANAGED_HOME) : undefined;
+const managedProfile = process.env.HAPI_DSH_E2E_MANAGED_PROFILE ?? 'hapi-ext4';
 type Rpc = <T = unknown>(method: string, request?: unknown) => Promise<T>;
 
 const timingEnabled = process.env.HAPI_DSH_E2E_TIMING === '1';
@@ -36,6 +43,18 @@ async function templateKey(): Promise<string> {
         } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
             rows.push(`${path}:missing`);
+        }
+    }
+    if (managedHome) {
+        rows.push(`managed:${managedHome}:${managedProfile}`);
+        for (const path of [join(managedHome, 'hapi-dsh', 'state.json'), join(managedHome, 'profiles', managedProfile, 'package.json')]) {
+            try {
+                const info = await stat(path);
+                rows.push(`${path}:${Math.trunc(info.mtimeMs)}:${info.size}`);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+                rows.push(`${path}:missing`);
+            }
         }
     }
     return createHash('sha256').update(rows.join('\n')).digest('hex').slice(0, 16);
@@ -74,15 +93,26 @@ async function ensureTemplate(): Promise<E2eTemplate> {
             exports: { '.': './index.mjs', './package.json': './package.json', './cordis.patch.yml': './cordis.patch.yml' },
             dsh: { bundle: { patch: './cordis.patch.yml' } } }));
         await writeFile(join(template.provider, 'cordis.patch.yml'), '- insert:\n    - id: hapi-dsh-e2e-provider\n      name: hapi-dsh-e2e-provider\n');
-        const command = await resolveDshCommand({ dsh: { home: template.hubHome } } as never);
+        if (managedHome) {
+            // Copy the installed profile and the bundle state pointer so this
+            // template resolves the verified private runtime automatically.
+            await mkdir(template.hubHome, { recursive: true });
+            await cp(join(managedHome, 'profiles'), join(template.hubHome, 'profiles'), { recursive: true, force: true });
+            await mkdir(join(template.hubHome, 'hapi-dsh'), { recursive: true });
+            await cp(join(managedHome, 'hapi-dsh', 'state.json'), join(template.hubHome, 'hapi-dsh', 'state.json'));
+        }
         const hubConfig = createConfig('http://127.0.0.1:9', { DSH_HOME: template.hubHome });
         hubConfig.server.port = 0;
         hubConfig.hapi.token = 'template-access-token';
         hubConfig.hapi.id = 'e2e-template-hub';
         hubConfig.federation = { credentialsFile: join(directory, 'template-pairings.json') };
+        if (managedHome) hubConfig.dsh.profile = managedProfile;
         const hubConfigFile = join(directory, 'template-hub.json');
         await writeConfig(hubConfigFile, hubConfig);
-        await installProfile(hubConfig, hubConfigFile, root);
+        const command = await resolveDshCommand(hubConfig);
+        // An artifact-managed profile already links the installed plugin; a
+        // development template still needs this checkout installed once.
+        if (!managedHome) await installProfile(hubConfig, hubConfigFile, root);
         await addFixtureProvider(hubConfig.dsh.profile, template.provider, command, runtimeEnvironment(hubConfig, hubConfigFile));
         const runner = createRunnerConfig('http://127.0.0.1:9', { id: 'template-runner', token: 'template-pair-token', dshHome: template.runnerHome });
         const runnerFile = join(directory, 'template-runner.json');
@@ -103,6 +133,11 @@ async function materializeProfiles(templateHome: string, targetHome: string): Pr
     // Default copy resolve symlinks to absolute targets; verbatim would keep
     // template-relative links that break after the tree moves.
     await cp(join(templateHome, 'profiles'), join(targetHome, 'profiles'), { recursive: true, force: true });
+    const state = join(templateHome, 'hapi-dsh', 'state.json');
+    if (await lstat(state).then(() => true, () => false)) {
+        await mkdir(join(targetHome, 'hapi-dsh'), { recursive: true });
+        await cp(state, join(targetHome, 'hapi-dsh', 'state.json'));
+    }
 }
 export interface OfficialEnvironment {
     hapi: HapiWireFixture;
@@ -167,6 +202,7 @@ export async function startOfficialEnvironment(remote = false, options: { compan
     try {
         await hapi.start();
         const config = createConfig(hapi.url, { DSH_HOME: join(directory, 'hub-home') });
+        if (managedHome) config.dsh.profile = managedProfile;
         config.server.port = 0;
         config.hapi.token = hapi.accessToken;
         config.hapi.id = 'e2e-native-hub';
