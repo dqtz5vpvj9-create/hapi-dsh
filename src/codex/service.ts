@@ -242,7 +242,7 @@ export class CodexService {
     try { await work } finally { if (this.catalogRefresh === work) this.catalogRefresh = undefined }
   }
 
-  async attach(sourceId: string, snapshot?: HapiSession): Promise<NativeCodexAgent | undefined> {
+  async attach(sourceId: string, snapshot?: HapiSession, attachOptions: { deferChildren?: boolean } = {}): Promise<NativeCodexAgent | undefined> {
     if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined

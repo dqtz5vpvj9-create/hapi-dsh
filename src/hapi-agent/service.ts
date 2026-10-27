@@ -192,7 +192,7 @@ export class HapiAgentService {
     this.catalogRefresh = task
     try { await task } finally { if (this.catalogRefresh === task) this.catalogRefresh = undefined }
   }
-  async attach(sourceId: string, snapshot?: HapiSession): Promise<HapiObservedAgent | undefined> {
+  async attach(sourceId: string, snapshot?: HapiSession, attachOptions: { deferChildren?: boolean } = {}): Promise<HapiObservedAgent | undefined> {
     if (snapshot && snapshot.id !== sourceId) throw new Error('The source snapshot belongs to another session')
     if (this.disposed) throw new Error('The source service was disposed')
     if (this.lifetimes.removed(sourceId)) return undefined
@@ -213,7 +213,7 @@ export class HapiAgentService {
       if (this.disposed || !this.lifetimes.current(sourceId, version)) return undefined
       if (!(this.eligible(source))) { this.excluded.add(sourceId); this.historyJournals.delete(sourceId); return undefined }
       this.excluded.delete(sourceId)
-      const agent = await this.create(source, undefined, undefined, version)
+      const agent = await this.create(source, undefined, undefined, version, undefined, attachOptions)
       if (this.disposed || !this.lifetimes.current(sourceId, version)) { await agent.dispose(); return undefined }
       this.agents.set(sourceId, agent); this.errors.delete(sourceId)
       this.attachRetries.get(sourceId)?.dispose(); this.attachRetries.delete(sourceId)
@@ -270,9 +270,9 @@ export class HapiAgentService {
     if (!journal) { journal = new SourceHistoryJournal(); this.historyJournals.set(sourceId, journal) }
     return journal
   }
-  private create(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id), epoch?: number) {
+  private create(source: HapiSession, rows?: readonly HapiMessage[], checkpoint?: HistoryCheckpoint, version = this.lifetimes.version(source.id), epoch?: number, attachOptions: { deferChildren?: boolean } = {}) {
     const logical = observedSessionId(this.transport.hubId, source.id)
-    return HapiObservedAgent.create(this.ctx, this.transport, source, { ...this.options,
+    return HapiObservedAgent.create(this.ctx, this.transport, source, { ...this.options, ...(attachOptions.deferChildren === true ? { deferChildren: true } : {}),
       displayRevision: this.revisions.get(logical) ?? 0,
       historyJournal: this.historyFor(source.id), ...(checkpoint ? { historyCheckpoint: checkpoint } : {}),
       ...(epoch === undefined ? {} : { historyEpoch: epoch }),

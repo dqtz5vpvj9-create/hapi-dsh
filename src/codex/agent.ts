@@ -87,6 +87,8 @@ export async function readHistoryRevision(transport: HapiTransport, sessionId: s
 }
 
 export interface NativeCodexOptions {
+  /** Opening a display must not wait for child registration. */
+  deferChildren?: boolean
   stateDirectory: string
   displayRevision?: number
   resolveAttachments?: (hapiSessionId: string, message: UserMessage) => Promise<HapiAttachment[]>
@@ -256,6 +258,8 @@ export class NativeCodexAgent implements Agent {
   private readonly childContent: ObservedContent
   private readonly childScopes = new ObservedScopeIndex()
   private readonly children: ObservedChildren
+  /** Settles after child/subagent sessions have registered in the background. */
+  childrenReady: Promise<void> = Promise.resolve()
   private source: HapiSession
   private readonly queued = new Map<string, { row: NativeRow & { kind: 'user' }; raw: HapiMessage }>()
   private readonly idleWaiters = new Set<{ resolve(): void; reject(error: Error): void }>()
@@ -444,7 +448,11 @@ export class NativeCodexAgent implements Agent {
       catch (error) {
         console.warn('[hapi-dsh] agent startup listener failed; continuing with the source-owned agent:', error instanceof Error ? error.message : String(error))
       }
-      await agent.children.mount()
+      if (options.deferChildren === true) {
+        agent.childrenReady = agent.children.mount().catch(error => {
+          console.warn('[hapi-dsh] background child registration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
+        })
+      } else await agent.children.mount()
       return agent
     } catch (error) { await agent.dispose(); throw error }
   }

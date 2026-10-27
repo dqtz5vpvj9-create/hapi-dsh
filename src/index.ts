@@ -815,7 +815,7 @@ export class HapiController extends TypertRemoteService {
             // `sessions` lists attached agents; the Hub catalog is sourceDiscovery.
             const discovered = catalog.sourceDiscovery?.sessions ?? [];
             const source = discovered.find(session => observedSessionId(this.options.client.hubId, session.sourceSessionId) === logical);
-            const attached = source ? await this.options.observed.attach(source.sourceSessionId) : undefined;
+            const attached = source ? await this.options.observed.attach(source.sourceSessionId, undefined, { deferChildren: true }) : undefined;
             console.warn(`[hapi-dsh] ensure display logical=${logical.slice(-10)} discovered=${discovered.length} matched=${Boolean(source)} attached=${Boolean(attached)}`);
         } catch (error) { console.warn(`[hapi-dsh] ensure display failed logical=${logical.slice(-10)} error=${error instanceof Error ? error.message.slice(0, 120) : 'unknown'}`) }
     }
@@ -904,7 +904,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });
     const nativeControl = new NativeControl(client, {
         get: id => codex.get(id),
-        attach: id => codex.attach(id),
+        attach: id => codex.attach(id, undefined, { deferChildren: true }),
         resolveForkBoundary: (sessionId, messageId) => hapiController.resolveHistoryFork(sessionId, messageId),
     }, join(dataDirectory, 'native'));
     const observedControl = new HapiObservedControl(client, observed, join(dataDirectory, 'observed'));

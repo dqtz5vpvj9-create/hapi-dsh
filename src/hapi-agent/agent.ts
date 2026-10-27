@@ -63,6 +63,8 @@ export interface HapiObservedOptions extends ObservedContentOptions {
   fastHistorySeed?: boolean
   /** The service already merged these rows with its live journal. */
   initialRowsMerged?: boolean
+  /** Opening a display must not wait for child/subagent registration. */
+  deferChildren?: boolean
 }
 
 class ObservedInbox implements Inbox {
@@ -109,6 +111,8 @@ export class HapiObservedAgent implements Agent {
   private readonly sourceScopes = new ObservedScopeIndex()
   private readonly children: ObservedChildren
   private readonly dshChildren: SourceDshChildren
+  /** Settles after child/subagent sessions have registered in the background. */
+  childrenReady: Promise<void> = Promise.resolve()
   private readonly approvals: NativeApprovals
   private readonly queued = new Map<string, { item: ObservedItem & { kind: 'user' }; row: HapiMessage }>()
   private readonly notices = new Map<string, ObservedNotice>()
@@ -276,8 +280,15 @@ export class HapiObservedAgent implements Agent {
       catch (error) {
         console.warn('[hapi-dsh] agent startup listener failed; continuing with the source-owned agent:', error instanceof Error ? error.message : String(error))
       }
-      await agent.children.mount()
-      await agent.dshChildren.mount()
+      const mountChildren = async (): Promise<void> => {
+        await agent.children.mount()
+        await agent.dshChildren.mount()
+      }
+      if (config.deferChildren === true) {
+        agent.childrenReady = mountChildren().catch(error => {
+          console.warn('[hapi-dsh] background child registration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
+        })
+      } else await mountChildren()
       return agent
     } catch (error) { await agent.dispose(); throw error }
   }
