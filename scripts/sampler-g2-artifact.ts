@@ -7,9 +7,9 @@
  */
 import { writeFileSync } from 'node:fs'
 import type { Page } from 'playwright'
-import { installUiProbe } from './ui-probe.ts'
-import { beginUiLive } from './ui-live-fixture.ts'
-import { WarmOfficialSession } from './warm-session.ts'
+import { installUiProbe } from '../e2e/ui-probe.ts'
+import { beginUiLive } from '../e2e/ui-live-fixture.ts'
+import { WarmOfficialSession } from '../e2e/warm-session.ts'
 
 const outPath = process.env.HAPI_DSH_G2_REPORT ?? '/mnt/cache/src/hapi-dsh/.tmp/gates/g2-artifact.json'
 const SAMPLES = 20

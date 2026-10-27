@@ -22,7 +22,8 @@ const reportPath = process.env.HAPI_DSH_G6_REPORT ?? join(hapiDsh, '.tmp/gates/g
 const profile = 'hapi-ext4'
 const DSH_VERSION = '0.2.1-rc.3'
 const HOST_PORT = 3096
-const labelFor = (compositionVersion?: string): string => compositionVersion?.includes('ext.6') ? 'e1' : compositionVersion?.includes('ext.7') ? 'e2' : 'unknown'
+const labelFor = (compositionVersion?: string): string => compositionVersion?.includes('ext.6') ? 'e1'
+  : compositionVersion?.includes('ext.7') || compositionVersion?.includes('ext.8') ? 'e2' : 'unknown'
 
 interface InstallResult { exitCode: number | null, stdout: string, stderr: string, durationMs: number, json: Record<string, unknown> }
 function runInstaller(bundle: string, action: 'install' | 'upgrade' | 'rollback', extra: string[] = []): InstallResult {
