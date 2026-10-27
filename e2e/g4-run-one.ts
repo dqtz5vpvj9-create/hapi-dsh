@@ -184,7 +184,7 @@ async function settle(page: Page, environment: OfficialEnvironment): Promise<voi
   }
 }
 
-async function capture(page: Page, environment: OfficialEnvironment, startEvents: number, startCalls: number) {
+async function capture(page: Page, environment: OfficialEnvironment, startEvents: number, startCalls: number, scenario: string) {
   const dom = await page.evaluate(() => {
     const panes = [...document.querySelectorAll('.hapi-pane')].map(pane => ({
       title: pane.getAttribute('aria-label') ?? '',
@@ -219,11 +219,22 @@ async function capture(page: Page, environment: OfficialEnvironment, startEvents
     // it fires at different moments on the original and patched clients and
     // would make two otherwise identical runs differ. Drop only those reads;
     // every action-triggered session request stays in the observation.
-    calls: environment.hapi.requestLog.slice(startCalls)
-      .filter(call => !(call.method === 'GET' && ['/api/machines', '/api/sessions', '/api/hub-settings'].includes(call.path)))
-      // Presence heartbeat POSTs race the scenario boundary the same way.
-      .filter(call => call.path !== '/api/visibility')
-      .map(call => ({ method: call.method, path: mask(call.path) })),
+    calls: (() => {
+      const calls = environment.hapi.requestLog.slice(startCalls)
+        .filter(call => !(call.method === 'GET' && ['/api/machines', '/api/sessions', '/api/hub-settings'].includes(call.path)))
+        // Presence heartbeat POSTs race the scenario boundary the same way.
+        .filter(call => call.path !== '/api/visibility')
+        .map(call => ({ method: call.method, path: mask(call.path) }))
+      if (scenario !== 'reconnect') return calls
+      // After the event stream reconnects the client resumes every catalog
+      // subscription concurrently, so request ordering and the number of
+      // duplicate refresh reads depend on scheduler timing, not on the
+      // composition. Reconnect keeps the ordered multiset of distinct
+      // endpoints; its source events and final semantic state stay strict.
+      calls.sort((left, right) => `${left.method} ${left.path}`.localeCompare(`${right.method} ${right.path}`))
+      return calls.filter((call, index) => index === 0
+        || call.method !== calls[index - 1]!.method || call.path !== calls[index - 1]!.path)
+    })(),
     semanticState: { dom, sessions },
     providerRegistrations: 0,
     newWindows: 0,
@@ -255,7 +266,7 @@ try {
           debugError = `${String(error).slice(0, 300)} | state=${JSON.stringify(debugState)}`
         } else debugError = undefined
       }
-      const observation = await capture(page, environment, startEvents, startCalls)
+      const observation = await capture(page, environment, startEvents, startCalls, scenario)
       cases.push({ variant, ...(variant === 'original' ? {} : { switches: { historySource: Number(combo[0]), mountedChat: Number(combo[1]), windowCommit: Number(combo[2]) } }),
         scenario, round, observation: { ...observation, failed, ...(debugError && process.env.HAPI_DSH_G4_DEBUG === '1' ? { debugError } : {}) } })
       await page.context().close().catch(() => {})
