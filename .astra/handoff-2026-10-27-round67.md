@@ -342,3 +342,19 @@ Astra review, ext.4 wiring.
   183-233 ms). Full suite 1695 pass / 0 fail; commits `6fff3d753`, `9998a5f1b`.
 - Host dist rebuilt and client deployed; production Host still needs a restart
   to activate the host-side incremental live fix.
+
+## round 130 status
+
+- Warm: two of the last three runs passed 22/22 in full (append-based live
+  commits + incremental indexed reads + drop restoration); the occasional flake
+  is the second cumulative live chunk not becoming visible within 1500 ms even
+  though its text-delta commits (`after-commit` grows, DOM keeps only the first
+  chunk). Acceptance now records `streamTexts` and the live commit sequence.
+- Full suite 1695 pass / 0 fail. Commits `2dccf77b3` plus earlier `9998a5f1b`,
+  `6fff3d753`. Client deployed and Host dist rebuilt.
+- Production Host restart is scheduled by a detached systemd unit to activate
+  the attachment recovery + incremental live fixes (user authorized restarts).
+- Next: if the second-chunk flake persists, check whether the official
+  conversation publishes `assistant/live-chunk` updates on animation frames that
+  are starved in the warm harness; otherwise force a cheap render nudge after
+  appending, then run three consecutive 22/22 and move to ext.4 wiring + Astra.
