@@ -103,3 +103,19 @@ composition. Add an ext contract test for:
 3. default-off behavior unchanged.
 Then rebuild ext artifacts/manifests and reinstall into the hapi-dsh runtime
 before rerunning warm acceptance.
+
+## ext 0004 implemented (round 75)
+
+`dsh-ext` branch `ext/0.2.1-rc.3` now has 0004:
+- `bf6aeedc` opt-in `setFollowOnProgrammaticEdge` in ui-chat use-chat-reading
+  (+ `ext/adr/0004.md`)
+- `08dc38b7` export from ui-chat client entry
+- `5838efbe` cumulative patch `ext/patches/0.2.1-rc.3/0004-programmatic-live-edge.patch`,
+  `series` updated
+Default off; stock consumers unchanged. Remaining for 0004:
+1. ext contract tests (programmatic edge follow / reader-away unchanged / default-off);
+2. regenerate the rc.3 release artifacts + manifests/checksums;
+3. conditionally enable from the hapi-dsh composition only when the patched
+   package is present (feature-detect the export, never assume);
+4. `node scripts/bundle/pack.mjs --ext-release <dir>`, install the runtime,
+   verify live on a real Host, then rerun warm.
