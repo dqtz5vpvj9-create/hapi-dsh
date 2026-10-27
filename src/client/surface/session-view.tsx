@@ -736,11 +736,16 @@ export function installSessionViewHost(ctx: Context): {
                 // geometry when this occurrence mounts. Retry the viewport admission
                 // instead of failing the whole conversation on one false sample.
                 let ok = false
-                for (let attempt = 0; attempt < 80 && !lifetime.aborted; attempt++) {
+                for (let attempt = 0; attempt < 240 && !lifetime.aborted; attempt++) {
                     ok = await prepareInitialViewport(options.target, options.reference, options.navigation, alive,
                         () => block?.getSnapshot(), lifetime)
                     if (ok) break
-                    if (alive() && !options.target.hidden && attempt >= 8) break
+                    // A pane can be visible while its measured editor is still
+                    // settling (restore, split, mobile keyboard). Keep retrying
+                    // for a bounded minute instead of failing the occurrence
+                    // after two seconds; detached targets still stop early.
+                    if (!alive()) break
+                    if (!options.target.hidden && attempt >= 40) break
                     await new Promise<void>(resolve => {
                         const timer = setTimeout(resolve, 250)
                         lifetime.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
