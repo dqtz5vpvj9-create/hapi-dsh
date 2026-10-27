@@ -191,3 +191,26 @@ ext 0004 is now complete at the source level and tested inside dsh-ext:
   hapi-dsh composition (feature-detect; ui-chat is currently type-only in
   src/client), verify live streaming on that runtime, then retest warm and the
   remaining frame budget.
+
+## round 85: production HAPI Main failure — new root-cause candidate
+
+Production probe after the latest deploy:
+- Clicking the display row "HAPI Main" opens the conversation with body and
+  `Load earlier` (flow present). A fresh page shows no restored panes, so the
+  screenshot's hard error is not reproducible via a plain row click.
+- The probe did capture a real conversation-stream error:
+  `[session-controller] event feed subscriber failed: Error: conversation
+  Context 12:turn-process1000003 received an update before its start Match`
+  (ConversationNodeAssembler.replayContext). This ordering violation can prevent
+  the Chat from mounting, which would surface exactly as
+  "The source conversation could not open its usable editor and first history
+  viewport" after the admission retries time out.
+- `session-view` admission retries were widened (visible pane: 40 attempts,
+  up to a bounded minute; detached still stops) and deployed in commit
+  `975ff07e4`. That removes the two-second hard failure but does NOT fix the
+  ordering bug.
+- Next: find which path feeds a turn-process update without its start to the
+  official assembler (candidate: live append after a snapshot replace slices
+  events by `liveSeqBase`, dropping start rows while keeping updates; or win-
+  dow trim dropping a start group). Reproduce deterministically in warm by
+  asserting no `event feed subscriber failed` in console, then fix ordering.
