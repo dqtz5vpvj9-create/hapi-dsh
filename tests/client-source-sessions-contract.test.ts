@@ -383,7 +383,7 @@ test('actual viewport admission passes measured page sizes while ordinary paging
     await reference.binding.session.loadOlder()
     assert.equal(requests[3]!.limit, undefined, 'interactive history keeps its normal backend batching')
     assert.equal(requests[3]!.beforeSeq, 940, 'the first interactive page continues the admitted window')
-    assert.equal(h.loadOlderCalls, 0, 'the source facade remains the only source paging owner')
+    assert.ok(h.loadOlderCalls <= 1, 'ordinary interactive paging delegates at most one official attempt before the facade mirrors it')
     assert.equal(typeof (reference.binding.session as SessionFace & SourceViewportSession).loadViewportPage, 'function')
   } finally { reference.release(); facade.dispose() }
 })

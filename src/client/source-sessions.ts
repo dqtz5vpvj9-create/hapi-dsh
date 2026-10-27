@@ -322,6 +322,7 @@ class SourceRecord {
   private outlineTimer: ReturnType<typeof setTimeout> | undefined
   private outlineRecoveryAttempt = 0
   private trimTimer: ReturnType<typeof setTimeout> | undefined
+  private officialPagerWorks = false
   private adoptingOlderCursor = false
   private outlineFailure: { phase: 'first' | 'continuation'; attempt: number; pages: number; durationMs: number; code: string } | undefined
   private jump = 0
@@ -539,7 +540,16 @@ class SourceRecord {
         void this.loadNewest(this.newestOutline)
         return
       }
-      entries = change.entries.filter(row => Number(row.event.seq) > this.liveSeqBase)
+      // A replacement snapshot can repeat rows this paged window already
+      // retained; only its unseen suffix (or a changed payload) belongs here.
+      const residentSeqs = new Set(this.eventSource.getSnapshot().entries.map(row => Number(row.event.seq)))
+      const residentPayloads = new Map(this.eventSource.getSnapshot().entries.map(row => [Number(row.event.seq), JSON.stringify(row.event)]))
+      entries = change.entries.filter(row => {
+        const seq = Number(row.event.seq)
+        if (seq <= this.liveSeqBase) return false
+        if (!residentSeqs.has(seq)) return true
+        return residentPayloads.get(seq) !== JSON.stringify(row.event)
+      })
     }
     if (!entries.length) return
     this.liveQueue.push(...entries)
@@ -1003,16 +1013,18 @@ class SourceRecord {
    * provider and mirrors the page into the retained window.
    * @returns whether a page was merged.
    */
-  private async loadOlderDirect(): Promise<boolean> {
+  private async loadOlderDirect(limit?: number): Promise<boolean> {
     const api = this.owner.api ?? await this.owner.whenAttached()
     if (this.disposed || !api) return false
     const endSeq = this.firstSeq() ?? SOURCE_WINDOW_SEQ_BASE
     const head = this.eventSource.getSnapshot().entries[0] as unknown as { source?: SourcePosition } | undefined
-    const request = head?.source
-      ? { sessionId: this.sessionId, beforeAt: head.source.at, beforeSeq: head.source.seq, endSeq,
+    const size = limit
+    const cursor = this.target?.before ?? head?.source
+    const request = cursor
+      ? { sessionId: this.sessionId, beforeAt: cursor.at, beforeSeq: cursor.seq, endSeq, ...(size === undefined ? {} : { limit: size }),
         ...(this.target?.beforeEpoch === undefined ? {} : { epoch: this.target.beforeEpoch }),
         ...(this.target?.beforeMessageId === undefined ? {} : { cursorMessageId: this.target.beforeMessageId }) }
-      : { sessionId: this.sessionId, fromOldest: true, endSeq }
+      : { sessionId: this.sessionId, fromOldest: true, endSeq, ...(size === undefined ? {} : { limit: size }) }
     const result = await api.sourceHistoryWindowPage(request)
     if (this.disposed) return false
     if (!result.ok) throw result.error
@@ -1045,6 +1057,8 @@ class SourceRecord {
     this.hasMore = value.hasMoreBefore
     const priorAfter = this.target?.after, priorAfterEpoch = this.target?.afterEpoch
     const priorAfterMessageId = this.target?.afterMessageId
+    const priorHasMoreAfter = this.target?.hasMoreAfter
+    const priorWasTail = this.mode === 'tail'
     const merged = this.eventSource.getSnapshot().entries
     const sources = merged.flatMap(entry => {
       const source = (entry as unknown as { source?: SourcePosition }).source
@@ -1060,7 +1074,7 @@ class SourceRecord {
       beforeMessageId: value.beforeMessageId,
       afterMessageId: priorAfterMessageId ?? last?.messageId ?? value.afterMessageId,
       hasMoreBefore: value.hasMoreBefore,
-      hasMoreAfter: value.hasMoreAfter,
+      hasMoreAfter: priorWasTail ? false : (priorHasMoreAfter ?? value.hasMoreAfter),
       firstSeq: merged[0]?.event.seq ?? null,
       lastSeq: merged.at(-1)?.event.seq ?? null,
       firstTurn: 0,
@@ -1402,11 +1416,30 @@ class SourceRecord {
       // /api/session/page contract remains the single paging path; this facade
       // only mirrors, retains and anchors the resulting window.
       const beforeCount = this.eventSource.getSnapshot().entries.length
-      await this.originalFace.loadOlder()
-      if (this.disposed || token !== this.jump) return
-      this.flushTail()
-      if (this.eventSource.getSnapshot().entries.length === beforeCount && this.hasMore) await this.loadOlderDirect()
-      this.adoptOlderCursor()
+      if (limit !== undefined && this.mode !== 'tail') {
+        // A measured viewport asks for an exact page size: the facade itself is
+        // the only source-paging owner for that read.
+        await this.loadOlderDirect(limit)
+      } else if (this.mode === 'tail' && (this.firstSeq() ?? DISPLAY_SEQ_OFFSET) > DISPLAY_SEQ_OFFSET) {
+        // The opening seed is a suffix of the retained source. Recover its
+        // missing prefix through the official pager before any source-cursor
+        // page may skip an unreceived event.
+        await this.originalFace.loadOlder()
+        if (this.disposed || token !== this.jump) return
+        this.flushTail()
+        this.adoptOlderCursor()
+      } else if (this.mode === 'tail') {
+        // A complete tail owns no seed prefix; the facade is its page provider.
+        await this.loadOlderDirect(limit)
+      } else {
+        await this.originalFace.loadOlder()
+        if (this.disposed || token !== this.jump) return
+        this.flushTail()
+        const grew = this.eventSource.getSnapshot().entries.length !== beforeCount
+        if (grew) this.officialPagerWorks = true
+        else if (!this.officialPagerWorks && this.hasMore) await this.loadOlderDirect(limit)
+        this.adoptOlderCursor()
+      }
     } catch (error) {
       if (this.disposed || token !== this.jump) return
       // A source read failure is not source exhaustion. Keep the current
@@ -1651,6 +1684,15 @@ class SourceRecord {
   /** Explicit latest intent from the official to-bottom control. */
   returnToLive(signal?: AbortSignal): boolean | Promise<boolean> {
     if (this.disposed || signal?.aborted) return false
+    // A resident window already ending at the live tail is authoritative; an
+    // explicit latest intent must keep it instead of replacing it with a
+    // shorter fresh page.
+    if (this.mode !== 'tail' && this.tail.entries.length > 0) {
+      const tailLast = this.tail.entries[this.tail.entries.length - 1]
+      const windowLast = this.eventSource.getSnapshot().entries.at(-1)
+      if (tailLast !== undefined && windowLast !== undefined
+        && Number(tailLast.event.seq) === Number(windowLast.event.seq)) return true
+    }
     // Explicit latest always reads the authoritative source head by identity.
     // It never compares outline ordinals with native display turns, and never
     // assumes the resident original tail is current.
