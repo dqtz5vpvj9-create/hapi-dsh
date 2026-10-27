@@ -119,3 +119,29 @@ Default off; stock consumers unchanged. Remaining for 0004:
    package is present (feature-detect the export, never assume);
 4. `node scripts/bundle/pack.mjs --ext-release <dir>`, install the runtime,
    verify live on a real Host, then rerun warm.
+
+## rounds 75-77 update
+
+ext 0004 is now complete at the source level and tested inside dsh-ext:
+
+- `dsh-ext` HEAD `259a5279` (branch `ext/0.2.1-rc.3`):
+  - module-scope `setFollowOnProgrammaticEdge` (default off) in
+    `packages/client/ui-chat/src/client/chat/use-chat-reading.ts`;
+  - exported from the ui-chat client entry;
+  - `tests/live-edge-follow.client.spec.ts` — 3/3 passing (stock off unchanged,
+    opt-in follows, reader away not pulled);
+  - `ext/patches/0.2.1-rc.3/0004-programmatic-live-edge.patch` (87 lines, with
+    test) + `series` + `ext/adr/0004.md`; worktree clean.
+- Remaining to make it effective end-to-end:
+  1. build the real rc.3 ext release (artifacts + manifest/checksums);
+  2. `node scripts/bundle/pack.mjs --ext-release <dir>` and install the runtime;
+  3. enable the switch from the hapi-dsh composition only when the patched
+     package is present. Today `src/client` imports ui-chat only as `import type`,
+     so first establish how the browser runtime provides that package
+     (external/remote module) before adding a runtime `import` call. Alternative
+     acceptable route: ext reads an existing composition flag instead of the
+     plugin calling a ui-chat export;
+  4. real-Host live verification, then warm acceptance (currently 21/22 with the
+     placeholder ext fixture; live is the only failure).
+- Also still open: rewrite the 11 source-session contracts to the
+  official-pager-owner semantics (46/57 today).
