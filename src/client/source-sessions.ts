@@ -848,7 +848,9 @@ class SourceRecord {
     this.learnTargetTurns(accepted)
     this.target.lastSeq = this.lastSeq()
     this.pruneTurnMaps()
-    this.session.publish()
+    // The appended events already notify the event source's subscribers; a
+    // second session publish after the DOM commit made the patched official
+    // reader apply its scroll correction twice (one row height of drift).
     try { performance.mark(`hapi-dsh:live:flush-end:${String(this.eventSource.getSnapshot().entries.length)}`) } catch { /* optional */ }
   }
 
