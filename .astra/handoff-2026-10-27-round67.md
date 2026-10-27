@@ -163,3 +163,31 @@ ext 0004 is now complete at the source level and tested inside dsh-ext:
   (2) `npm run deploy` and verify served == local; (3) build real rc.3 ext
   release with 0004, `pack.mjs --ext-release`, install runtime; (4) real-Host
   live verification and warm 22/22; (5) Astra six-gate review.
+
+## rounds 81-84: green suite, published client, ext.4 built
+
+- Full test suite: 1696 tests, 1695 pass, 0 fail (was 55 failing at round 81).
+  Root fixes: `ensureDisplayAgent` no-ops without native/observed engines;
+  loadOlder distinguishes seed/tail/target modes with a facade fallback page
+  reader; direct pages prefer the explicit before cursor, pass exact measured
+  sizes, preserve the forward boundary and skip exact replays; `returnToLive`
+  keeps an authoritative resident tail; older prepends merge in place.
+- `npm run deploy` passes and publishes the client without restarting the Host
+  (served bundle equals local dist plus the appended sourceMappingURL line).
+  Commits: 1bd39c285, 66ac3a751, bb4629c4c.
+- Warm: stationary prepend passes; `live updates` still fails — the streamed
+  text never appears in the pane DOM (`hasStreaming: false`, anchors 291-320,
+  nodes ~7k). Relaxing the live filter grows the window but the text still does
+  not render, and it breaks live/races contracts, so the stock filter stays.
+  `continuous up and down` long frame fluctuates 416-866 ms (>200 budget); CPU
+  profile is dominated by browser (program)/layout, client JS self-time is small.
+- ext.4 is ready in `dsh-ext` commit `2c5dfd3c`:
+  `ext/releases/0.2.1-rc.3/ext.4/` has the three tarballs, manifest.json and
+  release.json (patchSet sha b3101919…, capabilities historySource/mountedChat/
+  windowCommit). ui-chat was rebuilt with 0004 (`setFollowOnProgrammaticEdge`
+  present in lib/client.js).
+- Next: `npm run bundle:pack -- --ext-release /mnt/cache/src/dsh-ext/ext/releases/0.2.1-rc.3/ext.4`,
+  install that bundle into a DSH profile/runtime, enable the 0004 switch from the
+  hapi-dsh composition (feature-detect; ui-chat is currently type-only in
+  src/client), verify live streaming on that runtime, then retest warm and the
+  remaining frame budget.
