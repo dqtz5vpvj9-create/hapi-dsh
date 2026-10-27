@@ -11,7 +11,9 @@ export type WarmCommand = 'status' | 'check' | 'accept' | 'perf' | 'rebuild-clie
 
 export async function requestWarm<T = unknown>(command: WarmCommand): Promise<T> {
   return await new Promise<T>((resolveRequest, reject) => {
-    const req = request({ socketPath: warmSocket, path: `/${command}`, method: 'POST', timeout: command === 'perf' ? 900_000 : 240_000 }, response => {
+    const repetitions = Number(process.env.HAPI_DSH_UI_REPETITIONS ?? '1')
+    const timeout = command === 'perf' ? 900_000 : Number.isInteger(repetitions) && repetitions > 1 ? 1_800_000 : 240_000
+    const req = request({ socketPath: warmSocket, path: `/${command}`, method: 'POST', timeout }, response => {
       let text = ''
       response.setEncoding('utf8')
       response.on('data', chunk => { text += chunk })
