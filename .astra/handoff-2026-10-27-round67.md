@@ -265,3 +265,27 @@ timing/budget noise or remaining scheduling work, not a deterministic failure.
 Next: run warm repeatedly on an idle host, capture CPU profiles for the long
 frames, and only then judge; do not claim closure until three consecutive
 22/22 runs.
+
+## rounds 101-112: scroll budget fixed; live DOM update remains
+
+- Retained window reduced to 1500 events: warm continuous scroll now p95 16.8 ms,
+  max 33-183 ms, no long tasks (was 400-1100 ms with 13k DOM nodes). Long-task
+  attribution + mark correlation added to the UI probe; the acceptance report
+  now records `longTasks` and per-sample `marks`.
+- Cold open fixed after the reader-activity clock started at -infinity and only
+  reader-owned scroll samples mark activity (warm body 344-360 ms).
+- `flushLive` commits are gesture-deferred (160 ms quiet) and automatic earlier
+  page loads wait out an active wheel.
+- Live: all batches now map and commit (marks `live:queue` -> `live:mapped`),
+  a fresh `plugin:hapi-dsh/execution` clears eviction gaps, fresh turns only
+  clear eviction gaps (never omitted history), live-path trims no longer raise
+  gaps, and new display seqs allocate above the real resident tail.
+  BUT the official event source entry count stays constant (`live:flush-end:1187`)
+  after those appends and the DOM never changes (`hasStreaming: false`,
+  anchorKeys 333): appends are being swallowed silently, so the streamed text
+  still does not render. Next: add `live:commit:<kind>:<entries>` marks plus a
+  try/catch around the commit path and inspect whether `append` is rejected,
+  whether `hasLateSourceRows` routes to replace, or whether the visible pane is
+  bound to a different façade record.
+- Suite 1695 pass / 0 fail; deploy ok (commit `6ac9abe52`); warm best 21/22 with
+  live the only deterministic-looking failure left (first body/scroll now pass).
