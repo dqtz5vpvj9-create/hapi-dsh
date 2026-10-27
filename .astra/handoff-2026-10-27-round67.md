@@ -421,3 +421,23 @@ Astra review, ext.4 wiring.
   three consecutive final-artifact warm runs.
 - Latest artifact bundle: sha `59c117c220fc2b7e916454ee29861a5999ae8e5515449eeabd5408833b2747ad`,
   release `7c770d1691568e85…`, extRelease 6 (contains the pre-append trim build).
+
+## round 86 continued: artifact warm green, G1 pass, Astra round 11
+
+- Artifact acceptance on the installed runtime is **22/22, three consecutive**
+  (ext.6 evidence and then ext.7 final artifact; reports under
+  .astra/evidence/artifact-warm-ext6|ext7). Root cause of the former drift was
+  the acceptance detach step clamping to the floor; the check now detaches 40 px
+  above the floor and asserts the following marker is gone.
+- Production G1 cold-open: 20/20 <= 1500 ms (247-458 ms, p95 458) with all
+  display opening caches recursively purged; sampler committed as
+  `npm run test:g1:production`.
+- ext.7 adds the generic `globalThis.__dshFollowProgrammaticEdge` opt-in; final
+  bundle sha `caac26b6…`, release `5ce5a4df…`, extRelease 7; idempotent reinstall
+  changed:false; rollback ext.7->ext.6 and re-upgrade healthy.
+- Astra round 11: G1 PASS(report), final-artifact warm PASS; G2-G6 remain
+  NOT_EXECUTED; 0004 on/off behavioral difference still unverified and needs the
+  commit-critical-section floor-clamp experiment. Next in Astra's order:
+  0004 experiment -> G2 (20-sample paging) -> G3 -> G4 -> G5 -> G6.
+- Current run: 20-repetition acceptance on the final artifact for the G2 sample
+  set; warm IPC timeout now scales with repetitions.
