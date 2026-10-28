@@ -123,8 +123,7 @@
     "check": "npm run typecheck && npm test && npm run build",
     "prepack": "npm run build",
     "test:micro": "npm run typecheck && npm test",
-    "test:release": "npm run check",
-    "test:g1:production": "node scripts/probe-cold-open-matrix.mjs"
+    "test:release": "npm run check"
   },
   "dependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.3",
