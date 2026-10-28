@@ -347,12 +347,22 @@ export class SourceDshChildren {
     // after the parent open has settled so the first paint is never blocked.
     try { await this.seedCached(descriptors) }
     catch (error) { console.warn('[hapi-dsh] DSH cached child seeding failed', error instanceof Error ? error.message : String(error)) }
-    const timer = setTimeout(() => {
-      void this.refresh(true).catch(error => {
+    // Running children are the ones whose transcripts the reader is likely to
+    // open next; hydrate only those first, at very low concurrency. The rest
+    // wait until the app has been idle for a while so opening the parent never
+    // competes with a burst of transcript reads.
+    const active = setTimeout(() => {
+      void this.refresh(true, false, { onlyActive: true, concurrency: 2, gapMs: 400 }).catch(error => {
         console.warn('[hapi-dsh] background DSH child hydration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
       })
     }, 4000)
-    timer.unref?.()
+    active.unref?.()
+    const idle = setTimeout(() => {
+      void this.refresh(true, false, { concurrency: 2, gapMs: 600 }).catch(error => {
+        console.warn('[hapi-dsh] background DSH child hydration failed; the parent display stays usable', error instanceof Error ? error.message : String(error))
+      })
+    }, 25_000)
+    idle.unref?.()
   }
 
   /** Materialize children from their cached transcripts without any network read. */
@@ -367,25 +377,28 @@ export class SourceDshChildren {
     }
     this.owner.changed()
   }
-  refresh(authoritative = false): Promise<void> {
+  refresh(authoritative = false, notifyHistoryChange = false,
+    options: { onlyActive?: boolean, gapMs?: number, concurrency?: number } = {}): Promise<void> {
     if (this.disposed || !this.mounted || this.owner.source().metadata?.flavor !== 'dsh') return Promise.resolve()
     if (this.pendingRefresh) return this.pendingRefresh
     const task = (async () => {
-      const descriptors = sourceDshChildCatalog(this.owner.source())
+      const all = sourceDshChildCatalog(this.owner.source())
+      const descriptors = options.onlyActive === true ? all.filter(descriptor => descriptor.activity === 'running') : all
       const ids = new Map(descriptors.map(descriptor => [descriptor.sessionId, descriptor]))
       for (const child of this.children.values()) {
         const descriptor = ids.get(child.binding.childDshSessionId)
         if (!descriptor || descriptor.createdAt !== child.binding.childCreatedAt) throw new NativeHistoryChangedError('The original DSH child membership changed; acquire the current display generation')
       }
+      if (!descriptors.length) { this.owner.changed(); return }
       // Child transcripts are independent; opening a parent with dozens of
       // children must not serialize all of their history reads. Keep a small
       // concurrency pool so the HAPI hub stays responsive while errors still
       // propagate in order.
       const queue = [...descriptors]
       // Background hydration of a large parent stays deliberately gentle: the
-      // child reads are seconds long, so a burst of six would compete with the
+      // child reads are seconds long, so a burst would compete with the
       // conversation the reader just opened.
-      const gap = descriptors.length > 8 ? 200 : 0
+      const gap = options.gapMs ?? (all.length > 8 ? 200 : 0)
       const worker = async (): Promise<void> => {
         for (;;) {
           const descriptor = queue.shift()
@@ -402,7 +415,7 @@ export class SourceDshChildren {
           if (gap) await new Promise(resolve => setTimeout(resolve, gap))
         }
       }
-      await Promise.all(Array.from({ length: Math.min(6, Math.max(1, descriptors.length)) }, worker))
+      await Promise.all(Array.from({ length: Math.min(options.concurrency ?? 6, Math.max(1, descriptors.length)) }, worker))
       this.owner.changed()
     })()
     this.pendingRefresh = task
