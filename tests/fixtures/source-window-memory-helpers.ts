@@ -308,9 +308,9 @@ export function evaluatePlateau(
 /** Preflight the real NativeProjector for planned synthetic rows. This counts
  * projected Session events and their JSON UTF-8 bytes, not input source rows. */
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
-import { parseNativeRow, type NativeBinding } from '../src/codex/native.ts'
-import { NativeProjector } from '../src/codex/projector.ts'
-import type { HapiMessage } from '../src/codex/contracts.ts'
+import { parseNativeRow, type NativeBinding } from '../../src/codex/native.ts'
+import { NativeProjector } from '../../src/codex/projector.ts'
+import type { HapiMessage } from '../../src/codex/contracts.ts'
 
 export interface ProjectionSummary {
   sourceRows: number

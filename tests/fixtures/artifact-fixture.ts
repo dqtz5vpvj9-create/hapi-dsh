@@ -2,7 +2,7 @@
  * fixture output, not a simulated claim that a real Office converter ran. */
 import { createHash } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { HapiSession } from '../src/codex/contracts.ts';
+import type { HapiSession } from '../../src/codex/contracts.ts';
 
 export interface ArtifactFixtureValue {
     fileName: string;

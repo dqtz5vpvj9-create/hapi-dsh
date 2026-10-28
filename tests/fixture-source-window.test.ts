@@ -3,8 +3,8 @@
  * model, or upstream HAPI process is contacted. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { HapiWireFixture } from '../e2e/hapi-fixture.ts'
-import { useBoundedSourceHistory } from '../e2e/source-conversation-fixture.ts'
+import { HapiWireFixture } from './fixtures/hapi-fixture.ts'
+import { useBoundedSourceHistory } from './fixtures/source-conversation-fixture.ts'
 import { sourceMessageContextSchema, sourceOutlineSchema } from '../src/session-extras-types.ts'
 import type { HapiMessage, HapiMessagesPage } from '../src/codex/contracts.ts'
 

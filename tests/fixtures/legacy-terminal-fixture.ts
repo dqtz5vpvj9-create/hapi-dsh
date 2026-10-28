@@ -1,7 +1,7 @@
 /** Explicit simulated SessionTerminal PTY behind the original Socket.IO wire.
  * It retains original session/terminal IDs and never executes a shell. */
 import type { Socket } from 'socket.io'
-import type { HapiSession } from '../src/codex/contracts.ts'
+import type { HapiSession } from '../../src/codex/contracts.ts'
 
 interface Cursor { epoch: string; offset: number }
 interface Terminal { sessionId: string; terminalId: string; epoch: string; output: string }

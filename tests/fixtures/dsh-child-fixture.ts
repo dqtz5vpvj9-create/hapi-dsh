@@ -2,8 +2,8 @@
  * process is implied; the browser uses the unmodified official DSH runtime. */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { z } from 'zod'
-import type { HapiSession } from '../src/codex/contracts.ts'
-import type { SourceDshChildDescriptor, SourceDshChildMessage } from '../src/hapi-agent/dsh-child-types.ts'
+import type { HapiSession } from '../../src/codex/contracts.ts'
+import type { SourceDshChildDescriptor, SourceDshChildMessage } from '../../src/hapi-agent/dsh-child-types.ts'
 import type { HapiWireFixture, NativeFixture } from './hapi-fixture.ts'
 
 interface Child {

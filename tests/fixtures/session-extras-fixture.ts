@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { NativeFixture } from './hapi-fixture.ts';
-import type { SourceNote, SourceAttachment } from '../src/session-extras-types.ts';
+import type { SourceNote, SourceAttachment } from '../../src/session-extras-types.ts';
 
 const limits = { maxBytesPerFile: 1024 * 1024, maxAttachmentsPerEntry: 10, maxBytesPerEntry: 10 * 1024 * 1024,
     maxBytesPerSession: 32 * 1024 * 1024, allowedMimeTypes: ['image/png', 'text/plain'] };

@@ -1,8 +1,8 @@
 /** Explicit HAPI wire fixture. It does not claim to execute a real Codex model. */
 import { createServer, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
-import type { HapiEvent, HapiMessage, HapiSession, HapiSendMessage, HapiMessagesPage } from '../src/codex/contracts.ts';
-import type { NativeForkReceipt } from '../src/codex/control-types.ts';
+import type { HapiEvent, HapiMessage, HapiSession, HapiSendMessage, HapiMessagesPage } from '../../src/codex/contracts.ts';
+import type { NativeForkReceipt } from '../../src/codex/control-types.ts';
 import { WorkbenchWireFixture } from './workbench-fixture.ts';
 import { SessionExtrasWireFixture } from './session-extras-fixture.ts';
 import { ArtifactWireFixture } from './artifact-fixture.ts';
@@ -12,7 +12,7 @@ import { VoiceWireFixture } from './voice-fixture.ts';
 import { NotificationsWireFixture } from './notifications-fixture.ts';
 import { CollaborationWireFixture } from './collaboration-fixture.ts';
 import { DshChildWireFixture } from './dsh-child-fixture.ts';
-import type { LegacyWorkspaceSnapshot } from '../src/legacy-workspace-types.ts';
+import type { LegacyWorkspaceSnapshot } from '../../src/legacy-workspace-types.ts';
 
 const token = 'e2e-hapi-access-token';
 const jwt = 'e2e-hapi-jwt';
@@ -108,7 +108,7 @@ export class HapiWireFixture {
     readonly planRequests: Array<{ sessionId: string; planId: string }> = [];
     readonly cancelled: string[] = [];
     /** G4 matrix: ordered source-API calls and emitted events during one scenario. */
-    readonly requestLog: Array<{ method: string, path: string }> = [];
+    readonly requestLog: Array<{ method: string, path: string, at?: number, body?: unknown }> = [];
     readonly emittedLog: Array<{ type: string, sessionId?: string }> = [];
     dropNextCancelReply = false;
     suppressNextCancelEvent = false;
@@ -437,7 +437,11 @@ export class HapiWireFixture {
             if (url.pathname === '/api/auth') { send(body.accessToken === token ? { token: jwt } : { error: 'fixture authentication failed' }, body.accessToken === token ? 200 : 401); return; }
             if (url.pathname === '/health') { send({ status: 'ok', capabilities: { titleSuggestion: this.extras.titleSuggestionAvailable, workGraph: this.collaboration.available } }); return; }
             if (request.headers.authorization !== `Bearer ${jwt}`) { send({ error: 'unauthorized' }, 401); return; }
-            this.requestLog.push({ method: request.method ?? 'GET', path: url.pathname });
+            {
+                const method = request.method ?? 'GET'
+                this.requestLog.push({ method, path: url.pathname, at: Date.now(),
+                    ...(method !== 'GET' && raw ? { body: structuredClone(body) } : {}) })
+            }
             if (this.notifications.handle(url, request, response, body)) return;
             if (this.collaboration.handle(url, request, response)) return;
             if (this.admin.handle(this, url, request, response, body)) return;

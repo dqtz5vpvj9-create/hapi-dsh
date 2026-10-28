@@ -4,7 +4,7 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { HapiWireFixture, NativeFixture } from './hapi-fixture.ts'
-import type { PiHistoryEntry, SourceHistoryReceipt } from '../src/hapi-agent/history-types.ts'
+import type { PiHistoryEntry, SourceHistoryReceipt } from '../../src/hapi-agent/history-types.ts'
 
 type Home = { id: string; label: string; path: string; official?: boolean }
 type CursorFailure = Extract<NonNullable<SourceHistoryReceipt['cursorResult']>, { ok: false }>

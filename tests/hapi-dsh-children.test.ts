@@ -305,3 +305,24 @@ test('a changed source continuation mode retires the immutable official descript
     assert.equal(source.mutations.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
+
+test('opening a parent with forty children never waits for child transcripts', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-open-fast-')), source = new Source()
+  for (let index = 0; index < 40; index++) source.add(`bulk-${index}`, index % 2 ? 'continuable' : 'one-shot')
+  let childReads = 0
+  const originalRequest = source.request.bind(source)
+  source.request = async (path: string, options?: { method?: string; body?: unknown; timeoutMs?: number }) => {
+    if (/\/dsh-subagents\/.+\/messages/.test(path)) childReads++
+    return originalRequest(path, options)
+  }
+  const started = Date.now()
+  const app = await mount(source, directory)
+  try {
+    const elapsed = Date.now() - started
+    const parent = app.service.list()[0]!
+    assert.ok(parent, 'the parent display attaches')
+    assert.equal(parent.childSessions.length, 40, 'children register from descriptors immediately')
+    assert.equal(childReads, 0, 'the parent open must not read a single child transcript')
+    assert.ok(elapsed < 2000, `parent attach took ${elapsed}ms; it must not serialize child history`)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
+})

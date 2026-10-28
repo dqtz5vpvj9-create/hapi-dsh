@@ -1,6 +1,6 @@
 /** Explicit original HAPI work-graph fixture; no real team agent is launched. */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { SourceWorkEvent, SourceWorkLink } from '../src/source-collaboration-types.ts';
+import type { SourceWorkEvent, SourceWorkLink } from '../../src/source-collaboration-types.ts';
 export class CollaborationWireFixture {
     available = true;
     offline = false;

@@ -1,5 +1,5 @@
 /** Synthetic original media and source rows for the official attachment test. */
-import type { HapiMessage } from '../src/codex/contracts.ts'
+import type { HapiMessage } from '../../src/codex/contracts.ts'
 
 export const attachmentWindowImages = {
   old: {

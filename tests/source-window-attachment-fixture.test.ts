@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local'
 import { parseObservedHistory } from '../src/hapi-agent/parser.ts'
-import { attachmentWindowImages, sourceWindowAttachmentHistory } from '../e2e/source-window-attachment-fixture.ts'
+import { attachmentWindowImages, sourceWindowAttachmentHistory } from './fixtures/source-window-attachment-fixture.ts'
 
 test('attachment acceptance fixture places the old image beyond the three-page opening tail with complete turns', () => {
   const history = sourceWindowAttachmentHistory(), items = parseObservedHistory(history.rows)

@@ -5,7 +5,7 @@ import {
   nativeMemoryWorkload, projectNativeSummary, workloadCrossesWindow, accumulateWindowEntries,
   sourceWindowResponseRecords, WindowReadBarrier, ENGINEERING_MEMORY_BUDGETS, memoryBodyMarkers, memoryBodyCoverage,
   type MemorySnapshot, type PlateauThresholds,
-} from '../e2e/source-window-memory-helpers.ts'
+} from './fixtures/source-window-memory-helpers.ts'
 
 const empty: MemorySnapshot = { hostRssMiB: null, hostHeapUsedMiB: null, hostExternalMiB: null,
   browserRssMiB: null, browserGcHeapMiB: null, browserDomNodes: null, browserListeners: null,

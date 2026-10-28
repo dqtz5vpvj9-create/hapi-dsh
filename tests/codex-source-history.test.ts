@@ -6,7 +6,7 @@ import { parseNativeRow, compareNativeMessages, type NativeBinding } from '../sr
 import { ObservedProjector } from '../src/hapi-agent/projector.ts'
 import { parseObservedHistory, parseObservedMessage } from '../src/hapi-agent/parser.ts'
 import { parseNativeObservation } from '../src/codex/observations.ts'
-import { nativeIndexedHistory } from '../e2e/source-conversation-fixture.ts'
+import { nativeIndexedHistory } from './fixtures/source-conversation-fixture.ts'
 import { officialChat, officialHistoryPage } from './official-conversation-fixture.ts'
 
 const binding: NativeBinding = { hubId: 'synthetic-hub', hapiSessionId: 'synthetic-source', threadId: 'synthetic-thread', home: null, homeId: null, machineId: 'synthetic-machine' }

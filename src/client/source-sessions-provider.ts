@@ -95,6 +95,10 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         const scope = await sourceSessionsContext(owner)
         provider = scope.plugin({ name: 'hapi-source-sessions-provider', apply(providerContext: Context) {
           providerContext.reflect.provide('sessions', facade)
+          // G4 compatibility probe: count real session-provider registrations
+          // when the sampler installed the counter. Absent in production.
+          const probe = Reflect.get(globalThis, '__hapiDshG4Probe') as { providers?: number } | undefined
+          if (probe !== undefined) probe.providers = (probe.providers ?? 0) + 1
         } })
         await provider
         owner.reflect.provide('hapiSourceSessions', facade)

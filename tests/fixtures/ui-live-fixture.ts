@@ -1,5 +1,5 @@
 import type { HapiWireFixture } from './hapi-fixture.ts'
-import type { HapiMessage } from '../src/codex/contracts.ts'
+import type { HapiMessage } from '../../src/codex/contracts.ts'
 
 /** Synthetic source snapshots travel over the actual SSE/projection/session path. */
 export function beginUiLive(wire: HapiWireFixture, sessionId: string, mode: 'events' | 'indexed' = 'events') {

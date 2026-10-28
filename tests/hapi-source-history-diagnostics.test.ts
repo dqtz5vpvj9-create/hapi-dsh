@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 import { diagnoseSourceHistory, DiagnosticInputError } from '../scripts/source-history-diagnostics.ts'
 import { diagnoseNativePages } from '../scripts/native-page-diagnostics.ts'
-import { nativeIndexedHistory } from '../e2e/source-conversation-fixture.ts'
+import { nativeIndexedHistory } from './fixtures/source-conversation-fixture.ts'
 import type { HapiMessage, HapiMessagesPage } from '../src/codex/contracts.ts'
 
 const canary = 'PRIVATE_CANARY_diagnostic_97df9e6a', unknownKey = 'PRIVATE_FIELD_527891'

@@ -2,7 +2,7 @@
  * Shape follows pinned HAPI nativeHistoryIndexed.ts materialize()/write():
  * real source IDs/localId, outer execution metadata, completed item snapshots,
  * and pagination by invokedAt/seq independently of item creation time. */
-import type { HapiMessage, HapiMessagesPage } from '../src/codex/contracts.ts'
+import type { HapiMessage, HapiMessagesPage } from '../../src/codex/contracts.ts'
 import type { NativeFixture } from './hapi-fixture.ts'
 
 export function nativeIndexedHistory(threadId: string, turns = 180, steps = 25): HapiMessage[] {

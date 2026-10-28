@@ -42,7 +42,7 @@ import { SourceHistoryWindow } from '../src/codex/source-window.ts'
 import { DISPLAY_SEQ_OFFSET, openingWindow } from '../src/shared/history-window.ts'
 import { NativeProjector } from '../src/codex/projector.ts'
 import { parseNativeRow } from '../src/codex/native.ts'
-import { nativeMemoryWorkload } from '../e2e/source-window-memory-helpers.ts'
+import { nativeMemoryWorkload } from './fixtures/source-window-memory-helpers.ts'
 import type { HapiTransport } from '../src/codex/contracts.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')

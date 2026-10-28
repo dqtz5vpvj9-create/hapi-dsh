@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import { posix } from 'node:path';
 import { Server as SocketServer, type Socket } from 'socket.io';
-import type { HapiSession } from '../src/codex/contracts.ts';
+import type { HapiSession } from '../../src/codex/contracts.ts';
 import { LegacyTerminalWireFixture } from './legacy-terminal-fixture.ts';
 
 // Fixture protocol deliberately stands alone from the provider implementation.

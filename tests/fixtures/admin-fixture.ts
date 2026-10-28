@@ -1,8 +1,8 @@
 /** Explicit HAPI administration wire fixture. No real database or Runner is changed. */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HapiWireFixture } from './hapi-fixture.ts';
-import type { HapiMachine } from '../src/hapi/schemas.ts';
-import type { SourceDshBundles, SourceHubSettings } from '../src/source-admin-types.ts';
+import type { HapiMachine } from '../../src/hapi/schemas.ts';
+import type { SourceDshBundles, SourceHubSettings } from '../../src/source-admin-types.ts';
 
 export class AdminWireFixture {
     settings: SourceHubSettings = { sessionSummaryContract: false, sessionSummaryInChat: false };

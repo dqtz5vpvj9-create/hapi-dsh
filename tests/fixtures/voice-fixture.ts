@@ -1,7 +1,7 @@
 /** Explicit voice-provider protocol fixture. It never contacts a real speech/model service. */
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import WebSocket, { WebSocketServer } from 'ws';
-import type { VoiceCredentialUpdate, VoiceCredentials } from '../src/voice-types.ts';
+import type { VoiceCredentialUpdate, VoiceCredentials } from '../../src/voice-types.ts';
 
 type Backend = 'gemini-live' | 'qwen-realtime';
 export class VoiceWireFixture {
