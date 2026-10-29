@@ -5,6 +5,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import upstreams from '../../UPSTREAMS.json' with { type: 'json' };
 
 /** Federation frames carry this protocol revision. */
 export const RUNTIME_PROTOCOL = 2 as const;
@@ -20,14 +21,11 @@ export interface RuntimeIdentityV1 {
     readonly protocol: typeof RUNTIME_PROTOCOL;
 }
 
-/** Upstream commit recorded at build time; a missing file stays explicit. */
+/** Static source import is embedded by esbuild at every distribution depth. */
 function upstreamCommitFromPackage(): string {
-    try {
-        const value = JSON.parse(readFileSync(new URL('../../UPSTREAMS.json', import.meta.url), 'utf8')) as { dsh?: { commit?: unknown } };
-        return typeof value.dsh?.commit === 'string' ? value.dsh.commit : 'unknown';
-    } catch {
-        return 'unknown';
-    }
+    const commit = upstreams.dsh.commit;
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Packaged DSH provenance must contain an exact commit');
+    return commit;
 }
 
 interface BundleReleaseIdentity {

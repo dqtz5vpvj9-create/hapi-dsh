@@ -1,0 +1,39 @@
+name: HHPI backend contract
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['src/**', 'tests/**', 'scripts/**', 'package*.json', 'tsconfig*.json', 'UPSTREAMS.json', '.github/workflows/hhpi-backend.yml']
+  pull_request:
+    paths: ['src/**', 'tests/**', 'scripts/**', 'package*.json', 'tsconfig*.json', 'UPSTREAMS.json', '.github/workflows/hhpi-backend.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Install exact project dependencies
+        timeout-minutes: 5
+        run: npm ci
+      - name: Host types and source boundaries
+        timeout-minutes: 2
+        run: |
+          node node_modules/typescript/bin/tsc -p tsconfig.host.json --noEmit
+          node --import tsx --test tests/hhpi-index.test.ts tests/hhpi-ledger.test.ts tests/hhpi-gateway.test.ts tests/hhpi-no-hapi.test.ts tests/hhpi-remote-service.test.ts tests/federation-bundled-identity.test.ts tests/config-private.test.ts tests/config-recovery.test.ts
+      - name: Install pinned native Codex without user credentials
+        timeout-minutes: 2
+        run: npm install --prefix "${RUNNER_TEMP}/hhpi-codex" --no-package-lock --ignore-scripts @openai/codex@0.165.0
+      - name: Native app-server against synthetic model boundary
+        timeout-minutes: 2
+        run: HHPI_CODEX_TEST_SCRIPT="${RUNNER_TEMP}/hhpi-codex/node_modules/@openai/codex/bin/codex.js" node --import tsx --test tests/hhpi-codex-native.test.ts

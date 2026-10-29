@@ -20,6 +20,9 @@ function remoteError(error: unknown): never {
     const source = error instanceof SourceError ? error : new SourceError('TARGET_UNAVAILABLE', 'The source request could not be completed.');
     throw new RemoteError('hhpi/source', source.message, { sourceCode: source.code, outcome: source.code === 'OUTCOME_UNKNOWN' ? 'indeterminate' : 'rejected' });
 }
+const addressedSession = (request: { sessionId: string }): readonly SessionId[] => [request.sessionId as SessionId];
+const addressedSource = (request: { sourceId: string }): readonly string[] => [request.sourceId];
+
 export class HhpiSourceService extends TypertRemoteService {
     constructor(ctx: Context, private readonly gateway: SourceGateway) {
         super(ctx, 'hhpi');
@@ -35,17 +38,17 @@ export class HhpiSourceService extends TypertRemoteService {
     }
     @Remote('catalog')
     async catalog(signal?: AbortSignal): Promise<SourceCatalog> { try { return await this.gateway.catalog(this.access, signal); } catch (error) { remoteError(error); } }
-    @Remote('read')
+    @Remote({ name: 'read', resources: { session: addressedSession } })
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error); } }
-    @Remote({ name: 'changes', mode: 'stream' })
+    @Remote({ name: 'changes', mode: 'stream', resources: { session: addressedSession } })
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStream<SourceChanges> {
         try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error); }
     }
-    @Remote('operate')
+    @Remote({ name: 'operate', resources: { session: addressedSession } })
     async operate(request: SourceOperation): Promise<SourceReceipt> { try { return await this.gateway.operate(request, this.access); } catch (error) { remoteError(error); } }
-    @Remote('create')
+    @Remote({ name: 'create', resources: { hhpiSource: addressedSource } })
     async create(request: SourceCreateRequest): Promise<SourceCreationReceipt> { try { return await this.gateway.create(request, this.access); } catch (error) { remoteError(error); } }
-    @Remote('resource')
+    @Remote({ name: 'resource', resources: { session: addressedSession } })
     async resource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> { try { return await this.gateway.resource(request, this.access, signal); } catch (error) { remoteError(error); } }
 }
 export function installSources(ctx: Context, sources: readonly DirectCodexConfig[], directory: string, legacyHapi: boolean): SourceGateway {
