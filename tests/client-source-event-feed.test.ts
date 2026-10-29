@@ -19,7 +19,7 @@ before(async () => {
       `export { SourceEventFeed } from ${JSON.stringify(join(root, 'src/client/source-event-feed.ts'))}`,
       `export { SourceWindowStore } from ${JSON.stringify(join(root, 'src/client/source-window-store.ts'))}`,
     ].join('\n'), resolveDir: root, sourcefile: 'source-event-feed-entry.ts', loader: 'ts' },
-    alias: { '@deepseek-ai/dsh-api-session-controller/client': contractEvents },
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(root, 'tests/fixtures/client-session-contract.ts') },
     bundle: true, platform: 'node', target: 'node24', format: 'esm', write: false, logLevel: 'silent',
   })
   runtime = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0]!.text).toString('base64')}`)

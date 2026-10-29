@@ -19,7 +19,7 @@ let provider: Plugin.Object
 
 before(async () => {
   const result = await build({ entryPoints: [join(root, 'src/client/source-sessions-provider.ts')],
-    alias: { '@deepseek-ai/dsh-api-session-controller/client': eventContract },
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(root, 'tests/fixtures/client-session-contract.ts') },
     external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false,
     logLevel: 'silent' })
   const module = { exports: {} }
@@ -30,6 +30,12 @@ before(async () => {
 async function fixture() {
   const ctx = new Context(), started: Array<{ name: string; owner: unknown }> = [], stopped: string[] = []
   await ctx.plugin(Loader)
+  // The full UI supplies an authenticated remote. Here only the RPC boundary
+  // is a fixture; the real Cordis Loader and Session facade still execute.
+  ctx.reflect.provide('remote', {
+    $mount: async () => () => {},
+    hhpi: { catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, sessions: [], sources: [] } }) },
+  } as unknown as Context['remote'])
   ctx.loader.internal = { version: 'client', import: (name: string) => ({ inject: ['sessions'], apply(owner: Context) {
     started.push({ name, owner: owner.sessions })
     return () => { stopped.push(name) }
@@ -42,7 +48,7 @@ const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 test('early hook isolates new consumers before a delayed original service becomes available', async () => {
   const { ctx, started, stopped, create } = await fixture()
-  const original = { kind: 'original' }
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
   try {
     const installed = ctx.plugin(provider)
     await flush()
@@ -76,7 +82,7 @@ test('disposing while the original service is absent removes the hook and restor
     await installed.dispose()
     assert.ok(entries.every(entry => entry.options.isolate?.sessions === undefined))
     assert.equal(ctx.get('hapiSourceSessions'), undefined)
-    const original = { kind: 'original' }
+    const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
     ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
     await ctx.loader.await()
     assert.equal(started.length, names.length)
@@ -86,7 +92,7 @@ test('disposing while the original service is absent removes the hook and restor
 
 test('already-created pending consumers start once against the facade', async () => {
   const { ctx, started, stopped, create } = await fixture()
-  const original = { kind: 'original' }
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
   try {
     const entries = await create()
     assert.equal(started.length, 0)
@@ -107,7 +113,7 @@ test('already-created pending consumers start once against the facade', async ()
 
 test('already-active consumers use the public fallback and provider disposal restores their original realm', async () => {
   const { ctx, started, stopped, create } = await fixture()
-  const original = { kind: 'original' }
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
   try {
     ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
     const entries = await create()

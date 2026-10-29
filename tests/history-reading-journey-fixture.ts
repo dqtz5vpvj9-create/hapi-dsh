@@ -33,7 +33,7 @@ function loadRuntime(): Promise<Runtime> {
         `export { historyWindowProgressed, probeHistoryWindow } from ${JSON.stringify(join(root, 'src/client/seamless/controller.ts'))}`,
         "export { MutableSessionEventSource } from '@deepseek-ai/dsh-api-session-controller/client'",
       ].join('\n'), resolveDir: root, sourcefile: 'history-reading-journey-entry.ts', loader: 'ts' },
-      alias: { '@deepseek-ai/dsh-api-session-controller/client': contractEvents },
+      alias: { '@deepseek-ai/dsh-api-session-controller/client': join(root, 'tests/fixtures/client-session-contract.ts') },
       define: { process: 'undefined' }, bundle: true, platform: 'node', target: 'node24', format: 'esm', write: false, logLevel: 'silent',
       plugins: fault ? [{ name: 'history-regression-in-memory', setup(builder) {
         builder.onLoad({ filter: /(?:source-sessions|source-window-store|source-event-feed|controller)\.ts$/ }, async ({ path }) => {

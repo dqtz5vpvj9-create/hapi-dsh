@@ -44,7 +44,7 @@ before(async () => {
       `export { SourceSessions } from ${JSON.stringify(join(root, 'src/client/source-sessions.ts'))}`,
       "export { MutableSessionEventSource } from '@deepseek-ai/dsh-api-session-controller/client'",
     ].join('\n'), resolveDir: root, sourcefile: 'late-merge-entry.ts', loader: 'ts' },
-    alias: { '@deepseek-ai/dsh-api-session-controller/client': contractEvents },
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(root, 'tests/fixtures/client-session-contract.ts') },
     bundle: true, platform: 'node', target: 'node24', format: 'esm', write: false, logLevel: 'silent',
   })
   runtime = await import(`data:text/javascript;base64,${Buffer.from(built.outputFiles[0]!.text).toString('base64')}`)

@@ -234,7 +234,7 @@ test('real ClientSession operations and an independent source body share one sta
   const sourceFile = fileURLToPath(new URL('../src/client/source-sessions.ts', import.meta.url))
   const bundle = await build({ stdin: { contents: `export { SourceSessions } from ${JSON.stringify(sourceFile)}`,
     resolveDir: dirname(sourceFile), loader: 'ts' }, bundle: true, platform: 'node', target: 'node24', format: 'esm',
-    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(controllerRoot, 'lib/types/client/contract/events.js') },
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(process.cwd(), 'tests/fixtures/client-session-contract.ts') },
     write: false, logLevel: 'silent' })
   const { SourceSessions } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString('base64')}`) as typeof import('../src/client/source-sessions.ts')
   const queued = createUserMessage({ content: [{ type: 'text', text: 'Queued source input' }], source: { kind: 'user' } })

@@ -70,7 +70,7 @@ before(async () => {
   ].join('\n')
   const built = await build({
     stdin: { contents, resolveDir: root, sourcefile: 'source-window-retention-entry.ts', loader: 'ts' },
-    alias: { '@deepseek-ai/dsh-api-session-controller/client': contractEvents },
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(root, 'tests/fixtures/client-session-contract.ts') },
     bundle: true, platform: 'node', target: 'node24', format: 'esm',
     write: false, sourcemap: false, legalComments: 'none', logLevel: 'silent',
   })
