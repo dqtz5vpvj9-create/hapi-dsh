@@ -31,19 +31,10 @@ jobs:
       - name: Source history cancellation, revisions and continuous reading
         timeout-minutes: 2
         run: node --import tsx --test tests/hhpi-history-races.test.ts
-      - name: Record pinned source extension input contracts
-        if: always()
+      - name: Prepare the pinned source overlay without machine-local dependencies
+        timeout-minutes: 3
         run: |
-          node --input-type=module <<'JS'
-          import { readFileSync } from 'node:fs';
-          const patch = readFileSync('source-snapshots/dsh-ext/source.patch', 'utf8');
-          const wanted = new Set(['ext/scripts/pack.mjs', 'packages/api/session-controller/src/client/contract/history-source.ts', 'packages/client/ui-conversation/src/client/conversation/history-view.ts']);
-          for (const block of patch.split(/(?=^diff --git )/m)) {
-            const path = /^diff --git a\/(\S+) b\//.exec(block)?.[1];
-            if (wanted.has(path)) {
-              console.log(`::group::${path}`);
-              console.log(block);
-              console.log('::endgroup::');
-            }
-          }
-          JS
+          node scripts/dsh-ext/prepare.mjs "${RUNNER_TEMP}/hhpi-source" > "${RUNNER_TEMP}/hhpi-source.json"
+          node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(process.argv[1])); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`); console.log(JSON.stringify(x));' "${RUNNER_TEMP}/hhpi-source.json"
+      - name: Inspect the actual official reader and compiler contracts
+        run: node scripts/dsh-ext/inspect-contracts.mjs "${HHPI_DSH_SOURCE}"
