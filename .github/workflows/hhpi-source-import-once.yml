@@ -1,0 +1,67 @@
+name: HHPI verified source checkpoint import
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['.github/workflows/hhpi-source-import-once.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    if: github.repository == 'dqtz5vpvj9-create/hapi-dsh' && github.ref == 'refs/heads/feat/hhpi-remote-access-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Apply exact locally validated source checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 6ed236b214d52036176147312cb04ef1c0242673
+          python3 - <<'PY'
+          import base64, gzip, hashlib, pathlib, subprocess
+          encoded = '''
+          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
+          '''
+          patch = gzip.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest() == 'a21f39a898e54b392a477a64db479ee5c4833fa4c33c8fd45dd4e5485ea013bd'
+          path = pathlib.Path('/tmp/hhpi-verified-source.patch')
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--index', '--unidiff-zero', str(path)], check=True)
+          PY
+          git diff --cached --check
+          git diff --cached --stat
+      - name: Save source checkpoint on the authorized feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/feat/hhpi-remote-access-20261029 | cut -f1)" = "${GITHUB_SHA}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(hhpi): wire HAPI-optional Host and Runner sources' -m 'Import checksum-verified source changes already tested locally. Preserve ordinary DSH, route direct source capabilities, and remove the HAPI credential requirement from native-only configuration. This is a backend development checkpoint, not browser acceptance or a production release.'
+          git push origin HEAD:refs/heads/feat/hhpi-remote-access-20261029
+      - name: Install exact project dependencies
+        timeout-minutes: 5
+        run: npm ci
+      - name: Host types and source behavior checks
+        timeout-minutes: 2
+        run: |
+          node node_modules/typescript/bin/tsc -p tsconfig.host.json --noEmit
+          node --import tsx --test tests/hhpi-index.test.ts tests/hhpi-ledger.test.ts tests/hhpi-gateway.test.ts tests/hhpi-no-hapi.test.ts tests/config-private.test.ts tests/config-recovery.test.ts
