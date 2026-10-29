@@ -22,7 +22,10 @@ async function edit(root, file, change) {
     result = result.slice(0, item.start) + item.text + result.slice(item.end); previous = item.start;
   }
   const errors = source(path, result).parseDiagnostics;
-  if (errors.length) throw new Error(ts.flattenDiagnosticMessageText(errors[0].messageText, '\n'));
+  if (errors.length) {
+    const position = source(path, result).getLineAndCharacterOfPosition(errors[0].start ?? 0);
+    throw new Error(`${file}:${position.line + 1}:${position.character + 1}: ${ts.flattenDiagnosticMessageText(errors[0].messageText, '\n')}`);
+  }
   await writeFile(path, result);
 }
 const insert = (edits, at, text) => edits.push({ start: at, end: at, text });
@@ -84,7 +87,7 @@ export async function applyReaderPublication(root) {
     const read = method(owner, ast, 'readComplete');
     insert(edits, read.body.getStart(ast) + 1, `\n    this.completePreserveAnchor = request === null || request.kind === 'before' || request.kind === 'after'\n    let completed = false\n`);
     const visitRead = node => {
-      if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression) && node.expression.left.getText(ast) === 'this.phase' && node.expression.right.getText(ast) === "'ready'") insert(edits, node.end, '\n      completed = true');
+      if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression) && node.expression.left.getText(ast) === 'this.phase' && node.expression.right.getText(ast) === "'ready'") insert(edits, node.end, '\n      completed = true;\n      ');
       if (ts.isIfStatement(node) && node.expression.getText(ast) === '!this.released && this.versionCursor !== null') edits.push({ start: node.expression.getStart(ast), end: node.expression.end, text: '!this.released && this.versionCursor !== null && (completed || signal.aborted)' });
       ts.forEachChild(node, visitRead);
     };
