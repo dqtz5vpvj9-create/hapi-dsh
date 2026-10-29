@@ -6,6 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
+import { parseSources } from '../remote/config.ts';
+import type { DirectCodexConfig } from '../remote/protocol.ts';
 
 export const DSH_VERSION = '0.2.1-rc.3';
 export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
@@ -19,7 +21,7 @@ export interface RuntimeConfig {
         command?: string;
         args?: string[];
     };
-    hapi: {
+    hapi?: {
         id: string;
         url: string;
         tokenEnv: string;
@@ -35,6 +37,7 @@ export interface RuntimeConfig {
         tls?: { certFile: string; keyFile: string };
     };
     federation?: { credentialsFile: string };
+    sources?: DirectCodexConfig[];
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -94,13 +97,13 @@ function trustedAuthority(value: unknown): string {
 /** Validate serialized operator configuration before it is used by the Host or CLI. */
 export function parseConfig(input: unknown): RuntimeConfig {
     const config = record(input, 'configuration');
-    keys(config, ['version', 'dsh', 'hapi', 'server', 'federation'], 'configuration');
+    keys(config, ['version', 'dsh', 'hapi', 'server', 'federation', 'sources'], 'configuration');
     if (config.version !== CONFIG_VERSION) throw new Error(`Unsupported configuration version; expected ${CONFIG_VERSION}`);
     const dsh = record(config.dsh, 'dsh');
-    const hapi = record(config.hapi, 'hapi');
+    const hapi = config.hapi === undefined ? undefined : record(config.hapi, 'hapi');
     const server = record(config.server, 'server');
     keys(dsh, ['home', 'profile', 'command', 'args'], 'dsh');
-    keys(hapi, ['id', 'url', 'tokenEnv', 'token', 'companionUrl'], 'hapi');
+    if (hapi) keys(hapi, ['id', 'url', 'tokenEnv', 'token', 'companionUrl'], 'hapi');
     keys(server, ['host', 'port', 'publicUrl', 'trustedHosts', 'tls'], 'server');
     const home = string(dsh.home, 'dsh.home');
     if (!isAbsolute(home)) throw new Error('dsh.home must be an absolute path');
@@ -109,10 +112,6 @@ export function parseConfig(input: unknown): RuntimeConfig {
     if (['web', 'headless', 'sdk', 'sdk-minimal', 'acp', 'desktop'].includes(profile)) {
         throw new Error('dsh.profile must name a dedicated custom profile, such as hapi');
     }
-    const tokenEnv = string(hapi.tokenEnv, 'hapi.tokenEnv');
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) throw new Error('hapi.tokenEnv must be an environment variable name');
-    const hubId = hapi.id === undefined ? randomUUID() : string(hapi.id, 'hapi.id');
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(hubId)) throw new Error('hapi.id must be a stable identifier using letters, digits, dots, underscores, or hyphens');
     const host = string(server.host, 'server.host');
     try {
         normalizeBindAddress(host);
@@ -127,7 +126,6 @@ export function parseConfig(input: unknown): RuntimeConfig {
     const result: RuntimeConfig = {
         version: CONFIG_VERSION,
         dsh: { home, profile },
-        hapi: { id: hubId, url: normalizeHttpUrl(hapi.url, 'hapi.url'), tokenEnv },
         server: { host, port: Number(server.port) },
     };
     if (dsh.command !== undefined) result.dsh.command = string(dsh.command, 'dsh.command');
@@ -137,8 +135,16 @@ export function parseConfig(input: unknown): RuntimeConfig {
         }
         result.dsh.args = [...dsh.args];
     }
-    if (hapi.token !== undefined) result.hapi.token = string(hapi.token, 'hapi.token');
-    if (hapi.companionUrl !== undefined) result.hapi.companionUrl = normalizeCompanionUrl(hapi.companionUrl);
+    if (hapi) {
+        const tokenEnv = string(hapi.tokenEnv, 'hapi.tokenEnv');
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) throw new Error('hapi.tokenEnv must be an environment variable name');
+        const hubId = hapi.id === undefined ? randomUUID() : string(hapi.id, 'hapi.id');
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(hubId)) throw new Error('hapi.id must be a stable identifier using letters, digits, dots, underscores, or hyphens');
+        result.hapi = { id: hubId, url: normalizeHttpUrl(hapi.url, 'hapi.url'), tokenEnv };
+        if (hapi.token !== undefined) result.hapi.token = string(hapi.token, 'hapi.token');
+        if (hapi.companionUrl !== undefined) result.hapi.companionUrl = normalizeCompanionUrl(hapi.companionUrl);
+    }
+    if (config.sources !== undefined) result.sources = parseSources(config.sources);
     if (server.publicUrl !== undefined) result.server.publicUrl = normalizeHttpUrl(server.publicUrl, 'server.publicUrl');
     if (server.trustedHosts !== undefined) {
         if (!Array.isArray(server.trustedHosts) || server.trustedHosts.length > 32) throw new Error('server.trustedHosts must be an array of at most 32 authorities');
@@ -168,11 +174,15 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
     return join(base, 'hapi-dsh', 'config.json');
 }
 
-export function createConfig(hapiUrl: string, env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
+export type HapiRuntimeConfig = RuntimeConfig & { hapi: NonNullable<RuntimeConfig['hapi']> };
+export function createConfig(hapiUrl: string, env?: NodeJS.ProcessEnv): HapiRuntimeConfig;
+export function createConfig(hapiUrl?: undefined, env?: NodeJS.ProcessEnv): RuntimeConfig;
+export function createConfig(hapiUrl: string | undefined, env?: NodeJS.ProcessEnv): RuntimeConfig;
+export function createConfig(hapiUrl?: string, env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
     return parseConfig({
         version: CONFIG_VERSION,
         dsh: { home: env.DSH_HOME ? resolve(env.DSH_HOME) : join(homedir(), '.dsh'), profile: 'hapi' },
-        hapi: { id: randomUUID(), url: hapiUrl, tokenEnv: 'HAPI_DSH_TOKEN' },
+        ...(hapiUrl === undefined ? {} : { hapi: { id: randomUUID(), url: hapiUrl, tokenEnv: 'HAPI_DSH_TOKEN' } }),
         server: { host: '127.0.0.1', port: 3080 },
     });
 }
@@ -210,7 +220,7 @@ export async function readConfig(path: string): Promise<RuntimeConfig> {
     const document = await readPrivateJson(path);
     const config = parseConfig(document);
     const input = document as { hapi?: { id?: unknown } };
-    if (input.hapi?.id !== undefined) return config;
+    if (input.hapi === undefined || input.hapi.id !== undefined) return config;
     return withFileLock(`${path}.migration`, async () => {
         // Re-read under the lock, so two starting processes cannot persist different identities.
         const current = await readPrivateJson(path);
@@ -267,16 +277,21 @@ export async function writePrivateJson(path: string, value: unknown, replace = f
 }
 
 export function resolveHapiToken(config: RuntimeConfig, env: NodeJS.ProcessEnv = process.env): string {
+    if (!config.hapi) throw new Error('No HAPI source is configured; a HAPI token is not required for HHPI sources or federation.');
     const value = env[config.hapi.tokenEnv] ?? config.hapi.token;
     if (!value?.trim()) throw new Error(`Set ${config.hapi.tokenEnv} to the HAPI access token before starting`);
     if (value.includes('\0') || /[\r\n]/.test(value)) throw new Error('HAPI access token must be a single line');
     return value;
 }
 
-export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi: { id: string; url: string; tokenEnv: string; companionUrl?: string; credentialConfigured: boolean } } {
+type PublicHapiConfig = Omit<NonNullable<RuntimeConfig['hapi']>, 'token'> & { credentialConfigured: boolean };
+export function publicConfig(config: HapiRuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi: PublicHapiConfig };
+export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi?: PublicHapiConfig };
+export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi?: PublicHapiConfig } {
+    const { hapi, ...common } = config;
     return {
-        ...config,
-        hapi: { id: config.hapi.id, url: config.hapi.url, tokenEnv: config.hapi.tokenEnv,
-            ...(config.hapi.companionUrl ? { companionUrl: config.hapi.companionUrl } : {}), credentialConfigured: Boolean(config.hapi.token) },
+        ...common,
+        ...(hapi ? { hapi: { id: hapi.id, url: hapi.url, tokenEnv: hapi.tokenEnv,
+            ...(hapi.companionUrl ? { companionUrl: hapi.companionUrl } : {}), credentialConfigured: Boolean(hapi.token) } } : {}),
     };
 }

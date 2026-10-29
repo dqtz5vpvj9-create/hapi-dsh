@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import { installSources } from '../remote/service.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readRunnerConfig } from './config.ts';
@@ -7,7 +9,7 @@ import { bootstrapPayload, mountBootstrapRoute } from '../shared/bootstrap.ts';
 export { bootstrapPayload, SAFE_GLOBALS } from '../shared/bootstrap.ts';
 
 export const name = 'hapi-dsh-runner';
-export const inject = ['connection', 'webServer', 'clientModules', 'appReady'];
+export const inject = ['connection', 'webServer', 'clientModules', 'appReady', 'typert', 'remoteAccess'];
 export interface Config { configFile?: string }
 
 interface RunnerServices {
@@ -23,6 +25,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const path = config.configFile ?? process.env.HAPI_DSH_RUNNER_CONFIG_FILE;
     if (!path) throw new Error('HAPI_DSH_RUNNER_CONFIG_FILE is required for the Runner profile');
     const runtime = await readRunnerConfig(path);
+    installSources(ctx, runtime.sources ?? [], join(runtime.dsh.home, 'profiles', runtime.dsh.profile, 'data', 'hapi-dsh', 'sources'), false);
     const services = Object.fromEntries(inject.map((service) => [service, ctx.get(service)])) as unknown as RunnerServices;
     let client: RunnerClient | undefined;
     const disposeRoute = mountBootstrapRoute(services, () => {

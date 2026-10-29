@@ -64,6 +64,7 @@ async function requestJson(fetcher: typeof globalThis.fetch, url: string, init: 
 
 /** Authenticate against the pinned HAPI contract, then read both catalogs using its issued Web JWT. */
 export async function checkHapi(config: RuntimeConfig, options: Pick<DoctorOptions, 'env' | 'fetch'> = {}): Promise<DoctorCheck[]> {
+    if (!config.hapi) return [{ name: 'hapi', status: 'skipped', detail: 'No legacy HAPI source is configured; native DSH federation and direct sources require no HAPI token' }];
     const accessToken = resolveHapiToken(config, options.env);
     const fetcher = options.fetch ?? globalThis.fetch;
     const base = `${config.hapi.url}/`;

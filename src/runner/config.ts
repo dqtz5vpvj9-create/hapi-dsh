@@ -10,12 +10,13 @@ export interface RunnerConfig {
     hub: { url: string; tokenEnv: string; token?: string };
     dsh: RuntimeConfig['dsh'];
     server: { host: '127.0.0.1'; port: number };
+    sources?: RuntimeConfig['sources'];
 }
 
 export function parseRunnerConfig(value: unknown): RunnerConfig {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Runner configuration must be an object');
     const input = value as Record<string, unknown>;
-    if (Object.keys(input).some((key) => !['version', 'machine', 'hub', 'dsh', 'server'].includes(key))) throw new Error('Unknown Runner configuration field');
+    if (Object.keys(input).some((key) => !['version', 'machine', 'hub', 'dsh', 'server', 'sources'].includes(key))) throw new Error('Unknown Runner configuration field');
     if (input.version !== 1 || typeof input.machine !== 'object' || input.machine === null || typeof input.hub !== 'object' || input.hub === null) throw new Error('Invalid Runner configuration');
     const machine = input.machine as Record<string, unknown>;
     const hub = input.hub as Record<string, unknown>;
@@ -24,12 +25,14 @@ export function parseRunnerConfig(value: unknown): RunnerConfig {
     if (typeof input.server !== 'object' || input.server === null || Array.isArray(input.server)
         || Object.keys(input.server).some((key) => !['host', 'port'].includes(key))) throw new Error('Runner server configuration accepts only its loopback host and port');
     // The same official launch/profile validation applies to both Host compositions.
-    const common = parseConfig({ version: 1, dsh: input.dsh, server: input.server,
-        hapi: { id: machine.id, url: hub.url, tokenEnv: hub.tokenEnv, ...(hub.token === undefined ? {} : { token: hub.token }) } });
+    const common = parseConfig({ version: 1, dsh: input.dsh, server: input.server, ...(input.sources === undefined ? {} : { sources: input.sources }) });
+    if (common.sources?.some(source => source.machineId !== machine.id)) throw new Error('Runner sources must use its paired machine ID');
+    if (typeof hub.tokenEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(hub.tokenEnv)) throw new Error('hub.tokenEnv must be an environment variable name');
+    if (hub.token !== undefined && (typeof hub.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(hub.token))) throw new Error('Invalid Runner pairing token');
     if (common.server.host !== '127.0.0.1') throw new Error('The Runner-owned DSH listener must bind 127.0.0.1; the reverse connection provides remote access');
     return { version: 1, machine: { id: machine.id, name: machine.name },
-        hub: { url: common.hapi.url, tokenEnv: common.hapi.tokenEnv, ...(common.hapi.token === undefined ? {} : { token: common.hapi.token }) },
-        dsh: common.dsh, server: { host: '127.0.0.1', port: common.server.port } };
+        hub: { url: normalizeHttpUrl(hub.url, 'hub.url'), tokenEnv: hub.tokenEnv, ...(hub.token === undefined ? {} : { token: hub.token as string }) },
+        dsh: common.dsh, server: { host: '127.0.0.1', port: common.server.port }, ...(common.sources === undefined ? {} : { sources: common.sources }) };
 }
 
 export function createRunnerConfig(hubUrl: string, options: { id?: string; name?: string; token?: string; dshHome?: string } = {}): RunnerConfig {

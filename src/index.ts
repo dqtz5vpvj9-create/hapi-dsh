@@ -1,5 +1,7 @@
 import { logicalDisplayId, observedSessionId } from './hapi-agent/identity.ts'
 import { join } from 'node:path';
+import { installSources } from './remote/service.ts';
+import { WorkspaceShell } from './hub/workspace-shell.ts';
 import { DSH_VERSION } from './cli/config.ts';
 import { runtimeIdentity } from './runner/identity.ts';
 import type { Context } from '@deepseek-ai/cordis';
@@ -162,7 +164,7 @@ import { mountPluginEvents } from './shared/plugin-events.ts';
 import { officialProviderConfig } from './shared/official-provider.ts';
 
 export const name = 'hapi-dsh';
-export const inject = ['loader', 'agents', 'sessions', 'sessionProjections', 'attachments', 'fileUploads', 'llm', 'typert', 'webServer', 'connection', 'clientModules', 'appReady'];
+export const inject = ['loader', 'agents', 'sessions', 'sessionProjections', 'attachments', 'fileUploads', 'llm', 'typert', 'webServer', 'connection', 'clientModules', 'appReady', 'remoteAccess'];
 export interface Config { configFile: string }
 export const Config: S<Config> = S.object({ configFile: S.string().required() });
 
@@ -923,10 +925,34 @@ export class HapiController extends TypertRemoteService {
     }
 }
 
-/** Composition only: every upstream Host and Client service remains unmodified. */
+/** Host composition. Optional source-built DSH reading extensions are pinned by the distribution. */
 export async function apply(ctx: Context, input: Config): Promise<void> {
     const config = await readConfig(input.configFile);
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
+    const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json'),
+        identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });
+    ctx.effect(() => () => federation.close(), 'hapi-dsh: Runner connections');
+    ctx.effect(() => mountBootstrapRoute({
+        webServer: ctx.webServer, clientModules: ctx.clientModules, connection: ctx.connection,
+        appReady: ctx.get('appReady') as { onReady(callback: () => void): () => void },
+    }), 'hapi-dsh: local pane plugin bootstrap');
+    ctx.on('webserver/index-inject', table => {
+        stageWorkspaceBoot(table, ctx.clientModules.graph());
+        table.push(compressedStreamInjection);
+        table.push(...workspaceBootInjections());
+    });
+    ctx.effect(() => ctx.webServer.tapIndex(deferWorkspaceEntry), 'hapi-dsh: first-paint workspace layout');
+    ctx.effect(() => mountCompressedStream({ webServer: ctx.webServer, connection: ctx.connection }), 'hapi-dsh: compressed official streams');
+    ctx.effect(() => mountVersionedAssets(ctx.webServer), 'hapi-dsh: versioned Web shell assets');
+    await federation.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
+    ctx.effect(() => mountPluginEvents({ webServer: ctx.webServer, connection: ctx.connection,
+        hasHost: id => federation.listMachines().some(host => host.id === id && host.online),
+    }), 'hapi-dsh: multiplexed official plugin events');
+    installSources(ctx, config.sources ?? [], join(dataDirectory, 'sources'), config.hapi !== undefined);
+    if (!config.hapi) {
+        new WorkspaceShell(ctx, federation, new WorkspaceRepository(join(dataDirectory, 'workspace.json')), JSON.stringify([config.dsh.home, config.dsh.profile]));
+        return;
+    }
     const hapiToken = resolveHapiToken(config);
     const client = new HapiClient({ hubId: config.hapi.id, url: config.hapi.url, token: hapiToken })
     const historyWindows = new DisplayHistoryWindows();
@@ -952,8 +978,6 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
         onDisplayRetired: displayId => historyWindows.retire(displayId),
         resumeSession,
     });
-    const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json'),
-        identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });
     const nativeControl = new NativeControl(client, {
         get: id => codex.get(id),
         attach: id => codex.attach(id, undefined, { deferChildren: true }),
@@ -1026,24 +1050,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     ctx.effect(() => () => client.close(), 'hapi-dsh: HAPI connection');
     ctx.effect(() => () => codex.dispose(), 'hapi-dsh: native observation');
     ctx.effect(() => () => observed.dispose(), 'hapi-dsh: source engine observation');
-    ctx.effect(() => () => federation.close(), 'hapi-dsh: Runner connections');
     ctx.effect(() => ctx.llm.registerAdapter([NATIVE_CODEX_PROVIDER, HAPI_OBSERVED_PROVIDER], new NativeModelMetadata()), 'hapi-dsh: source model metadata');
-    ctx.effect(() => mountBootstrapRoute({
-        webServer: ctx.webServer, clientModules: ctx.clientModules, connection: ctx.connection,
-        appReady: ctx.get('appReady') as { onReady(callback: () => void): () => void },
-    }), 'hapi-dsh: local pane plugin bootstrap');
-    ctx.on('webserver/index-inject', table => {
-        stageWorkspaceBoot(table, ctx.clientModules.graph());
-        table.push(compressedStreamInjection);
-        table.push(...workspaceBootInjections());
-    });
-    ctx.effect(() => ctx.webServer.tapIndex(deferWorkspaceEntry), 'hapi-dsh: first-paint workspace layout');
-    ctx.effect(() => mountCompressedStream({ webServer: ctx.webServer, connection: ctx.connection }), 'hapi-dsh: compressed official streams');
-    ctx.effect(() => mountVersionedAssets(ctx.webServer), 'hapi-dsh: versioned Web shell assets');
-    await federation.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
-    ctx.effect(() => mountPluginEvents({ webServer: ctx.webServer, connection: ctx.connection,
-        hasHost: id => federation.listMachines().some(host => host.id === id && host.online),
-    }), 'hapi-dsh: multiplexed official plugin events');
     workbench.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     terminal.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });
     extras.mount({ webServer: ctx.webServer, authorize: request => ctx.connection.requestRejection(request) });

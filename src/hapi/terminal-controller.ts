@@ -1,3 +1,4 @@
+import { legacyWorkbenchSource } from '../shared/source-access.ts'
 /** Official terminal namespace with a public isolated delegate for ordinary DSH execution. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -16,7 +17,7 @@ import { isLegacyTerminalId } from '../legacy-terminal-types.ts'
  * be read from its actual machine. Its ordinary delegate remains unmodified.
  */
 export class NativeAwareTerminalController extends TypertRemoteService {
-  static inject = ['loader', 'hapi']
+  static inject = ['loader']
   static Config = TerminalController.Config
   private nativeState: { config: unknown; value: NativeMachineTerminals } | undefined
   private readonly lifetime = new AbortController()
@@ -47,32 +48,32 @@ export class NativeAwareTerminalController extends TypertRemoteService {
 
   @Remote
   async environment(agent: Agent, signal: AbortSignal): Promise<TerminalEnvironment> {
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     return source === undefined ? this.ordinary.environment(agent, signal) : this.native.environment(source, signal)
   }
 
   @Remote
   async shells(agent: Agent, signal: AbortSignal): Promise<TerminalShell[]> {
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     return source === undefined ? this.ordinary.shells(agent, signal) : this.native.shells(source, signal)
   }
 
   @Remote
   async list(sessionId: SessionId): Promise<WebTerminalInfo[]> {
-    const source = this.ctx.hapi.workbenchSource(sessionId)
+    const source = legacyWorkbenchSource(this.ctx, sessionId)
     return source === undefined ? this.ordinary.list(sessionId) : this.native.list(source, this.lifetime.signal)
   }
 
   @Remote
   async create(agent: Agent, request: TerminalCreateRequest, signal: AbortSignal): Promise<WebTerminalInfo> {
     if (isLegacyTerminalId(request.id)) throw new RemoteError('terminal/unavailable', 'Original SessionTerminal identities must be opened through their saved source resource.', {})
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     return source === undefined ? this.ordinary.create(agent, request, signal) : this.native.create(source, request, signal)
   }
 
   @Remote({ mode: 'stream' })
   retain(sessionId: SessionId, id: WebTerminalId, signal: AbortSignal): AsyncIterable<TerminalRetentionFrame> {
-    const source = this.ctx.hapi.workbenchSource(sessionId)
+    const source = legacyWorkbenchSource(this.ctx, sessionId)
     if (isLegacyTerminalId(id)) {
       if (!source) throw new RemoteError('terminal/unavailable', 'The original SessionTerminal source is unavailable.', {})
       return this.ctx.hapi.legacyTerminals.retain(sessionId, source, id, signal)
@@ -82,7 +83,7 @@ export class NativeAwareTerminalController extends TypertRemoteService {
 
   @Remote({ mode: 'stream' })
   attach(agent: Agent, id: WebTerminalId, signal: AbortSignal): RemoteStream<TerminalFrame, TerminalInput> {
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     if (isLegacyTerminalId(id)) {
       if (!source) throw new RemoteError('terminal/unavailable', 'The original SessionTerminal source is unavailable.', {})
       const invocation = this.ctx.invocation
@@ -97,7 +98,7 @@ export class NativeAwareTerminalController extends TypertRemoteService {
 
   @Remote
   async rename(agent: Agent, id: WebTerminalId, title: string): Promise<void> {
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     if (isLegacyTerminalId(id)) {
       if (!source) throw new RemoteError('terminal/unavailable', 'The original SessionTerminal source is unavailable.', {})
       return this.ctx.hapi.legacyTerminals.rename(agent.id, source, id, title)
@@ -108,7 +109,7 @@ export class NativeAwareTerminalController extends TypertRemoteService {
 
   @Remote
   async close(agent: Agent, id: WebTerminalId): Promise<void> {
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     if (isLegacyTerminalId(id)) {
       if (!source) throw new RemoteError('terminal/unavailable', 'The original SessionTerminal source is unavailable.', {})
       this.ctx.hapi.legacyTerminals.close(agent.id, source, id)

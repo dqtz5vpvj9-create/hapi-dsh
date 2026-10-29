@@ -1,3 +1,4 @@
+import { legacyWorkbenchSource } from '../shared/source-access.ts'
 /** Source-aware discovery behind the unchanged official `fileReferences/list` Remote. */
 import { posix, win32 } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -72,7 +73,7 @@ function rank(values: Iterable<FileReferenceCandidate>, query: string, limit: nu
  * is consulted for a source Agent.
  */
 export class SourceAwareFileReferences extends FileReferenceService {
-  static inject = ['loader', 'agents', 'hapi']
+  static inject = ['loader', 'agents']
 
   constructor(ctx: Context) { super(ctx) }
 
@@ -91,7 +92,7 @@ export class SourceAwareFileReferences extends FileReferenceService {
     if (this.ctx.agents.get(agent.id) !== agent) {
       throw new RemoteError('hapi/request', 'This source Agent is unavailable or has been replaced', { outcome: 'rejected', status: 409 })
     }
-    const source = this.ctx.hapi.workbenchSource(agent.id)
+    const source = legacyWorkbenchSource(this.ctx, agent.id)
     if (!source || expected && (source.sourceSessionId !== expected.sourceSessionId
       || source.sourceHubId !== expected.sourceHubId || source.machineId !== expected.machineId)) {
       throw new RemoteError('hapi/request', 'The file-reference source is no longer current', { outcome: 'rejected', status: 409 })

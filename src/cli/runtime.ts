@@ -371,7 +371,7 @@ export async function writeLaunchUrl(configFile: string, url: string): Promise<v
 
 /** DSH owns all application boot and teardown; this wrapper only forwards signals and exit status. */
 export async function startProfile(config: RuntimeConfig, configFile: string, noOpen = false): Promise<number> {
-    resolveHapiToken(config);
+    if (config.hapi) resolveHapiToken(config);
     const command = await resolveDshCommand(config);
     const env = runtimeEnvironment(config, configFile);
     await verifyDshVersion(command, env);

@@ -16,6 +16,7 @@ import { officialProviderContext, officialProviderScope } from '../shared/offici
 import { canonicalJson } from '../codex/native.ts'
 import { isSourceChildDisplayId } from '../codex/session-controller.ts'
 import { isHapiDshChildAgent, type HapiDshChildAgent } from './dsh-children.ts'
+import { assertOrdinarySourceTarget } from '../shared/source-access.ts'
 import { sourceDshChildCommandIdSchema } from './dsh-child-types.ts'
 
 const addressSchema = z.object({ childSessionId: z.string().min(1), parentSessionId: z.string().min(1), mode: z.literal('continuable') })
@@ -52,6 +53,7 @@ export class SourceAwareSubagentController extends TypertRemoteService implement
 
   @Remote('prompt')
   async prompt(request: SubagentPromptRequest, signal: AbortSignal): Promise<SubagentPromptReceipt> {
+    assertOrdinarySourceTarget(request.childSessionId); assertOrdinarySourceTarget(request.parentSessionId)
     if (!isSourceChildDisplayId(request.childSessionId)) return this.ordinary.prompt(request, signal)
     signal.throwIfAborted()
     const parsed = promptSchema.safeParse(request)
@@ -84,6 +86,7 @@ export class SourceAwareSubagentController extends TypertRemoteService implement
 
   @Remote('interruptByParent')
   interruptByParent(childSessionId: SessionId, parentSessionId: SessionId, mode: 'continuable'): SubagentInterruptReceipt {
+    assertOrdinarySourceTarget(childSessionId); assertOrdinarySourceTarget(parentSessionId)
     if (!isSourceChildDisplayId(childSessionId)) return this.ordinary.interruptByParent(childSessionId, parentSessionId, mode)
     const parsed = addressSchema.safeParse({ childSessionId, parentSessionId, mode })
     if (!parsed.success) throw new RemoteError('gateway/bad-request', 'Invalid source child interrupt address', { issues: parsed.error.issues })
@@ -100,6 +103,7 @@ export class SourceAwareSubagentController extends TypertRemoteService implement
   startActivation(spec: SubagentActivationSpec): Promise<SubagentActivation> { return this.ordinary.startActivation(spec) }
   waitForChildren(parent: Agent): Promise<boolean> { return this.ordinary.waitForChildren(parent) }
   sendMessage(sender: Agent, targetId: SessionId, content: ContentBlock[], options: SubagentSendMessageOptions): Promise<MessageId> {
+    assertOrdinarySourceTarget(sender.id); assertOrdinarySourceTarget(targetId)
     if (isSourceChildDisplayId(targetId)) return Promise.reject(new RemoteError('subagent/not-resumable',
       'This original source child accepts its source browser prompt protocol; local model delivery cannot impersonate its native parent.', { childSessionId: targetId }))
     return this.ordinary.sendMessage(sender, targetId, content, options)
@@ -107,12 +111,14 @@ export class SourceAwareSubagentController extends TypertRemoteService implement
   /** Preserve the package-exported host adapter used by the official Agent Team plugin. */
   [deliverSubagentPrompt](parent: Agent, childId: SessionId, content: ContentBlock[], source: MessageSource,
     signal: AbortSignal, delivery: SubagentDelivery): Promise<MessageId> {
+    assertOrdinarySourceTarget(parent.id); assertOrdinarySourceTarget(childId)
     if (isSourceChildDisplayId(childId)) return Promise.reject(new RemoteError('subagent/not-resumable',
       'The original source child cannot receive a local host protocol message as its native parent.', { childSessionId: childId }))
     const deliver = delivery === 'steer' ? steerHostSubagentPrompt : queueHostSubagentPrompt
     return deliver(this.ordinary, parent, childId, content, source, signal)
   }
   interrupt(targetSessionId: SessionId, authority: SubagentInterruptAuthority): void {
+    assertOrdinarySourceTarget(targetSessionId)
     if (!isSourceChildDisplayId(targetSessionId)) { this.ordinary.interrupt(targetSessionId, authority); return }
     if (authority.kind !== 'user') throw new RemoteError('subagent/unauthorized',
       'The original source child requires its exact parent address for a user interrupt', { childSessionId: targetSessionId })
@@ -120,8 +126,8 @@ export class SourceAwareSubagentController extends TypertRemoteService implement
   }
   drainDescendants(parents: readonly Agent[]): Promise<void> { return this.ordinary.drainDescendants(parents) }
   drainChildren(parent: Agent, childIds: readonly SessionId[]): Promise<void> { return this.ordinary.drainChildren(parent, childIds) }
-  listChildren(parentSessionId: SessionId, signal?: AbortSignal): Promise<SubagentCatalogEntry[]> { return this.ordinary.listChildren(parentSessionId, signal) }
-  listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]> { return this.ordinary.listDescendants(rootSessionId, signal) }
+  listChildren(parentSessionId: SessionId, signal?: AbortSignal): Promise<SubagentCatalogEntry[]> { assertOrdinarySourceTarget(parentSessionId); return this.ordinary.listChildren(parentSessionId, signal) }
+  listDescendants(rootSessionId: SessionId, signal?: AbortSignal): Promise<SubagentDescendantListEntry[]> { assertOrdinarySourceTarget(rootSessionId); return this.ordinary.listDescendants(rootSessionId, signal) }
   registerProvider(provider: SubagentProvider): () => void { return this.ordinary.registerProvider(provider) }
   getProvider(name: string): SubagentProvider | undefined { return this.ordinary.getProvider(name) }
   list(): string[] { return this.ordinary.list() }

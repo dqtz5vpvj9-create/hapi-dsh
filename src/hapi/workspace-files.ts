@@ -1,3 +1,4 @@
+import { legacyWorkbenchSource } from '../shared/source-access.ts'
 /** Source routing for the unchanged official file resource and document plugins. */
 import { createHash } from 'node:crypto'
 import { posix, win32 } from 'node:path'
@@ -134,7 +135,7 @@ function textPage(path: string, entry: SourceDocumentRead, offset: number, limit
  * serving Hub filesystem is never consulted for a source session.
  */
 export class NativeAwareWorkspaceFiles extends TypertRemoteService {
-  static inject = ['loader', 'hapi']
+  static inject = ['loader']
   static Config = WorkspaceFiles.Config
   private readonly pollIntervalMs: number
   private readonly documents = new Map<string, { expiresAt: number; document: SourceDocumentRead }>()
@@ -155,7 +156,7 @@ export class NativeAwareWorkspaceFiles extends TypertRemoteService {
 
   @Remote
   async read(scope: WorkspaceFileScope, path: string, range: WorkspaceFileRange, signal: AbortSignal): Promise<WorkspaceFileText> {
-    const source = this.ctx.hapi.workbenchSource(scope.sessionId)
+    const source = legacyWorkbenchSource(this.ctx, scope.sessionId)
     if (source === undefined) return this.ordinary.read(scope, path, range, signal)
     try {
       const offset = integer(range.offset ?? 1, 1, 'offset')
@@ -168,7 +169,7 @@ export class NativeAwareWorkspaceFiles extends TypertRemoteService {
 
   @Remote
   async readBytes(scope: WorkspaceFileScope, path: string, options: WorkspaceByteReadOptions, signal: AbortSignal): Promise<WorkspaceFileBytes> {
-    const source = this.ctx.hapi.workbenchSource(scope.sessionId)
+    const source = legacyWorkbenchSource(this.ctx, scope.sessionId)
     if (source === undefined) return this.ordinary.readBytes(scope, path, options, signal)
     try {
       let resolved = path
@@ -197,7 +198,7 @@ export class NativeAwareWorkspaceFiles extends TypertRemoteService {
 
   @Remote
   async stat(scope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<WorkspaceFileStat> {
-    const source = this.ctx.hapi.workbenchSource(scope.sessionId)
+    const source = legacyWorkbenchSource(this.ctx, scope.sessionId)
     if (source === undefined) return this.ordinary.stat(scope, path, signal)
     try { return fileStat(await this.documentRead(source, scope, path, signal)) }
     catch (error) { return sourceFailure(error) }
@@ -205,7 +206,7 @@ export class NativeAwareWorkspaceFiles extends TypertRemoteService {
 
   @Remote
   async list(scope: WorkspaceFileScope, path: string, signal: AbortSignal): Promise<WorkspaceDirectoryListing> {
-    const source = this.ctx.hapi.workbenchSource(scope.sessionId)
+    const source = legacyWorkbenchSource(this.ctx, scope.sessionId)
     if (source === undefined) return this.ordinary.list(scope, path, signal)
     try {
       // Workspace confinement is decided before any Runner management call, so
@@ -231,7 +232,7 @@ export class NativeAwareWorkspaceFiles extends TypertRemoteService {
 
   @Remote({ mode: 'stream' })
   changes(scope: WorkspaceFileScope, path: string, signal: AbortSignal): AsyncIterable<WorkspaceFileWatchFrame> {
-    const source = this.ctx.hapi.workbenchSource(scope.sessionId)
+    const source = legacyWorkbenchSource(this.ctx, scope.sessionId)
     if (source === undefined) return this.ordinary.changes(scope, path, signal)
     return this.sourceChanges(source, scope, path, signal)
   }

@@ -1,3 +1,4 @@
+import { assertOrdinarySourceTarget } from '../shared/source-access.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionController, type Config } from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -31,7 +32,7 @@ function addressedSession(request: { readonly address: SessionAddress }): Sessio
  * settlement semantics. Nothing changes an upstream instance or prototype.
  */
 export class NativeAwareSessionController extends TypertRemoteService {
-  static inject = ['loader', 'hapi']
+  static inject = ['loader']
   static Config = SessionController.Config
 
   constructor(ctx: Context, _config: Config) { super(ctx, 'sessionController', { namespace: 'session' }) }
@@ -44,15 +45,15 @@ export class NativeAwareSessionController extends TypertRemoteService {
     return original
   }
 
-  resolveAgent(sessionId: SessionId): ReturnType<SessionController['resolveAgent']> { return this.ordinary.resolveAgent(sessionId) }
-  inspect(sessionId: SessionId, signal?: AbortSignal): ReturnType<SessionController['inspect']> { return this.ordinary.inspect(sessionId, signal) }
+  resolveAgent(sessionId: SessionId): ReturnType<SessionController['resolveAgent']> { assertOrdinarySourceTarget(sessionId); return this.ordinary.resolveAgent(sessionId) }
+  inspect(sessionId: SessionId, signal?: AbortSignal): ReturnType<SessionController['inspect']> { assertOrdinarySourceTarget(sessionId); return this.ordinary.inspect(sessionId, signal) }
   workspaceDesktop(): ReturnType<SessionController['workspaceDesktop']> { return this.ordinary.workspaceDesktop() }
 
   @Remote('list')
   async list(_request: SessionListRequest, signal: AbortSignal): Promise<SessionListValue> {
     const value = sessionListHints(await this.ordinary.list(_request, signal))
     return { ...value, items: value.items.map(row => {
-      const blank = this.ctx.hapi.sourceSessionBlank(row.sessionId)
+      const blank = this.ctx.get('hapi')?.sourceSessionBlank(row.sessionId)
       return blank === undefined ? row : { ...row, blank }
     }) }
   }
@@ -65,6 +66,7 @@ export class NativeAwareSessionController extends TypertRemoteService {
 
   @Remote('selectModel')
   selectModel(request: SessionSelectModelRequest): Promise<SessionSelectModelValue> {
+    assertOrdinarySourceTarget(request.sessionId)
     if (isNativeDisplayId(request.sessionId)) return Promise.reject(new RemoteError('hapi/request',
       'Native Codex model selection uses hapi.nativeApplySetting; the DSH model selector cannot configure the native owner.',
       { outcome: 'rejected', sourceCode: 'native_model_control_required' }))
@@ -95,6 +97,7 @@ export class NativeAwareSessionController extends TypertRemoteService {
 
   @Remote('rename')
   rename(request: SessionRenameRequest): Promise<SessionRenameValue> {
+    assertOrdinarySourceTarget(request.sessionId)
     if (isSourceChildDisplayId(request.sessionId)) return Promise.reject(new RemoteError('hapi/request',
       'Source child transcripts are read-only and retain their original owner labels.',
       { outcome: 'rejected', sourceCode: 'source_child_read_only' }))
@@ -105,6 +108,7 @@ export class NativeAwareSessionController extends TypertRemoteService {
 
   @Remote('fork')
   fork(request: SessionForkRequest): Promise<SessionForkValue> {
+    assertOrdinarySourceTarget(request.sessionId)
     if (isNativeDisplayId(request.sessionId)) return Promise.reject(new RemoteError('hapi/request',
       'Native Codex forks use hapi.nativeFork and its durable native operation receipt.',
       { outcome: 'rejected', sourceCode: 'native_fork_control_required' }))
@@ -115,13 +119,15 @@ export class NativeAwareSessionController extends TypertRemoteService {
   }
 
   @Remote('prompt')
-  prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue> { return this.ordinary.prompt(request, signal) }
+  prompt(request: SessionPromptRequest, signal: AbortSignal): Promise<SessionPromptValue> {
+    assertOrdinarySourceTarget(request.sessionId); return this.ordinary.prompt(request, signal) }
 
   @Remote('attachment')
-  attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue> { return this.ordinary.attachment(request) }
+  attachment(request: SessionAttachmentRequest): Promise<SessionAttachmentValue> { assertOrdinarySourceTarget(request.sessionId); return this.ordinary.attachment(request) }
 
   @Remote('updateQueue')
   async updateQueue(request: SessionUpdateQueueRequest): Promise<SessionUpdateQueueValue> {
+    assertOrdinarySourceTarget(request.sessionId)
     if (!isSourceChildDisplayId(request.sessionId) && (isNativeDisplayId(request.sessionId) || isObservedDisplayId(request.sessionId)) && request.action.kind === 'steer') {
       const result = await this.ctx.hapi.nativeSteerInbox(request.sessionId, request.itemId)
       if (result.status === 'failed') throw new RemoteError('hapi/request', result.error,
@@ -138,20 +144,24 @@ export class NativeAwareSessionController extends TypertRemoteService {
   }
 
   @Remote('cancel')
-  cancel(request: SessionCancelRequest): SessionCancelValue { return this.ordinary.cancel(request) }
+  cancel(request: SessionCancelRequest): SessionCancelValue {
+    assertOrdinarySourceTarget(request.sessionId); return this.ordinary.cancel(request) }
 
   @Remote({ name: 'page', resources: { session: addressedSession } })
   page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage> {
+    assertOrdinarySourceTarget(addressedSession(request))
     return this.ordinary.page(request, signal)
   }
 
   @Remote({ mode: 'stream', resources: { session: addressedSession } })
   follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
+    assertOrdinarySourceTarget(addressedSession(request))
     return this.ordinary.follow(openingWindow(request), signal)
   }
 
   @Remote('projections')
   projections(request: SessionProjectionsRequest, signal: AbortSignal): Promise<SessionProjectionsValue> {
+    assertOrdinarySourceTarget(request.sessionId)
     return this.ordinary.projections(request, signal)
   }
 

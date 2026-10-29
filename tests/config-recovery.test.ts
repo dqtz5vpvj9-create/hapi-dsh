@@ -21,6 +21,8 @@ test('identity migration takes over a lock left by an exited process', async (t)
     await writeFile(path, JSON.stringify({ ...config, hapi }), { mode: 0o600 });
     await writeFile(`${path}.migration.lock`, exitedPidRecord(), { mode: 0o600 });
     const results = await Promise.all([readConfig(path), readConfig(path)]);
+    assert.ok(results[0]!.hapi);
+    assert.ok(results[1]!.hapi);
     assert.equal(results[0]!.hapi.id, results[1]!.hapi.id);
     assert.deepEqual(await readdir(directory), ['config.json']);
 });

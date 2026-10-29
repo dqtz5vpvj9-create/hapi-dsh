@@ -13,6 +13,7 @@ test('configuration normalizes Hub URLs and preserves a random Hub identity acro
     assert.equal(config.hapi.url, 'https://hub.example.test/subpath');
     assert.match(config.hapi.id, /^[0-9a-f-]{36}$/);
     const changed = parseConfig({ ...config, hapi: { ...config.hapi, url: 'https://other.example.test' } });
+    assert.ok(changed.hapi);
     assert.equal(changed.hapi.id, config.hapi.id);
     assert.notEqual(createConfig(config.hapi.url, {}).hapi.id, config.hapi.id);
 });
@@ -20,9 +21,11 @@ test('configuration normalizes Hub URLs and preserves a random Hub identity acro
 test('Companion configuration preserves the original Hub and requires an explicit HTTPS origin without leaking credentials', () => {
     const config = createConfig('http://127.0.0.1:3006/original-prefix', {});
     const parsed = parseConfig({ ...config, hapi: { ...config.hapi, token: 'fixture-private-token', companionUrl: 'https://MOBILE.example.test:443/' } });
+    assert.ok(parsed.hapi);
     assert.equal(parsed.hapi.companionUrl, 'https://mobile.example.test');
     assert.equal(parsed.hapi.url, config.hapi.url);
-    assert.equal(publicConfig(parsed).hapi.companionUrl, parsed.hapi.companionUrl);
+    const publicView = publicConfig(parsed); assert.ok(publicView.hapi);
+    assert.equal(publicView.hapi.companionUrl, parsed.hapi.companionUrl);
     assert.equal(JSON.stringify(publicConfig(parsed)).includes('fixture-private-token'), false);
     for (const companionUrl of ['http://mobile.example.test', 'https://mobile.example.test/api', 'https://mobile.example.test/%2f',
         'https://mobile.example.test?code=fixture-secret', 'https://mobile.example.test#fixture-secret', 'https://user:fixture-secret@mobile.example.test',
@@ -81,9 +84,10 @@ test('legacy config identity migration gives concurrent readers the same persist
     const { id: _id, ...legacyHapi } = current.hapi;
     await writeFile(path, JSON.stringify({ ...current, hapi: legacyHapi }), { mode: 0o600 });
     const results = await Promise.all([readConfig(path), readConfig(path), readConfig(path)]);
-    assert.equal(new Set(results.map((result) => result.hapi.id)).size, 1);
+    for (const result of results) assert.ok(result.hapi);
+    assert.equal(new Set(results.map((result) => result.hapi!.id)).size, 1);
     const persisted = JSON.parse(await readFile(path, 'utf8')) as { hapi: { id: string } };
-    assert.equal(persisted.hapi.id, results[0]!.hapi.id);
+    assert.equal(persisted.hapi.id, results[0]!.hapi!.id);
     assert.deepEqual(await readdir(directory), ['config.json']);
 });
 

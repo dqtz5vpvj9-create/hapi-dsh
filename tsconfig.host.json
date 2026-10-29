@@ -1,11 +1,36 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "rootDir": "." },
+  "compilerOptions": {
+    "rootDir": "."
+  },
   "include": [
-    "src/index.ts", "src/client-api.ts", "src/hapi/**/*.ts", "src/hapi-agent/**/*.ts", "src/codex/**/*.ts",
-    "src/shared/**/*.ts", "src/session-provider/**/*.ts", "src/hub/**/*.ts", "src/runner/**/*.ts", "src/cli/**/*.ts",
-    "tests/codex-*.test.ts", "tests/hapi-*.test.ts", "tests/config-*.test.ts",
-    "tests/federation-*.test.ts", "tests/host-*.test.ts", "tests/source-event-*.test.ts"
+    "src/index.ts",
+    "src/client-api.ts",
+    "src/hapi/**/*.ts",
+    "src/hapi-agent/**/*.ts",
+    "src/codex/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/session-provider/**/*.ts",
+    "src/hub/**/*.ts",
+    "src/runner/**/*.ts",
+    "src/cli/**/*.ts",
+    "tests/codex-*.test.ts",
+    "tests/hapi-*.test.ts",
+    "tests/config-*.test.ts",
+    "tests/federation-*.test.ts",
+    "tests/host-*.test.ts",
+    "tests/source-event-*.test.ts",
+    "src/remote/**/*.ts",
+    "src/hhpi-api.ts",
+    "tests/hhpi-index.test.ts",
+    "tests/hhpi-ledger.test.ts",
+    "tests/hhpi-codex-native.test.ts",
+    "tests/hhpi-gateway.test.ts",
+    "tests/hhpi-no-hapi.test.ts"
   ],
-  "exclude": ["node_modules", "dist", "src/client"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/client"
+  ]
 }

@@ -28,6 +28,7 @@ export async function readLoginToken(fromStdin: boolean): Promise<string> {
 }
 
 export async function login(config: RuntimeConfig, path: string, fromStdin: boolean): Promise<void> {
+    if (!config.hapi) throw new Error('This HHPI profile has no legacy HAPI source. Use machine pairing for remote DSH access.');
     const updated = { ...config, hapi: { ...config.hapi, token: await readLoginToken(fromStdin) } };
     resolveHapiToken(updated, {});
     await writeConfig(path, updated, true);
