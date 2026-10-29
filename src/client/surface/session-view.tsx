@@ -34,12 +34,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     }
 }
 
-declare module '@deepseek-ai/cordis' {
-    interface Context {
-        chatPresentationConsumer: { presentation(sessionId: SessionId): { foldCompletedTurns: boolean; stepGrouping: 'collapsed' | 'history' | 'none'; virtualizeGroupMembers?: boolean } | undefined }
-    }
-}
-
 /** Public payload dependencies can extend beyond a row's ordering anchor. */
 function nodeSourceSpan(value: ChatConversationViewNode, lastSeq: number): [number, number] | undefined {
     const node = value as ChatNode

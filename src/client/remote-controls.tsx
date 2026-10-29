@@ -47,7 +47,10 @@ export function installRemoteSourceControls(ctx: Context): () => void {
       <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}`}</style>
       {metadata.capabilities.steer && state.running && <button type="button" className="hhpi-source-steer" aria-label="Steer"
         disabled={input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim()}
-        onClick={() => props.inputActions.submit('steer')}>{zh ? '立即插话' : 'Steer'}</button>}
+        onClick={() => {
+          const scope = ctx.sessions.scope(props.sessionId)
+          if (scope) ctx.conversation.input.for(scope).submit('steer', 'click')
+        }}>{zh ? '立即插话' : 'Steer'}</button>}
     </>
   }
   const DockBody = ({ session }: { session: RemoteSourceSession }) => {

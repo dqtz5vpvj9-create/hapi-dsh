@@ -366,8 +366,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
       const onlyAppend = updates.every(entry => entry.event.seq > tail) && removed.size === 0
       changes = onlyAppend ? [{ kind: 'append', entries: updates }] : [{ kind: 'replace', entries }]
     }
-    this.record({ base: previous.version, version: this.state.version, changes, headChanged: hasAfter && change.upserts.some(entry => entry.event.seq > tail),
-      window: { before: this.state.before, after: this.state.after, hasBefore: this.state.hasBefore, hasAfter } })
+    this.record({ base: previous.version, version: this.state.version, changes, headChanged: hasAfter && change.upserts.some(entry => entry.event.seq > tail) })
   }
 
   cachedHead(session: SourceSession | undefined): SourcePage | undefined {
@@ -398,8 +397,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     this.abort.signal.throwIfAborted()
     this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter)
-    this.record({ base: prior.version, version: this.state.version, changes: [{ kind: 'replace', entries: this.state.entries }], headChanged: page.hasAfter,
-      window: { before: this.state.before, after: this.state.after, hasBefore: page.hasBefore, hasAfter: page.hasAfter } })
+    this.record({ base: prior.version, version: this.state.version, changes: [{ kind: 'replace', entries: this.state.entries }], headChanged: page.hasAfter })
   }
 
   fail(error: unknown): void { this.error = error; for (const listener of this.listeners) listener() }

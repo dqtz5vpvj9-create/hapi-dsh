@@ -181,8 +181,7 @@ export class RemoteSessions implements ISessions {
       const id = session.id as SessionId
       ids.push(id)
       byId[id] = { id, title: session.title, displayTitle: session.title, cwd: session.cwd, running: session.status === 'running' || session.status === 'waiting',
-        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt,
-        projectionValues: { title: session.title } }
+        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt }
     }
     this.list.set({ ...base, ids, byId })
   }
