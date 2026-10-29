@@ -6,13 +6,18 @@
 
 2026-10-29 用户要求立即提交上一轮实现。当前执行环境无法访问上一轮工作区，远端 main 仍停留在基线。本分支保存从上一轮实际文件读取输出中恢复的源码，避免继续仅依赖临时工作区。未覆盖 main，未部署生产。
 
-第一批恢复：
+已恢复到原路径的文件：
 
-- `src/client/remote-history.ts`：共享源缓存、独立 Pane 历史窗口、补页去重、版本与取消处理。
-- `tests/hhpi-history.test.ts`：六项历史行为测试源码，源端 wire 为明确 fixture。
-- `src/remote/protocol.ts`：可找回的较早协议文件快照。
+| 文件 | 恢复内容 |
+| --- | --- |
+| `src/client/remote-history.ts` | 共享源缓存、独立 Pane 历史窗口、补页去重、版本与取消处理 |
+| `src/client/remote-sessions.ts` | 远端 Session 适配、会话目录、引用生命周期与源操作路由 |
+| `src/client/remote-reading.ts` | 使用官方 mounted reader 的 Pane 导航 |
+| `src/client/remote-controls.tsx` | Steer、审批和操作回执控件 |
+| `tests/hhpi-history.test.ts` | 六项历史行为测试源码，源端 wire 为明确 fixture |
+| `src/remote/protocol.ts` | 可找回的较早协议文件快照 |
 
-协议快照早于客户端最后一次修改，尚缺客户端引用的 `SourceReadRequest.around` 和 `isSourceSessionId` 等后续变更。它按可核实原文保存；不能将此恢复分支认定为完整、可构建的 HHPI。
+协议快照早于客户端最后一次修改，尚缺客户端引用的 `SourceReadRequest.around` 和 `isSourceSessionId` 等后续变更；`src/hhpi-api.ts` 也未恢复。文件按可核实原文保存，未修补这些缺口以冒充原始最终实现。此分支不是完整、可构建的 HHPI。
 
 ## 未恢复的实现
 
