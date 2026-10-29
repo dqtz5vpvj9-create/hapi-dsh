@@ -1,0 +1,38 @@
+name: HHPI source extension build
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['scripts/dsh-ext/**', 'source-snapshots/**', '.github/workflows/hhpi-extension.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extension:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Prepare exact source inputs
+        run: |
+          node scripts/dsh-ext/prepare.mjs "${RUNNER_TEMP}/hhpi-source" > "${RUNNER_TEMP}/hhpi-source.json"
+          node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(process.argv[1])); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);' "${RUNNER_TEMP}/hhpi-source.json"
+      - name: Compile and package the pinned source extensions
+        timeout-minutes: 10
+        run: node scripts/dsh-ext/build-extension.mjs "${HHPI_DSH_SOURCE}" "${RUNNER_TEMP}/hhpi-packages"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hhpi-source-extension-packages
+          path: ${{ runner.temp }}/hhpi-packages
+          if-no-files-found: error
+          retention-days: 7
