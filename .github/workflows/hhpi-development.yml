@@ -1,0 +1,46 @@
+name: HHPI development baseline
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths:
+      - '.github/workflows/hhpi-development.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive only tracked source
+        run: |
+          mkdir -p "${RUNNER_TEMP}/hhpi-development"
+          git archive --format=tar.gz --output="${RUNNER_TEMP}/hhpi-development/source.tar.gz" HEAD
+          git rev-parse HEAD > "${RUNNER_TEMP}/hhpi-development/commit.txt"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Preserve Node runtime and provenance
+        run: |
+          cp "$(command -v node)" "${RUNNER_TEMP}/hhpi-development/node"
+          node --version > "${RUNNER_TEMP}/hhpi-development/node-version.txt"
+      - name: Install exact baseline dependencies
+        timeout-minutes: 5
+        run: npm ci
+      - name: Archive installed public dependencies
+        run: tar -czf "${RUNNER_TEMP}/hhpi-development/dependencies.tar.gz" node_modules
+      - name: Preserve reproducible development inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hhpi-development-baseline
+          path: ${{ runner.temp }}/hhpi-development/
+          if-no-files-found: error
+          retention-days: 3
