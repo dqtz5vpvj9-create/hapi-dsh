@@ -1,0 +1,49 @@
+name: HHPI client contracts
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
+  pull_request:
+    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Install exact dependencies
+        timeout-minutes: 5
+        run: npm ci
+      - name: Show affected test selection
+        run: npm run test:changed -- --files src/client/remote-history.ts tests/hhpi-history-races.test.ts --list
+      - name: Source history cancellation, revisions and continuous reading
+        timeout-minutes: 2
+        run: node --import tsx --test tests/hhpi-history-races.test.ts
+      - name: Record pinned source extension input contracts
+        if: always()
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const patch = readFileSync('source-snapshots/dsh-ext/source.patch', 'utf8');
+          const wanted = new Set(['ext/scripts/pack.mjs', 'packages/api/session-controller/src/client/contract/history-source.ts', 'packages/client/ui-conversation/src/client/conversation/history-view.ts']);
+          for (const block of patch.split(/(?=^diff --git )/m)) {
+            const path = /^diff --git a\/(\S+) b\//.exec(block)?.[1];
+            if (wanted.has(path)) {
+              console.log(`::group::${path}`);
+              console.log(block);
+              console.log('::endgroup::');
+            }
+          }
+          JS
