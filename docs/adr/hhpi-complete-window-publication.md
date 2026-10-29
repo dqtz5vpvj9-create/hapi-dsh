@@ -1,0 +1,23 @@
+# Complete-window publication through the official DSH reader
+
+Status: implementation and contract validation in progress; browser acceptance is not implied.
+
+## Boundary
+
+Native DSH retains the existing event-page feed. An optional `HistoryFeedV1.mode = 'complete-window'` declares that a read returns the entire bounded candidate window, including opaque source cursors and forward-gap state. Treating that response as a prepend duplicates resident entries and bypasses the official window coordinator.
+
+Complete-window reads and stream snapshots use the same official Conversation assembler and window coordinator. A per-view serial publication queue orders reads and revisions. The coordinator samples the mounted reader immediately before publication and restores it after layout. A read stays busy through that restoration. A failed preparation preserves the old displayed window.
+
+The source feed exposes synchronous `validate`, `accept`, and `discard` publication acknowledgements. Candidate preparation cannot release the displayed entries. Validation occurs immediately before the assembler publication; acceptance occurs in the same synchronous publication boundary. The source cache pins accepted windows and bounded candidates independently from the DOM virtual range. A late or expired candidate fails explicitly.
+
+A complete delta includes an authoritative snapshot. Its source cursors and detached state survive edits and streaming completion. Explicit latest and reconnect refresh are separate operations. Provider cursors remain opaque; Chat must use the committed source cursor rather than deriving one from a displayed event or context row.
+
+## Source changes and default behavior
+
+The extension is applied only to the pinned TypeScript sources by `scripts/dsh-ext/complete-windows.mjs`. Its structural edits assert the expected interface, class and publication method boundaries before changing anything. The build records its SHA-256 and produces the source diff; no installed or compiled JavaScript is string-patched and no runtime object is intercepted. Feeds omitting the mode keep the original path.
+
+Host and Runner must distribute the same extension packages and source-input identity. Ordinary DSH does not use HHPI source IDs, SourceFrames, or a second execution Session.
+
+## Validation requirements
+
+Contract tests must use the real patched `BoundHistoryView`, assembler and coordinator. The source wire and reader measurement/layout boundary may be controlled fixtures. Required assertions cover repeated body-bearing prepends, one publication for coalesced reads, read-time scrolling measured at commit, rejection before publication preserving the visible window, a live revision during paging, opaque cursors, independent Pane positions, and cancellation. Browser scrolling, mobile viewport and physical-device checks are separate release evidence.

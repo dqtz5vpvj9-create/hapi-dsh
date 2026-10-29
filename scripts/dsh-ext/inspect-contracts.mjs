@@ -3,19 +3,17 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 const root = process.argv[2];
 if (!root) throw new Error('A prepared DSH source directory is required.');
-for (const file of [
-  'packages/client/ui-chat/src/client/chat/use-chat-navigation.ts',
-  'packages/client/ui-conversation/src/client/contract/history-view.ts',
-  'packages/client/ui-conversation/src/client/conversation/bound-conversation.ts',
-  'packages/client/ui-conversation/src/client/conversation/assembler.ts',
-  'packages/api/session-controller/src/client/contract/window-commit.ts',
-]) {
+const files = await readdir(join(root, 'packages/client/ui-conversation/src/client'), { recursive: true });
+for (const name of files.filter(name => /\.(ts|tsx)$/.test(name))) {
+  const file = `packages/client/ui-conversation/src/client/${name}`;
   const content = await readFile(join(root, file), 'utf8');
-  console.log(`::group::${file}`);
-  console.log(content);
-  console.log('::endgroup::');
+  if (content.includes('class BoundConversation') || content.includes('cursor: String') || name.endsWith('assembler.ts')) {
+    console.log(`::group::${file}\n${content}\n::endgroup::`);
+  }
 }
-for (const file of ['package.json', 'tsconfig.client.json', 'packages/client/ui-chat/tsconfig.json', 'packages/api/session-controller/tsdown.config.ts']) {
-  try { console.log(`::group::${file}\n${await readFile(join(root, file), 'utf8')}\n::endgroup::`); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
-}
+for (const file of [
+  'packages/api/session-controller/src/client/contract/window-commit.ts',
+  'packages/client/ui-conversation/src/client/conversation/history-view.ts',
+  'packages/client/ui-conversation/src/client/contract/history-view.ts',
+  'tsconfig.client.json',
+]) console.log(`::group::${file}\n${await readFile(join(root, file), 'utf8')}\n::endgroup::`);
