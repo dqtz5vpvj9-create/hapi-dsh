@@ -22,7 +22,7 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/hhpi-compiler"
           cd "${RUNNER_TEMP}/hhpi-compiler"
           npm init -y
-          npm install --save-exact tsdown@0.22.2 lightningcss@1.33.0 pnpm@11.28.5
+          npm install --save-exact tsdown@0.22.2 lightningcss@1.33.0 pnpm@11.28.5 clsx@2.1.1 lexical@0.49.0 @lexical/headless@0.49.0 @lexical/history@0.49.0 @lexical/plain-text@0.49.0 @lexical/text@0.49.0 @lexical/utils@0.49.0 @types/mime-types@3.0.1
           tar -czf "${RUNNER_TEMP}/hhpi-compiler.tar.gz" package.json package-lock.json node_modules
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
