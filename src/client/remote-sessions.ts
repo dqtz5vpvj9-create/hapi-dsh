@@ -21,6 +21,7 @@ function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error
 function sourceError(message: string, indeterminate = false): RemoteError<'hhpi/source'> {
   return new RemoteError('hhpi/source', message, { outcome: indeterminate ? 'indeterminate' : 'rejected', sourceCode: indeterminate ? 'outcome_unknown' : 'unsupported' })
 }
+interface TrackedOperation { readonly fingerprint: string; readonly promise: Promise<SourceReceipt> }
 
 export class RemoteSourceSession implements SessionFace {
   readonly eventSource = new MutableSessionEventSource()
@@ -30,8 +31,9 @@ export class RemoteSourceSession implements SessionFace {
   private readonly state: Value<SessionSnapshot>
   private readonly projectionValues = new Map<string, Value<unknown>>()
   private readonly submissions = new Map<string, BeginSubmissionInput>()
-  private readonly operations = new Map<string, Promise<SourceReceipt>>()
+  private readonly operations = new Map<string, TrackedOperation>()
   private readonly stopMetadata: () => void
+  private disposed = false
   readonly ready: Promise<void>
 
   constructor(readonly sessionId: SessionId, metadata: SourceSession, readonly history: RemoteSourceHistory, private readonly api: HhpiRemoteApi) {
@@ -44,14 +46,18 @@ export class RemoteSourceSession implements SessionFace {
       if (!value) { value = new Value<unknown>(undefined); this.projectionValues.set(key, value) }
       return value
     } }
-    this.historyRead = { version: 1, openView: (viewId, budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }, signal) => history.openView(viewId, budget, signal) }
+    this.historyRead = { version: 1, openView: (viewId, budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }, signal) => {
+      if (this.disposed) return Promise.reject(new DOMException('The source view was released.', 'AbortError'))
+      return history.openView(viewId, budget, signal)
+    } }
     this.stopMetadata = history.subscribeSession(session => { this.update(session) })
     this.update(metadata)
     this.ready = history.prepare().then(page => {
+      if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
       this.state.set({ ...this.state.getSnapshot(), openState: 'open', hasMore: page.hasBefore,
         blank: !page.entries.some(entry => ['user/message', 'assistant/message', 'tool/call'].includes(entry.event.type)) })
     }).catch(error => {
-      this.state.set({ ...this.state.getSnapshot(), openState: 'error', openError: sourceError(error instanceof Error ? error.message : 'Source history is unavailable.') })
+      if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), openState: 'error', openError: sourceError(error instanceof Error ? error.message : 'Source history is unavailable.') })
       throw error
     })
     void this.ready.catch(() => {})
@@ -59,16 +65,17 @@ export class RemoteSourceSession implements SessionFace {
   readonly getSnapshot = (): SessionSnapshot => this.state.getSnapshot()
   readonly subscribe = (listener: () => void): (() => void) => this.state.subscribe(listener)
   update(session: SourceSession): void {
+    if (this.disposed) return
     if (session.id !== this.sessionId) throw new Error('Source metadata crossed session identities')
     this.metadata.set(session)
     this.state.set({ ...this.state.getSnapshot(), running: session.status === 'running' || session.status === 'waiting' })
-    this.projectionValues.get('title')?.set(session.title)
     for (const [key, value] of [['title', session.title], ['hhpiSource', session]] as const) {
       let store = this.projectionValues.get(key)
       if (!store) { store = new Value<unknown>(value); this.projectionValues.set(key, store) } else store.set(value)
     }
   }
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
+    if (this.disposed) throw sourceError('The source view was released.')
     const requestId = crypto.randomUUID() as SessionRequestId
     this.submissions.set(requestId, input)
     this.state.set({ ...this.state.getSnapshot(), pendingSubmissions: [...this.state.getSnapshot().pendingSubmissions,
@@ -83,19 +90,21 @@ export class RemoteSourceSession implements SessionFace {
     pending.onRetire?.(retirement)
   }
   async prompt(...[content, mode, signal, suppliedId]: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
-    signal?.throwIfAborted()
     const requestId = suppliedId ?? crypto.randomUUID() as SessionRequestId
-    this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
-    if (content.some(part => part.type !== 'text')) {
-      const error = sourceError('This source currently accepts text input. File resources remain scoped to its source machine.')
-      this.retire(requestId, { reason: 'failed' }); this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
-      return { ok: false, error }
+    if (signal?.aborted) {
+      this.retire(requestId, { reason: 'failed' })
+      signal.throwIfAborted()
     }
-    const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
-    const metadata = this.metadata.getSnapshot()
-    const kind = mode === 'steer' ? 'steer' : 'send'
-    if (!metadata.capabilities[kind]) return { ok: false, error: sourceError(`The source does not support ${kind}.`) }
+    if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
+    this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
     try {
+      if (content.some(part => part.type !== 'text')) throw sourceError('This source currently accepts text input. File resources remain scoped to its source machine.')
+      const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
+      const metadata = this.metadata.getSnapshot()
+      const kind = mode === 'steer' ? 'steer' : 'send'
+      if (metadata.status === 'offline') throw sourceError('The source is offline. No operation was sent.')
+      if (!metadata.capabilities[kind]) throw sourceError(`The source does not support ${kind}.`)
+      if (kind === 'steer' && !metadata.activeTurnId) throw sourceError('There is no active native turn to steer.')
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text,
         ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) })
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
@@ -104,18 +113,26 @@ export class RemoteSourceSession implements SessionFace {
     } catch (cause) {
       const error = cause instanceof RemoteError ? cause as RemoteError<'hhpi/source'> : sourceError(cause instanceof Error ? cause.message : 'The source did not acknowledge this operation.', true)
       this.retire(requestId, { reason: 'failed' })
-      this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
+      if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
       return { ok: false, error }
     }
   }
-  /** In-flight and settled operation identities are shared across every Pane. */
+  /** Share exact operation identities across Panes, including uncertain outcomes. */
   operate(operation: SourceOperation): Promise<SourceReceipt> {
+    if (this.disposed) return Promise.reject(sourceError('The source view was released.'))
     if (operation.sessionId !== this.sessionId) return Promise.reject(sourceError('An operation belongs to another source session.'))
+    const fingerprint = JSON.stringify([operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
     const existing = this.operations.get(operation.operationId)
-    if (existing) return existing
-    const work = this.api.operate(operation).then(result)
-    this.operations.set(operation.operationId, work)
-    return work
+    if (existing) return existing.fingerprint === fingerprint ? existing.promise : Promise.reject(sourceError('An operation ID was reused with different arguments.'))
+    const request = Object.freeze({ ...operation })
+    // Publish the identity before invoking remote code, including a synchronous
+    // callback. Once dispatched, releasing a view never cancels the native write.
+    const promise = Promise.resolve().then(() => this.api.operate(request)).then(result).then(receipt => {
+      if (receipt.sessionId !== request.sessionId || receipt.operationId !== request.operationId) throw sourceError('The source returned a receipt for a different operation or session.', true)
+      return Object.freeze({ ...receipt })
+    })
+    this.operations.set(request.operationId, { fingerprint, promise })
+    return promise
   }
   async cancel(): ReturnType<SessionFace['cancel']> {
     const session = this.metadata.getSnapshot()
@@ -132,7 +149,11 @@ export class RemoteSourceSession implements SessionFace {
   async command(): ReturnType<SessionFace['command']> { return { ok: false, error: sourceError('Send source commands as text through its native input.') } }
   async loadOlder(): Promise<void> { throw sourceError('History navigation requires the current Pane reader.') }
   async loadThrough(): Promise<void> { throw sourceError('History navigation requires the current Pane reader.') }
-  dispose(): void { this.stopMetadata(); for (const id of this.submissions.keys()) this.retire(id, { reason: 'failed' }) }
+  dispose(): void {
+    if (this.disposed) return
+    this.disposed = true; this.stopMetadata()
+    for (const id of this.submissions.keys()) this.retire(id, { reason: 'failed' })
+  }
 }
 
 interface RecordOwner { scope: AgentScopeHandle; session: RemoteSourceSession; binding: SessionBinding; counts: Map<SessionRetainOptions['source'], number> }
@@ -167,7 +188,10 @@ export class RemoteSessions implements ISessions {
       this.lifetime.signal.throwIfAborted()
       this.legacyHapi = catalog.legacyHapi
       const active = new Set(catalog.sessions.map(session => session.id))
-      for (const [id, old] of this.metadata) if (!active.has(id)) this.metadata.set(id, { ...old, status: 'offline' })
+      for (const [id, old] of this.metadata) if (!active.has(id)) {
+        const offline: SourceSession = { ...old, status: 'offline' }
+        this.metadata.set(id, offline); this.records.get(id as SessionId)?.session.update(offline)
+      }
       for (const session of catalog.sessions) { this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session) }
       this.publish()
     })().finally(() => { if (this.refreshRead === work) this.refreshRead = undefined })
