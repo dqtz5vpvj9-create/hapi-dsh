@@ -1,0 +1,33 @@
+name: HHPI source export
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths:
+      - .github/workflows/hhpi-source-export.yml
+      - src/client/**
+      - src/remote/**
+      - src/hhpi-api.ts
+      - scripts/install-dsh-ext.mjs
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Archive tracked source only
+        run: |
+          mkdir -p "${RUNNER_TEMP}/hhpi-source"
+          git archive --format=tar.gz --output="${RUNNER_TEMP}/hhpi-source/source.tar.gz" HEAD
+          git rev-parse HEAD > "${RUNNER_TEMP}/hhpi-source/commit.txt"
+      - name: Upload source checkpoint
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hhpi-feature-source
+          path: ${{ runner.temp }}/hhpi-source/
+          if-no-files-found: error
+          retention-days: 2
