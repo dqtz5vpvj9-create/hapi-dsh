@@ -1,3 +1,5 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
+import { join as testTemporaryJoin } from 'node:path'
 /**
  * Integration regression for the real public SourceSessions facade.
  *
@@ -159,7 +161,7 @@ function snapshot(id: SessionId): SessionSnapshot {
 }
 test('real SourceSessions facade: blocked forward, fast live, late earlier ended-turn row', { timeout: 15_000 }, async () => {
   const traceparent = `00-${randomUUID().replace(/-/g, '')}-${randomUUID().replace(/-/g, '').slice(0, 16)}-01`
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-late-merge-'), fake = new FakeHapi()
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-late-merge-")), fake = new FakeHapi()
   const oldUser = user('turn-old', 1, 1000, 'old-user')
   const oldAnswer = answer('turn-old', 'old-answer', 2, 1001, 'old answer')
   const oldEnd = terminal('turn-old', 'old-end', 3, 1002)

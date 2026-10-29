@@ -1,3 +1,4 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
 import { HistoryProjectionSink } from '../src/shared/projection-event-sink.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -29,7 +30,7 @@ import {
 } from '../src/source-attachment-types.ts'
 
 /** Temporary state stays under the task's designated data-cache directory. */
-const TEST_ROOT = process.env.HAPI_DSH_TEST_ROOT ?? '/mnt/cache/data-cache'
+const TEST_ROOT = process.env.HAPI_DSH_TEST_ROOT ?? testTemporaryRoot()
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC', 'base64')
 
 interface App {

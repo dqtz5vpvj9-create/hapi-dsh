@@ -12,8 +12,10 @@ import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { doctor, type DoctorCheck, type DoctorResult } from '../src/cli/doctor.ts'
 import type { RuntimeConfig } from '../src/cli/config.ts'
-import { createHarness, repositoryRoot, seedProfile, type Harness } from './host-bundle-support.test.ts'
+import { createHarness, seedProfile, type Harness } from './host-bundle-support.test.ts'
 import { ops, release } from '../src/cli/release.ts'
+
+import { createDoctorPackage } from './fixtures/doctor-package.ts'
 
 const TOKEN = 'doctor-secret-token-value'
 
@@ -26,9 +28,9 @@ function configFor(harness: Harness): RuntimeConfig {
     }
 }
 
-async function runDoctor(harness: Harness): Promise<DoctorResult> {
+async function runDoctor(harness: Harness, packageRoot?: string): Promise<DoctorResult> {
     return doctor(configFor(harness), join(harness.root, 'config.json'), {
-        packageRoot: repositoryRoot,
+        packageRoot: packageRoot ?? await createDoctorPackage(harness.root),
         offline: true,
         command: harness.command,
         run: async (command, options) => command.executable === 'pnpm'
@@ -205,6 +207,22 @@ test('the test harness never leaves release directories behind', async () => {
         const files = await readdir(join(release.stateRoot(harness.dshHome), 'releases'))
         assert.equal(files.length, 1)
         assert.match(files[0]!, /^r-[a-f0-9]{16}$/)
+    } finally {
+        await rm(harness.root, { recursive: true, force: true })
+    }
+})
+
+// The package fixture is an IO boundary only; missing artifacts still fail.
+test('doctor rejects a missing browser artifact without relying on a repository build', async () => {
+    const harness = await createHarness()
+    try {
+        await seedProfile(harness.dshHome, harness.profile)
+        assert.equal((await harness.install('a')).ok, true)
+        const packageRoot = await createDoctorPackage(harness.root)
+        await rm(join(packageRoot, 'dist', 'client.js'))
+        const result = await runDoctor(harness, packageRoot)
+        assert.equal(check(result, 'bundle-artifacts').status, 'fail')
+        assert.equal(result.ok, false)
     } finally {
         await rm(harness.root, { recursive: true, force: true })
     }

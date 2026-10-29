@@ -291,7 +291,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     this.context = new Set(accepted.metadata.context); this.seqs = accepted.snapshot.entries.map(entry => entry.event.seq)
     this.journal.length = 0; this.journalBytes = 0
     if (this.stateEpoch !== this.owner.sourceEpoch) { void this.recover().catch(error => { this.fail(error) }); return }
-    const entries = this.owner.currentEntries(this.seqs) as SourceEntry[], present = new Set(entries.map(entry => entry.event.seq))
+    const entries = this.owner.currentEntries(this.seqs) as SourceEntry[], present = new Set<number>(entries.map(entry => entry.event.seq))
     const tail = this.state.after ? parseCursor(this.state.after, this.stateEpoch) : -1
     this.accept({ upserts: [...entries, ...this.state.hasAfter ? [] : this.owner.entriesAfter(tail)], removed: this.seqs.filter(seq => !present.has(seq)) })
     this.owner.trimCache()

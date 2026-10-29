@@ -1,3 +1,4 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
 import { projectedSourceEvents } from './source-frame-fixture.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -119,7 +120,7 @@ test('source scope index resolves exact SDK tool and legacy UUID chains while ke
 })
 
 test('actual SDK parent and nested children become separate official Sessions with exact read-only ownership', async () => {
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-sidechains-')), source = new Source()
+  const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-sidechains-')), source = new Source()
   source.rows = [task(1, 'task-a-call', 'task-a', 'Explore'), sdkAnswer(2, 'a-answer', 'A child answer', 'task-a'),
     task(3, 'task-b-call', 'task-b', 'Nested', 'task-a'), sdkAnswer(4, 'b-answer', 'B child answer', 'task-b'),
     taskResult(5, 'b-result', 'task-b', 'task-a'), taskResult(6, 'a-result', 'task-a'), sdkAnswer(7, 'parent-answer', 'Parent answer')]
@@ -155,7 +156,7 @@ test('actual SDK parent and nested children become separate official Sessions wi
 })
 
 test('native agent-run cumulative traces retain real child thread identity and do not contaminate the native parent', async () => {
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-native-children-')), source = new Source(true)
+  const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-native-children-')), source = new Source(true)
   const nativeExecution = { threadId: 'child-thread', turnId: 'child-turn', itemId: 'child-answer' }
   source.rows = [run(1, 'child-thread', 'running'),
     trace(2, 'child-message', 'child-thread', { type: 'message', message: 'Part', streamSnapshot: true, nativeExecution }),
@@ -180,7 +181,7 @@ test('native agent-run cumulative traces retain real child thread identity and d
 })
 
 test('source child lineage changes retire only that view; corrections preserve its current Agent and Session', async () => {
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-child-generation-')), source = new Source()
+  const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-child-generation-')), source = new Source()
   const answer = sdk(3, 'late-child', { type: 'assistant', isSidechain: true, parentUuid: 'late-root', message: { content: [{ type: 'text', text: 'Original child' }] } })
   source.rows = [answer]
   const app = await mount(source, directory)
@@ -216,7 +217,7 @@ test('source child lineage changes retire only that view; corrections preserve i
 })
 
 test('a child publishes live source text and commits one final body without replacing its Session', async () => {
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-child-live-')), source = new Source(true)
+  const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-child-live-')), source = new Source(true)
   const nativeExecution = { threadId: 'child-thread', turnId: 'child-turn', itemId: 'child-answer' }
   source.rows = [run(1, 'child-thread', 'running'),
     trace(2, 'child-message', 'child-thread', { type: 'message', message: 'Part', streamSnapshot: true, nativeExecution })]

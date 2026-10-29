@@ -1,3 +1,5 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
+import { join as testTemporaryJoin } from 'node:path'
 /** Synthetic HAPI protocol, real pinned DSH Sessions, Agents, scopes and projection registries. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -85,7 +87,7 @@ class CatalogFixture implements HapiObservedTransport {
 }
 
 async function withOnDemandCatalog(run: (fixture: CatalogFixture, codex: CodexService, observed: HapiAgentService) => Promise<void>) {
-    const directory = await mkdtemp('/mnt/cache/data-cache/hapi-resolver-snapshot-'), fixture = new CatalogFixture(), ctx = new Context();
+    const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-resolver-snapshot-")), fixture = new CatalogFixture(), ctx = new Context();
     let codex!: CodexService, observed!: HapiAgentService;
     try {
         await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime);

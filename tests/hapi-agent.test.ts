@@ -1,3 +1,5 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
+import { join as testTemporaryJoin } from 'node:path'
 import { projectedSourceEvents } from './source-frame-fixture.ts'
 import { hapiObservedProjectionDefinition } from '../src/hapi-agent/projection-state.ts'
 import type { HapiObservedProjection } from '../src/hapi-agent/projection-types.ts'
@@ -232,7 +234,7 @@ test('Pi cumulative snapshots converge on one official answer and do not invent 
 })
 
 test('observed cumulative streams publish one stable canonical body before completion', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-stream-'), source = new Fixture(); source.add('pi')
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-observed-stream-")), source = new Fixture(); source.add('pi')
   source.rows.set('pi', [input()])
   const app = await mount(source, directory), agent = app.service.list()[0]!
   try {
@@ -278,7 +280,7 @@ test('source delivery remains unknown after disconnect and restart, without auto
 })
 
 test('observed reconnect revisions and missing source boundaries preserve their official owner', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-revision-'), source = new Fixture()
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-observed-revision-")), source = new Fixture()
   source.add('claude')
   const oldest = input(), latest = codex('revision-answer', 2, { type: 'message', message: 'Original answer' })
   source.rows.set('claude', [oldest, latest])

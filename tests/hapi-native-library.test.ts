@@ -1,3 +1,4 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
@@ -29,7 +30,7 @@ async function harness(run: (fixture: {
     handler: (path: string, method: string, body: unknown) => Promise<unknown>;
     reload(): NativeLibrary;
 }) => Promise<void>) {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-library-'));
+    const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-library-'));
     const fixture = {
         current: agent(), calls: [] as Array<{ path: string; method: string; body: unknown }>,
         historyRewinds: new Map<string, string>(),

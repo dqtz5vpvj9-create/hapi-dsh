@@ -153,7 +153,7 @@ test('public composition retains one isolated official constructor and the exact
   const app = await mount()
   const official = await mount(SessionController)
   try {
-    assert.deepEqual(NativeAwareSessionController.inject, ['loader', 'hapi'])
+    assert.deepEqual(NativeAwareSessionController.inject, ['loader'], 'HAPI is an optional source; the ordinary controller must start without it')
     assert.equal(NativeAwareSessionController.Config, SessionController.Config)
     const describe = (controller: object) => remoteMethods(controller).map(({ resources, ...value }) => ({ ...value,
       resources: Object.keys(resources ?? {}) })).sort((a, b) => a.method.localeCompare(b.method))

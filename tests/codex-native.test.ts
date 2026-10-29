@@ -1,3 +1,5 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
+import { join as testTemporaryJoin } from 'node:path'
 import { projectedSourceEvents } from './source-frame-fixture.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -1143,7 +1145,7 @@ test('indexed native output and running state advance during blocked archival re
 })
 
 test('native turn completion and reconnect snapshot revisions keep the original display and refresh its anchor', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-'), fake = new FakeHapi()
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-native-revision-")), fake = new FakeHapi()
   const state = (message: HapiMessage, status: 'inProgress' | 'completed'): HapiMessage => {
     const envelope = message.content as { meta?: Record<string, unknown>; content: { data?: { nativeExecution?: object } } }
     const execution = (envelope.meta?.nativeExecution ?? envelope.content.data?.nativeExecution) as object
@@ -1175,7 +1177,7 @@ test('native turn completion and reconnect snapshot revisions keep the original 
 })
 
 test('native revision deleting the oldest source identity rebases only the read model', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-delete-'), fake = new FakeHapi()
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-native-revision-delete-")), fake = new FakeHapi()
   const oldest = user(), latest = agentBody('message', { message: 'Retained answer' }, 'retained-revision')
   fake.rows = [oldest, latest]
   let epoch = 1
@@ -1194,7 +1196,7 @@ test('native revision deleting the oldest source identity rebases only the read 
 })
 
 test('native legacy cache recovery updates the existing anchor to its validated source revision', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-legacy-'), fake = new FakeHapi()
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-native-revision-legacy-")), fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Legacy cached answer' }, 'legacy-revision')]
   const logicalId = nativeSessionId(fake.hubId, fake.source.id)
   new NativeHistoryCache(nativeStateDirectory(directory, logicalId, bindingFor(fake.hubId, fake.source)), logicalId)

@@ -1,3 +1,5 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
+import { join as testTemporaryJoin } from 'node:path'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -19,7 +21,7 @@ test('history cache keeps a contiguous newest tail under its byte budget and pre
 })
 
 test('an archive over the cache budget is written as an explicitly incomplete newest tail', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-')
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-dsh-cache-"))
   try {
     const cache = new NativeHistoryCache(directory, 'synthetic-cache')
     const rows = [row(1, 2_000), row(2, 2_000), row(3, 2_000)]
@@ -43,7 +45,7 @@ test('cache tail counts UTF-8 bytes for Chinese and emoji instead of JavaScript 
 })
 
 test('cache file budget includes UTF-8 rows and the persisted JSON envelope', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-unicode-')
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-dsh-cache-unicode-"))
   try {
     const rows = [1, 2, 3].map(id => ({ ...row(id, 0), content: { text: '中文🙂'.repeat(120) } }))
     const budget = Buffer.byteLength(JSON.stringify(rows.slice(1)), 'utf8')
@@ -58,7 +60,7 @@ test('cache file budget includes UTF-8 rows and the persisted JSON envelope', as
 })
 
 test('cache replacement leaves private complete snapshots and no temporary files', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-replace-')
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-dsh-cache-replace-"))
   try {
     const cache = new NativeHistoryCache(directory, 'replacement')
     cache.write([row(1, 1_000)], true, 7)
@@ -76,7 +78,7 @@ test('cache replacement leaves private complete snapshots and no temporary files
 })
 
 test('a failed cache replacement reports the error and removes its temporary file', async () => {
-  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-dsh-cache-failure-')
+  const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-dsh-cache-failure-"))
   try {
     const cache = new NativeHistoryCache(directory, 'blocked')
     const destination = join(directory, 'blocked.opening.json')

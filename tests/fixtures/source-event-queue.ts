@@ -1,3 +1,4 @@
+import { tmpdir as testTemporaryRoot } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -25,7 +26,7 @@ export function deferred() {
   return { promise, resolve }
 }
 export async function sourceQueueFixture(kind: 'native' | 'observed') {
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hapi-source-queue-'))
+  const directory = await mkdtemp(join(testTemporaryRoot(), 'hapi-source-queue-'))
   const listeners = new Set<(event: HapiEvent) => void | Promise<void>>()
   const source: HapiSession = { id: 'queue-source', namespace: 'fixture', seq: 1, createdAt: 1, updatedAt: 1,
     active: true, activeAt: 1, thinking: false, thinkingAt: 1, metadataVersion: 1, agentStateVersion: 1,
