@@ -1,14 +1,14 @@
 /** Browser-safe schemas for authenticated official Typert transport. */
 import { z } from 'zod';
 import type { InvocationDescriptor, RemoteResult, RemoteStreamHandle, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
-import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceEntry, SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './remote/protocol.ts';
+import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt, SourceEntry, SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './remote/protocol.ts';
 
 export interface HhpiRemoteApi {
     catalog(signal?: AbortSignal): Promise<RemoteResult<SourceCatalog>>;
     read(request: SourceReadRequest, signal?: AbortSignal): Promise<RemoteResult<SourcePage>>;
     changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStreamHandle<SourceChanges, never>;
     operate(request: SourceOperation): Promise<RemoteResult<SourceReceipt>>;
-    create(request: SourceCreateRequest, signal?: AbortSignal): Promise<RemoteResult<SourceSession>>;
+    create(request: SourceCreateRequest): Promise<RemoteResult<SourceCreationReceipt>>;
     resource(request: SourceResourceRequest, signal?: AbortSignal): Promise<RemoteResult<SourceResource>>;
 }
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -37,16 +37,16 @@ export const operationSchema: z.ZodType<SourceOperation> = z.strictObject({ sess
 const page = z.strictObject({ session, epoch: id, version: seq, entries: z.array(entry), before: seq.nullable(), after: seq.nullable(), hasBefore: z.boolean(), hasAfter: z.boolean(), context: z.array(seq) });
 const changes = z.strictObject({ session, epoch: id, base: seq, version: seq, reset: z.boolean(), upserts: z.array(entry), removed: z.array(seq) });
 const inputs = { read: readSchema, changes: z.strictObject({ sessionId: id, epoch: id, version: seq }), operate: operationSchema,
-    create: z.strictObject({ sourceId: id, cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
+    create: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
 const outputs = { catalog: z.strictObject({ protocol: z.literal(1), legacyHapi: z.boolean(), sessions: z.array(session), sources: z.array(z.strictObject({ id, machineId: id, engine: z.string(), online: z.boolean(), create: z.boolean() })) }),
     read: page, changes, operate: z.strictObject({ operationId: id, sessionId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), turnId: id.optional() }),
-    create: session, resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string() }) };
+    create: z.strictObject({ sourceId: id, operationId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), session: session.optional() }), resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string() }) };
 const codec = (name: string, schema: z.ZodType) => ({ mode: 'strict' as const, typeSymbol: `hapi-dsh#hhpi/${name}`, create: () => schema });
 export const HHPI_REMOTE: TypertRemoteContribution = {
     package: 'hapi-dsh', descriptors: (Object.keys(outputs) as Array<keyof HhpiRemoteApi>).map((method): InvocationDescriptor => ({
         id: `hapi-dsh#hhpi/${method}`, service: 'hhpi', namespace: 'hhpi', method, invocation: { kind: 'direct' },
         ...(method === 'changes' ? { mode: 'stream' as const } : {}),
-        ...(method !== 'operate' ? { cancellation: { parameter: 'signal' as const } } : {}),
+        ...(method !== 'operate' && method !== 'create' ? { cancellation: { parameter: 'signal' as const } } : {}),
         parameters: method === 'catalog' ? [] : [{ name: 'request', wire: 'request', source: 'json', codec: codec(`${method}Input`, inputs[method]) }],
         result: codec(`${method}Output`, outputs[method]),
     })),
