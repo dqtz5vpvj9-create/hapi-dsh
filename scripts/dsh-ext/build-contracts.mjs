@@ -13,15 +13,17 @@ await build({ stdin: { contents, resolveDir: ROOT, loader: 'ts' }, outfile: join
   platform: 'node', format: 'cjs', target: 'node24', packages: 'external', nodePaths: [join(ROOT, 'node_modules')],
   tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: true } } });
 console.log('Compiled actual pinned BoundHistoryView, assembler and window coordinator.');
-const directory = join(source, 'packages/client/ui-chat/src/client');
-for (const name of await readdir(directory, { recursive: true })) {
-  if (!/\.(ts|tsx)$/.test(name)) continue;
-  const text = await readFile(join(directory, name), 'utf8'), lines = text.split('\n');
-  const matches = lines.flatMap((line, index) => /cursor:|historyView\.read\(|\.read\(\{ kind: '(before|after)'/.test(line) ? [index] : []);
-  if (!matches.length) continue;
-  console.log(`::group::Official navigation ${name}`);
-  const wanted = new Set();
-  for (const index of matches) for (let line = Math.max(0, index - 12); line <= Math.min(lines.length - 1, index + 10); line++) wanted.add(line);
-  for (const index of [...wanted].sort((a, b) => a - b)) console.log(`${index + 1}: ${lines[index]}`);
-  console.log('::endgroup::');
+for (const packageName of ['ui-chat', 'ui-conversation', 'ui-session']) {
+  const directory = join(source, `packages/client/${packageName}/src/client`);
+  for (const name of await readdir(directory, { recursive: true })) {
+    if (!/\.(ts|tsx)$/.test(name)) continue;
+    const text = await readFile(join(directory, name), 'utf8'), lines = text.split('\n');
+    const matches = lines.flatMap((line, index) => /kind: ['"](?:before|after)['"]|cursor:|String\(.*(?:first|last|seq)|historyView.*read/.test(line) ? [index] : []);
+    if (!matches.length) continue;
+    console.log(`::group::Official navigation ${packageName}/${name}`);
+    const wanted = new Set();
+    for (const index of matches) for (let line = Math.max(0, index - 10); line <= Math.min(lines.length - 1, index + 10); line++) wanted.add(line);
+    for (const index of [...wanted].sort((a, b) => a - b)) console.log(`${index + 1}: ${lines[index]}`);
+    console.log('::endgroup::');
+  }
 }

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyCompleteWindows } from './complete-windows.mjs';
 import { applyReaderPublication } from './reader-publication.mjs';
+import { applyInputContracts } from './input-contracts.mjs';
 export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
 export const UPSTREAM_VERSION = '0.2.1-rc.3';
 export const EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-conversation', 'packages/client/ui-chat'];
@@ -48,7 +49,8 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   try { await copySources(overrides); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await applyCompleteWindows(directory);
   await applyReaderPublication(directory);
-  for (const file of ['complete-windows.mjs', 'reader-publication.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
+  await applyInputContracts(directory);
+  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
   const provenance = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs, patchSetSha256: sha256(JSON.stringify(inputs)) };
   await writeFile(join(directory, 'hhpi-source-inputs.json'), `${JSON.stringify(provenance, null, 2)}\n`);
   return { directory, provenance };

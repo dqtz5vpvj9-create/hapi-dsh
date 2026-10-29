@@ -10,10 +10,10 @@ if (manifest.packageManager !== 'pnpm@11.28.5') throw new Error('The pinned upst
 const pnpm = (args, cwd = source, timeout = 180_000) => run('npm', ['exec', '--yes', '--package=pnpm@11.28.5', '--', 'pnpm', ...args], { cwd, timeout });
 console.log('Installing the exact upstream lockfile with lifecycle scripts disabled.');
 console.log(pnpm(['install', '--frozen-lockfile', '--ignore-scripts'], source, 300_000));
-const projects = [];
-for (const path of EXTENSION_PACKAGES) projects.push(`${path}/tsconfig.json`);
+console.log('Generating official Typert source contracts before Client compilation.');
+console.log(pnpm(['exec', 'tsx', 'scripts/generate-typert.ts'], source, 180_000));
 console.log('Typechecking and emitting the source extension project references.');
-console.log(pnpm(['exec', 'tsc', '-b', ...projects], source, 300_000));
+console.log(pnpm(['exec', 'tsc', '-b', ...EXTENSION_PACKAGES.map(path => `${path}/tsconfig.json`)], source, 300_000));
 await mkdir(output, { recursive: true });
 for (const path of EXTENSION_PACKAGES) {
   const cwd = join(source, path);
