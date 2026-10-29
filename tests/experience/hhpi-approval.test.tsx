@@ -1,6 +1,6 @@
 /** Production approval UI. Only the remote operate call is controlled by the test. */
 import { act, fireEvent, render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { userEvent } from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SourceApproval, SourceOperation, SourceReceipt } from '../../src/remote/protocol.ts'
