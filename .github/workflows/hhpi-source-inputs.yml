@@ -1,0 +1,56 @@
+name: HHPI source inputs
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['.github/workflows/hhpi-source-inputs.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: 1f81c047fc48fa190a683e469daa699857e9afe8
+          path: .hhpi-inputs/dsh
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: dqtz5vpvj9-create/hapi-dsh
+          ref: 7fd0dd4e1c63356b11ad37f841a76c7b28160254
+          path: .hhpi-inputs/recovery
+          persist-credentials: false
+      - name: Archive tracked source without profiles or credentials
+        run: |
+          mkdir -p "${RUNNER_TEMP}/hhpi-source-inputs"
+          git -C .hhpi-inputs/dsh archive --format=tar.gz --output="${RUNNER_TEMP}/hhpi-source-inputs/dsh-source.tar.gz" HEAD
+          git -C .hhpi-inputs/recovery archive --format=tar.gz --output="${RUNNER_TEMP}/hhpi-source-inputs/recovery-source.tar.gz" HEAD
+      - name: Acquire native Codex test executable without authentication
+        timeout-minutes: 4
+        run: |
+          VERSION=$(npm view @openai/codex version)
+          mkdir -p "${RUNNER_TEMP}/hhpi-codex-runtime"
+          npm install --prefix "${RUNNER_TEMP}/hhpi-codex-runtime" --save-exact "@openai/codex@${VERSION}"
+          printf '%s\n' "$VERSION" > "${RUNNER_TEMP}/hhpi-source-inputs/codex-version.txt"
+          tar -C "${RUNNER_TEMP}/hhpi-codex-runtime" -czf "${RUNNER_TEMP}/hhpi-source-inputs/codex-runtime.tar.gz" package.json package-lock.json node_modules
+      - name: Preserve source inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: hhpi-source-inputs
+          path: ${{ runner.temp }}/hhpi-source-inputs/
+          if-no-files-found: error
+          retention-days: 3
