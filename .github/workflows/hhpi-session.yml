@@ -2,7 +2,7 @@ name: HHPI source Session operations
 on:
   push:
     branches: [feat/hhpi-remote-access-20261029]
-    paths: ['src/client/remote-*.ts', 'src/remote/**', 'tests/hhpi-session-operations.test.ts', 'tests/fixtures/client-session-contract.ts', '.github/workflows/hhpi-session.yml']
+    paths: ['src/client/remote-*.ts', 'src/client/remote-*.tsx', 'src/remote/**', 'tests/hhpi-session-operations.test.ts', 'tests/experience/hhpi-approval.test.tsx', 'tests/fixtures/client-session-contract.ts', '.github/workflows/hhpi-session.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -21,4 +21,6 @@ jobs:
       - run: npm ci
         timeout-minutes: 5
       - run: node --import tsx --test tests/hhpi-session-operations.test.ts
+        timeout-minutes: 1
+      - run: npm run test:experience -- tests/experience/hhpi-approval.test.tsx
         timeout-minutes: 1

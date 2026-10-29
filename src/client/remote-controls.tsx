@@ -1,18 +1,32 @@
 /** Additive controls for capabilities owned by the native source engine. */
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { isSourceSessionId, type SourceApproval, type SourceReceipt } from '../remote/protocol.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 
-export function SourceApprovalControl({ session, request, zh }: { session: RemoteSourceSession; request: SourceApproval; zh: boolean }) {
+interface ApprovalProps {
+  session: Pick<RemoteSourceSession, 'sessionId' | 'operate'>
+  request: SourceApproval
+  zh: boolean
+}
+export function SourceApprovalControl(props: ApprovalProps) {
+  return <SourceApprovalButtons key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
+}
+function SourceApprovalButtons({ session, request, zh }: ApprovalProps) {
   const [receipt, setReceipt] = useState<SourceReceipt | undefined>()
   const [error, setError] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
   const lifetime = useRef(0)
-  useEffect(() => { ++lifetime.current; return () => { ++lifetime.current } }, [session, request.id])
+  // A reconnect may replace the Session face without changing its native ID.
+  // Invalidate old callbacks before the new owner can receive an input event.
+  useLayoutEffect(() => {
+    ++lifetime.current; inFlight.current = false
+    setReceipt(undefined); setError(undefined); setBusy(false)
+    return () => { ++lifetime.current }
+  }, [session, request.id])
   const answer = async (decision: 'accept' | 'decline'): Promise<void> => {
     if (inFlight.current || receipt?.status === 'accepted') return
     inFlight.current = true; setBusy(true); setError(undefined)
@@ -46,7 +60,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     return <>
       <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}`}</style>
       {metadata.capabilities.steer && state.running && <button type="button" className="hhpi-source-steer" aria-label="Steer"
-        disabled={input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim()}
+        disabled={input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim() || !metadata.activeTurnId}
         onClick={() => {
           const scope = ctx.sessions.scope(props.sessionId)
           if (scope) ctx.conversation.input.for(scope).submit('steer', 'click')
