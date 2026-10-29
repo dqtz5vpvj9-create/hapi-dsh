@@ -23,6 +23,8 @@ import { WorkspacePaneProvider } from './pane-context.tsx'
 import { installSharedRightbar } from './shared-rightbar.tsx'
 import { installSourceWindowNavigation } from './source-window-navigation.tsx'
 import { bindPaneReading } from '../reading-view.ts'
+import { bindRemotePaneReading } from '../remote-reading.ts'
+import { isSourceSessionId } from '../../remote/protocol.ts'
 import type { SourcePreparationReference, SourceViewportSession, SourceWindowViewport } from '../source-sessions.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -736,7 +738,9 @@ export function installSessionViewHost(ctx: Context): {
             const preparation = new WindowPreparationCoordinator(options.navigation.state)
             preparations.set(entry.key, preparation)
             entries.set(identity, entry); publish()
-            const stopReading = bindPaneReading(ctx, options.target, options.reference, options.navigation)
+            const stopReading = isSourceSessionId(options.reference.sessionId)
+                ? bindRemotePaneReading(options.target, options.reference, options.navigation)
+                : bindPaneReading(ctx, options.target, options.reference, options.navigation)
             let readingStopped = false
             const uninitialHistory = (): void => { if (!readingStopped) { readingStopped = true; stopReading() } }
             initialHistory.set(identity, uninitialHistory)

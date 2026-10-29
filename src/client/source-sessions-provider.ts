@@ -13,6 +13,8 @@ import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type { Loader, Entry } from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import { SourceSessions } from './source-sessions.ts'
+import { RemoteSessions } from './remote-sessions.ts'
+import { HHPI_REMOTE } from '../hhpi-api.ts'
 import { SOURCE_SESSION_CONSUMERS, SOURCE_SESSIONS_REALM, sourceSessionsContext } from './source-sessions-composition.ts'
 import { installCommandDirectoryProvider } from './command-directory-provider.ts'
 
@@ -88,8 +90,12 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       await entry.update({ isolate: isolation(entry, label) })
     }))
     diagnosticMark('hapi-dsh:provider:isolated')
-    originalOwner = ctx.inject(['sessions'], async owner => {
-      const facade = new SourceSessions(owner.sessions)
+    originalOwner = ctx.inject(['sessions', 'remote'], async owner => {
+      // Install HHPI independently of HAPI. The official DSH Session owner
+      // keeps native execution and leases; HHPI adds only source-owned views.
+      const unmountHhpi = await owner.remote.$mount(HHPI_REMOTE)
+      const remote = new RemoteSessions(owner, owner.sessions, owner.remote.hhpi)
+      const facade = new SourceSessions(remote)
       let provider: Fiber | undefined
       try {
         const scope = await sourceSessionsContext(owner)
@@ -106,9 +112,16 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       } catch (error) {
         await provider?.dispose()
         facade.dispose()
+        remote.dispose()
+        await unmountHhpi?.()
         throw error
       }
-      return async () => { await provider?.dispose(); facade.dispose() }
+      return async () => {
+        await provider?.dispose()
+        facade.dispose()
+        remote.dispose()
+        await unmountHhpi?.()
+      }
     })
     await originalOwner
   } catch (error) {

@@ -61,6 +61,7 @@ import { installDraftHandoff } from './draft-handoff-dialog.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
 import { installWorkspaceLinkSettings } from './workspace-links.tsx'
 import { installDeferredPlugins } from './deferred-plugins.ts'
+import { installRemoteSourceControls } from './remote-controls.tsx'
 
 export { WorkspaceController, sessionResourceId, parseSessionResourceId } from './controller.ts'
 export type { WorkspaceHost, WorkspaceOptions, WorkspaceSnapshot, WorkspacePersistence } from './controller.ts'
@@ -172,6 +173,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(() => { window.removeEventListener('storage', onPreference) })
     stage = 'register workspace styles and locale'
     disposers.push(installWorkspaceStyles(document))
+    disposers.push(installRemoteSourceControls(ctx))
     disposers.push(installWorkspaceMenus(document))
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     // Page-global: covers local and remote Host panes. Automates the official
