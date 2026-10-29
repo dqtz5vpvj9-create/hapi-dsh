@@ -60,8 +60,7 @@ export class SourceGateway {
     }
     async read(request: SourceReadRequest, access: SourceAccess, signal?: AbortSignal): Promise<SourcePage> {
         const adapter = this.adapterFor(request.sessionId, access), page = await adapter.read(request, signal);
-        signal?.throwIfAborted(); this.assertAllowed(access, { kind: 'session', id: request.sessionId });
-        this.checkSession(adapter, page.session, request.sessionId); return page;
+        signal?.throwIfAborted(); this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId }); this.checkSession(adapter, page.session, request.sessionId); return page;
     }
     async *changes(request: SourceChangesRequest, access: SourceAccess, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const adapter = this.adapterFor(request.sessionId, access);
@@ -72,6 +71,7 @@ export class SourceGateway {
     }
     async operate(request: SourceOperation, access: SourceAccess): Promise<SourceReceipt> {
         const adapter = this.adapterFor(request.sessionId, access), receipt = await adapter.operate(request);
+        this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId });
         if (receipt.sessionId !== request.sessionId || receipt.operationId !== request.operationId) throw new SourceError('OUTCOME_UNKNOWN', 'The source acknowledgement belongs to another operation.');
         return receipt;
     }
@@ -80,6 +80,7 @@ export class SourceGateway {
         const adapter = this.adapters.get(request.sourceId);
         if (!adapter?.create) throw new SourceError('UNSUPPORTED', 'This source does not expose native thread creation.');
         const receipt = await adapter.create(request);
+        this.assertLive(); this.assertAllowed(access, { kind: 'source', id: request.sourceId });
         if (receipt.operationId !== request.operationId || receipt.sourceId !== request.sourceId) throw new SourceError('OUTCOME_UNKNOWN', 'The source creation acknowledgement belongs to another operation.');
         if (receipt.session) this.checkSession(adapter, receipt.session);
         return receipt;
@@ -88,7 +89,7 @@ export class SourceGateway {
         const adapter = this.adapterFor(request.sessionId, access);
         if (!adapter.readResource) throw new SourceError('UNSUPPORTED', 'This source has not declared resource access. No central Host path was opened.');
         const value = await adapter.readResource(request, signal);
-        signal?.throwIfAborted(); this.assertAllowed(access, { kind: 'session', id: request.sessionId }); return value;
+        signal?.throwIfAborted(); this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId }); return value;
     }
     async dispose(): Promise<void> {
         if (this.disposed) return; this.disposed = true;

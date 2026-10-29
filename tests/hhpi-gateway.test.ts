@@ -73,3 +73,38 @@ test('foreign acknowledgements remain indeterminate and disposed gateways reject
     await assert.rejects(gateway.operate({ sessionId: session.id, operationId: 'one', kind: 'cancel' }, allow), { code: 'OUTCOME_UNKNOWN' });
     await gateway.dispose(); await assert.rejects(gateway.read({ sessionId: session.id }, allow), { code: 'DISPOSED' });
 });
+
+test('revocation during a native operation or creation never publishes its late receipt', async () => {
+    const { adapter } = fixture();
+    const mutation = Promise.withResolvers<SourceReceipt>();
+    const creation = Promise.withResolvers<import('../src/remote/protocol.ts').SourceCreationReceipt>();
+    adapter.operate = async () => mutation.promise;
+    adapter.create = async () => creation.promise;
+    const gateway = new SourceGateway([adapter], false);
+    let allowed = true;
+    const access: SourceAccess = () => allowed;
+    const writing = gateway.operate({ sessionId: session.id, operationId: 'request-1', kind: 'send', text: 'synthetic' }, access);
+    const creating = gateway.create({ sourceId: adapter.id, operationId: 'request-2' }, access);
+    allowed = false;
+    mutation.resolve({ operationId: 'request-1', sessionId: session.id, status: 'accepted', message: 'Native source accepted' });
+    creation.resolve({ operationId: 'request-2', sourceId: adapter.id, status: 'accepted', message: 'Created', session });
+    await assert.rejects(writing, { code: 'UNSUPPORTED' });
+    await assert.rejects(creating, { code: 'UNSUPPORTED' });
+    await gateway.dispose();
+});
+
+test('gateway disposal before a late read or resource response rejects the stale result', async () => {
+    const { adapter } = fixture();
+    const pageGate = Promise.withResolvers<SourcePage>();
+    const fileGate = Promise.withResolvers<{ encoding: 'base64'; content: string; mimeType: string }>();
+    adapter.read = async () => pageGate.promise;
+    adapter.readResource = async () => fileGate.promise;
+    const gateway = new SourceGateway([adapter], false);
+    const reading = gateway.read({ sessionId: session.id }, allow);
+    const resource = gateway.resource({ sessionId: session.id, path: 'synthetic' }, allow);
+    await gateway.dispose();
+    pageGate.resolve(page);
+    fileGate.resolve({ encoding: 'base64', content: '', mimeType: 'text/plain' });
+    await assert.rejects(reading, { code: 'DISPOSED' });
+    await assert.rejects(resource, { code: 'DISPOSED' });
+});
