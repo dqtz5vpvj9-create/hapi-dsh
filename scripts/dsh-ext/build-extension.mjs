@@ -7,6 +7,8 @@ const source = process.argv[2], output = resolve(process.argv[3] ?? join(ROOT, '
 if (!source) throw new Error('A prepared DSH source directory is required.');
 const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'));
 if (manifest.packageManager !== 'pnpm@11.28.5') throw new Error('The pinned upstream package manager changed.');
+const provenance = JSON.parse(await readFile(join(source, 'hhpi-source-inputs.json'), 'utf8'));
+const identity = { upstreamCommit: provenance.upstreamCommit, upstreamVersion: provenance.upstreamVersion, patchSetSha256: provenance.patchSetSha256 };
 const pnpm = (args, cwd = source, timeout = 180_000) => run('npm', ['exec', '--yes', '--package=pnpm@11.28.5', '--', 'pnpm', ...args], { cwd, timeout });
 console.log('Installing the exact upstream lockfile with lifecycle scripts disabled.');
 console.log(pnpm(['install', '--frozen-lockfile', '--ignore-scripts'], source, 300_000));
@@ -15,13 +17,18 @@ console.log(pnpm(['exec', 'tsx', 'scripts/generate-typert.ts'], source, 180_000)
 console.log('Typechecking and emitting the source extension project references.');
 console.log(pnpm(['exec', 'tsc', '-b', ...EXTENSION_PACKAGES.map(path => `${path}/tsconfig.json`)], source, 300_000));
 await mkdir(output, { recursive: true });
+if ((await readdir(output)).some(name => name.endsWith('.tgz'))) throw new Error('Use an empty package output directory; mixed extension builds are not accepted.');
 for (const path of EXTENSION_PACKAGES) {
-  const cwd = join(source, path);
+  const cwd = join(source, path), metadataPath = join(cwd, 'package.json');
+  const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
+  // Source package metadata distinguishes this build from the official npm rc.
+  // Nothing in compiled JavaScript is intercepted or rewritten.
+  metadata.hhpiSourceExtension = identity;
+  await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(`Building ${path} with the official compiler preset.`);
   console.log(pnpm(['exec', 'tsdown', '--config-loader', 'native'], cwd, 180_000));
   console.log(pnpm(['pack', '--pack-destination', output], cwd));
 }
-const provenance = JSON.parse(await readFile(join(source, 'hhpi-source-inputs.json'), 'utf8'));
 const packages = [];
 for (const name of (await readdir(output)).filter(name => name.endsWith('.tgz')).sort()) {
   const bytes = await readFile(join(output, name));

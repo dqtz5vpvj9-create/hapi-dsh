@@ -1,0 +1,65 @@
+name: HHPI installed extension integration
+
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['src/**', 'tests/**', 'scripts/**', 'source-snapshots/**', 'package*.json', 'tsconfig*.json', '.github/workflows/hhpi-integration.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - run: npm ci
+        timeout-minutes: 5
+      - name: Verify extension installation boundary
+        run: node --test tests/hhpi-extension-install.test.mjs
+      - name: Prepare pinned source
+        run: |
+          node scripts/dsh-ext/prepare.mjs "${RUNNER_TEMP}/hhpi-source" > "${RUNNER_TEMP}/hhpi-source.json"
+          node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(process.argv[1])); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);' "${RUNNER_TEMP}/hhpi-source.json"
+      - name: Build source extension packages
+        timeout-minutes: 10
+        run: node scripts/dsh-ext/build-extension.mjs "${HHPI_DSH_SOURCE}" "${RUNNER_TEMP}/hhpi-packages"
+      - name: Install the complete verified extension set
+        id: install
+        timeout-minutes: 4
+        run: node scripts/dsh-ext/install-extension.mjs "${RUNNER_TEMP}/hhpi-packages"
+      - name: Full Host Client and component typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 2
+        run: npm run typecheck
+      - name: Full behavior suite against installed extensions
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 6
+        run: npm test
+      - name: History and fault contracts
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 3
+        run: npm run test:history && npm run test:faults
+      - name: Build distributable plugin
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 3
+        run: npm run build
+      - name: Confirm tracked dependency inputs were not changed
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: git diff --exit-code -- package.json package-lock.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        with:
+          name: hhpi-installed-extension-identity
+          path: .tmp/hhpi-ext/installed.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
