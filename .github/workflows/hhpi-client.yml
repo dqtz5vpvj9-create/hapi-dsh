@@ -3,9 +3,9 @@ name: HHPI client contracts
 on:
   push:
     branches: [feat/hhpi-remote-access-20261029]
-    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
+    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'tests/contracts/**', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
   pull_request:
-    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
+    paths: ['src/client/**', 'src/remote/**', 'tests/hhpi-history*.test.ts', 'tests/contracts/**', 'scripts/**', 'source-snapshots/**', 'package*.json', '.github/workflows/hhpi-client.yml']
   workflow_dispatch:
 
 permissions:
@@ -27,14 +27,17 @@ jobs:
         timeout-minutes: 5
         run: npm ci
       - name: Show affected test selection
-        run: npm run test:changed -- --files src/client/remote-history.ts tests/hhpi-history-races.test.ts --list
-      - name: Source history cancellation, revisions and continuous reading
+        run: npm run test:changed -- --files src/client/remote-history.ts src/client/history-publication.ts tests/hhpi-history-races.test.ts tests/hhpi-history-publication.test.ts --list
+      - name: Source history races and transactional publication
         timeout-minutes: 2
-        run: node --import tsx --test tests/hhpi-history-races.test.ts
-      - name: Prepare the pinned source overlay without machine-local dependencies
+        run: node --import tsx --test tests/hhpi-history-races.test.ts tests/hhpi-history-publication.test.ts
+      - name: Prepare the pinned source overlay
         timeout-minutes: 3
         run: |
           node scripts/dsh-ext/prepare.mjs "${RUNNER_TEMP}/hhpi-source" > "${RUNNER_TEMP}/hhpi-source.json"
           node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(process.argv[1])); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`); console.log(JSON.stringify(x));' "${RUNNER_TEMP}/hhpi-source.json"
-      - name: Inspect the actual official reader and compiler contracts
-        run: node scripts/dsh-ext/inspect-contracts.mjs "${HHPI_DSH_SOURCE}"
+      - name: Compile actual official production contracts
+        run: node scripts/dsh-ext/build-contracts.mjs "${HHPI_DSH_SOURCE}"
+      - name: Official Conversation continuous reading
+        timeout-minutes: 2
+        run: node --import tsx --test tests/contracts/hhpi-official-history.test.ts

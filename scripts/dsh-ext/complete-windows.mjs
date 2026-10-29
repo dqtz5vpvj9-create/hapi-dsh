@@ -56,8 +56,11 @@ export async function applyCompleteWindows(root) {
     const start = body.getStart(source) + 1; edits.push({ start, end: start, text: `\n${code}\n` });
   };
   prepend('read', `    this.assertLive(); signal?.throwIfAborted()
-    await this.openingPromise
+    await this.opening
     if (this.feed?.mode === 'complete-window') return this.requestComplete(request, signal)`);
+  prepend('refresh', `    this.assertLive(); signal?.throwIfAborted()
+    await this.opening
+    if (this.feed?.mode === 'complete-window') return this.requestComplete(null, signal)`);
   prepend('startPage', `    if (this.feed?.mode === 'complete-window') return this.requestComplete(request)`);
   prepend('resync', `    if (this.feed?.mode === 'complete-window') return this.requestComplete(null)`);
   prepend('applyDelta', `    if (this.feed?.mode === 'complete-window') {
@@ -67,21 +70,16 @@ export async function applyCompleteWindows(root) {
         if (delta.base !== this.versionCursor || delta.snapshot?.version !== delta.version) {
           throw Object.assign(new Error('The complete history stream has a version gap.'), { code: 'STALE_VERSION' })
         }
-        await this.commitSnapshot(delta.snapshot)
+        await this.commitSnapshot(delta.snapshot, this.abort.signal)
         this.headChanged = delta.headChanged
         this.publish()
         return false
       })
     }`);
   const commit = member('commitSnapshot'), bodyStart = commit.body.getStart(source) + 1;
-  let inner = text.slice(bodyStart, commit.body.end - 1);
-  const signalEdits = [];
-  const visitSignal = node => {
-    if (ts.isPropertyAccessExpression(node) && node.getText(source) === 'this.abort.signal') signalEdits.push({ start: node.getStart(source) - bodyStart, end: node.end - bodyStart, text: 'commitSignal' });
-    else ts.forEachChild(node, visitSignal);
-  };
-  ts.forEachChild(commit.body, visitSignal); inner = applyEdits(inner, signalEdits);
-  edits.push({ start: commit.getStart(source), end: commit.end, text: `private async commitSnapshot(snapshot: HistorySnapshotV1, commitSignal: AbortSignal = this.abort.signal): Promise<void> {
+  if (commit.parameters[1]?.name.getText(source) !== 'signal') throw new Error('The pinned commit cancellation parameter changed.');
+  const inner = text.slice(bodyStart, commit.body.end - 1);
+  edits.push({ start: commit.getStart(source), end: commit.end, text: `private async commitSnapshot(snapshot: HistorySnapshotV1, signal: AbortSignal): Promise<void> {
     const publication = this.feed?.mode === 'complete-window' ? this.feed.publication : undefined
     const previous = this.completeCandidate
     if (this.feed?.mode === 'complete-window' && !publication) throw new Error('A complete-window source must acknowledge publication.')
@@ -93,12 +91,6 @@ export async function applyCompleteWindows(root) {
       throw error
     } finally { this.completeCandidate = previous }
   }` });
-  const startMethod = member('start');
-  const awaitInitial = node => {
-    if (ts.isCallExpression(node) && node.expression.getText(source) === 'this.commitSnapshot' && !ts.isAwaitExpression(node.parent)) edits.push({ start: node.getStart(source), end: node.getStart(source), text: 'await ' });
-    ts.forEachChild(node, awaitInitial);
-  };
-  ts.forEachChild(startMethod.body, awaitInitial);
   const publish = member('publishWindow');
   const assemblerCalls = publish.body.statements.filter(statement => ts.isVariableStatement(statement)
     && statement.declarationList.declarations.some(declaration => declaration.initializer && ts.isCallExpression(declaration.initializer)
@@ -159,7 +151,7 @@ export async function applyCompleteWindows(root) {
     this.assertLive(); signal.throwIfAborted()
     const feed = this.feed
     if (!feed || feed.mode !== 'complete-window') throw new Error('The complete-window source is not open.')
-    this.followAbort?.abort(); this.followAbort = null
+    this.followAbort?.abort(); this.followAbort = undefined
     this.busy = true; this.publish()
     let candidate: HistorySnapshotV1 | undefined
     try {
