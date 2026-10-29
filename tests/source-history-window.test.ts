@@ -1,17 +1,18 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { freezeMessage, MessageId } from '@deepseek-ai/dsh-llm'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
-import type { SessionPage, SessionPageRequest } from '@deepseek-ai/dsh-api-session-controller/types'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { HistoryProjectionSink } from '../src/shared/projection-event-sink.ts'
 import type { HapiMessage, HapiMessagesPage, HapiTransport } from '../src/codex/contracts.ts'
-import { DISPLAY_SEQ_OFFSET, DISPLAY_TURN_BASE, DisplayHistoryWindows, SourceHistoryWindow, type RenderedHistoryPage } from '../src/codex/source-window.ts'
+import { DISPLAY_TURN_BASE, sourceTurnKey, DisplayHistoryWindows, SourceHistoryPageCache, SourceHistoryWindow,
+  type RenderedHistoryPage, type SourceWindowPage } from '../src/codex/source-window.ts'
 
 function boundary() { return { threadId: 'thread', turnId: 'turn', itemId: 'item' } }
 function row(id: number, turn: number, userMessage = false): HapiMessage {
   return { id: `row-${id}`, localId: userMessage ? `local-${id}` : null, seq: id,
     createdAt: 1000 + id, invokedAt: userMessage ? 1000 + id : null,
-    content: userMessage ? { role: 'user', content: { type: 'text', text: `turn ${turn}` } }
-      : { role: 'agent', content: { type: 'text', text: `answer ${id}` } } }
+    content: userMessage ? { role: 'user', content: { type: 'text', text: `turn ${turn}` }, meta: { nativeExecution: { threadId: 'thread', turnId: `turn-${turn}`, itemId: `item-${id}` } } }
+      : { role: 'agent', content: { type: 'text', text: `answer ${id}` }, meta: { nativeExecution: { threadId: 'thread', turnId: `turn-${turn}`, itemId: `item-${id}` } } } }
 }
 
 /** The window only sees the same public rendering contract as each Agent. */
@@ -21,7 +22,6 @@ function indexIsPartial(rows: readonly HapiMessage[], anchorIndex: number): bool
 }
 
 function fakeAgent(rows: readonly HapiMessage[], anchorIndex: number) {
-  const turns = [...new Set(rows.map((_, index) => Math.floor(index / 3)))]
   return {
     id: SessionId('hapi-codex-source-window-fixture'),
     binding: { hapiSessionId: 'source-window-fixture' },
@@ -31,33 +31,34 @@ function fakeAgent(rows: readonly HapiMessage[], anchorIndex: number) {
         firstTurn: DISPLAY_TURN_BASE + 1, hasOlder: anchorIndex > 0,
         oldest: { id: anchor.id, at: anchor.createdAt, seq: anchor.seq! }, partial: indexIsPartial(rows, anchorIndex) }
     },
-    renderHistoryPage(pageRows: readonly HapiMessage[]): RenderedHistoryPage {
-      const session = Session.create(SessionId(`history-${pageRows[0]?.id}`))
+    async renderHistoryPage(pageRows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
+      const session = new HistoryProjectionSink()
       let turn = 0
-      let lastTurn = -1
+      let lastTurn: string | null | undefined
       const sources = new Map<string, number>()
       const rewinds = new Map<number, string>()
       const forks = new Map<string, ReturnType<typeof boundary>>()
       const turnAnchors = new Map<number, { id: string; at: number; seq: number; key: string | null }>()
       for (const [index, item] of pageRows.entries()) {
-        const sourceTurn = Math.floor(index / 3)
+        const sourceTurn = sourceTurnKey(item)
+        session.setSource({ messageId: item.id, at: item.createdAt, seq: item.seq ?? 0, itemKey: item.id, ...(sourceTurn ? { turnKey: sourceTurn } : {}) })
         if (sourceTurn !== lastTurn) {
           lastTurn = sourceTurn; turn++
-          turnAnchors.set(turn, { id: item.id, at: item.createdAt, seq: item.seq ?? item.createdAt, key: null })
-          session.append('turn/start', { turn })
+          turnAnchors.set(turn, { id: item.id, at: item.createdAt, seq: item.seq ?? item.createdAt, key: sourceTurn })
+          session.append('turn/start', { turn }, item.createdAt)
         }
         const event: SessionEvent = item.localId
           ? session.append('user/message', freezeMessage({ id: MessageId(`u:${item.id}`), role: 'user',
-            content: [{ type: 'text', text: 'question' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
+            content: [{ type: 'text', text: 'question' }], source: { kind: 'user' } }), item.createdAt, { surfaceOp: 'append' })
           : session.append('assistant/message', { turn, step: 1,
             message: freezeMessage({ id: MessageId(`a:${item.id}`), role: 'assistant',
               content: [{ type: 'text', text: 'answer' }], source: { kind: 'model', provider: 'fixture', model: 'fixture' } }),
-            stream: [] }, { surfaceOp: 'append' })
+            stream: [] }, item.createdAt, { surfaceOp: 'append' })
         sources.set(item.id, event.seq)
         if (item.localId) rewinds.set(event.seq, item.localId)
         if (!item.localId) forks.set(`a:${item.id}`, boundary())
       }
-      return { events: session.snapshotEvents(), lastTurn: turn, sources, rewinds, forks, turnAnchors }
+      return { events: session.events, eventSources: session.eventSources, lastTurn: turn, sources, rewinds, forks, turnAnchors }
     },
   }
 }
@@ -90,35 +91,34 @@ class FakeTransport implements HapiTransport {
   subscribe(): never { throw new Error('unused') }
 }
 
-test('source history window pages older turns with contiguous virtual seqs and no rebuild', async () => {
+async function beforePage(window: SourceHistoryWindow, transport: FakeTransport, before: { at: number; seq: number }) {
+  return window.windowBefore(before, 0, async cursor => {
+    const page = await transport.readMessages(window.agent.binding.hapiSessionId, { beforeAt: cursor.at, beforeSeq: cursor.seq })
+    return { messages: page.messages, epoch: page.page.epoch, hasMore: page.page.hasMore,
+      next: page.page.nextBeforeAt == null || page.page.nextBeforeSeq == null ? null : { at: page.page.nextBeforeAt, seq: page.page.nextBeforeSeq } }
+  }, 1)
+}
+
+test('source pages keep original identities across independently rendered pages without a display rebuild', async () => {
   const rows = Array.from({ length: 24 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
-  const agent = fakeAgent(rows, 18)
-  const transport = new FakeTransport(rows)
-  const delegate = async (_request: SessionPageRequest): Promise<SessionPage> => { throw new Error('no real page expected') }
-  const window = new SourceHistoryWindow(agent, transport)
-  let before = DISPLAY_SEQ_OFFSET
-  const seen = new Set<number>()
-  let pages = 0
+  const agent = fakeAgent(rows, 18), transport = new FakeTransport(rows), window = new SourceHistoryWindow(agent, transport)
+  let before = agent.historyWindowAnchor().before, pages = 0
+  const seen = new Set<string>()
   while (true) {
-    const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: before + 10,
-      beforeSeq: before, maxMessages: 20 }, undefined, delegate)
-    if (!page.records.length) { assert.equal(page.hasMore, false); break }
-    assert.equal(page.records.at(-1)!.event.seq, before - 1)
-    for (const [index, record] of page.records.entries()) {
-      if (index > 0) assert.equal(record.event.seq, page.records[index - 1]!.event.seq + 1)
-      assert.ok(record.event.seq < before)
-      assert.ok(!seen.has(record.event.seq), 'each virtual seq appears once')
-      seen.add(record.event.seq)
+    const page = await beforePage(window, transport, before)
+    assert.deepEqual(page.records, [], 'the canonical body is not duplicated in an obsolete numeric-coordinate stream')
+    for (const frame of page.frames!) {
+      assert.ok(frame.source && frame.source.seq < before.seq)
+      assert.ok(!seen.has(frame.key)); seen.add(frame.key)
     }
-    const firstTurn = page.records.find(record => record.event.type === 'turn/start')?.event.data as { turn: number } | undefined
-    assert.ok(firstTurn === undefined || firstTurn.turn < agent.historyWindowAnchor()!.firstTurn)
-    before = page.records[0]!.event.seq
     pages++
-    if (!page.hasMore) break
+    if (!page.hasMoreBefore) break
+    assert.ok(page.before && page.before.seq < before.seq)
+    before = page.before
     assert.ok(pages < 10)
   }
-  assert.ok(pages >= 2)
-  assert.ok(transport.queries.length >= pages)
+  assert.equal(pages, 6); assert.equal(transport.queries.length, pages)
+  assert.equal(window.agent, agent)
 })
 
 test('canonical outline numbers every source turn around the live seed', async () => {
@@ -139,105 +139,96 @@ test('canonical outline numbers every source turn around the live seed', async (
   assert.equal(value.entries[2]?.messageId, 'row-7')
 })
 
-test('direct context windows map rendered turns to the canonical outline and assign bounded seqs', async () => {
+test('direct context body has stable source identity and never waits for the directory', async () => {
   const rows = Array.from({ length: 12 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
   const agent = fakeAgent(rows, 9)
-  const outline = rows.filter((_row, index) => index % 3 === 0).map((item, index) => ({
-    messageId: item.id, label: `question ${index + 1}`, at: item.createdAt, seq: item.seq ?? index, createdAt: item.createdAt,
-  }))
-  const window = new SourceHistoryWindow(agent, new FakeTransport(rows), undefined, async () => ({
-    entries: outline, page: { epoch: 1, hasMore: false, beforeCursor: null },
-  }))
-  let reads = 0
+  let outlineReads = 0, reads = 0
+  const window = new SourceHistoryWindow(agent, new FakeTransport(rows), undefined, async () => {
+    outlineReads++; throw new Error('Body loading must not read the outline')
+  })
   const page = await window.windowAt('row-10', 2, 3_000_000_000, async (messageId, radius) => {
-    reads++
-    assert.equal(messageId, 'row-10')
-    assert.equal(radius, 2)
-    return { messages: rows.slice(8, 12), page: { beforeCursor: { at: 1009, seq: 9 }, afterCursor: { at: 1012, seq: 12 },
+    reads++; assert.equal(messageId, 'row-10'); assert.equal(radius, 2)
+    return { messages: rows.slice(8), page: { beforeCursor: { at: 1009, seq: 9 }, afterCursor: { at: 1012, seq: 12 },
       hasMoreBefore: true, hasMoreAfter: false, epoch: 1, reset: false } }
   })
-  assert.equal(reads, 1)
-  assert.deepEqual(page.records.map(item => item.event.seq), [3_000_000_000, 3_000_000_001, 3_000_000_002, 3_000_000_003, 3_000_000_004, 3_000_000_005])
-  const starts = page.records.filter(item => item.event.type === 'turn/start').map(item => item.event.data as { turn: number })
-  assert.deepEqual(starts.map(item => item.turn), [1_000_000, 1_000_001])
+  assert.equal(reads, 1); assert.equal(outlineReads, 0)
+  assert.deepEqual([...new Set(page.frames!.map(frame => frame.source?.messageId))], ['row-9', 'row-10', 'row-11', 'row-12'])
+  assert.equal(new Set(page.frames!.map(frame => frame.turnKey)).size, 2)
   assert.equal(page.hasMoreBefore, true)
 })
 
-test('a source page never splits the same source turn across virtual pages', async () => {
+test('overlapping detached pages name the same source turn and message keys', async () => {
   const rows = Array.from({ length: 12 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
-  const agent = fakeAgent(rows, 9)
-  const transport = new FakeTransport(rows)
-  const window = new SourceHistoryWindow(agent, transport)
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  const turns = page.records.flatMap(record => record.event.type === 'turn/start' ? [record.event.data.turn] : [])
-  assert.deepEqual(turns, [...new Set(turns)])
-  const firstSeq = page.records[0]!.event.seq
-  const second = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: firstSeq + 1,
-    beforeSeq: firstSeq, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  assert.ok(second.records.every(record => record.event.seq < firstSeq))
+  const agent = fakeAgent(rows, 9), transport = new FakeTransport(rows, 4), window = new SourceHistoryWindow(agent, transport)
+  const page = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  const overlap = await window.windowAt('row-8', 1, 0, async () => snapshotContext(rows.slice(6, 9), 1))
+  const shared = page.frames!.filter(frame => frame.event.type === 'assistant/message' && overlap.frames!.some(other => other.key === frame.key))
+  assert.ok(shared.length > 0)
+  for (const frame of shared) assert.equal(frame.turnKey, overlap.frames!.find(other => other.key === frame.key)!.turnKey)
+  assert.equal(transport.queries.length, 1)
 })
 
-
-test('history rewind/fork mappings survive page cache eviction', async () => {
+test('history rewind and fork authorization uses served source identities without retaining page bodies', async () => {
   const rows = Array.from({ length: 12 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
-  const agent = fakeAgent(rows, 9)
-  const window = new SourceHistoryWindow(agent, new FakeTransport(rows))
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  const first = page.records[0]!.event.seq
-  const user = page.records.find(record => record.event.type === 'user/message')!
-  const rewind = window.resolveRewind(user.event.seq)
-  assert.ok(rewind)
-  const assistant = page.records.find(record => record.event.type === 'assistant/message')!
-  const assistantId = (assistant.event.data as { message: { id: string } }).message.id
-  assert.deepEqual(window.resolveFork(`a:${assistantId.slice(2)}`), boundary())
-  window.trimTo(0)
-  assert.equal(window.resolveRewind(user.event.seq), rewind)
-  assert.ok(first > 0)
+  const agent = fakeAgent(rows, 9), transport = new FakeTransport(rows), window = new SourceHistoryWindow(agent, transport)
+  const page = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  const user = page.frames!.find(frame => frame.event.type === 'user/message')!
+  const assistant = page.frames!.find(frame => frame.event.type === 'assistant/message')!
+  assert.equal(window.resolveRewindMessage((user.event.data as { id: string }).id), `local-${user.source!.seq}`)
+  assert.deepEqual(window.resolveFork(`a:${assistant.source!.messageId}`), boundary())
+  assert.ok(window.cacheBytes > 0)
+  assert.equal(window.resolveRewindMessage('never-served'), undefined)
+  window.dispose()
+  assert.equal(window.resolveRewindMessage((user.event.data as { id: string }).id), undefined)
+  assert.equal(window.resolveFork(`a:${assistant.source!.messageId}`), undefined)
 })
 
-
-
-test('display window retirement releases agent/cache refs and global bytes stay bounded', async () => {
+test('display retirement releases source and authorization state and subsequent body reads reject', async () => {
   const rows = Array.from({ length: 12 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
-  const agent = fakeAgent(rows, 9)
-  const transport = new FakeTransport(rows)
-  const registry = new DisplayHistoryWindows(1)
+  const agent = fakeAgent(rows, 9), transport = new FakeTransport(rows), registry = new DisplayHistoryWindows()
   const window = registry.window('display-a', agent, transport)
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  assert.ok(page.records.length > 0)
-  assert.equal(registry.size, 1)
-  assert.equal(registry.bytes, 0, 'a page over the global budget is served but not retained')
+  const page = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  assert.ok(page.frames!.length > 0); assert.equal(registry.size, 1); assert.ok(registry.bytes > 0)
   registry.retire('display-a')
-  assert.equal(registry.size, 0)
-  assert.equal(registry.peek('display-a'), undefined)
-  await assert.rejects(window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET }, undefined, async () => ({ records: [], hasMore: false })))
+  assert.equal(registry.size, 0); assert.equal(registry.peek('display-a'), undefined)
+  assert.equal(window.mappingCount, 0); assert.equal(window.attachments.disposed, true); assert.ok(registry.bytes > 0,
+    'the HAPI-equivalent page cache survives display retirement within its authentication lifetime')
+  await assert.rejects(beforePage(window, transport, agent.historyWindowAnchor().before), /released/)
+  registry.clear(); assert.equal(registry.bytes, 0)
 })
 
-test('a single oversized page never bypasses the per-window cache ceiling', async () => {
+test('repeated page cursors reuse their bounded projected page cache', async () => {
   const rows = Array.from({ length: 12 }, (_, index) => row(index + 1, Math.floor(index / 3), index % 3 === 0))
-  const agent = fakeAgent(rows, 9)
-  const transport = new FakeTransport(rows)
-  const window = new SourceHistoryWindow(agent, transport)
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  assert.ok(page.records.length > 0)
-  assert.ok(window.cacheBytes <= 8 * 1024 * 1024)
+  const agent = fakeAgent(rows, 9), transport = new FakeTransport(rows), window = new SourceHistoryWindow(agent, transport)
+  const first = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  const again = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  assert.ok(first.frames!.length > 0); assert.deepEqual(first.frames, again.frames)
+  assert.equal(transport.queries.length, 1); assert.ok(window.cacheBytes > 0)
 })
 
-test('a giant partial turn is delivered as bounded pages without an oversized-turn error', async () => {
+test('projected history pages obey the source, total-byte, and source-count LRU bounds', () => {
+  const cache = new SourceHistoryPageCache({ totalBytes: 700, sourceBytes: 450, sources: 1 })
+  const page = (text: string): SourceWindowPage => ({ records: [], frames: [{ key: 'frame', event: {
+    type: 'user/message', seq: 1, time: 1, data: { text },
+  } } as unknown as SourceWindowPage['frames'][number]], hasMoreBefore: false, hasMoreAfter: false, before: null, after: null })
+  cache.set('source-a', 'source-a', 'first', page('你'.repeat(80)))
+  cache.set('source-a', 'source-a', 'second', page('你'.repeat(80)))
+  assert.equal(cache.get('source-a', 'first'), undefined, 'per-source pressure evicts the oldest page')
+  assert.ok(cache.get('source-a', 'second'))
+  cache.set('source-b', 'source-b', 'third', page('你'.repeat(80)))
+  assert.equal(cache.get('source-a', 'second'), undefined, 'the source-count bound evicts the old source')
+  assert.ok(cache.get('source-b', 'third'))
+  assert.ok(cache.bytes <= 450)
+  cache.removeOwner('source-b')
+  assert.equal(cache.bytes, 0)
+})
+
+test('a giant partial turn uses one bounded source read without waiting for its beginning', async () => {
   const rows = Array.from({ length: 2_400 }, (_, index) => row(index + 1, 0, index === 0))
-  const agent = fakeAgent(rows, 2_300)
-  const transport = new FakeTransport(rows, 300)
-  const window = new SourceHistoryWindow(agent, transport)
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  assert.ok(page.records.length > 0)
-  assert.ok(page.records.length < 3_000)
-  assert.equal(page.hasMore, true)
+  const agent = fakeAgent(rows, 2_300), transport = new FakeTransport(rows, 300), window = new SourceHistoryWindow(agent, transport)
+  const page = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  assert.ok(page.frames!.length > 0); assert.ok(page.frames!.length <= 301)
+  assert.equal(page.hasMoreBefore, true); assert.equal(transport.queries.length, 1)
 })
 
 test('canonical outline orders shuffled outline rows by source position', async () => {
@@ -394,19 +385,20 @@ test('an indexing refresh preserves the last complete canonical coordinates unti
     beforeCursor: { at: rows[3]!.createdAt, seq: 4 }, afterCursor: { at: rows[5]!.createdAt, seq: 6 },
     hasMoreBefore: true, hasMoreAfter: true } })
   const expectedTurn = complete!.entries.find(entry => entry.messageId === rows[3]!.id)!.turn
-  const turnOf = (records: readonly { event: SessionEvent }[]) =>
-    (records.find(record => record.event.type === 'turn/start')!.event.data as { turn: number }).turn
+  const original = await window.windowAt(rows[3]!.id, 2, 0, context)
+  const originalKeys = original.frames!.map(frame => [frame.key, frame.turnKey])
   epoch = 2; indexing = true
   window.observeSnapshotEpoch(epoch)
   assert.equal((await window.canonicalOutline())?.indexing, true)
   const during = await window.windowAt(rows[3]!.id, 2, 3_000_000_000, context)
-  assert.equal(turnOf(during.records), expectedTurn, 'partial labels cannot replace an existing source turn map')
+  assert.deepEqual(during.frames!.map(frame => [frame.key, frame.turnKey]), originalKeys, 'partial labels cannot change body identities')
   indexing = false
   const refreshed = await window.canonicalOutline()
   assert.equal(refreshed?.complete, true)
   assert.equal(refreshed?.epoch, 2)
   const after = await window.windowAt(rows[3]!.id, 2, 3_001_000_000, context)
-  assert.equal(turnOf(after.records), expectedTurn)
+  assert.deepEqual(after.frames!.map(frame => [frame.key, frame.turnKey]), originalKeys)
+  assert.equal(refreshed!.entries.find(entry => entry.messageId === rows[3]!.id)!.turn, expectedTurn)
 })
 
 test('exhausted unreadable coverage is distinct from indexing and is never complete', async () => {
@@ -505,9 +497,8 @@ for (const direction of ['before', 'after'] as const) test(`${direction} paging 
   assert.equal(page.epoch, 3)
   assert.equal(window.agent, agent)
   assert.equal(window.attachments.disposed, false)
-  assert.ok(page.records.length > 0)
-  assert.ok(page.records.every(record => (record as any).source?.epoch === 3))
-  assert.ok(page.records.every(record => (record as any).source?.messageId !== 'row-999'), 'the reset response is never appended')
+  assert.ok(page.frames!.length > 0)
+  assert.ok(page.frames!.every(frame => frame.source?.messageId !== 'row-999'), 'the reset response is never appended')
 })
 
 for (const failure of ['moved', 'removed', 'changed-again'] as const) test(`snapshot recovery rejects a ${failure} boundary without an unbounded retry`, async () => {
@@ -526,37 +517,15 @@ for (const failure of ['moved', 'removed', 'changed-again'] as const) test(`snap
   assert.equal(window.attachments.disposed, false)
 })
 
-test('a giant single source turn is not split into a second display turn', async () => {
+test('giant-turn pages preserve one stable turn identity across bounded slices', async () => {
   const rows = Array.from({ length: 140 }, (_, index) => row(index + 1, 0, index === 0))
-  const agent = {
-    id: SessionId('hapi-codex-giant-turn-fixture'),
-    binding: { hapiSessionId: 'giant-turn-fixture' },
-    historyWindowAnchor() { const anchor = rows[125]!
-      return { epoch: 1, before: { at: anchor.createdAt, seq: anchor.seq! }, firstTurn: DISPLAY_TURN_BASE + 1, hasOlder: true } },
-    async renderHistoryPage(pageRows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
-      const session = Session.create(SessionId('giant-history'))
-      session.append('turn/start', { turn: 1 })
-      let last = 0
-      for (const item of pageRows) {
-        const event = item.localId
-          ? session.append('user/message', freezeMessage({ id: MessageId(`u:${item.id}`), role: 'user',
-            content: [{ type: 'text', text: 'question' }], source: { kind: 'user' } }), { surfaceOp: 'append' })
-          : session.append('assistant/message', { turn: 1, step: 1,
-            message: freezeMessage({ id: MessageId(`a:${item.id}`), role: 'assistant',
-              content: [{ type: 'text', text: 'answer' }], source: { kind: 'model', provider: 'fixture', model: 'fixture' } }),
-            stream: [] }, { surfaceOp: 'append' })
-        last = event.seq
-      }
-      return { events: session.snapshotEvents(), lastTurn: 1, sources: new Map(), rewinds: new Map(), forks: new Map() }
-    },
-  }
-  const transport = new FakeTransport(rows, 7)
-  const window = new SourceHistoryWindow(agent, transport)
-  const page = await window.page({ address: { kind: 'session', sessionId: 'display' as never }, throughSeq: DISPLAY_SEQ_OFFSET,
-    beforeSeq: DISPLAY_SEQ_OFFSET, maxMessages: 20 }, undefined, async () => ({ records: [], hasMore: false }))
-  const starts = page.records.filter(record => record.event.type === 'turn/start')
-  assert.equal(starts.length, 1, 'one source turn produces one display turn/start')
-  assert.ok(page.records.length >= 100, 'the giant turn is delivered as one bounded page')
+  const agent = fakeAgent(rows, 125), transport = new FakeTransport(rows, 7), window = new SourceHistoryWindow(agent, transport)
+  const first = await beforePage(window, transport, agent.historyWindowAnchor().before)
+  const second = await beforePage(window, transport, first.before!)
+  const turns = new Set([...first.frames!, ...second.frames!].map(frame => frame.turnKey))
+  assert.equal(turns.size, 1)
+  assert.ok(!turns.has(undefined)); assert.equal(transport.queries.length, 2)
+  assert.equal(first.frames!.filter(frame => frame.event.type === 'turn/start').length, 1)
 })
 
 test('outlinePage accumulates pages and keeps the seed turn stable while older pages prepend', async () => {

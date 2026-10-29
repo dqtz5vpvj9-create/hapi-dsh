@@ -23,6 +23,7 @@ export interface NativeLibrarySessions {
     get(id: string): NativeLibraryAgent | undefined;
     /** Resolve a display seq, including a paged historical row. */
     resolveRewind?(sessionId: string, seq: number): string | undefined;
+    resolveRewindMessage?(sessionId: string, messageId: string): string | undefined;
     reconcileSource(sourceId: string): Promise<NativeLibraryAgent | undefined>;
     refreshCatalog(): Promise<void>;
 }
@@ -182,7 +183,7 @@ export class NativeLibrary {
             const displaySeq = request.action.displayMessageSeq;
             rewindLocalId = request.action.displayMessageId === undefined
                 ? this.sessions.resolveRewind?.(agent.id, displaySeq!) ?? agent.resolveRewindLocalIdAtSeq(displaySeq!)
-                : agent.resolveRewindLocalId(request.action.displayMessageId);
+                : this.sessions.resolveRewindMessage?.(agent.id, request.action.displayMessageId) ?? agent.resolveRewindLocalId(request.action.displayMessageId);
             if (!rewindLocalId) throw new HapiRequestError('Only a committed native user message can be a rewind boundary', 'rejected', 400);
         }
         return this.execute(request.operationId, `session:${sourceId}`, request.action.kind, intent, async () => {

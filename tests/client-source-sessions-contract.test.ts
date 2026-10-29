@@ -27,6 +27,7 @@ import type { SessionFace } from '@deepseek-ai/dsh-api-session-controller/client
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { SourcePreparationReference, SourceSessionsApi, SourceViewportSession, SourceWindowPreparer } from '../src/client/source-sessions.ts'
+import { SOURCE_HISTORY_FRAME_CHUNK_SIZE } from '../src/source-window-types.ts'
 import type { SourceHistoryOutlineValue, SourceHistoryWindowRequest, SourceHistoryWindowValue } from '../src/source-window-types.ts'
 import { prepareInitialViewport } from '../src/client/surface/session-view.tsx'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
@@ -43,6 +44,9 @@ import { DISPLAY_SEQ_OFFSET, openingWindow } from '../src/shared/history-window.
 import { NativeProjector } from '../src/codex/projector.ts'
 import { parseNativeRow } from '../src/codex/native.ts'
 import { nativeMemoryWorkload } from './fixtures/source-window-memory-helpers.ts'
+import { HistoryProjectionSink } from '../src/shared/projection-event-sink.ts'
+import { toSourceFrames } from '../src/shared/source-frame-builder.ts'
+import { SOURCE_FRAME_EVENT, type SourceFrame, type SourceFrameBatch } from '../src/shared/source-frames.ts'
 import type { HapiTransport } from '../src/codex/contracts.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -64,6 +68,7 @@ interface MutableEventSource extends SessionEventSource {
 }
 
 interface Facade {
+  api?: SourceSessionsApi
   attach(api: SourceSessionsApi): void
   retain(target: SessionId, options: SessionRetainOptions): SessionReference
   retainInfo(id: SessionId): { getSnapshot(): SessionRetainInfo; subscribe(listener: () => void): () => void }
@@ -76,6 +81,7 @@ interface Facade {
 
 interface Runtime {
   SourceSessions: new (original: ISessions) => Facade
+  SourceWindowStore: typeof import('../src/client/source-window-store.ts').SourceWindowStore
   MutableSessionEventSource: new () => MutableEventSource
   createScope(ctx: Context, id: SessionId): { ctx: SessionBinding['ctx']; fiber: { dispose(): Promise<void> } }
   scopeOf(ctx: Context): SessionId | undefined
@@ -86,6 +92,7 @@ let runtime: Runtime
 before(async () => {
   const contents = [
     `export { SourceSessions } from ${JSON.stringify(join(root, 'src/client/source-sessions.ts'))}`,
+    `export { SourceWindowStore } from ${JSON.stringify(join(root, 'src/client/source-window-store.ts'))}`,
     `export { createScope, scopeOf } from ${JSON.stringify(join(controllerRoot, 'lib/types/client/scope.js'))}`,
     "export { MutableSessionEventSource } from '@deepseek-ai/dsh-api-session-controller/client'",
   ].join('\n')
@@ -138,6 +145,11 @@ function event(seq: number, type = 'user/message'): SessionEventLikeEntry {
   return { type: 'event', event: { type, seq, time: seq, data: {} } } as unknown as SessionEventLikeEntry
 }
 
+function sourceEvent(messageId: string, position: number): SessionEventLikeEntry {
+  return { type: 'event', source: { messageId, at: position, seq: position },
+    event: { type: 'user/message', seq: position, time: position, data: { id: messageId, text: messageId } } } as unknown as SessionEventLikeEntry
+}
+
 function seqs(snapshot: { readonly entries: readonly SessionEventLikeEntry[] }): number[] {
   return snapshot.entries.map(entry => Number(entry.event.seq))
 }
@@ -170,6 +182,25 @@ function apiWith(overrides: Partial<SourceSessionsApi> = {}): SourceSessionsApi 
 
 function outlineRowsOf(binding: SessionBinding): readonly OutlineRow[] {
   return binding.session.projections.faceOf('turnOutline').getSnapshot() as readonly OutlineRow[]
+}
+
+function outlineStateOf(binding: SessionBinding): SourceViewportSession['sourceOutline'] {
+  return (binding.session as SessionFace & SourceViewportSession).sourceOutline
+}
+
+/** Body readiness and directory completeness are independent public contracts. */
+async function waitForOutline(binding: SessionBinding,
+  status: ReturnType<SourceViewportSession['sourceOutline']['getSnapshot']>['status'], timeout = 2_000): Promise<void> {
+  const source = outlineStateOf(binding)
+  if (source.getSnapshot().status === status) return
+  let stop: (() => void) | undefined
+  const reached = new Promise<void>(resolve => {
+    const check = (): void => { if (source.getSnapshot().status === status) resolve() }
+    stop = source.subscribe(check)
+    check()
+  })
+  try { await within(reached, `source directory did not become ${status}`, timeout) }
+  finally { stop?.() }
 }
 
 function snapshotOf(id: SessionId, hasMore: boolean): SessionSnapshot {
@@ -336,7 +367,240 @@ test('pending loadOlder publishes loadingOlder, then publishes completion and ex
   }
 })
 
-test('actual viewport admission passes measured page sizes while ordinary paging retains its default', async () => {
+test('cancelling loadOlder while the HAPI API is attaching clears the pending UI immediately', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(101), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith())
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await within(reference.ready, 'source reference did not become ready')
+    facade.api = undefined
+    const face = reference.binding.session as SessionFace & SourceViewportSession
+    const loading = face.loadOlder()
+    assert.equal(face.getSnapshot().loadingOlder, true)
+    face.cancelOlderPage?.(new Error('reader stopped waiting for API attachment'))
+    assert.equal(await settlement(loading, 250), 'resolved',
+      'cancellation while waiting for API attachment must not leave the button loading until the 30-second attach timeout')
+    assert.equal(face.getSnapshot().loadingOlder, false)
+  } finally {
+    reference.release()
+    facade.dispose()
+  }
+})
+
+test('an upward prefetch warms one older page without touching the window, then loadOlder commits that page', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(208), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  const pageGate = deferred<{ ok: true; value: SourceHistoryWindowValue }>()
+  const requested = deferred<void>()
+  const requests: SourceHistoryWindowRequest[] = []
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
+    requests.push(request)
+    requested.resolve(undefined)
+    return pageGate.promise
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    const face = reference.binding.session as SessionFace & SourceViewportSession
+    const before = reference.binding.eventSource.getSnapshot()
+    const prefetch = face.prefetchOlderPage!()
+    await within(requested.promise, 'upward prefetch did not warm its adjacent page')
+    const duplicate = face.prefetchOlderPage!()
+    assert.equal(requests.length, 1, 'repeated wheel/touch samples share the same page request')
+    assert.equal(face.getSnapshot().loadingOlder, false, 'background warm-up does not expose a foreground loading state')
+    assert.equal(reference.binding.eventSource.getSnapshot(), before, 'uncommitted prefetched rows stay invisible')
+
+    pageGate.resolve({ ok: true, value: windowValue([event(5), event(7)], { hasMoreBefore: false }) })
+    await within(Promise.all([prefetch, duplicate]), 'prefetched page did not finish')
+    assert.equal(reference.binding.eventSource.getSnapshot(), before, 'completing the warm-up still does not publish it')
+
+    await face.loadOlder()
+    assert.equal(requests.length, 1, 'the foreground page consumes the warmed source response')
+    assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [5, 7, 10])
+    assert.equal(face.getSnapshot().hasMore, false)
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('a larger warm page feeds a smaller viewport read and its remainder without duplicate HAPI requests', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(212), tail: [sourceEvent('tail-100', 100)], tailHasMore: true })
+  h.resolveReady()
+  const requests: SourceHistoryWindowRequest[] = []
+  const frames = Array.from({ length: 50 }, (_, index) => bodyFrame(`message-${index + 1}`, index + 1))
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
+    requests.push(request)
+    return { ok: true, value: windowValue([], { frames, before: { at: 1, seq: 1 }, beforeMessageId: 'message-1',
+      hasMoreBefore: true, hasMoreAfter: false, epoch: 1 }) }
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    const face = reference.binding.session as SessionFace & SourceViewportSession
+    await face.prefetchOlderPage!(50)
+    await face.loadViewportPage(20)
+    assert.equal(requests.length, 1, 'the 50-row warm page satisfies the first 20-row viewport request')
+    const sourceIds = (): string[] => reference.binding.eventSource.getSnapshot().entries
+      .flatMap(entry => {
+        const source = (entry as unknown as { source?: { messageId: string } }).source
+        return source?.messageId.startsWith('message-') ? [source.messageId] : []
+      })
+    assert.deepEqual(sourceIds(), Array.from({ length: 20 }, (_, index) => `message-${index + 31}`))
+
+    await face.prefetchOlderPage!(50)
+    await face.loadViewportPage(20)
+    assert.equal(requests.length, 1, 'the unconsumed older rows remain available at the new source cursor')
+    assert.deepEqual(sourceIds(), [...Array.from({ length: 20 }, (_, index) => `message-${index + 11}`),
+      ...Array.from({ length: 20 }, (_, index) => `message-${index + 31}`)])
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('reopening the same source reuses its cached older page without another HAPI read', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(211), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  let requests = 0
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async () => {
+    requests++
+    return { ok: true, value: windowValue([event(5)], { hasMoreBefore: false }) }
+  } }))
+  const first = facade.retain(h.id, { source: 'mainView' })
+  await first.ready
+  try {
+    await (first.binding.session as SessionFace).loadOlder()
+    assert.equal(requests, 1)
+  } finally { first.release() }
+
+  const reopened = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reopened.ready
+    await (reopened.binding.session as SessionFace).loadOlder()
+    assert.equal(requests, 1, 'a released Pane does not discard an already accepted source page')
+    assert.deepEqual(seqs(reopened.binding.eventSource.getSnapshot()), [5, 10])
+  } finally { reopened.release(); facade.dispose() }
+})
+
+test('a failed background page warm-up stays invisible and the next foreground attempt retries its cursor', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(209), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  let requests = 0
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async () => {
+    requests++
+    if (requests === 1) throw new Error('prefetch transport failed')
+    return { ok: true, value: windowValue([event(5)], { hasMoreBefore: false }) }
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    const face = reference.binding.session as SessionFace & SourceViewportSession
+    await face.prefetchOlderPage!()
+    assert.equal(face.getSnapshot().loadingOlder, false)
+    assert.equal(face.sourceWindow?.getSnapshot().pagingError, undefined,
+      'a speculative read failure must not become a foreground paging error')
+    assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [10])
+
+    await face.loadOlder()
+    assert.equal(requests, 2, 'the foreground request retries the same source cursor')
+    assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [5, 10])
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('loadOlder stays in one flight while skipping raw pages with no projected rows', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(206), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  const requests: SourceHistoryWindowRequest[] = []
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
+    requests.push(request)
+    if (requests.length === 1) return { ok: true, value: windowValue([], {
+      frames: [], before: { at: 8, seq: 8 }, beforeMessageId: 'filtered-source-row', epoch: 1,
+      hasMoreBefore: true, hasMoreAfter: false,
+    }) }
+    return { ok: true, value: windowValue([event(5)], {
+      before: { at: 5, seq: 5 }, beforeMessageId: 'visible-source-row', epoch: 1,
+      hasMoreBefore: false, hasMoreAfter: false,
+    }) }
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    const face = reference.binding.session
+    const changes: string[] = []
+    const stop = reference.binding.eventSource.subscribe(() => {
+      changes.push(reference.binding.eventSource.getSnapshot().change.kind)
+    })
+    try {
+      await face.loadOlder()
+      assert.deepEqual(requests.map(request => ({ beforeSeq: request.beforeSeq, cursorMessageId: request.cursorMessageId,
+        fromOldest: request.fromOldest })), [
+        { beforeSeq: undefined, cursorMessageId: undefined, fromOldest: true },
+        { beforeSeq: 8, cursorMessageId: 'filtered-source-row', fromOldest: undefined },
+      ], 'the second request starts at the cursor advanced by the invisible raw page')
+      assert.deepEqual(changes, ['prepend'], 'the reading window publishes once, after visible rows arrive')
+      assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [5, 10])
+      assert.equal(face.getSnapshot().loadingOlder, false)
+      assert.equal(face.getSnapshot().hasMore, false)
+    } finally { stop() }
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('loadOlder rejects a page that claims more history without advancing its cursor', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(207), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  let requests = 0
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async () => {
+    requests++
+    return { ok: true, value: windowValue([], { frames: [], before: { at: 8, seq: 8 },
+      beforeMessageId: 'stalled-source-row', epoch: 1, hasMoreBefore: true, hasMoreAfter: false }) }
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    await assert.rejects(reference.binding.session.loadOlder(), /cursor did not advance/)
+    assert.equal(requests, 2, 'a repeated cursor is detected before the same page can be requested indefinitely')
+    assert.equal(reference.binding.session.getSnapshot().loadingOlder, false)
+    assert.equal(reference.binding.session.getSnapshot().hasMore, true)
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('cancelling a stalled older page clears loading state and ignores its late response', { timeout: 5_000 }, async () => {
+  const h = harness({ id: sourceId(208), tail: [event(10)], tailHasMore: true })
+  h.resolveReady()
+  const started = deferred<void>()
+  const latePage = deferred<{ ok: true; value: SourceHistoryWindowValue }>()
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceHistoryWindowPage: async () => {
+    started.resolve(undefined)
+    return latePage.promise
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  try {
+    await reference.ready
+    const session = reference.binding.session as SessionFace & SourceViewportSession
+    const entries = reference.binding.eventSource.getSnapshot().entries
+    const pending = session.loadOlder()
+    await within(started.promise, 'the foreground history request did not start')
+    assert.equal(session.getSnapshot().loadingOlder, true)
+
+    session.cancelOlderPage!(new Error('reader request timed out'))
+    await within(pending, 'cancelling the page did not release the foreground loader')
+    assert.equal(session.getSnapshot().loadingOlder, false,
+      'the stale RPC cannot leave the Load earlier control permanently busy')
+    assert.equal(session.sourceWindow?.getSnapshot().pagingError, undefined,
+      'cancellation is not presented as a source-page failure')
+
+    latePage.resolve({ ok: true, value: windowValue([event(5)], { hasMoreBefore: false }) })
+    await Promise.resolve(); await Promise.resolve()
+    assert.equal(reference.binding.eventSource.getSnapshot().entries, entries,
+      'a response from the cancelled page never replaces the current reading window')
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('viewport admission measures its window while interactive paging delegates to the HAPI page policy', async () => {
   const h = harness({ id: sourceId(21), tail: [event(1_000)], tailHasMore: true })
   h.resolveReady()
   const requests: SourceHistoryWindowRequest[] = []
@@ -376,12 +640,13 @@ test('actual viewport admission passes measured page sizes while ordinary paging
       state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation
     assert.equal(await prepareInitialViewport(target, reference, navigation, () => true), true)
     assert.equal(requests.length, 3, 'source progress alone cannot expose a viewport without actual scroll range')
-    assert.deepEqual(requests.map(request => request.limit), [20, 80, 200])
+    assert.deepEqual(requests.map(request => request.limit), [20, 50, 50])
     assert.equal(requests[0]!.fromOldest, true)
     assert.deepEqual(requests.slice(1).map(request => request.beforeSeq), [980, 960])
     assert.equal(reference.binding.eventSource.getSnapshot().entries.length, 61)
     await reference.binding.session.loadOlder()
-    assert.equal(requests[3]!.limit, undefined, 'interactive history keeps its normal backend batching')
+    assert.equal(requests[3]!.limit, 50,
+      'interactive history uses HAPI regular page budget to bound DSH event fan-out')
     assert.equal(requests[3]!.beforeSeq, 940, 'the first interactive page continues the admitted window')
     assert.ok(h.loadOlderCalls <= 1, 'ordinary interactive paging delegates at most one official attempt before the facade mirrors it')
     assert.equal(typeof (reference.binding.session as SessionFace & SourceViewportSession).loadViewportPage, 'function')
@@ -454,7 +719,7 @@ test('two references to one source share a binding and release the original only
   }
 })
 
-test('preparation opens the same binding before a slow outline while public ready waits for both', { timeout: 5_000 }, async () => {
+test('preparation and public ready open the same binding while a slow outline remains independent', { timeout: 5_000 }, async () => {
   const h = harness({ id: sourceId(70) })
   const outlineEntered = deferred<void>(), outlineGate = deferred<void>()
   const facade = new runtime.SourceSessions(h.original)
@@ -477,11 +742,14 @@ test('preparation opens the same binding before a slow outline while public read
     const prepared = await within(reference.preparationReady, 'the slow outline blocked hidden preparation')
     assert.equal(prepared, reference.binding)
     assert.equal(facade.binding(h.id), prepared)
-    assert.deepEqual(readyOutcomes, [], 'preparation must not admit a source whose full outline is pending')
+    assert.equal(await within(reference.ready, 'the slow outline blocked the body'), prepared)
+    assert.equal(outlineStateOf(prepared).getSnapshot().status, 'none', 'body readiness must not report pending navigation as complete')
+    assert.deepEqual(outlineRowsOf(prepared), [])
     assert.deepEqual(h.retainCalls, [{ target: h.id, source: 'mainView' }])
     assert.equal(h.liveReferences, 1, 'preparation must use the caller existing original lease')
     outlineGate.resolve(undefined)
-    assert.equal(await within(reference.ready, 'complete source readiness never settled'), prepared)
+    await waitForOutline(prepared, 'ready')
+    assert.equal(await reference.ready, prepared)
     assert.equal(outlineCalls, 1)
     assert.deepEqual(outlineRowsOf(prepared).map(row => row.prompt), ['complete'])
     assert.equal(h.retainCalls.length, 1)
@@ -595,7 +863,7 @@ test('ordinary sessions return the original reference without source preparation
   assert.equal(h.liveReferences, 0)
 })
 
-test('ready waits for the source-wide outline and exposes merged host/tail turns before use', { timeout: 5_000 }, async () => {
+test('body ready precedes the source-wide outline and navigation later exposes merged host/tail turns', { timeout: 5_000 }, async () => {
   const h = harness({ id: sourceId(4), tailOutline: [{ turn: 1, seq: 10, prompt: 'tail-duplicate', response: 'tail' }] })
   h.resolveReady()
   const outlineGate = deferred<void>()
@@ -614,12 +882,11 @@ test('ready waits for the source-wide outline and exposes merged host/tail turns
   }))
   const reference = facade.retain(h.id, { source: 'mainView' })
   try {
-    const settled: string[] = []
-    void reference.ready.then(() => { settled.push('resolved') }, () => { settled.push('rejected') })
-    await new Promise(resolve => setTimeout(resolve, 25))
-    assert.deepEqual(settled, [], 'ready must not resolve before the source-wide outline is available')
+    const binding = await within(reference.ready, 'pending navigation blocked the source body')
+    assert.equal(outlineStateOf(binding).getSnapshot().status, 'none')
+    assert.deepEqual(outlineRowsOf(binding).map(row => row.prompt), ['tail-duplicate'])
     outlineGate.resolve(undefined)
-    const binding = await within(reference.ready, 'source reference did not become ready')
+    await waitForOutline(binding, 'ready')
     assert.deepEqual(calls, [h.id], 'the facade must prefetch the outline once for this source')
     assert.deepEqual(outlineRowsOf(binding).map(entry => entry.turn), [0, 1, 2],
       'the projection must expose the source-wide turn ladder in order')
@@ -627,20 +894,20 @@ test('ready waits for the source-wide outline and exposes merged host/tail turns
       'the host outline must win over a duplicate loaded-tail turn')
     assert.equal(binding, reference.binding, 'ready must resolve the same stable binding')
   } finally {
-    reference.release()
+    outlineGate.resolve(undefined); reference.release(); facade.dispose()
   }
 })
 
-test('a late source API attach cannot leave ready resolved with only the loaded tail', { timeout: 5_000 }, async () => {
+test('a late source API attach backfills navigation without delaying the loaded body', { timeout: 5_000 }, async () => {
   const h = harness({ id: sourceId(5), tailOutline: [{ turn: 1, seq: 10, prompt: 'tail-only', response: 'tail' }] })
   h.resolveReady()
   const facade = new runtime.SourceSessions(h.original)
   const reference = facade.retain(h.id, { source: 'mainView' })
   try {
-    const outcomes: string[] = []
-    void reference.ready.then(() => { outcomes.push('resolved') }, error => { outcomes.push(`rejected:${String(error)}`) })
-    await new Promise(resolve => setTimeout(resolve, 30))
-    const resolvedBeforeAttach = outcomes.length > 0
+    const binding = await within(reference.ready, 'the absent metadata API blocked the loaded body')
+    assert.equal(binding, reference.binding)
+    assert.equal(outlineStateOf(binding).getSnapshot().status, 'none')
+    assert.deepEqual(outlineRowsOf(binding).map(row => row.prompt), ['tail-only'])
 
     facade.attach(apiWith({
       sourceHistoryOutline: async () => ({ ok: true, value: outlineValue([
@@ -648,14 +915,12 @@ test('a late source API attach cannot leave ready resolved with only the loaded 
         { turn: 1, seq: 10, prompt: 'host-one', response: 'one' },
       ]) }),
     }))
-    const binding = await within(reference.ready, 'source reference did not become ready after late attach')
-
-    assert.equal(resolvedBeforeAttach, false,
-      'ready must not silently resolve as complete while the source outline API is only attached later')
+    await waitForOutline(binding, 'ready')
+    assert.equal(await reference.ready, binding, 'late metadata cannot replace the body binding')
     assert.deepEqual(outlineRowsOf(binding).map(entry => entry.turn), [0, 1],
       'a late attach must backfill the source-wide outline instead of painting the loaded tail as full')
   } finally {
-    reference.release()
+    reference.release(); facade.dispose()
   }
 })
 
@@ -685,11 +950,9 @@ test('cold indexing admits the first body and completes the directory in the bac
       'a provisional host outline must not replace the loaded tail yet')
     assert.equal(h.retainCalls.length, 1, 'indexing recovery must not acquire another native lease')
     await within(fourth.promise, 'the background scan did not continue after indexing')
+    assert.equal(outlineStateOf(binding).getSnapshot().status, 'partial')
     complete.resolve(undefined)
-    for (let index = 0; index < 80; index++) {
-      if (outlineRowsOf(binding).map(row => row.prompt).join(',') === 'host-zero,host-one') break
-      await new Promise(resolve => setTimeout(resolve, 25))
-    }
+    await waitForOutline(binding, 'ready')
     assert.deepEqual(outlineRowsOf(binding).map(row => row.prompt), ['host-zero', 'host-one'],
       'the completed directory must replace the provisional preview')
     assert.deepEqual(seqs(binding.eventSource.getSnapshot()), [10], 'indexing must not reread or replace the body window')
@@ -714,6 +977,7 @@ for (const state of ['unreadable', 'incomplete'] as const) {
     try {
       // A directory failure is a navigation state, not an open failure.
       assert.equal(await within(reference.ready, 'a directory failure blocked the open'), reference.binding)
+      await waitForOutline(reference.binding, 'degraded')
       assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [10],
         'the body window stays exactly as loaded')
       assert.ok(calls >= 1)
@@ -722,7 +986,8 @@ for (const state of ['unreadable', 'incomplete'] as const) {
 }
 
 for (const stage of ['attach', 'rpc', 'indexing'] as const) {
-  test(`releasing the last cold occurrence cancels its ${stage} wait and ignores late completion`, async () => {
+test(`releasing the last cold occurrence cancels background ${stage} work and ignores late completion`, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
     const h = harness({ id: sourceId(stage === 'attach' ? 65 : stage === 'rpc' ? 66 : 67) })
     if (stage !== 'attach') h.resolveReady()
     const facade = new runtime.SourceSessions(h.original)
@@ -741,16 +1006,20 @@ for (const stage of ['attach', 'rpc', 'indexing'] as const) {
     const stop = binding.session.projections.faceOf('turnOutline').subscribe(() => { changes++ })
     try {
       if (stage !== 'attach') await within(entered.promise, 'the cold request never started')
+      if (stage !== 'attach') assert.equal(await reference.ready, binding, 'background metadata must not delay body readiness')
       reference.release()
-      await assert.rejects(within(reference.ready, 'released readiness did not settle', 100), /released/)
+      if (stage === 'attach') await assert.rejects(reference.ready, /released/)
+      else assert.equal(await reference.ready, binding, 'release cannot retroactively reject settled body readiness')
       assert.equal(h.liveReferences, 0)
       reply.resolve(undefined)
       if (stage === 'attach') { facade.attach(api); h.resolveReady() }
-      await new Promise(resolve => setTimeout(resolve, 450))
+      await new Promise(resolve => setImmediate(resolve))
+      t.mock.timers.tick(450)
+      await new Promise(resolve => setImmediate(resolve))
       assert.equal(calls, stage === 'attach' ? 0 : 1, 'release must stop scheduled reads')
       assert.equal(changes, 0, 'late metadata cannot publish into the released occurrence')
       assert.equal(facade.binding(h.id), undefined)
-    } finally { reply.resolve(undefined); stop(); reference.release(); facade.dispose() }
+    } finally { reply.resolve(undefined); stop(); reference.release(); facade.dispose(); t.mock.timers.reset() }
   })
 }
 
@@ -768,8 +1037,12 @@ test('a stalled first directory page is bounded and degrades navigation', async 
   const reference = facade.retain(h.id, { source: 'mainView' })
   try {
     await entered.promise
+    assert.equal(await reference.ready, reference.binding, 'a stalled page must not consume the body readiness budget')
+    assert.equal(outlineStateOf(reference.binding).getSnapshot().status, 'none')
+    const degraded = waitForOutline(reference.binding, 'degraded', 6_000)
     t.mock.timers.tick(5_000)
-    assert.equal(await reference.ready, reference.binding, 'a stalled page degrades navigation instead of blocking the open')
+    await degraded
+    assert.equal(await reference.ready, reference.binding)
     assert.equal(calls, 1, 'the stalled page is not retried in a new loop')
     assert.deepEqual(outlineRowsOf(reference.binding), [])
   } finally { reply.resolve(undefined); reference.release(); facade.dispose(); t.mock.timers.reset() }
@@ -788,7 +1061,9 @@ test('a complete first directory page does not schedule a redundant full re-read
   } }))
   const reference = facade.retain(h.id, { source: 'mainView' })
   try {
-    const binding = await reference.ready, before = outlineRowsOf(binding)
+    const binding = await reference.ready
+    await waitForOutline(binding, 'ready')
+    const before = outlineRowsOf(binding)
     t.mock.timers.tick(20_000)
     await Promise.resolve(); await Promise.resolve()
     assert.equal(calls, 1, 'a complete directory is not re-scanned on a timer')
@@ -811,6 +1086,7 @@ test('an outline RPC failure degrades navigation instead of failing the open', {
   try {
     const binding = await within(reference.ready, 'a directory failure blocked the open', 4_000)
     assert.equal(binding, reference.binding, 'a directory failure must not fail the open')
+    await waitForOutline(binding, 'degraded')
     assert.deepEqual(seqs(binding.eventSource.getSnapshot()), [10], 'the body window stays exactly as loaded')
   } finally { console.warn = warn; reference.release(); facade.dispose() }
 })
@@ -839,6 +1115,7 @@ test('a new retain retries a degraded directory while another reference keeps th
     // open alive and only degrades navigation.
     assert.equal(await within(first.ready, 'the degraded open never settled'), binding)
     assert.equal(await within(kept.ready, 'the shared degraded open never settled'), binding)
+    await waitForOutline(binding, 'degraded')
     assert.equal(calls, 3, 'concurrent references must share one bounded failed attempt')
     first.release()
     assert.equal(h.liveReferences, 1, 'another reference must keep the degraded source record alive')
@@ -846,7 +1123,8 @@ test('a new retain retries a degraded directory while another reference keeps th
 
     available = true
     retry = facade.retain(h.id, { source: 'mainView' })
-    assert.equal(await within(retry.ready, 'a new retain did not recover the directory'), binding)
+    assert.equal(await within(retry.ready, 'a metadata retry blocked body readiness'), binding)
+    await waitForOutline(binding, 'ready')
     assert.equal(kept.binding, binding, 'recovery must preserve the existing binding and editor owner')
     assert.equal(calls, 4, 'the new retain must issue a fresh directory read')
     assert.deepEqual(outlineRowsOf(binding).map(row => row.prompt), ['host-zero', 'host-one'])
@@ -925,7 +1203,7 @@ test('a target window holds the reader position while live tail advances', { tim
     const radius = requests[0]?.radius
     assert.ok(typeof radius === 'number' && radius > 0 && radius <= 99,
       'the target radius must be a positive HAPI-bounded context size (maximum 99)')
-    assert.equal(typeof requests[0]?.startSeq, 'number', 'the target window must carry a display seq base')
+    assert.equal(requests[0]?.startSeq, undefined, 'source context reads must not allocate display coordinates on the Host')
     const target = reference.binding.eventSource.getSnapshot()
     assert.deepEqual(seqs(target), [3, 4, 5], 'the facade window must contain the direct target records')
     assert.equal(target.hasMore, true, 'the target window must publish its own older-history state')
@@ -1040,130 +1318,262 @@ test('a released non-host loadThrough resolving no anchor does not fall back to 
   }
 })
 
-for (const turns of [8, 12]) for (const sourceHasOlder of [false, true]) {
-  test(`opening ${turns}-turn seed recovers its omitted prefix before source paging (archive ${sourceHasOlder})`, async () => {
-    const ctx = new Context()
-    await ctx.plugin(SessionStore)
-    await ctx.plugin(AgentRegistry)
-    await ctx.plugin(SessionProjectionRegistry)
-    await ctx.plugin(TypertRegistry)
-    class FixtureQuery extends SessionQueryEngine {
-      override searchSessions(): Promise<never> { throw new Error('unused search') }
-      override searchEvents(): Promise<never> { throw new Error('unused search') }
+function frameTransport(frames: SourceFrame[], kind: 'replace' | 'merge' = 'replace', seq = 0): SessionEventLikeEntry {
+  return { type: 'event', event: { type: SOURCE_FRAME_EVENT, seq, time: seq, data: { kind, frames } } } as unknown as SessionEventLikeEntry
+}
+
+function bodyFrame(id: string, ordinal: number): SourceFrame {
+  return { key: `body:${id}`, source: { messageId: id, at: ordinal, seq: ordinal }, turnKey: `turn:${id}`, stepKey: `step:${id}`,
+    event: { type: 'assistant/message', seq: 0, time: ordinal, data: { turn: 1, step: 1,
+      message: { id, role: 'assistant', content: [{ type: 'text', text: id }] } } } as unknown as SourceFrame['event'] }
+}
+
+function bodyStream() {
+  const queue: SourceFrameBatch[] = []
+  let pending: ((value: IteratorResult<SourceFrameBatch>) => void) | undefined, closed = false, disposals = 0
+  const stream = {
+    [Symbol.asyncIterator]() { return this },
+    next(): Promise<IteratorResult<SourceFrameBatch>> {
+      const value = queue.shift()
+      if (value) return Promise.resolve({ done: false, value })
+      if (closed) return Promise.resolve({ done: true, value: undefined })
+      return new Promise(resolve => { pending = resolve })
+    },
+    push(value: SourceFrameBatch) {
+      if (closed) return
+      if (pending) { const resolve = pending; pending = undefined; resolve({ done: false, value }) }
+      else queue.push(value)
+    },
+    close() { closed = true; pending?.({ done: true, value: undefined }); pending = undefined },
+    dispose() { disposals++; this.close() },
+    get disposals() { return disposals },
+  }
+  return stream
+}
+const bodyTick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+test('source body readiness waits for its independent baseline and release cancels only that feed', async () => {
+  const h = harness({ id: sourceId(201), tail: [] }), stream = bodyStream()
+  h.resolveReady()
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceWindowFollow: () => stream }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  let ready = false
+  void reference.ready.then(() => { ready = true })
+  try {
+    await bodyTick()
+    assert.equal(ready, false, 'the operation Session opening alone is not body readiness')
+    stream.push({ kind: 'replace', historyVersion: 1, frames: [bodyFrame('first', 1)] })
+    await reference.ready
+    assert.equal(reference.binding.session.getSnapshot().blank, false)
+    assert.equal(reference.binding.eventSource.getSnapshot().entries.length, 1)
+    assert.equal(h.retainCalls.length, 1)
+    reference.release()
+    await bodyTick()
+    assert.ok(stream.disposals > 0, 'release must cancel a waiting body stream iterator')
+    assert.equal(h.liveReferences, 0)
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('live projection state does not replace the independent transcript body window', async () => {
+  const h = harness({ id: sourceId(204), tail: [event(1, 'plugin:hapi-dsh/execution')] }), stream = bodyStream()
+  h.resolveReady()
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceWindowFollow: () => stream }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  stream.push({ kind: 'replace', historyVersion: 1, frames: [bodyFrame('tail', 1)] })
+  try {
+    await reference.ready
+    const before = reference.binding.eventSource.getSnapshot()
+    h.eventSource.append(event(2, 'plugin:hapi-dsh/execution'))
+    await bodyTick()
+    const after = reference.binding.eventSource.getSnapshot()
+    assert.equal(after.revision, before.revision,
+      'projection updates are delivered by the original session face and must not rebuild the transcript')
+    assert.deepEqual(after.entries.map(entry => entry.event.type).sort(),
+      ['assistant/message', 'plugin:hapi-dsh/execution'].sort(),
+      'the opening projection snapshot remains available without replaying each later state update')
+  } finally { reference.release(); facade.dispose() }
+})
+
+test('interactive source history commits one chunked HAPI page only after completion', { timeout: 5_000 }, async t => {
+  const h = harness({ id: sourceId(205), tail: [] }), stream = bodyStream()
+  h.resolveReady()
+  const secondChunk = deferred<void>(), continueStream = deferred<void>()
+  const allChunksRead = deferred<void>(), completePage = deferred<void>()
+  const requests: SourceHistoryWindowRequest[] = []
+  const allFrames = Array.from({ length: 50 }, (_, index) => {
+    const ordinal = 801 + index, base = bodyFrame(`message-${ordinal}`, ordinal)
+    return Array.from({ length: 4 }, (_, part) => ({ ...base, key: `${base.key}:part-${part}`,
+      event: { ...base.event, seq: part } }))
+  }).flat()
+  const page = { before: { at: 801, seq: 801 }, after: null, beforeMessageId: 'message-801', epoch: 1,
+    hasMoreBefore: true, hasMoreAfter: false } as const
+  let chunks = 0
+  const changeKinds: string[] = []
+  let unsubscribe = (): void => {}
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceWindowFollow: () => stream, sourceHistoryWindowPageStream: async function* (request) {
+    requests.push(request)
+    for (let end = allFrames.length; end > 0;) {
+      const start = Math.max(0, end - SOURCE_HISTORY_FRAME_CHUNK_SIZE)
+      chunks++
+      if (chunks === 2) { secondChunk.resolve(); await continueStream.promise }
+      yield { kind: 'frames', frames: allFrames.slice(start, end) }
+      end = start
     }
-    new FixtureQuery(ctx)
-    new SessionTitleService(ctx, { fallbackMaxWords: 20, fallbackMaxBytes: 256, maxTitleBytes: 256 })
-    ctx.provide('fileUploads', { registerAgentResolver: () => () => {} } as unknown as Context['fileUploads'])
-    const id = sourceId(40 + turns + Number(sourceHasOlder))
-    const threadId = `tail-gap-thread-${turns}`
+    allChunksRead.resolve()
+    await completePage.promise
+    yield { kind: 'complete', value: page }
+  } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  stream.push({ kind: 'replace', historyVersion: 1, frames: [bodyFrame('tail', 1_001)] })
+  try {
+    await reference.ready
+    const binding = reference.binding, face = binding.session
+    const projection = t.mock.method(runtime.SourceWindowStore.prototype, 'apply')
+    unsubscribe = binding.eventSource.subscribe(() => changeKinds.push(binding.eventSource.getSnapshot().change.kind))
+    const before = binding.eventSource.getSnapshot()
+    const pending = face.loadOlder()
+    await secondChunk.promise
+    assert.equal(requests.length, 1, 'the complete page uses one remote stream open')
+    assert.equal(requests[0]!.limit, 50, 'the source page matches HAPI regular paging')
+    assert.equal(face.getSnapshot().loadingOlder, true, 'one paging gesture keeps one loading state across batches')
+    const partial = binding.eventSource.getSnapshot()
+    assert.equal(partial, before, 'transport chunks must not publish a partial page')
+    assert.equal(projection.mock.callCount(), 0, 'transport chunks must not repeatedly project the resident window')
+    assert.deepEqual(changeKinds, [])
+    await face.loadOlder()
+    assert.equal(requests.length, 1, 'another gesture cannot take ownership of the pending page')
+
+    continueStream.resolve()
+    await allChunksRead.promise
+    assert.equal(chunks, Math.ceil(allFrames.length / SOURCE_HISTORY_FRAME_CHUNK_SIZE),
+      'projected frames are delivered in bounded WebSocket messages')
+    assert.equal(binding.eventSource.getSnapshot(), before, 'all frames still wait for the authoritative cursor record')
+    assert.equal(projection.mock.callCount(), 0)
+    assert.deepEqual(changeKinds, [])
+    assert.equal(face.getSnapshot().loadingOlder, true, 'receiving the last frame does not finish page loading')
+    completePage.resolve()
+    await pending
+
+    const after = binding.eventSource.getSnapshot()
+    assert.equal(projection.mock.callCount(), 1, 'one complete source page projects the resident window once')
+    assert.deepEqual(changeKinds, ['prepend'], 'one complete source page publishes one incremental prepend')
+    assert.equal(after.revision, before.revision + 1)
+    assert.deepEqual([requests[0]!.beforeSeq, requests[0]!.epoch, requests[0]!.cursorMessageId],
+      [1_001, undefined, 'tail'], 'one HAPI page is anchored at the existing source cursor')
+    assert.equal(after.change.kind, 'prepend', 'the existing viewport receives an incremental prepend')
+    const sourceIds = [...new Set(after.entries.map(entry => (entry as unknown as { source?: { messageId: string } }).source?.messageId)
+      .filter((id): id is string => !!id))]
+    assert.equal(sourceIds.length, 51, 'all 50 older messages remain alongside the original tail')
+    assert.deepEqual(sourceIds.slice(0, 3), ['message-801', 'message-802', 'message-803'])
+    assert.equal(sourceIds.at(-1), 'tail')
+    assert.equal(after.entries.at(-1), before.entries.at(-1), 'the original tail keeps its cached entry identity')
+    assert.equal(face.getSnapshot().loadingOlder, false)
+  } finally { continueStream.resolve(); completePage.resolve(); unsubscribe(); reference.release(); facade.dispose() }
+})
+
+test('an authoritative body rewrite deletes old rows and invalidates an outstanding source page', async () => {
+  const h = harness({ id: sourceId(202), tail: [] }), stream = bodyStream()
+  h.resolveReady()
+  const entered = deferred<void>(), page = deferred<{ ok: true; value: SourceHistoryWindowValue }>()
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceWindowFollow: () => stream,
+    sourceHistoryWindowPage: async () => { entered.resolve(); return page.promise } }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  stream.push({ kind: 'replace', historyVersion: 1, frames: [bodyFrame('deleted', 1), bodyFrame('retained', 2)] })
+  try {
+    await reference.ready
+    const binding = reference.binding, face = binding.session as SessionFace & SourceViewportSession
+    const pending = face.loadSourceMessage('older')
+    await entered.promise
+    stream.push({ kind: 'replace', reset: true, historyVersion: 2, frames: [bodyFrame('retained', 2)] })
+    await bodyTick()
+    page.resolve({ ok: true, value: windowValue([], { frames: [bodyFrame('obsolete-page', 0)] }) })
+    assert.equal(await pending, undefined)
+    assert.deepEqual(binding.eventSource.getSnapshot().entries.map(row => (row as unknown as { source: { messageId: string } }).source.messageId), ['retained'])
+    assert.equal(reference.binding, binding)
+    assert.equal(h.retainCalls.length, 1, 'rewriting source data must not replace its native operation owner')
+  } finally { reference.release(); facade.dispose() }
+})
+
+for (const restarted of [false, true]) test(`a reconnect baseline observes a missed ${restarted ? 'Host restart' : 'history rewrite'} while an unchanged baseline retains history`, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const h = harness({ id: sourceId(203), tail: [] }), first = bodyStream(), second = bodyStream()
+  h.resolveReady()
+  let calls = 0
+  const facade = new runtime.SourceSessions(h.original)
+  facade.attach(apiWith({ sourceWindowFollow: () => ++calls === 1 ? first : second }))
+  const reference = facade.retain(h.id, { source: 'mainView' })
+  first.push({ kind: 'replace', historyId: 'first-owner', historyVersion: 1, frames: [bodyFrame('history', 1), bodyFrame('tail', 2)] })
+  try {
+    await reference.ready
+    first.push({ kind: 'replace', historyId: 'first-owner', historyVersion: 1, frames: [bodyFrame('tail', 2)] })
+    await bodyTick()
+    assert.equal(reference.binding.eventSource.getSnapshot().entries.length, 2,
+      'bounded reconnect data must not imply that older resident history was deleted')
+    first.close()
+    await bodyTick()
+    second.push({ kind: 'replace', historyId: restarted ? 'restarted-owner' : 'first-owner', historyVersion: restarted ? 1 : 2, frames: [bodyFrame('tail', 2)] })
+    t.mock.timers.tick(250)
+    await bodyTick()
+    assert.equal(calls, 2)
+    assert.deepEqual(reference.binding.eventSource.getSnapshot().entries.map(row => (row as unknown as { source: { messageId: string } }).source.messageId), ['tail'],
+      'a newer baseline version must remove rows deleted while the client was disconnected')
+  } finally { reference.release(); facade.dispose(); t.mock.timers.reset() }
+})
+
+for (const turns of [8, 12]) for (const sourceHasOlder of [false, true]) {
+  test(`opening ${turns}-turn source window recovers its complete prefix by source identity (archive ${sourceHasOlder})`, async () => {
+    const id = sourceId(40 + turns + Number(sourceHasOlder)), threadId = `tail-gap-thread-${turns}`
     const { rows, bodyIds } = nativeMemoryWorkload(threadId, `tail-gap-${turns}`, turns, 1)
-    const projector = new NativeProjector(Session.create(id), { model: () => 'fixture', provider: () => 'fixture',
-      submittedMessage: () => undefined, stream: () => {} })
-    projector.beginHistorySeed()
-    const nativeBinding = { hubId: 'fixture', hapiSessionId: 'source', threadId, home: null, homeId: null, machineId: 'fixture' }
-    projector.apply(rows.flatMap(row => { const parsed = parseNativeRow(row, nativeBinding); return parsed ? [parsed] : [] }))
-    const session = ctx.sessions.create(id, { seed: projector.historySeed(), meta: { cwd: '/workspace/fixture' } })
-    const ordinary = new SessionController(ctx, { nativeOpen: false, listWorkSliceMs: 16 })
-    const window = new SourceHistoryWindow({ id, binding: { hapiSessionId: 'source' },
-      historyWindowAnchor: () => ({ epoch: 1, before: { at: 1, seq: 1 }, firstTurn: 1, hasOlder: sourceHasOlder }),
-      renderHistoryPage: () => { throw new Error('the retained seed uses the original official page') },
-    }, {} as HapiTransport)
-    const throughSeq = (DISPLAY_SEQ_OFFSET + session.seq - 1) as SessionSeq
-    const address = { kind: 'session' as const, sessionId: id }
-    const page = (request: Parameters<SourceHistoryWindow['page']>[0]) => window.page(request, undefined,
-      next => ordinary.page(next, new AbortController().signal))
-    const opening = await page({ ...openingWindow({ address, maxMessages: 500,
-      turnWindow: { minMessages: 50, minTurns: 2 } }), throughSeq })
-    assert.equal(opening.records[0]!.event.seq, DISPLAY_SEQ_OFFSET + (turns === 8 ? 19 : 79),
-      'the real official 20-message cut starts inside the retained native seed')
-    assert.equal(bodyIds.filter(id => JSON.stringify(opening.records).includes(id)).length, 13)
-    const h = harness({ id, tail: opening.records, tailHasMore: opening.hasMore, loadOlder: async events => {
-      const older = await page({ address, throughSeq, beforeSeq: events.getSnapshot().entries[0]!.event.seq,
-        maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } })
-      events.prepend(older.records, older.hasMore)
-    } })
+    const binding = { hubId: 'fixture', hapiSessionId: 'source', threadId, home: null, homeId: null, machineId: 'fixture' }
+    const render = (values: typeof rows): SourceFrame[] => {
+      const sink = new HistoryProjectionSink()
+      const projector = new NativeProjector(sink, { model: () => 'fixture', provider: () => 'fixture',
+        submittedMessage: () => undefined, stream: () => {} })
+      projector.apply(values.flatMap(row => { const parsed = parseNativeRow(row, binding); return parsed ? [parsed] : [] }))
+      return toSourceFrames({ events: sink.events, eventSources: sink.eventSources,
+        turnAnchors: projector.turnAnchorEntries(), stepAnchors: projector.stepAnchorEntries() })
+    }
+    const cut = Math.floor(rows.length / 2), opening = render(rows.slice(cut))
+    const h = harness({ id, tail: [frameTransport(opening)], tailHasMore: true })
     h.resolveReady()
     const requests: SourceHistoryWindowRequest[] = []
     const facade = new runtime.SourceSessions(h.original)
     facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
       requests.push(request)
-      return { ok: true, value: windowValue([event(DISPLAY_SEQ_OFFSET - 1)], { hasMoreBefore: false }) }
+      return { ok: true, value: windowValue([], { frames: requests.length === 1 ? render(rows.slice(0, cut)) : [],
+        before: { at: 1, seq: 1 }, beforeMessageId: rows[0]!.id,
+        hasMoreBefore: requests.length === 1 && sourceHasOlder, hasMoreAfter: false }) }
     } }))
     const reference = facade.retain(id, { source: 'mainView' })
     try {
       await reference.ready
       await (reference.binding.session as SessionFace & SourceViewportSession).loadViewportPage()
       const recovered = reference.binding.eventSource.getSnapshot()
-      assert.equal(h.loadOlderCalls, 1, 'one bounded original page recovers the seed prefix')
-      assert.equal(requests.length, 0, 'source cursor must not skip the unreceived original prefix')
-      assert.deepEqual(seqs(recovered), Array.from({ length: session.seq }, (_, index) => DISPLAY_SEQ_OFFSET + index),
-        'all lifecycle, body and annotation events survive the opening cut exactly once')
-      assert.equal(bodyIds.filter(id => JSON.stringify(recovered.entries).includes(id)).length, bodyIds.length)
-      assert.equal(recovered.hasMore, sourceHasOlder)
+      assert.equal(h.loadOlderCalls, 0, 'source history has only one paging owner')
+      assert.equal(requests.length, 1)
+      assert.equal(requests[0]!.beforeSeq, opening[0]!.source!.seq)
+      assert.equal(requests[0]!.startSeq, undefined)
+      assert.equal(requests[0]!.endSeq, undefined)
+      assert.equal(bodyIds.filter(body => JSON.stringify(recovered.entries).includes(body)).length, bodyIds.length,
+        'the raw source prefix cannot disappear at the official event transport cut')
+      const identities = recovered.entries.map(row => (row as unknown as { sourceFrameKey: string }).sourceFrameKey)
+      assert.equal(new Set(identities).size, identities.length)
       assert.equal(reference.binding.session.getSnapshot().hasMore, sourceHasOlder)
       if (sourceHasOlder) {
         await reference.binding.session.loadOlder()
-        assert.equal(h.loadOlderCalls, 1, 'source archive paging must not accumulate in the original ClientSession')
-        assert.equal(requests.length, 1)
-        assert.equal(requests[0]!.fromOldest, true)
-        assert.equal(requests[0]!.endSeq, DISPLAY_SEQ_OFFSET)
+        assert.equal(requests.length, 2)
+        assert.equal(h.loadOlderCalls, 0)
         assert.equal(reference.binding.session.getSnapshot().hasMore, false)
       }
-    } finally { reference.release(); facade.dispose(); window.dispose(); await ctx.fiber.dispose() }
+    } finally { reference.release(); facade.dispose() }
   })
 }
 
-for (const batch of ['single', 'multiple', 'replaced'] as const) {
-test(`the official seed prefix stays readable until the page reader moves (${batch})`, async () => {
-  const rows = Array.from({ length: 120 }, (_, index) => {
-    const row = locatedEvent(index)
-    return { ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + index } } as SessionEventLikeEntry
-  })
-  const h = harness({ id: sourceId(102), tail: rows.slice(100), loadOlder: async events => {
-    if (batch === 'single') events.prepend(rows.slice(0, 100), false)
-    else if (batch === 'multiple') {
-      events.prepend(rows.slice(50, 100), true)
-      events.prepend(rows.slice(0, 50), false)
-    } else {
-      events.prepend(rows.slice(0, 50), true)
-      events.replace(rows.slice(80), true)
-      events.prepend(rows.slice(50, 80), false)
-    }
-  } })
-  h.resolveReady()
-  const facade = new runtime.SourceSessions(h.original)
-  facade.attach(apiWith({ sourceHistoryWindowPage: async () => { throw new Error('seed prefix is already on the original pager') } }))
-  const reference = facade.retain(h.id, { source: 'mainView' })
-  await reference.ready
-  const session = reference.binding.session as SessionFace & SourceViewportSession
-  let visible = 100
-  const stop = session.registerWindowReader!({ available: () => true,
-    read: () => ({ firstSeq: DISPLAY_SEQ_OFFSET + visible, lastSeq: DISPLAY_SEQ_OFFSET + visible + 3, followingTail: false }) })
-  try {
-    await session.loadOlder()
-    assert.equal(h.loadOlderCalls, 1)
-    const first = batch === 'replaced' ? 'visible-50' : 'visible-0'
-    assert.ok(sourceIdentities(reference.binding.eventSource).includes(first),
-      'the original prepend must not be evicted before its first DOM commit')
-    if (batch === 'replaced') assert.equal(sourceIdentities(reference.binding.eventSource).includes('visible-0'), false,
-      'a superseded prefix must not hold a replacement snapshot hostage')
-    const append = async (index: number): Promise<void> => {
-      const row = locatedEvent(103)
-      h.eventSource.append({ ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + index } } as SessionEventLikeEntry)
-      await Promise.resolve(); await Promise.resolve()
-    }
-    await append(120)
-    assert.ok(sourceIdentities(reference.binding.eventSource).includes(first),
-      'unchanged pre-page geometry cannot release the fetched prefix')
-    visible = 101
-    await append(121)
-    assert.equal(sourceIdentities(reference.binding.eventSource).includes(first), false,
-      'reader movement releases page protection and restores bounded locality')
-  } finally { stop(); reference.release(); facade.dispose() }
-})
-}
-
-test('a replacement can retire an uncommitted seed page after its budget was refused', async () => {
+test('a committed page remains resident when the live source replaces its seed tail', async () => {
   const rows = Array.from({ length: 5020 }, (_, index) => {
     const row = locatedEvent(index)
     return { ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + index } } as SessionEventLikeEntry
@@ -1173,7 +1583,7 @@ test('a replacement can retire an uncommitted seed page after its budget was ref
   } })
   h.resolveReady()
   const facade = new runtime.SourceSessions(h.original)
-  facade.attach(apiWith())
+  facade.attach(apiWith({ sourceHistoryWindowPage: async () => ({ ok: true, value: windowValue(rows.slice(0, 5000)) }) }))
   const reference = facade.retain(h.id, { source: 'mainView' })
   await reference.ready
   const session = reference.binding.session as SessionFace & SourceViewportSession
@@ -1182,38 +1592,61 @@ test('a replacement can retire an uncommitted seed page after its budget was ref
   try {
     const before = reference.binding.eventSource.getSnapshot()
     await session.loadOlder()
-    assert.equal(reference.binding.eventSource.getSnapshot().revision, before.revision,
-      'an oversized protected page must leave the visible window unchanged')
-    h.eventSource.replace(rows.slice(5000), true)
+    const afterPage = reference.binding.eventSource.getSnapshot()
+    assert.ok(afterPage.revision > before.revision, 'the oversized page commits into the resident history')
+    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-0'))
+    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-5003'))
+    const repaired = rows.slice(5000).map(row => row.event.seq === DISPLAY_SEQ_OFFSET + 5003
+      ? { ...row, event: { ...row.event, data: { ...row.event.data, content: [{ type: 'text', text: 'Recovered source body' }] } } } as SessionEventLikeEntry
+      : row)
+    h.eventSource.replace(repaired, true)
     await Promise.resolve(); await Promise.resolve()
     const after = reference.binding.eventSource.getSnapshot()
-    assert.ok(after.revision > before.revision, 'a discarded pending prefix must not block the replacement snapshot')
+    assert.ok(after.revision > afterPage.revision, 'the new source tail updates after the older page')
+    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-0'), 'the older committed page stays resident')
     assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-5000'))
     assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-5003'))
-    assert.ok(after.entries.length < 100, 'the replacement still obeys viewport locality')
+    assert.ok(JSON.stringify(after.entries).includes('Recovered source body'), 'a real resident correction still commits after the unrelated page was refused')
+    assert.ok(after.entries.length > repaired.length, 'the replacement tail is merged with its resident history')
   } finally { stop(); reference.release(); facade.dispose() }
 })
 
 for (const failure of ['no-progress', 'reject'] as const) {
-  test(`an original prefix page ${failure} never skips to the source archive`, async () => {
+  test(`a source prefix page ${failure} preserves its current reader and cursor`, async () => {
     const h = harness({ id: sourceId(failure === 'reject' ? 61 : 60), tail: [event(DISPLAY_SEQ_OFFSET + 19)],
       loadOlder: async () => { if (failure === 'reject') throw new Error('original page transport failed') } })
     h.resolveReady()
     const requests: SourceHistoryWindowRequest[] = []
+    let mode: 'failed' | 'recover' = 'failed'
     const facade = new runtime.SourceSessions(h.original)
     facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
-      requests.push(request); return { ok: true, value: windowValue([], { hasMoreBefore: false }) }
+      requests.push(request)
+      if (mode === 'recover') return { ok: true, value: windowValue([], { hasMoreBefore: false, before: null }) }
+      if (failure === 'reject') throw new Error('source page transport failed')
+      return { ok: true, value: windowValue([], { hasMoreBefore: true }) }
     } }))
     const reference = facade.retain(h.id, { source: 'mainView' })
     try {
       await reference.ready
-      if (failure === 'reject') await assert.rejects(() => reference.binding.session.loadOlder(), /original page transport failed/)
-      else await reference.binding.session.loadOlder()
-      assert.equal(h.loadOlderCalls, 1)
-      assert.equal(requests.length, 0)
+      if (failure === 'reject') await assert.rejects(() => reference.binding.session.loadOlder(), /source page transport failed/)
+      else await assert.rejects(() => reference.binding.session.loadOlder(), /cursor did not advance/)
+      assert.equal(h.loadOlderCalls, 0)
+      assert.equal(requests.length, failure === 'reject' ? 1 : 2,
+        'a non-advancing empty page is retried only to verify its cursor, then rejected')
       assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [DISPLAY_SEQ_OFFSET + 19])
       assert.equal(reference.binding.session.getSnapshot().hasMore, true)
       assert.equal(reference.binding.session.getSnapshot().loadingOlder, false)
+      const source = reference.binding.session as SessionFace & Partial<SourceViewportSession>
+      assert.equal(source.sourceWindow?.getSnapshot().pagingError, true,
+        'the failed request remains distinguishable from an idle Load earlier button')
+
+      mode = 'recover'
+      await reference.binding.session.loadOlder()
+      assert.equal(source.sourceWindow?.getSnapshot().pagingError, undefined,
+        'a successful retry clears the visible failure state')
+      assert.equal(reference.binding.session.getSnapshot().hasMore, false)
+      assert.deepEqual(seqs(reference.binding.eventSource.getSnapshot()), [DISPLAY_SEQ_OFFSET + 19],
+        'the successful empty terminal page preserves the already visible transcript')
     } finally { reference.release(); facade.dispose() }
   })
 }
@@ -1239,9 +1672,9 @@ async function candidateHarness(index: number, page?: NonNullable<Parameters<typ
     sourceHistoryWindowPage: async request => {
       requests.push(request)
       if (page) return page(request)
-      const first = request.endSeq === undefined ? Number(request.startSeq) : request.endSeq - 1
+      const first = request.beforeSeq === undefined ? 3_001_000_000 : 3_000_999_999
       return { ok: true, value: windowValue([event(first)], {
-        hasMoreBefore: request.endSeq === undefined, hasMoreAfter: false,
+        hasMoreBefore: request.beforeSeq === undefined, hasMoreAfter: false,
         before: { at: first, seq: first }, after: { at: 100, seq: 100 },
       }) }
     },
@@ -1300,7 +1733,7 @@ test('prepared latest pages preserve separate before and after epochs at publica
     const backward = request.beforeSeq !== undefined
     const ordinal = backward ? 100 - (++beforePages * 10) : request.afterSeq !== undefined ? 110 : 100
     const epoch = backward ? 7 + beforePages : request.afterSeq !== undefined ? 20 : 7
-    const seq = backward ? request.endSeq! - 1 : request.startSeq!
+    const seq = 3_000_000_000 + ordinal
     return { ok: true, value: windowValue([event(seq)], {
       epoch, before: { at: ordinal, seq: ordinal }, after: { at: ordinal, seq: ordinal },
       beforeMessageId: `edge-${ordinal}`, afterMessageId: `edge-${ordinal}`,
@@ -1392,7 +1825,7 @@ for (const accepted of [true, false]) {
       const records = reference.binding.eventSource.getSnapshot().entries
       assert.equal(records.filter(row => (row.event.data as { id?: string }).id === 'during-preview').length, 1)
       assert.equal(records.length, 2)
-      assert.equal(Number(records[0]?.event.seq) > 3_000_000_000, accepted)
+      assert.equal(records.some(row => Number(row.event.seq) > 3_000_000_000), accepted, 'only admitted candidate content replaces the old reader')
     } finally { gate.resolve(false); stop(); await fixture.dispose() }
   })
 }
@@ -1434,359 +1867,69 @@ function locatedEvent(seq: number, epoch?: number): SessionEventLikeEntry {
 }
 const sourceIdentities = (source: SessionEventSource): string[] => source.getSnapshot().entries.map(row => (row as unknown as { source: { messageId: string } }).source.messageId)
 
-for (const secondPane of ['none', 'tail', 'unknown'] as const) {
-  test(`visible history pins survive live updates with ${secondPane} second pane`, { timeout: 5_000 }, async () => {
-    const h = harness({ id: sourceId(secondPane === 'none' ? 91 : secondPane === 'tail' ? 92 : 93),
-      tail: Array.from({ length: 100 }, (_, index) => locatedEvent(index)) })
-    h.resolveReady()
-    const facade = new runtime.SourceSessions(h.original)
-    facade.attach(apiWith())
-    const reference = facade.retain(h.id, { source: 'mainView' })
-    await reference.ready
-    const session = reference.binding.session as SessionFace & SourceViewportSession
-    const stops = [session.registerWindowReader!({ available: () => true,
-      read: () => ({ firstSeq: 40, lastSeq: 43, followingTail: false }) })]
-    if (secondPane !== 'none') stops.push(session.registerWindowReader!({ available: () => true,
-      read: () => secondPane === 'unknown' ? undefined : { firstSeq: 96, lastSeq: 99, followingTail: true } }))
-    try {
-      h.eventSource.append(locatedEvent(100))
-      await Promise.resolve(); await Promise.resolve()
-      const first = sourceIdentities(reference.binding.eventSource)
-      assert.ok(first.includes('visible-40') && first.includes('visible-43'))
-      if (secondPane === 'none') assert.deepEqual(first, Array.from({ length: 16 }, (_, index) => `visible-${34 + index}`))
-      if (secondPane === 'tail') assert.ok(first.includes('visible-100'), 'a second tail reader must receive the live head')
-      if (secondPane === 'unknown') assert.equal(first.length, 101, 'one unknown visible pane prevents locality eviction for its sibling')
-      h.eventSource.append(locatedEvent(101))
-      await Promise.resolve(); await Promise.resolve()
-      const next = sourceIdentities(reference.binding.eventSource)
-      assert.ok(next.includes('visible-40') && next.includes('visible-43'))
-      if (secondPane === 'none') assert.deepEqual(next, first, 'distant new rows stay outside the historical reading interval')
-      else assert.ok(next.includes('visible-101'), 'live data is not silently parked when another pane may follow it')
-    } finally { stops.forEach(stop => stop()); reference.release(); facade.dispose() }
-  })
-}
-
-for (const mode of ['tail', 'window'] as const) {
-  test(`a following ${mode} preserves measured readable rows until layout confirms the new tail`, { timeout: 5_000 }, async () => {
-    const h = harness({ id: sourceId(mode === 'tail' ? 96 : 97),
-      tail: Array.from({ length: 80 }, (_, index) => locatedEvent(index)) })
-    h.resolveReady()
-    const facade = new runtime.SourceSessions(h.original)
-    facade.attach(apiWith({ sourceReadingAnchor: async () => ({ ok: true, value: { sourceMessageId: 'visible-79' } }),
-      sourceHistoryWindowPage: async () => ({ ok: true, value: windowValue(
-        Array.from({ length: 80 }, (_, index) => locatedEvent(index)), { hasMoreAfter: false }) }) }))
-    const reference = facade.retain(h.id, { source: 'mainView' })
-    await reference.ready
-    const session = reference.binding.session as SessionFace & SourceViewportSession
-    if (mode === 'window') await session.loadThrough(900 as SessionSeq)
-    let visible = [74, 79]
-    const stop = session.registerWindowReader!({ available: () => true, read: () => {
-      const entries = reference.binding.eventSource.getSnapshot().entries
-      const seq = (source: number) => entries.find(row =>
-        (row as unknown as { source?: { messageId: string } }).source?.messageId === `visible-${source}`)?.event.seq
-      return { firstSeq: Number(seq(visible[0]!)), lastSeq: Number(seq(visible[1]!)), followingTail: true }
-    } })
-    try {
-      const binding = reference.binding
-      // Many tool source rows can share one short folded process block. Their
-      // arrival cannot prove that the currently measured text left the screen.
-      for (let burst = 0; burst < 2; burst++) {
-        for (let index = 80 + burst * 20; index < 100 + burst * 20; index++) {
-          const row = locatedEvent(index)
-          h.eventSource.append({ ...row, event: { ...row.event, type: 'tool/call', data: { callId: `call-${index}` } } } as SessionEventLikeEntry)
-        }
-        await Promise.resolve(); await Promise.resolve()
-        const ids = sourceIdentities(reference.binding.eventSource)
-        for (let index = 74; index < 80; index++) assert.ok(ids.includes(`visible-${index}`),
-          'a source-row count must not evict the last measured readable interval')
-        assert.equal(ids.at(-1), `visible-${99 + burst * 20}`, 'new live rows still reach the retained tail')
-        assert.equal(reference.binding, binding)
-        assert.equal(session.getSnapshot().hasMore, true)
-      }
-      visible = [116, 119]
-      h.eventSource.append(locatedEvent(120))
-      await Promise.resolve(); await Promise.resolve()
-      const ids = sourceIdentities(reference.binding.eventSource)
-      assert.equal(ids.includes('visible-74'), false, 'a later measured viewport releases its previous reading range')
-      assert.equal(ids.at(-1), 'visible-120')
-      assert.ok(ids.length <= 12, 'retention remains local after layout advances')
-    } finally { stop(); reference.release(); facade.dispose() }
-  })
-}
-
-test('following-tail viewport retains a small source interval while continuous live rows advance', { timeout: 5_000 }, async () => {
-  const h = harness({ id: sourceId(94), tail: Array.from({ length: 100 }, (_, index) => locatedEvent(index)) })
-  h.resolveReady()
-  const facade = new runtime.SourceSessions(h.original)
-  facade.attach(apiWith())
-  const reference = facade.retain(h.id, { source: 'mainView' })
-  await reference.ready
-  const session = reference.binding.session as SessionFace & SourceViewportSession
-  const stop = session.registerWindowReader!({ available: () => true, read: () => {
-    const entries = reference.binding.eventSource.getSnapshot().entries
-    return { firstSeq: Number(entries.at(-4)!.event.seq), lastSeq: Number(entries.at(-1)!.event.seq), followingTail: true }
-  } })
-  try {
-    for (let next = 100; next < 160; next++) {
-      h.eventSource.append(locatedEvent(next))
-      await Promise.resolve(); await Promise.resolve()
-      const ids = sourceIdentities(reference.binding.eventSource)
-      assert.equal(ids.length, 11, 'four measured rows, the incoming row and six older overscan rows')
-      assert.equal(ids.at(-1), `visible-${next}`)
-      assert.equal(ids[0], `visible-${next - 10}`)
-    }
-  } finally { stop(); reference.release(); facade.dispose() }
-})
-
-test('tail retention preserves measured readable overscan independently of folded live source rows', async () => {
-  const tail = Array.from({ length: 1000 }, (_, index) => {
-    const row = locatedEvent(index)
-    return { ...row, event: { ...row.event, type: index % 10 === 0 ? 'assistant/message' : 'tool/call' } } as SessionEventLikeEntry
-  })
-  const h = harness({ id: sourceId(101), tail })
-  h.resolveReady()
-  const facade = new runtime.SourceSessions(h.original)
-  facade.attach(apiWith())
-  const reference = facade.retain(h.id, { source: 'mainView' })
-  await reference.ready
-  const session = reference.binding.session as SessionFace & SourceViewportSession
+test('live commits do not wait for reader quiet or lose the final event while another source is moving', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const moving = harness({ id: sourceId(105), tail: Array.from({ length: 10 }, (_, index) => locatedEvent(index)) })
+  const sibling = harness({ id: sourceId(106), tail: Array.from({ length: 10 }, (_, index) => locatedEvent(index)) })
+  moving.resolveReady(); sibling.resolveReady()
+  const movingFacade = new runtime.SourceSessions(moving.original), siblingFacade = new runtime.SourceSessions(sibling.original)
+  movingFacade.attach(apiWith()); siblingFacade.attach(apiWith())
+  const reading = movingFacade.retain(moving.id, { source: 'mainView' })
+  const background = siblingFacade.retain(sibling.id, { source: 'mainView' })
+  await Promise.all([reading.ready, background.ready])
+  let firstVisible = 6
+  const session = reading.binding.session as SessionFace & SourceViewportSession
   const stop = session.registerWindowReader!({ available: () => true,
-    read: () => ({ firstSeq: 800, lastSeq: 990, followingTail: true, overscan: { firstSeq: 690, lastSeq: 990 } }) })
+    read: () => ({ firstSeq: firstVisible, lastSeq: 9, followingTail: true }) })
   try {
-    for (let index = 1000; index < 1020; index++) {
-      const row = locatedEvent(index)
-      h.eventSource.append({ ...row, event: { ...row.event, type: 'tool/call' } } as SessionEventLikeEntry)
+    const binding = reading.binding
+    for (let seq = 10; seq < 13; seq++) {
+      firstVisible-- // Reader geometry changes while new messages arrive.
+      moving.eventSource.append(locatedEvent(seq))
+      sibling.eventSource.append(locatedEvent(seq))
       await Promise.resolve(); await Promise.resolve()
-      const retained = reference.binding.eventSource.getSnapshot().entries
-      assert.ok(retained.filter(row => row.event.type === 'assistant/message').length * 20 > 600,
-        'folded live source rows cannot consume the measured readable height above the viewport')
-      assert.ok(retained.length < 400)
-      assert.equal(retained.at(-1)!.event.seq, index)
+      assert.equal(sourceIdentities(reading.binding.eventSource).at(-1), `visible-${seq}`,
+        'each update, including the final isolated event, must reach the visible tail without advancing a timer')
+      assert.equal(sourceIdentities(background.binding.eventSource).at(-1), `visible-${seq}`,
+        'another source must not inherit this reader activity')
+      assert.ok(sourceIdentities(reading.binding.eventSource).includes(`visible-${firstVisible}`),
+        'publishing live data must preserve the measured reading range')
+      assert.equal(reading.binding, binding)
     }
-    assert.equal(session.getSnapshot().hasMore, true)
-  } finally { stop(); reference.release(); facade.dispose() }
+  } finally {
+    stop(); reading.release(); background.release(); movingFacade.dispose(); siblingFacade.dispose(); t.mock.timers.reset()
+  }
 })
 
-for (const releasePage of ['move', 'hide', 'unregister'] as const) {
-  test(`an older page keeps its readable beginning until its reader releases it (${releasePage})`, async () => {
-    const tail = Array.from({ length: 20 }, (_, index) => {
-      const row = locatedEvent(100 + index)
-      return { ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + index } } as SessionEventLikeEntry
-    })
-    const h = harness({ id: sourceId(98), tail })
-    h.resolveReady()
-    const facade = new runtime.SourceSessions(h.original)
-    const fetched: SessionEventLikeEntry[] = []
-    let failNextPage = false
-    facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
-      if (failNextPage) throw new Error('page temporarily unavailable')
-      const values: Array<{ type: string; data: Record<string, unknown>; source: number }> = []
-      values.push({ type: 'assistant/message', source: 0, data: { turn: 1, step: 1,
-        message: { id: 'older-commentary', role: 'assistant', content: [{ type: 'text', text: 'Earlier readable commentary' }] } } })
-      // The same folded process contains many distinct tool source rows after
-      // the older text. Source-group count is not rendered history progress.
-      for (let index = 1; index < 80; index++) {
-        const callId = `call-${Math.ceil(index / 2)}`, step = Math.ceil(index / 2) + 1
-        if (index % 2) {
-          values.push({ type: 'assistant/message', source: index, data: { turn: 1, step,
-            message: { id: `tool-message-${index}`, role: 'assistant', content: [{ type: 'tool-call', id: callId, name: 'tool', arguments: '{}' }] } } })
-          values.push({ type: 'tool/call', source: index, data: { turn: 1, step, callId, name: 'tool', arguments: '{}' } })
-        } else values.push({ type: 'tool/result', source: index, data: { turn: 1, step,
-          message: { id: `result-${index}`, role: 'tool', toolCallId: callId, source: { kind: 'tool', callId }, content: [{ type: 'text', text: 'done' }] } } })
-      }
-      values.forEach((value, index) => fetched.push({ type: 'event',
-        source: { messageId: `page-${value.source}`, at: value.source, seq: value.source, epoch: 7 },
-        event: { type: value.type, seq: request.endSeq! - values.length + index, time: value.source, data: value.data },
-      } as unknown as SessionEventLikeEntry))
-      return { ok: true, value: windowValue(fetched, { epoch: 7, before: { at: 0, seq: 0 }, beforeMessageId: 'page-0' }) }
-    } }))
-    const reference = facade.retain(h.id, { source: 'mainView' })
-    await reference.ready
-    const session = reference.binding.session as SessionFace & SourceViewportSession
-    let visible = [100, 103], available = true
-    const reader = { available: () => available,
-      read: () => {
-        const rows = reference.binding.eventSource.getSnapshot().entries
-        const seq = (id: number) => rows.find(row =>
-          (row as unknown as { source?: { messageId: string } }).source?.messageId === `visible-${id}`)?.event.seq
-        return { firstSeq: Number(seq(visible[0]!)), lastSeq: Number(seq(visible[1]!)), followingTail: false }
-      } }
-    let stop = session.registerWindowReader!(reader)
-    try {
-      await session.loadOlder()
-      const retained = reference.binding.eventSource.getSnapshot().entries
-      assert.equal(retained[0], fetched[0], 'the fetched readable prefix must survive its own commit')
-      assert.deepEqual(retained.slice(0, fetched.length), fetched, 'publish the contiguous bounded page until the next viewport measurement')
-      assert.ok(retained.includes(tail[0]!), 'the official prepend anchor remains resident')
-      assert.ok(retained.includes(tail[3]!))
-      assert.equal(session.getSnapshot().hasMore, true)
-      const reviseResident = async (index: number): Promise<void> => {
-        const row = tail[3]!
-        h.eventSource.append({ ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + 20 + index } } as SessionEventLikeEntry)
-        await Promise.resolve(); await Promise.resolve()
-      }
-      await reviseResident(0)
-      assert.ok(reference.binding.eventSource.getSnapshot().entries.includes(fetched[0]!),
-        'a live resident revision must not discard the received page while DOM still reports the old reader boundaries')
-      failNextPage = true
-      await assert.rejects(session.loadOlder(), /temporarily unavailable/)
-      await reviseResident(1)
-      assert.ok(reference.binding.eventSource.getSnapshot().entries.includes(fetched[0]!),
-        'a failed successor page and repeated unchanged measurements cannot release the last received page')
-      if (releasePage === 'move') visible = [101, 102]
-      else if (releasePage === 'unregister') {
-        stop()
-        stop = session.registerWindowReader!({ ...reader })
-      } else {
-        available = false
-        await reviseResident(2)
-        available = true
-      }
-      await reviseResident(3)
-      assert.equal(reference.binding.eventSource.getSnapshot().entries.includes(fetched[0]!), false,
-        'reader movement, hiding or unregistration releases the old page protection')
-    } finally { stop(); reference.release(); facade.dispose() }
-  })
-}
-
-test('a pending page survives an extended trailing span, changed geometry overscan and an empty forward repair', async () => {
-  const tail = Array.from({ length: 20 }, (_, index) => {
-    const row = locatedEvent(100 + index)
-    return { ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + index } } as SessionEventLikeEntry
-  })
-  const h = harness({ id: sourceId(99), tail })
+test('a source binding keeps the contiguous window bounded and exposes the forward cursor', { timeout: 5_000 }, async () => {
+  const tail = Array.from({ length: 1_200 }, (_, index) => locatedEvent(10_000 + index))
+  const older = Array.from({ length: 80 }, (_, index) => locatedEvent(9_920 + index))
+  const h = harness({ id: sourceId(91), tail })
   h.resolveReady()
-  const facade = new runtime.SourceSessions(h.original)
-  facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
-    if (request.afterSeq !== undefined) return { ok: true, value: windowValue([], { after: null, hasMoreAfter: false }) }
-    const records = Array.from({ length: 20 }, (_, index) => {
-      const row = locatedEvent(index)
-      return { ...row, event: { ...row.event, seq: request.endSeq! - 20 + index } } as SessionEventLikeEntry
-    })
-    return { ok: true, value: windowValue(records, { before: { at: 0, seq: 0 }, beforeMessageId: 'visible-0' }) }
-  } }))
-  const reference = facade.retain(h.id, { source: 'mainView' })
-  await reference.ready
-  const session = reference.binding.session as SessionFace & SourceViewportSession & { loadAfter(): Promise<boolean> }
-  let first = 100, last = 103, overscanFirst = 18
-  const stop = session.registerWindowReader!({ available: () => true, read: () => {
-    const rows = reference.binding.eventSource.getSnapshot().entries
-    const seq = (id: number) => rows.find(row =>
-      (row as unknown as { source?: { messageId: string } }).source?.messageId === `visible-${id}`)?.event.seq
-    const overscan = seq(overscanFirst)
-    return { firstSeq: Number(seq(first)), lastSeq: Number(seq(last)), followingTail: false,
-      ...(overscan === undefined ? {} : { overscan: { firstSeq: Number(overscan), lastSeq: Number(seq(last)) } }) }
-  } })
-  try {
-    await session.loadOlder()
-    const revise = async (index: number) => {
-      const row = tail[9]!
-      h.eventSource.append({ ...row, event: { ...row.event, seq: DISPLAY_SEQ_OFFSET + 20 + index } } as SessionEventLikeEntry)
-      await Promise.resolve(); await Promise.resolve()
-    }
-    last = 104
-    await revise(0)
-    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-0'),
-      'a folded step can extend its trailing source dependency without moving the leading reading boundary')
-    overscanFirst = 19
-    await revise(1)
-    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-0'),
-      'a layout-only geometry margin change cannot count as reader movement and release the pending page')
-    assert.equal(await session.loadAfter(), false)
-    assert.ok(sourceIdentities(reference.binding.eventSource).includes('visible-0'),
-      'empty forward exhaustion must not trim the previously received page with unprotected reader pins')
-    first = 101
-    await revise(2)
-    assert.equal(sourceIdentities(reference.binding.eventSource).includes('visible-0'), false)
-  } finally { stop(); reference.release(); facade.dispose() }
-})
-
-test('viewport eviction preserves source cursors for complete backward and forward traversal', { timeout: 5_000 }, async () => {
-  const h = harness({ id: sourceId(95), tail: Array.from({ length: 100 }, (_, index) => locatedEvent(index, 42)) })
-  h.resolveReady()
-  const facade = new runtime.SourceSessions(h.original)
   const requests: SourceHistoryWindowRequest[] = []
+  const facade = new runtime.SourceSessions(h.original)
   facade.attach(apiWith({ sourceHistoryWindowPage: async request => {
     requests.push(request)
-    const backward = request.beforeSeq !== undefined
-    const edge = reference.binding.eventSource.getSnapshot().entries.map(row =>
-      (row as unknown as { source: { messageId: string; seq: number; epoch: number } }).source)
-      .find(source => source.seq === (backward ? request.beforeSeq : request.afterSeq))!
-    assert.deepEqual([request.epoch, request.cursorMessageId], [edge.epoch, edge.messageId],
-      'eviction must carry the retained source row revision into its new boundary')
-    const epoch = 100 + requests.length
-    const first = backward ? Math.max(0, request.beforeSeq! - 20) : request.afterSeq! + 1
-    const last = backward ? request.beforeSeq! - 1 : Math.min(100, first + 19)
-    const start = backward ? request.endSeq! - (last - first + 1) : request.startSeq!
-    const records = Array.from({ length: last - first + 1 }, (_, index) => {
-      const row = locatedEvent(first + index, epoch)
-      return { ...row, event: { ...row.event, seq: start + index } } as SessionEventLikeEntry
-    })
-    return { ok: true, value: windowValue(records, { before: { at: first, seq: first }, after: { at: last, seq: last },
-      epoch, beforeMessageId: `visible-${first}`, afterMessageId: `visible-${last}`,
-      hasMoreBefore: first > 0, hasMoreAfter: last < 100 }) }
+    return { ok: true, value: windowValue(older, { before: { at: 9_920, seq: 9_920 }, hasMoreBefore: true }) }
   } }))
   const reference = facade.retain(h.id, { source: 'mainView' })
-  await reference.ready
-  const session = reference.binding.session as SessionFace & SourceViewportSession & { loadAfter(): Promise<boolean> }
-  let visible = ['visible-40', 'visible-43']
-  let windowChanged = false
-  const unwatch = reference.binding.eventSource.subscribe(() => { windowChanged = true })
-  const stop = session.registerWindowReader!({ available: () => true, read: () => {
-    assert.equal(windowChanged, false, 'sample visible pins before publishing the new source window, not from stale DOM afterward')
-    const rows = reference.binding.eventSource.getSnapshot().entries
-    const seqOf = (id: string) => Number(rows.find(row => (row as unknown as { source: { messageId: string } }).source.messageId === id)!.event.seq)
-    return { firstSeq: seqOf(visible[0]!), lastSeq: seqOf(visible[1]!), followingTail: false }
-  } })
   try {
-    h.eventSource.append(locatedEvent(100, 42))
+    await reference.ready
+    await reference.binding.session.loadOlder()
+    const afterPage = sourceIdentities(reference.binding.eventSource)
+    assert.equal(requests.length, 1, 'one gesture commits one contiguous page')
+    assert.equal(afterPage.length, 800, 'the resident projection follows the HAPI history window')
+    assert.equal(afterPage[0], 'visible-9920')
+    assert.equal(afterPage.at(-1), 'visible-10719')
+    assert.equal((reference.binding.session as SessionFace & SourceViewportSession).sourceWindow.getSnapshot().hasMoreAfter, true,
+      'the evicted newer interval remains reachable through its source cursor')
+
+    h.eventSource.append(locatedEvent(11_200))
     await Promise.resolve(); await Promise.resolve()
-    const seen = new Set(sourceIdentities(reference.binding.eventSource))
-    // A wheel burst can request another page before the compositor moves the
-    // original reading rows. Both successful pages must extend the source
-    // edge rather than immediately evicting the newly fetched prefix.
-    for (let page = 0; page < 2; page++) {
-      const before = sourceIdentities(reference.binding.eventSource)
-      windowChanged = false
-      await session.loadOlder()
-      const after = sourceIdentities(reference.binding.eventSource)
-      after.forEach(id => seen.add(id))
-      assert.notEqual(after[0], before[0], 'each accepted history request extends the edge while the viewport stays still')
-      assert.ok(visible.every(id => after.includes(id)), 'the stationary viewport remains protected')
-    }
-    for (let page = 0; page < 30 && session.getSnapshot().hasMore; page++) {
-      const before = sourceIdentities(reference.binding.eventSource)
-      visible = before.slice(0, 2)
-      windowChanged = false
-      await session.loadOlder()
-      const after = sourceIdentities(reference.binding.eventSource)
-      after.forEach(id => seen.add(id))
-      assert.notEqual(after[0], before[0], 'backward paging must advance the retained source edge')
-      assert.ok(visible.every(id => after.includes(id)), 'the old visible source rows survive prepend')
-    }
-    assert.equal(sourceIdentities(reference.binding.eventSource)[0], 'visible-0')
-    visible = sourceIdentities(reference.binding.eventSource).slice(-2)
-    for (let page = 0; page < 2; page++) {
-      const before = sourceIdentities(reference.binding.eventSource)
-      windowChanged = false
-      assert.equal(await session.loadAfter(), true)
-      const after = sourceIdentities(reference.binding.eventSource)
-      after.forEach(id => seen.add(id))
-      assert.notEqual(after.at(-1), before.at(-1), 'a second forward request also advances while the viewport stays still')
-      assert.ok(visible.every(id => after.includes(id)))
-    }
-    for (let page = 0; page < 40; page++) {
-      const before = sourceIdentities(reference.binding.eventSource)
-      visible = before.slice(-2)
-      windowChanged = false
-      if (!await session.loadAfter()) break
-      const after = sourceIdentities(reference.binding.eventSource)
-      after.forEach(id => seen.add(id))
-      assert.notEqual(after.at(-1), before.at(-1), 'forward paging must advance the retained source edge')
-      assert.ok(visible.every(id => after.includes(id)), 'the old visible source rows survive append')
-    }
-    assert.equal(sourceIdentities(reference.binding.eventSource).at(-1), 'visible-100')
-    assert.equal(seen.size, 101, 'every source row is reachable after locality eviction')
-    assert.ok(requests.some(request => request.beforeSeq !== undefined) && requests.some(request => request.afterSeq !== undefined))
-  } finally { unwatch(); stop(); reference.release(); facade.dispose() }
+    const afterLive = sourceIdentities(reference.binding.eventSource)
+    assert.equal(afterLive.length, 800, 'live tail rows do not create a gap inside the resident transcript')
+    assert.equal(afterLive[0], 'visible-9920')
+    assert.equal(afterLive.at(-1), 'visible-10719')
+    assert.deepEqual(afterPage, afterLive, 'the detached reader keeps its contiguous loaded interval')
+  } finally { reference.release(); facade.dispose() }
 })

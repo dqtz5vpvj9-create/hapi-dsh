@@ -90,7 +90,7 @@ function fixture() {
     return {
         port, state, spacer, composer, editor, target, reference,
         run: (signal?: AbortSignal) => prepareInitialViewport(target, reference, navigation, () => live, () => block, signal),
-        candidate: (signal = new AbortController().signal) => prepareCandidateViewport(target, reference, signal),
+        candidate: (signal = new AbortController().signal) => prepareCandidateViewport(target, reference, signal, navigation.state),
         pages: () => pages, limits,
         frames: () => frames,
         older: () => { first--; revision++ },
@@ -216,6 +216,17 @@ test('parking pauses the budget instead of granting another five seconds when a 
     assert.equal(f.listeners(), 0)
 })
 
+test('a latest candidate parked with its owning pane keeps the same remaining foreground budget', async () => {
+    const f = fixture(); f.port.scrollHeight = 900
+    f.visible(false); f.suspendFrames()
+    const ready = f.candidate()
+    await tick()
+    f.advance(60_000)
+    f.visible(true); f.resumeFrames()
+    assert.equal(await ready, true, 'another visible pane must not spend this candidate\'s foreground budget')
+    assert.equal(f.listeners(), 0)
+})
+
 for (const preparation of ['initial', 'candidate'] as const) {
     test(`${preparation} preparation excludes background suspension and releases its visibility listener`, async () => {
         const f = fixture(); f.port.scrollHeight = 900
@@ -325,7 +336,7 @@ for (const preparation of ['initial', 'candidate'] as const) {
             if (read >= 120) f.port.scrollHeight = 900
         })
         assert.equal(await (preparation === 'initial' ? f.run() : f.candidate()), true)
-        assert.deepEqual(f.limits, [20, 80, 200])
+        assert.deepEqual(f.limits, [20, 50, 50])
         assert.equal(f.frames(), 7, 'two commit frames per page, without a third redundant frame')
     })
 
@@ -640,12 +651,19 @@ test('a short visible tail pins enough measured outer history above folded sourc
         'the actual reader boundary remains separate from geometry retained above it')
     const pin = pinSourceViewport(records, viewport)!
     const overscan = viewport.overscan && pinSourceViewport(records, { ...viewport.overscan, followingTail: false })
-    const plan = sourceRetentionPlan(records, [pin, { ...pin, followingTail: false }, ...(overscan ? [overscan] : [])],
-        'newer', { events: 5000, bytes: 12 * 1024 * 1024, size: () => 1 })
+    const pins = [pin, { ...pin, followingTail: false }, ...(overscan ? [overscan] : [])]
+    const budget = { events: 1500, bytes: 12 * 1024 * 1024, size: () => 1 }
+    const plan = sourceRetentionPlan(records, pins, 'newer', budget)
     const readableHeight = records.slice(plan.first, plan.last).filter(row => row.event.type === 'assistant/message').length * 20
     assert.ok(readableHeight > f.port.clientHeight,
         `retained outer history is only ${readableHeight}px; folded source overscan cannot fill a ${f.port.clientHeight}px viewport`)
-    assert.ok(plan.last - plan.first < records.length / 2, 'geometry protection remains local to this viewport')
+    assert.deepEqual([plan.first, plan.last], [0, records.length],
+        'measuring a short viewport cannot discard already loaded history below the safety budget')
+    const pressured = sourceRetentionPlan(records, pins, 'newer', { ...budget, events: 500 })
+    assert.equal(pressured.fits, true)
+    assert.ok(pressured.last - pressured.first <= 500, 'actual pressure still enforces the retained event budget')
+    assert.ok(records.slice(pressured.first, pressured.last).filter(row => row.event.type === 'assistant/message').length * 20 > f.port.clientHeight,
+        'a safety trim must preserve the measured readable height above folded tool rows')
     assert.ok(f.measures() <= 35, 'finding the earlier readable boundary uses bounded layout work')
 })
 
@@ -806,7 +824,7 @@ function measuringTarget(geometry: ReturnType<typeof fixture>, readingState?: ()
 const emptyEvents = () => ({ getSnapshot: () => ({ entries: [], revision: 0, hasMore: false, change: { kind: 'replace' } }),
     subscribe: () => () => {} })
 
-test('ready Session occurrences register independent reader pins and dispose them with their public view lifetime', async t => {
+test('ready Session occurrences use the committed event window without registering a second reader', async t => {
     const { root, host, plugin } = await viewHostFixture(t)
     try {
         const readers = new Set<SourceWindowReader>(), ready = deferred<SessionReference['binding']>()
@@ -823,15 +841,9 @@ test('ready Session occurrences register independent reader pins and dispose the
         const first = mount('first'), second = mount('second')
         assert.equal(readers.size, 0, 'loading views have no usable geometry yet')
         ready.resolve(binding); await tick()
-        assert.equal(readers.size, 2, 'split panes retain independent pins for one official owner')
-        const firstReader = [...readers][0]!
-        assert.equal(firstReader.available(), true)
-        visible.current = false
-        assert.equal(firstReader.available(), false)
-        visible.current = true
+        assert.equal(readers.size, 0, 'the source window no longer trims against per-pane viewport pins')
         await first.dispose()
-        assert.equal(readers.size, 1)
-        assert.equal(firstReader.available(), false)
+        assert.equal(readers.size, 0)
         await plugin.dispose()
         assert.equal(readers.size, 0)
         await second.dispose()

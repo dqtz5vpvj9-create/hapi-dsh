@@ -277,9 +277,18 @@ export class HapiAgentService {
       historyJournal: this.historyFor(source.id), ...(checkpoint ? { historyCheckpoint: checkpoint } : {}),
       ...(epoch === undefined ? {} : { historyEpoch: epoch }),
       assertSourceCurrent: () => { if (this.disposed) throw new HistoryReadInvalidatedError(); this.lifetimes.assertCurrent(source.id, version) },
-      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.replaceDisplay(agent, snapshot, undefined, checkpoint, epoch),
+      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.rebaseDisplayHistory(agent, snapshot, checkpoint, epoch),
       ...(rows ? { initialRowsMerged: true } : {}) }, rows)
   }
+  /** Reconcile history without replacing the source's single command owner. */
+  private async rebaseDisplayHistory(agent: HapiObservedAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number): Promise<void> {
+    const sourceId = agent.binding.hapiSessionId
+    if (this.disposed || this.agents.get(sourceId) !== agent || this.lifetimes.removed(sourceId)) return
+    this.historyFor(sourceId).assertCurrent(checkpoint)
+    await agent.rebaseDisplayHistory(rows, checkpoint, epoch)
+    if (!this.disposed && this.agents.get(sourceId) === agent) this.errors.delete(sourceId)
+  }
+
   private async replaceDisplay(previous: HapiObservedAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint(), epoch?: number): Promise<void> {
     const sourceId = previous.binding.hapiSessionId
     const pending = this.attaching.get(sourceId)

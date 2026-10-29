@@ -1,3 +1,4 @@
+import { projectedSourceEvents } from './source-frame-fixture.ts'
 import { hapiObservedProjectionDefinition } from '../src/hapi-agent/projection-state.ts'
 import type { HapiObservedProjection } from '../src/hapi-agent/projection-types.ts'
 import assert from 'node:assert/strict'
@@ -168,7 +169,7 @@ test('all existing non-native HAPI flavors enter real official Sessions with ori
       assert.equal(app.ctx.agents.get(agent.id), agent); assert.equal(app.ctx.sessions.get(agent.id), agent.session)
       assert.equal(agent.projection.ownership, 'hapi-runner'); assert.equal(agent.projection.engine, 'hapi')
       assert.equal(agent.session.header.agentPreset, undefined, 'an observed source engine is not a DSH preset composition')
-      assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+      assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'assistant/message').length, 1)
       assert.equal(agent.resolveRewindLocalId('hapi-observed:user:input'), 'input')
       const seq = agent.resolveSourceMessageDisplaySeq('input'); assert.notEqual(seq, undefined)
       assert.equal(agent.sourceMessageAtDisplaySeq(seq!), 'input')
@@ -200,7 +201,7 @@ test('Claude SDK blocks retain source model, actual tool correlation and authori
     importInline: async (id, ref) => { imports.push(`${id}:${ref.base64}`); return { type: 'file', attachment: { attachmentId: AttachmentId('fixture-image'), bytes: 3, name: 'source-image' } } },
   })
   try {
-    const agent = app.service.list()[0]!, events = agent.session.snapshotEvents()
+    const agent = app.service.list()[0]!, events = projectedSourceEvents(agent)
     const user = events.find(event => event.type === 'user/message'); assert.ok(user?.type === 'user/message')
     assert.equal(user.data.content[1]?.type, 'file')
     const call = events.find(event => event.type === 'tool/call'), result = events.find(event => event.type === 'tool/result')
@@ -221,32 +222,39 @@ test('Pi cumulative snapshots converge on one official answer and do not invent 
   assert.ok(parseObservedHistory(rows).every(item => !('execution' in item)))
   const app = await mount(source, directory)
   try {
-    const agent = app.service.list()[0]!, answers = agent.session.snapshotEvents().filter(event => event.type === 'assistant/message')
+    const agent = app.service.list()[0]!, answers = projectedSourceEvents(agent).filter(event => event.type === 'assistant/message')
     assert.equal(answers.length, 1); assert.ok(answers[0]?.type === 'assistant/message')
     assert.deepEqual(answers[0].data.message.content, [{ type: 'text', text: 'Partial source answer' }])
     await agent.refresh(true)
     assert.equal(app.service.list()[0]!.displayRevision, 0)
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 1)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/end').length, 1)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('observed cumulative streams use the official dense revision contract before completion', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-stream-')), source = new Fixture(); source.add('pi')
+test('observed cumulative streams publish one stable canonical body before completion', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-stream-'), source = new Fixture(); source.add('pi')
   source.rows.set('pi', [input()])
-  const app = await mount(source, directory), revisions: number[] = []
-  const stop = app.ctx.on('agent/assistant-stream', ({ frame }) => { revisions.push(frame.revision) }, { global: true })
+  const app = await mount(source, directory), agent = app.service.list()[0]!
   try {
+    let key: string | undefined
     for (const [index, message] of ['Part', 'Partial source answer'].entries()) {
       const value = codex(`live-${index}`, index + 2, { type: 'message', id: 'observed-live', streamSnapshot: true, message })
       source.rows.get('pi')!.push(value)
       source.emit({ type: 'message-received', sessionId: 'pi', message: value }); await app.service.settled()
+      const partial = agent.sourceFrameBaseline().frames.filter(frame => frame.transient)
+      assert.equal(partial.length, 1)
+      if (key !== undefined) assert.equal(partial[0]!.key, key)
+      key = partial[0]!.key
+      const event = partial[0]!.event
+      assert.equal(event.type, 'assistant/message')
+      assert.deepEqual(projectedSourceEvents(agent).flatMap(event => event.type === 'assistant/message'
+        ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : []), [message])
     }
-    assert.ok(revisions.length >= 4)
-    assert.deepEqual(revisions, revisions.map((_revision, index) => index + 1))
     const done = ready(); source.rows.get('pi')!.push(done)
     source.emit({ type: 'message-received', sessionId: 'pi', message: done }); await app.service.settled()
-    assert.deepEqual(revisions, revisions.map((_revision, index) => index + 1))
-  } finally { stop(); await app.close(); await rm(directory, { recursive: true, force: true }) }
+    assert.equal(agent.sourceFrameBaseline().frames.find(frame => frame.key === key)?.transient, undefined)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'assistant/message').length, 1)
+  } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
 test('source delivery remains unknown after disconnect and restart, without automatic replay', async () => {
@@ -257,7 +265,7 @@ test('source delivery remains unknown after disconnect and restart, without auto
     const message = freezeMessage({ id: MessageId('source-send-id'), role: 'user', source: { kind: 'user', rpcId: 'stable-send' }, content: [{ type: 'text', text: 'One original send' }] })
     const agent = app.service.list()[0]!; agent.followup(message); await agent.journal.settled()
     assert.equal(source.sent.length, 1); assert.equal(agent.projection.delivery[0]?.state, 'indeterminate')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'user/message').length, 0)
     await app.close(); app = await mount(source, directory)
     app.service.list()[0]!.followup(message); await app.service.list()[0]!.journal.settled(); assert.equal(source.sent.length, 1)
     source.isConnected = false; source.emit({ type: 'connection-changed', data: { status: 'disconnected' } }); await app.service.settled()
@@ -269,7 +277,7 @@ test('source delivery remains unknown after disconnect and restart, without auto
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('observed reconnect revisions retain their official owner while missing source boundaries still replace it', async () => {
+test('observed reconnect revisions and missing source boundaries preserve their official owner', async () => {
   const directory = await mkdtemp('/mnt/cache/data-cache/hapi-observed-revision-'), source = new Fixture()
   source.add('claude')
   const oldest = input(), latest = codex('revision-answer', 2, { type: 'message', message: 'Original answer' })
@@ -294,7 +302,7 @@ test('observed reconnect revisions retain their official owner while missing sou
     source.rows.set('claude', [latest]); epoch = 3
     await initial.refresh(true); await app.service.settled()
     const replacement = app.service.list()[0]!
-    assert.notEqual(replacement, initial, 'a missing retained source boundary is a structural change')
+    assert.equal(replacement, initial, 'a source correction cannot replace its execution owner')
     assert.equal(replacement.resolveSourceMessageDisplaySeq(oldest.id), undefined)
     assert.equal(replacement.historyWindowAnchor()?.epoch, 3)
     assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
@@ -323,7 +331,7 @@ test('observed opening reads a fresh bounded tail before a blocked archive even 
     }
     app = await mount(source, directory, { fastHistorySeed: true })
     const initial = app.service.list()[0]!
-    const answers = () => app.service.list()[0]!.session.snapshotEvents().flatMap(event =>
+    const answers = () => projectedSourceEvents(app.service.list()[0]!).flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
     assert.deepEqual(answers(), ['Current source answer', 'Current source follow-up'], 'old preview cannot stand in for current source content')
     const live = codex('live', 11, { type: 'message', message: 'Live source answer' })
@@ -373,11 +381,11 @@ test('observed cache fallback keeps live output moving after a failed tail read 
     assert.notEqual(initial.resolveSourceMessageDisplaySeq(live.id), undefined, 'live output does not wait for full history')
     release!({ ...snapshot, messages: [...cached, missing] }); release = undefined
     await app.service.settled()
-    const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
+    const current = app.service.list()[0]!, answers = projectedSourceEvents(current).flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
     assert.ok(answers.includes('Live source answer'))
     assert.ok(answers.includes('Previously missing source row'))
-    const sourceItems = current.session.snapshotEvents().flatMap(event => {
+    const sourceItems = projectedSourceEvents(current).flatMap(event => {
       if ((event.type as string) !== 'plugin:hapi-dsh-observed/item') return []
       const data = (event as unknown as { data?: { sourceSeq?: unknown; key?: unknown } }).data
       if (!data) return []
@@ -510,7 +518,7 @@ test('source lifecycle consumes an actual official user event seq and attaches t
   try {
     const agent = app.service.byHapiSession('pi')!, seq = agent.resolveSourceMessageDisplaySeq('original-invoked-local')
     assert.notEqual(seq, undefined)
-    const user = agent.session.snapshotEvents().find(event => event.seq === seq)
+    const user = projectedSourceEvents(agent).find(event => event.seq === seq)
     assert.equal(user?.type, 'user/message')
     const request = { sessionId: agent.id, operationId: randomUUID(), action: { kind: 'fork' as const, displayMessageSeq: seq! } }
     const result = await lifecycle.operate(request)
@@ -519,7 +527,7 @@ test('source lifecycle consumes an actual official user event seq and attaches t
     assert.equal(child.binding.nativeId, 'actual-child-native-thread')
     assert.equal(app.ctx.agents.get(child.id), child); assert.equal(app.ctx.sessions.get(child.id), child.session)
     assert.equal(child.projection.ownership, 'hapi-runner'); assert.equal(child.projection.flavor, 'pi')
-    assert.equal(child.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
+    assert.equal(projectedSourceEvents(child).filter(event => event.type === 'user/message').length, 1)
     await lifecycle.operate(request); assert.equal(source.requests.filter(row => row.path.endsWith('/fork')).length, 1)
     assert.equal(source.sent.length, 0); assert.equal(source.aborts, 0)
   } finally { await lifecycle.settled(); await app.close(); await rm(directory, { recursive: true, force: true }) }
@@ -537,7 +545,7 @@ test('source command scope prevents official global handlers from mutating a HAP
     assert.equal(result?.result.kind, 'success'); await agent.journal.settled()
     await app.ctx.commands.execute(agent, '/later-global', [], new AbortController().signal); await agent.journal.settled()
     assert.equal(globalCalls, 0); assert.deepEqual(source.sent.map(value => value.value.text), ['/compact exact trailing text', '/later-global'])
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/start').length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -674,7 +682,7 @@ test('observed removal during initial history prevents a stale catalog from recr
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('observed replacement preparation retries independently of the disposed old Agent', async () => {
+test('observed read-model preparation retries while the original owner stays available', async context => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-observed-replacement-retry-')), fixture = new Fixture(), source = fixture.add('pi')
   const latest = codex('latest', 3, { type: 'message', message: 'Current answer' })
   fixture.rows.set(source.id, [input(), latest])
@@ -682,17 +690,23 @@ test('observed replacement preparation retries independently of the disposed old
   const app = await mount(fixture, directory, { onDisplayReset: (before, after) => { resets.push([before, after]) } })
   try {
     const previous = app.service.list()[0]!, missing = codex('older', 2, { type: 'message', message: 'Recovered answer' })
-    const original = fixture.getSession.bind(fixture); let snapshots = 0
-    fixture.getSession = async id => { if (++snapshots === 2) throw new Error('Replacement source temporarily unavailable'); return original(id) }
+    const original = previous.rebaseDisplayHistory.bind(previous); let attempts = 0
+    let failed!: () => void, repaired!: () => void
+    const failure = new Promise<void>(resolve => { failed = resolve }), repair = new Promise<void>(resolve => { repaired = resolve })
+    context.mock.method(previous, 'rebaseDisplayHistory', async (...args: Parameters<typeof original>) => {
+      if (++attempts === 1) { failed(); throw new Error('Read model temporarily unavailable') }
+      await original(...args); repaired()
+    })
     fixture.rows.set(source.id, [input(), missing, latest])
     fixture.emit({ type: 'message-updated', sessionId: source.id })
-    for (let index = 0; index < 300 && (app.service.list()[0]?.displayRevision ?? 0) < 2; index++) await new Promise(resolve => setTimeout(resolve, 10))
-    await app.service.settled()
+    await failure
+    assert.equal(app.service.list()[0], previous); assert.equal(app.ctx.sessions.get(previous.id), previous.session)
+    await repair; await app.service.settled()
     const current = app.service.list()[0]!
-    assert.ok(current); assert.ok(current.displayRevision >= 2)
+    assert.equal(current, previous); assert.equal(current.displayRevision, 0); assert.equal(attempts, 2)
     assert.notEqual(current.resolveSourceMessageDisplaySeq(missing.id), undefined)
-    assert.equal(app.ctx.sessions.get(previous.id), undefined)
-    assert.deepEqual(resets, [[previous.id, current.id]])
+    assert.equal(app.ctx.sessions.get(previous.id), previous.session)
+    assert.deepEqual(resets, [])
     assert.equal(fixture.sent.length, 0); assert.equal(fixture.aborts, 0); assert.equal(fixture.answers.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

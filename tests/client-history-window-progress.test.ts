@@ -56,3 +56,19 @@ test('expired gesture motion does not page again, while an actual scrollbar drag
     assert.equal(historyScrollBelongsToReader('down', 'up', 1000, true), true)
     assert.equal(historyScrollBelongsToReader('none', 'up', 1000, true), false)
 })
+
+test('a folded process commits real earlier cursor progress while retaining the same outer DOM', () => {
+    const dom = probeHistoryWindow(windowOf(['folded-process', 'answer']))
+    const source = { before: { at: 10, seq: 200 }, historyId: 'same-source', historyVersion: 0 }
+    const before = { ...dom, source }
+    const after = { ...dom, retainedHeadIndex: 0, source: { ...source, before: { at: 10, seq: 180 } } }
+    assert.equal(historyWindowProgressed(before, after), true)
+    assert.equal(historyWindowWasReset(before, after), false)
+    assert.equal(historyWindowProgressed(before, { ...after, source }), false, 'the same cursor is not a successful page')
+    assert.equal(historyWindowProgressed(before, { ...after, source: { ...source, before: { at: 10, seq: 220 } } }), false,
+        'live arrivals or forward trimming are not earlier progress')
+    for (const changed of [{ ...after.source, historyId: 'restarted-source' }, { ...after.source, historyVersion: 1 }]) {
+        assert.equal(historyWindowProgressed(before, { ...after, source: changed }), false)
+        assert.equal(historyWindowWasReset(before, { ...after, source: changed }), true)
+    }
+})

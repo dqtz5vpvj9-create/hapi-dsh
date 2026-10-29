@@ -19,8 +19,6 @@ export interface SourceWindowPin {
   unknownGeometry?: boolean
   requestedPage?: boolean
 }
-export const SOURCE_VIEWPORT_OVERSCAN = 6
-export const SOURCE_VIEWPORT_GROUP_TARGET = 48
 /** Keep the received bounded page until layout can measure its rendered rows.
  * A long folded tool interval can place readable text far from its near edge. */
 export function protectSourcePage(records: readonly SessionEventLikeEntry[], pins: readonly SourceWindowPin[]): SourceWindowPin[] {
@@ -148,23 +146,22 @@ export interface SourceRetentionPlan {
   oversizedRow: boolean
 }
 
-/** View-local retention is separate from safety ceilings. The measured visible
- * union is pinned; six whole source rows on each side are the normal overscan.
- * A single indivisible oversized source row remains complete. */
+/** Retain the continuous received window until its safety budget is exhausted.
+ * Only then release source groups opposite the reading direction, keeping all
+ * measured readers. DOM locality must not delete the conversation being read. */
 export function sourceRetentionPlan(entries: readonly SessionEventLikeEntry[], pins: readonly SourceWindowPin[],
-  direction: 'older' | 'newer', budget: { events: number; bytes: number; size(entry: SessionEventLikeEntry): number }): SourceRetentionPlan {
+  direction: 'older' | 'newer', budget: { events: number; bytes: number; groups?: number; size(entry: SessionEventLikeEntry): number }): SourceRetentionPlan {
   const groups = sourceGroups(entries)
   if (!groups.length) return { first: 0, last: 0, groups, fits: true, oversizedRow: false }
+  const contentGroups = groups.map(group => group.content)
   const sums = [0]
   for (const row of entries) sums.push(sums.at(-1)! + budget.size(row))
   const costFits = (first: number, last: number) => {
     const start = groups[first]!.start, end = groups[last]!.end
-    return end - start <= budget.events && sums[end]! - sums[start]! <= budget.bytes
+    return contentGroups.slice(first, last + 1).filter(Boolean).length <= (budget.groups ?? Number.POSITIVE_INFINITY)
+      && end - start <= budget.events && sums[end]! - sums[start]! <= budget.bytes
   }
   const content = groups.flatMap((group, index) => group.content ? [index] : [])
-  const contentCounts = [0]
-  for (const group of groups) contentCounts.push(contentCounts.at(-1)! + Number(group.content))
-  const contentCount = (first: number, last: number) => contentCounts[last + 1]! - contentCounts[first]!
   // A visible pane whose geometry is unknown may still be following live
   // output. Keep live arrivals until its geometry is measurable. Explicit
   // paging is different: preserve the previously captured interval plus the
@@ -175,12 +172,13 @@ export function sourceRetentionPlan(entries: readonly SessionEventLikeEntry[], p
       oversizedRow: !fits && groups.length === 1 }
   }
   const ranges = pins.map(pin => {
+    const first = groups.findIndex(group => group.key === pin.first)
+    const last = groups.findLastIndex(group => group.key === pin.last)
+    if (first < 0 || last < first) return undefined
     if (pin.followingTail && pin.visibleGroups > 0 && content.length) {
       return { first: content[Math.max(0, content.length - pin.visibleGroups)]!, last: groups.length - 1 }
     }
-    const first = groups.findIndex(group => group.key === pin.first)
-    const last = groups.findLastIndex(group => group.key === pin.last)
-    return first < 0 || last < first ? undefined : { first, last }
+    return { first, last }
   })
   if (pins.length && ranges.some(range => range === undefined)) {
     // A missing captured boundary does not prove that its reader moved. Let
@@ -188,21 +186,18 @@ export function sourceRetentionPlan(entries: readonly SessionEventLikeEntry[], p
     // may be discarded from the proposed replacement.
     return { first: 0, last: entries.length, groups, fits: false, oversizedRow: false }
   }
+  if (costFits(0, groups.length - 1)) {
+    return { first: 0, last: entries.length, groups, fits: true, oversizedRow: false }
+  }
   if (pins.length) {
     const firstPin = Math.min(...ranges.map(range => range!.first)), lastPin = Math.max(...ranges.map(range => range!.last))
     if (!costFits(firstPin, lastPin)) {
       return { first: groups[firstPin]!.start, last: groups[lastPin]!.end, groups,
         fits: firstPin === lastPin, oversizedRow: firstPin === lastPin }
     }
-    // With no measured viewport, retain precisely the captured interval plus
-    // explicit page protection. With geometry, overscan is measured in content
-    // groups too: interleaved status records cannot consume the reading margin.
-    const overscan = pins.some(pin => pin.unknownGeometry) ? 0 : SOURCE_VIEWPORT_OVERSCAN
-    let first = firstPin, last = lastPin, before = overscan, after = overscan
-    while (first > 0 && before > 0) { first--; if (groups[first]!.content) before-- }
-    while (last + 1 < groups.length && after > 0) { last++; if (groups[last]!.content) after-- }
-    while ((!costFits(first, last) || contentCount(first, last) > SOURCE_VIEWPORT_GROUP_TARGET) && (first < firstPin || last > lastPin)) {
-      if (last > lastPin && (first === firstPin || contentCount(lastPin + 1, last) >= contentCount(first, firstPin - 1))) last--
+    let first = 0, last = groups.length - 1
+    while (!costFits(first, last) && (first < firstPin || last > lastPin)) {
+      if (direction === 'older' ? last > lastPin : first === firstPin) last--
       else first++
     }
     return { first: groups[first]!.start, last: groups[last]!.end, groups, fits: true, oversizedRow: false }

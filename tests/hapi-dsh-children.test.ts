@@ -1,3 +1,5 @@
+import { projectedSourceEvents } from './source-frame-fixture.ts'
+import { SOURCE_FRAME_EVENT, type SourceFrameBatch } from '../src/shared/source-frames.ts'
 /** Original source protocol fixtures with the real published Agent/Session/Scope registries. */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -131,8 +133,8 @@ async function controls(ctx: Context) {
   return { original, originalFiber, invoke }
 }
 const input = (text = 'Continue the original child') => createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
-function text(session: { snapshotEvents(): readonly import('@deepseek-ai/dsh-session').SessionEvent[] }) {
-  return session.snapshotEvents().flatMap(event => event.type === 'assistant/message' ? event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []) : [])
+function text(agent: { sourceFrameBaseline(): SourceFrameBatch }) {
+  return projectedSourceEvents(agent).flatMap(event => event.type === 'assistant/message' ? event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []) : [])
 }
 
 test('source DSH members register real official child Sessions while only actual continuable children accept original prompts', async () => {
@@ -147,8 +149,11 @@ test('source DSH members register real official child Sessions while only actual
     assert.equal(worker.session.header.origin, 'subagent'); assert.equal(worker.session.header.parentSession, parent.id)
     assert.equal(worker.projection.sidechain?.kind, 'dsh-child'); assert.equal(worker.projection.readOnly, false)
     assert.equal(worker.projection.capabilities.images, false); assert.equal(worker.projection.model, null)
-    assert.deepEqual(text(worker.session), ['Answer from worker']); assert.deepEqual(text(parent.session), [])
-    assert.equal(worker.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 0)
+    assert.deepEqual(text(worker), ['Answer from worker']); assert.deepEqual(text(parent), [])
+    const baseline = worker.sourceFrameBaseline()
+    await worker.refresh()
+    assert.deepEqual(worker.sourceFrameBaseline(), baseline, 'unchanged history preserves its source version and body')
+    assert.equal(projectedSourceEvents(worker).filter(event => event.type === 'turn/end').length, 0)
     assert.equal(worker.state.descriptor.lastTurnCompleted, true)
     const message = input(); worker.followup(message); await worker.journal.settled()
     assert.equal(source.mutations.length, 1); assert.equal(source.mutations[0]?.child, 'worker'); assert.equal(source.mutations[0]?.operation, 'prompt')
@@ -192,22 +197,30 @@ test('child interrupt acceptance does not invent execution completion and unknow
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('real child epoch replacement retires old official identities without retargeting their future sends', async () => {
+test('real child epoch corrections retain parent and child owners while replacing only source body', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-child-epoch-')), source = new Source(); source.add('worker')
   const app = await mount(source, directory)
   try {
     const oldParent = app.service.list()[0]!, oldChild = app.service.dshChild(oldParent.childSessions[0]!.id)!
+    const stream = oldChild.sourceFrames(new AbortController().signal)[Symbol.asyncIterator]()
+    const baseline = (await stream.next()).value!
     source.epochs.set('worker', 'replacement-epoch')
     source.children.get('worker')![1] = { ...source.children.get('worker')![1]!, text: 'Corrected actual child answer' }
-    await assert.rejects(oldChild.refresh(), /epoch|length/)
+    const session = oldChild.session, journal = oldChild.journal
+    await oldChild.refresh()
     const parent = app.service.list()[0]!, child = app.service.dshChild(parent.childSessions[0]!.id)!
-    assert.equal(parent.displayRevision, 1); assert.notEqual(child.id, oldChild.id); assert.equal(child.logicalSessionId, oldChild.logicalSessionId)
-    assert.equal(app.ctx.agents.get(oldChild.id), undefined); assert.equal(app.service.dshChild(oldChild.id), undefined)
-    assert.throws(() => oldChild.followup(input()), /detached/)
-    assert.deepEqual(text(child.session), ['Corrected actual child answer']); assert.equal(source.mutations.length, 0)
+    assert.equal(parent, oldParent); assert.equal(parent.displayRevision, 0); assert.equal(child, oldChild)
+    assert.equal(child.session, session); assert.equal(child.journal, journal)
+    const corrected = (await stream.next()).value!
+    assert.equal(corrected.reset, true); assert.equal(corrected.historyVersion, baseline.historyVersion! + 1)
+    assert.ok(session.snapshotEvents().every(event => String(event.type) !== SOURCE_FRAME_EVENT && event.type !== 'assistant/message'))
+    assert.equal(app.ctx.agents.get(oldChild.id), oldChild); assert.equal(app.service.dshChild(oldChild.id), oldChild)
+    assert.deepEqual(text(child), ['Corrected actual child answer']); assert.equal(source.mutations.length, 0)
+    const waiting = stream.next()
     Object.assign(source.source.metadata!, { dshSubagents: [] }); source.source.metadataVersion++
     await parent.refresh(true)
     assert.equal(app.service.list()[0]!.childSessions.length, 0); assert.equal(app.service.dshChild(child.id), undefined)
+    assert.equal((await waiting).done, true, 'retiring the child releases a reader awaiting its next source frame')
     assert.throws(() => child.followup(input()), /detached/)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -220,7 +233,7 @@ test('a cached source child remains readable after restart while its original pa
     await app.close(); source.source.active = false
     app = await mount(source, directory)
     const child = app.service.dshChild(id)!
-    assert.ok(child); assert.equal(child.projection.readOnly, true); assert.deepEqual(text(child.session), ['Answer from worker'])
+    assert.ok(child); assert.equal(child.projection.readOnly, true); assert.deepEqual(text(child), ['Answer from worker'])
     assert.equal(child.state.history.complete, false); assert.match(child.state.history.error ?? '', /active Runner/)
     assert.throws(() => child.followup(input()), /active Runner/); assert.equal(source.mutations.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
@@ -243,10 +256,14 @@ test('official child-addressed history validates the real descriptor and catalog
         throughSeq: SessionSeq(child.session.seq - 1), maxMessages: 100,
       } }) as SessionPage
       assert.ok(page.records.length > 0)
-      assert.ok(page.records.some(row => row.type === 'event' && row.event.type === 'assistant/message'))
+      assert.ok(page.records.every(row => String(row.event.type) !== SOURCE_FRAME_EVENT && row.event.type !== 'assistant/message'),
+        'the official child page carries operation records, never a second transcript')
+      const sourceStream = child.sourceFrames(new AbortController().signal)[Symbol.asyncIterator]()
+      const opening = await sourceStream.next(); await sourceStream.return?.()
+      assert.ok((opening.value as SourceFrameBatch).frames.some(frame => frame.event.type === 'assistant/message'))
       assert.equal(child.projection.error, null)
       assert.equal(child.session.snapshotEvents().filter(event => event.type === 'subagent/descriptor').length, 1)
-      assert.equal(child.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 0)
+      assert.equal(projectedSourceEvents(child).filter(event => event.type === 'turn/end').length, 0)
     }
     const describe = (value: object) => remoteMethods(value).map(({ resources, ...rest }) => ({ ...rest, resources: Object.keys(resources ?? {}) }))
     assert.deepEqual(describe(app.ctx.subagents), describe(control.original))

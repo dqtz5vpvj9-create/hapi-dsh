@@ -276,7 +276,7 @@ export interface HapiTransport {
   listSessions(): Promise<readonly HapiSessionSummary[]>
   getSession(sessionId: string): Promise<HapiSession>
   /** This very same REST route reads native history for codexNativeSession. */
-  readMessages(sessionId: string, query?: HapiMessagesQuery): Promise<HapiMessagesPage>
+  readMessages(sessionId: string, query?: HapiMessagesQuery, signal?: AbortSignal): Promise<HapiMessagesPage>
   /** Native command discovery; actual expansion/validation remains with HAPI. */
   listSlashCommands?(sessionId: string): Promise<readonly HapiSlashCommand[]>
   /** One dispatch only. A successful response means accepted, not invoked. */

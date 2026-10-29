@@ -2,8 +2,8 @@
  * Bounded, session-isolated authorization index for source-history images.
  *
  * The official `session/attachment` endpoint authorizes an image only when the
- * display Session log references it. A source-history page is rendered in a
- * detached Session, so its image refs are not in the original display log even
+ * display Session log references it. Source-history pages and live body frames
+ * use a pure projection, so their image refs are not in the operation log even
  * though the bytes were already imported into the official attachment store.
  * This index records exactly the image refs that one bounded source window
  * served to one authorized display, and nothing else.

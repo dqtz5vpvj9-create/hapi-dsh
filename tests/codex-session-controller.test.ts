@@ -59,6 +59,7 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
   const renames: unknown[] = []
   const steers: unknown[] = []
   ctx.provide('hapi', {
+    sourceSessionBlank: () => undefined,
     sourceHistoryWindow: () => undefined,
     historyWindowBound: () => false,
     nativeSteerInbox: async (sessionId: string, itemId: string) => { steers.push({ sessionId, itemId }); return itemId === 'failed' ? { status: 'failed', error: 'Source outcome unknown', localId: itemId } : { status: 'steered', localId: itemId } },

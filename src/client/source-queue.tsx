@@ -65,7 +65,7 @@ export function SourceQueue({ rows, sessionId, api, disabled, steer, zh, source 
 
 
 export const sourceQueueStyles = `
-.hapi-source-queue{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance,12px)*2 - var(--dsh-composer-dock-inset,10px)*2);max-width:calc(var(--dsh-composer-card-max-width,960px) - var(--dsh-composer-dock-inset,10px)*2);margin:0 auto calc(0px - var(--dsh-composer-stack-gap,4px) - 3px);padding:0 var(--dsh-composer-dock-inset,10px);flex:none;font:var(--dsw-font-xs-13,13px/20px system-ui);color:var(--dsw-alias-label-primary)}
+.hapi-source-queue{box-sizing:border-box;position:relative;z-index:1;width:calc(100% - var(--dsh-composer-side-clearance,12px)*2 - var(--dsh-composer-dock-inset,10px)*2);max-width:calc(var(--dsh-composer-card-max-width,960px) - var(--dsh-composer-dock-inset,10px)*2);margin:0 auto calc(0px - var(--dsh-composer-stack-gap,4px) - 3px);padding:0 var(--dsh-composer-dock-inset,10px);flex:none;font:var(--dsw-font-xs-13,13px/20px system-ui);color:var(--dsw-alias-label-primary)}
 .hapi-source-queue-panel{position:relative;isolation:isolate;border-radius:var(--dsw-radius-lg,14px) var(--dsw-radius-lg,14px) 0 0;border:.5px solid var(--dsw-alias-border-l1,#8882);border-bottom:0;background:var(--dsw-specific-menu,var(--dsw-alias-bg-base));backdrop-filter:var(--dsw-menu-backdrop-filter);padding:2px 0;overflow:hidden}
 .hapi-source-queue-heading{display:flex;align-items:center;justify-content:space-between;width:100%;height:36px;border:0;background:none;color:var(--dsw-alias-label-secondary);padding:4px 12px;cursor:pointer;font:inherit}
 .hapi-source-queue-list{max-height:180px;overflow:auto}

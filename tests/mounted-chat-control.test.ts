@@ -26,7 +26,7 @@ function pane() {
 
 /** Minimal element whose closest() walks a fixed ancestry list. */
 function element(ancestry: Array<{ dataset?: Record<string, string | undefined> }>) {
-    return { closest: (selector: string) => ancestry.find(node => selector.includes(MOUNTED_CHAT_ATTRIBUTE) && node.dataset?.[MOUNTED_CHAT_ATTRIBUTE] !== undefined) ?? null };
+    return { closest: (selector: string) => ancestry.find(node => selector.includes(MOUNTED_CHAT_ATTRIBUTE) && node.dataset?.hapiMountedChat !== undefined) ?? null };
 }
 
 function fakeContext() {
@@ -49,7 +49,7 @@ test('a mounted control is published under its own Pane and resolved from conten
     const firstControl = control(), secondControl = control();
     publishPaneMountedChat(first, firstControl);
     publishPaneMountedChat(second, secondControl);
-    assert.equal(first.dataset[MOUNTED_CHAT_ATTRIBUTE] !== undefined, true);
+    assert.equal(first.dataset.hapiMountedChat !== undefined, true);
     assert.equal(resolveMountedChatForPane(element([first])), firstControl);
     assert.equal(resolveMountedChatForPane(element([second])), secondControl);
     assert.equal(resolveMountedChatForPane(element([])), undefined, 'content outside a registered Pane resolves nothing');
@@ -57,7 +57,7 @@ test('a mounted control is published under its own Pane and resolved from conten
     publishPaneMountedChat(first, null);
     assert.equal(resolveMountedChatForPane(element([second])), secondControl);
     assert.equal(resolveMountedChatForPane(element([first])), undefined);
-    assert.equal(first.dataset[MOUNTED_CHAT_ATTRIBUTE], undefined);
+    assert.equal(first.dataset.hapiMountedChat, undefined);
 });
 
 test('each Pane graph provides its own consumer and disposal stays scoped', () => {
@@ -86,8 +86,8 @@ test('a programmatic older request drives the pane control and reports fallback'
     const signal = new AbortController().signal;
     assert.equal(await requestOlderThroughMountedChat(control(async () => { signals.push(signal) }), signal), true);
     assert.equal(signals.length, 1);
-    assert.equal(await requestOlderThroughMountedChat(control(async () => { throw new Error('TARGET_UNAVAILABLE') }), signal), false,
-        'a refused control page must fall back to the official DOM control');
+    await assert.rejects(requestOlderThroughMountedChat(control(async () => { throw new Error('TARGET_UNAVAILABLE') }), signal),
+        /TARGET_UNAVAILABLE/, 'a failed page must not become a second request through a fallback click');
     assert.equal(await requestOlderThroughMountedChat(undefined, signal), false,
         'no control keeps the official DOM path');
 });

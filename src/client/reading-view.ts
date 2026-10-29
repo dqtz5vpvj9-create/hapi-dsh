@@ -8,6 +8,7 @@ import { findChatElement, messageNodeTarget, parseReloadReadingAnchor, placeRead
 import { keyIntent } from './seamless/intent.ts'
 import { loadHistoryThrough } from './history-navigation.ts'
 import type {} from './source-navigation.ts'
+import type { SourceViewportSession } from './source-sessions.ts'
 
 const latestCancellations = new WeakMap<HTMLElement, () => void>()
 
@@ -71,6 +72,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     let settleTimer: number | undefined
     let settleFrame: number | undefined
     let eventRevision = reference.binding.eventSource.getSnapshot().revision
+    const sourceWindow = (reference.binding.session as Partial<SourceViewportSession>).sourceWindow
+    let bodyVersion = sourceWindow?.getSnapshot()
     const projected = ctx.sessions.list.getSnapshot().byId[reference.sessionId]?.projectionValues
     const native = projected?.hapi ?? projected?.hapiObserved
     const sourceIdentity = native ? [native.hubId, native.hapiSessionId] : reference.sessionId
@@ -364,8 +367,10 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                     anchorTimer = undefined
                     const service = ctx.get('hapiMessageNavigation')
                     if (!service) return
+                    const version = bodyVersion
                     void service.sourceAnchor(reference.sessionId, anchor.seq).then(id => {
-                        if (!id || disposed || retainedAnchor?.seq !== anchor.seq) return
+                        if (!id || disposed || retainedAnchor?.seq !== anchor.seq
+                            || version?.historyId !== bodyVersion?.historyId || version?.historyVersion !== bodyVersion?.historyVersion) return
                         if (sourceAnchors.size >= 32) sourceAnchors.clear()
                         sourceAnchors.set(anchor.seq, id)
                         retainedAnchor = { ...retainedAnchor, sourceMessageId: id }
@@ -375,26 +380,42 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             }
         })
     }
-    const eventWindowChanged = (): void => {
-        const next = reference.binding.eventSource.getSnapshot()
-        if (disposed || next.revision === eventRevision) return
-        eventRevision = next.revision
-        if (!ready || next.change.kind !== 'replace') { scheduleSample(); return }
-        // A public Session stream reconnect/rebaseline replaces its retained
-        // tail page. Recover this occurrence's last reading anchor, not the
-        // default latest landing. Append/prepend/assistant settlement never
-        // manufacture a new navigation request.
+    const recoverReading = (): void => {
+        if (disposed || !ready) return
         const exact = request?.intent?.target.kind !== undefined && request.intent.target.kind !== 'latest' && !readerOwned
         if (!retainedAnchor && !exact) return
         pending?.abort(); pending = undefined
         request = { intent: source?.getSnapshot(), ...(retainedAnchor ? { reload: retainedAnchor } : {}), phase: 'waiting', recovery: true }
         update()
     }
+    const sourceWindowChanged = (): void => {
+        const next = sourceWindow!.getSnapshot(), previous = bodyVersion
+        bodyVersion = next
+        // HAPI publishes window metadata after its body commit. Only a new
+        // source history identity/version invalidates this reader's window;
+        // paging and same-item revisions can also use the public replace API.
+        if (previous?.historyId !== undefined && next.historyId !== undefined && previous.historyId !== next.historyId
+            || previous?.historyVersion !== undefined && next.historyVersion !== undefined && previous.historyVersion !== next.historyVersion) {
+            if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
+            anchorTimer = undefined
+            sourceAnchors.clear()
+            recoverReading()
+        }
+    }
+    const eventWindowChanged = (): void => {
+        const next = reference.binding.eventSource.getSnapshot()
+        if (disposed || next.revision === eventRevision) return
+        eventRevision = next.revision
+        if (sourceWindow || !ready || next.change.kind !== 'replace') { scheduleSample(); return }
+        // Ordinary DSH Session replacement still carries its reconnect signal.
+        recoverReading()
+    }
     const remember = (): void => {
         const anchor = readAnchor() ?? retainedAnchor
         try { if (anchor) window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)); else window.sessionStorage.removeItem(storageKey) } catch { /* optional anchor persistence */ }
     }
-    const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged), ...(source ? [source.subscribe(update)] : [])]
+    const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged),
+        ...(sourceWindow ? [sourceWindow.subscribe(sourceWindowChanged)] : []), ...(source ? [source.subscribe(update)] : [])]
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
     for (const event of events) root.addEventListener(event, reader, { capture: true, passive: true })
     root.addEventListener('click', officialNavigation, { capture: true })

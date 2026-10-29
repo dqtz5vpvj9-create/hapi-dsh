@@ -288,16 +288,16 @@ export function SourceSessionToolsPanel({ api, sessionId, onOpen, onSuccessor, l
 }
 
 /** Mounted beside the official user row; the conversation renderer is unchanged. */
-export function SourceHistoryAction({ api, sessionId, messageSeq, kind, onOpen, onChanged, language }: {
-    api: HapiRemoteApi; sessionId: string; messageSeq: number; kind: 'rewind' | 'fork';
+export function SourceHistoryAction({ api, sessionId, messageId, kind, onOpen, onChanged, language }: {
+    api: HapiRemoteApi; sessionId: string; messageId: string; kind: 'rewind' | 'fork';
     onOpen?: ((id: string) => void) | undefined; onChanged?: (() => void) | undefined; language?: string | undefined;
 }) {
     const tr = words(language), { controller, state } = useSourceLifecycle(api, sessionId)
     const [confirm, setConfirm] = useState(false), [operationId, setOperationId] = useState<string | undefined>()
-    const action: SourceAction = { kind, displayMessageSeq: messageSeq }
-    const matching = state.intents.findLast(row => row.action.kind === kind && row.action.displayMessageSeq === messageSeq)
+    const action: SourceAction = { kind, displayMessageId: messageId }
+    const matching = state.intents.findLast(row => row.action.kind === kind && row.action.displayMessageId === messageId)
     const selectedId = operationId ?? matching?.operationId
-    useEffect(() => { setConfirm(false); setOperationId(undefined) }, [controller, kind, messageSeq])
+    useEffect(() => { setConfirm(false); setOperationId(undefined) }, [controller, kind, messageId])
     const perform = async () => {
         const receipt = await controller.run(action)
         if (!receipt) return

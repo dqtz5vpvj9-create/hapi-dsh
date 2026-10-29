@@ -13,6 +13,7 @@ import { nativeStateDirectory } from '../src/codex/state-directory.ts'
 import { bindingFor, nativeSessionId } from '../src/codex/native.ts'
 import { CodexService, type CodexServiceOptions } from '../src/codex/service.ts'
 import { SourceHistoryWindow } from '../src/codex/source-window.ts'
+import { projectedSourceEvents } from './source-frame-fixture.ts'
 import {
   type HapiApprovalAnswer, type HapiCancelResult, type HapiEvent, type HapiMessage, type HapiMessagesPage,
   type HapiMessagesQuery, type HapiQueuedState, type HapiRetryResult, type HapiSendMessage, type HapiSession,
@@ -254,19 +255,24 @@ function initialThread(fake: FakeHapi): string { return fake.source.metadata!.co
 test('a live row arriving first is merged with an in-flight forward page in source order, without replacement', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-opening-forward-race-')), fake = new FakeHapi()
   fake.rows = [userRow(), agentRow('base', TURN, 2, 1001)]
-  let release!: () => void, reading!: () => void, blocked = false
+  let release!: () => void, reading!: () => void, blocked = false, forwardFinished = false
   const gate = new Promise<void>(resolve => { release = resolve })
   const started = new Promise<void>(resolve => { reading = resolve })
   fake.readHook = query => {
-    if (query.afterAt !== undefined && !blocked) { blocked = true; reading(); return gate.then(() => fake.page(query)) }
+    if (query.afterAt !== undefined && !blocked) {
+      blocked = true; reading(); return gate.then(() => { forwardFinished = true; return fake.page(query) })
+    }
     return fake.page(query)
   }
   const app = await mount(fake, directory)
+  const sourceAbort = new AbortController()
   let refreshing: Promise<void> | undefined
   try {
     const agent = await app.service.openSource(fake.source.id)
     assert.ok(agent)
     const revision = agent.displayRevision, identity = agent.id
+    const updates = agent.sourceFrames(sourceAbort.signal)[Symbol.asyncIterator]()
+    await updates.next()
     const readStart = fake.reads.length
     const earlier = agentRow('arrived-before-live', TURN, 3, 1002)
     const olderLive = agentRow('same-row', TURN, 4, 1003, 'old live value')
@@ -274,18 +280,14 @@ test('a live row arriving first is merged with an in-flight forward page in sour
     fake.rows.push(earlier, olderLive)
     refreshing = agent.refresh(true)
     await started
-    // The HTTP forward page stays blocked for more than 2s. Live projection
-    // must not wait for it: the user sees the newer row in under 1500ms.
-    const liveStarted = Date.now()
+    // The source feed must publish the live row while the forward request is
+    // still explicitly gated, independent of elapsed wall-clock time.
+    const liveCommitted = updates.next()
     fake.emit({ type: 'message-received', sessionId: fake.source.id, message: updatedLive })
-    for (let index = 0; index < 300 && agent.resolveSourceMessageDisplaySeq(updatedLive.id) === undefined; index++) {
-      await new Promise(resolve => setTimeout(resolve, 5))
-    }
-    const liveElapsed = Date.now() - liveStarted
+    const liveBatch = await liveCommitted
+    assert.ok(liveBatch.value?.frames.some(frame => frame.source?.messageId === updatedLive.id))
+    assert.equal(forwardFinished, false, 'live body is published before the in-flight forward page is released')
     assert.notEqual(agent.resolveSourceMessageDisplaySeq(updatedLive.id), undefined, 'live row is visible while forward is blocked')
-    assert.ok(liveElapsed < 1500, `live row latency ${liveElapsed}ms must stay below 1500ms`)
-    if (process.env.RACE_TRACE) console.error(`RACE_LIVE_MS=${liveElapsed}`)
-    await new Promise(resolve => setTimeout(resolve, 2100))
     release()
     await refreshing
     await app.service.settled()
@@ -296,11 +298,11 @@ test('a live row arriving first is merged with an in-flight forward page in sour
     assert.equal(current.binding.threadId, initialThread(fake), 'the same source binding')
     assert.notEqual(current.resolveSourceMessageDisplaySeq(earlier.id), undefined)
     assert.notEqual(current.resolveSourceMessageDisplaySeq(updatedLive.id), undefined)
-    const answers = current.session.snapshotEvents().flatMap(event => event.type === 'assistant/message'
+    const answers = projectedSourceEvents(current).flatMap(event => event.type === 'assistant/message'
       ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
     assert.equal(answers.filter(text => text === 'updated live value').length, 1, 'same-row update is applied once')
     assert.equal(answers.filter(text => text === 'old live value').length, 0, 'the in-flight stale version is not committed')
-    const sourceItems = current.session.snapshotEvents().flatMap(event => {
+    const sourceItems = projectedSourceEvents(current).flatMap(event => {
       if (event.type !== 'plugin:hapi-dsh/native-item') return []
       const data = event.data as { sourceSeq?: unknown; nativeItemId?: unknown }
       return typeof data.sourceSeq === 'number' && typeof data.nativeItemId === 'string'
@@ -309,8 +311,7 @@ test('a live row arriving first is merged with an in-flight forward page in sour
     assert.ok(sourceItems.findIndex(value => value.item === 'arrived-before-live')
       < sourceItems.findIndex(value => value.item === 'same-row'),
       'the annotated source surface retains source order for the delayed earlier row')
-    // The bounded history facade renders source rows independently of the
-    // append-only Session arrival order.
+    // The bounded history facade and live body retain the same source order.
     const facadeRows = [...fake.rows.filter(row => row.id !== olderLive.id), updatedLive]
       .sort((left, right) => (left.invokedAt ?? left.createdAt) - (right.invokedAt ?? right.createdAt)
         || (left.seq ?? 0) - (right.seq ?? 0))
@@ -326,7 +327,8 @@ test('a live row arriving first is merged with an in-flight forward page in sour
     const facadePage = await window.windowAt(updatedLive.id, 99, 1, async () => ({ messages: facadeRows,
       page: { beforeCursor: { at: 0, seq: 0 }, afterCursor: { at: 1, seq: 1 },
         hasMoreBefore: false, hasMoreAfter: false, epoch: EPOCH, reset: false } }))
-    const facadeOrder = facadePage.records.flatMap(record => (record as unknown as { source?: { seq: number } }).source?.seq ?? [])
+    const facadeOrder = facadePage.frames.flatMap(frame => frame.source?.seq ?? [])
+    assert.ok(facadeOrder.includes(earlier.seq!) && facadeOrder.includes(updatedLive.seq!))
     assert.ok(facadeOrder.indexOf(earlier.seq!) < facadeOrder.indexOf(updatedLive.seq!),
       'the bounded SourceHistoryWindow facade retains source order')
     const raceReads = fake.reads.slice(readStart)
@@ -335,7 +337,7 @@ test('a live row arriving first is merged with an in-flight forward page in sour
       'the race uses forward cursors only, not a full-archive recovery')
     assert.ok(raceReads.length <= 2, 'one forward page plus at most one epoch check')
     assert.equal(fake.sent.length, 0); assert.equal(current.projection.error, null)
-  } finally { release(); await refreshing?.catch(() => {}); await app.close(); await rm(directory, { recursive: true, force: true }) }
+  } finally { sourceAbort.abort(); release(); await refreshing?.catch(() => {}); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
 test('an older transport cache is never the seed when the current source tail is readable', async () => {

@@ -93,7 +93,8 @@ export function sourceSequenceForMessage(entries: readonly SessionEventLikeEntry
 /** Source order applies to message/step groups, never to isolated protocol events.
  * Turn and step starts must still precede all their updates after a late page.
  * This runs only when a batch contains a backwards source position. */
-export function orderSourceWindow(entries: readonly SessionEventLikeEntry[]): SessionEventLikeEntry[] {
+export function orderSourceWindow(entries: readonly SessionEventLikeEntry[],
+  scopeAt?: (index: number) => { turn: number | undefined; step: number | undefined }): SessionEventLikeEntry[] {
   const surfaces = new Map<number, Coordinates>()
   for (const entry of entries) {
     const type = String(entry.event.type)
@@ -111,9 +112,10 @@ export function orderSourceWindow(entries: readonly SessionEventLikeEntry[]): Se
   const located: Located[] = entries.map((entry, index) => {
     const data = dataOf(entry), surface = surfaces.get(Number(entry.event.seq))
     const referenced = typeof data.surfaceSeq === 'number' ? bySeq.get(data.surfaceSeq) : undefined
-    const turn = typeof data.turn === 'number' ? data.turn
+    const scope = scopeAt?.(index)
+    const turn = scope ? scope.turn : typeof data.turn === 'number' ? data.turn
       : typeof data.displayTurn === 'number' ? data.displayTurn : surface?.turn ?? referenced?.turn ?? currentTurn
-    const step = entry.event.type === 'turn/start' ? undefined : typeof data.step === 'number' ? data.step
+    const step = scope ? scope.step : entry.event.type === 'turn/start' ? undefined : typeof data.step === 'number' ? data.step
       : typeof data.displayStep === 'number' && data.displayStep > 0 ? data.displayStep
         : surface?.step ?? referenced?.step ?? (entry.event.type === 'user/message' || turn !== currentTurn ? undefined : currentStep)
     const row = { entry, index, source: position(entry) ?? surface?.source ?? referenced?.source, turn, step }

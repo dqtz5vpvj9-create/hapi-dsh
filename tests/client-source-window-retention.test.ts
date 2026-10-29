@@ -1,5 +1,5 @@
 /**
- * Bounded source-window retention contract for the public client sessions facade.
+ * Continuous history contract for the public client sessions facade.
  *
  * Constructed source relationships are explicit: the 1,700-row fixtures make
  * each source row render three sibling events; the 3,500-row fixture makes one
@@ -21,7 +21,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const controllerRoot = dirname(require.resolve('@deepseek-ai/dsh-api-session-controller/package.json'))
 const contractEvents = join(controllerRoot, 'lib/types/client/contract/events.js')
-const MAX_BYTES = 12 * 1024 * 1024
 const SESSION_ID = 'hapi-codex-00000000000000000000000000000099'
 const MAX_PAGE_ROWS = 200
 
@@ -219,7 +218,7 @@ function siblingWorld(text: string): {
   }
 }
 
-test('event-count retention: a second traversal recovers every source sibling', { timeout: 30_000 }, async () => {
+test('history above the resident window stays retrievable when reading back to the tail', { timeout: 30_000 }, async () => {
   const world = siblingWorld('x')
   const h = await world.harness
   try {
@@ -228,12 +227,12 @@ test('event-count retention: a second traversal recovers every source sibling', 
     console.log(JSON.stringify({ case: 'event-count', pageRows: world.pageRows, maxPageRows: maxRows(world.pageRows),
       retained: result.retained, bytes: result.bytes, neverSeen: result.neverSeen }))
     assert.ok(maxRows(world.pageRows) <= MAX_PAGE_ROWS, 'every fake source page must be at most 200 rows')
-    assert.ok(result.bytes <= MAX_BYTES, `retained window is ${result.bytes} UTF-8 bytes`)
+    assert.ok(result.retained <= 2_400, 'the live projection stays near HAPI\'s 800-message history window')
     assert.deepEqual(result.neverSeen, [], 'every event must be retrievable again after event-count eviction')
   } finally { h.release() }
 })
 
-test('byte-driven retention: a second traversal recovers every source sibling', { timeout: 30_000 }, async () => {
+test('history above the byte budget stays retrievable when reading back to the tail', { timeout: 30_000 }, async () => {
   const world = siblingWorld('你'.repeat(1_200))
   const h = await world.harness
   try {
@@ -242,12 +241,12 @@ test('byte-driven retention: a second traversal recovers every source sibling', 
     console.log(JSON.stringify({ case: 'byte-driven', pageRows: world.pageRows, maxPageRows: maxRows(world.pageRows),
       retained: result.retained, bytes: result.bytes, neverSeen: result.neverSeen }))
     assert.ok(maxRows(world.pageRows) <= MAX_PAGE_ROWS, 'every fake source page must be at most 200 rows')
-    assert.ok(result.bytes <= MAX_BYTES, `retained window is ${result.bytes} UTF-8 bytes`)
+    assert.ok(result.bytes <= 8 * 1024 * 1024, 'resident body bytes stay within the source-window budget')
     assert.deepEqual(result.neverSeen, [], 'every event must be retrievable again after byte-driven eviction')
   } finally { h.release() }
 })
 
-test('UTF-8 budget: paged distinct sources stay within 12 MiB and retain intact content', { timeout: 30_000 }, async () => {
+test('large distinct source rows round-trip from the bounded resident window', { timeout: 30_000 }, async () => {
   const count = 3_500, tailRows = 200
   const payload = '你'.repeat(3_000)
   const position = (row: number): SourcePosition => ({ messageId: `byte-${row}`, at: 1000 + row, seq: row + 1 })
@@ -267,14 +266,23 @@ test('UTF-8 budget: paged distinct sources stay within 12 MiB and retain intact 
     return sourcePage(Math.max(0, end - MAX_PAGE_ROWS + 1), end)
   }, full.slice(tailStart))
   try {
-    for (let index = 0; index < Math.ceil((count - tailRows) / MAX_PAGE_ROWS); index += 1) await h.face.loadOlder()
+    const seen = new Map<string, any>()
+    const capture = (): void => { for (const value of h.eventSource.getSnapshot().entries) seen.set(value.testId, value) }
+    for (let index = 0; index < Math.ceil((count - tailRows) / MAX_PAGE_ROWS); index += 1) {
+      await h.face.loadOlder(); capture()
+    }
+    for (let index = 0; index < Math.ceil(count / MAX_PAGE_ROWS) + 2; index += 1) {
+      if (!await h.face.loadAfter()) break
+      capture()
+    }
     const retained = h.eventSource.getSnapshot().entries
     const bytes = utf8Bytes(retained)
     console.log(JSON.stringify({ case: 'distinct-source-utf8', pageRows, maxPageRows: maxRows(pageRows),
       retained: retained.length, bytes }))
     assert.ok(maxRows(pageRows) <= MAX_PAGE_ROWS, 'every fake source page must be at most 200 rows')
-    assert.ok(retained.length > 0, 'valid byte-budget trimming must retain some content')
-    assert.ok(bytes <= MAX_BYTES, `retained window is ${bytes} UTF-8 bytes`)
+    assert.ok(retained.length <= 800, 'only the 800 nearest source rows remain projected')
+    assert.equal(seen.size, count, 'the reader can traverse every source row after old pages leave the resident window')
+    assert.ok(bytes <= 8 * 1024 * 1024, 'the resident source projection stays within its byte budget')
     for (const value of retained) {
       assert.ok(expected.has(value.testId), `retained an event outside the constructed source set: ${String(value.testId)}`)
       assert.equal(value.event.data.text, payload, `retained event content changed for ${String(value.testId)}`)
@@ -283,7 +291,7 @@ test('UTF-8 budget: paged distinct sources stay within 12 MiB and retain intact 
 })
 
 for (const kind of ['event-count', 'bytes'] as const) {
-  test(`one oversized source group stays whole without restoring evicted neighbors (${kind})`, async () => {
+  test(`an oversized source page stays intact (${kind})`, async () => {
     const small = { messageId: 'm1', at: 1, seq: 1 }
     const large = { messageId: 'large', at: 2, seq: 2 }
     const count = kind === 'event-count' ? 5_100 : 3
@@ -298,9 +306,10 @@ for (const kind of ['event-count', 'bytes'] as const) {
       await h.face.loadThrough(1)
       assert.equal(await h.face.loadAfter(), true)
       const retained = h.eventSource.getSnapshot().entries
-      assert.equal(retained.length, count)
-      assert.ok(retained.every((row: any) => row.source.messageId === 'large'))
-      assert.ok(retained.every((row: any) => row.event.data.text === text))
+      const largeRows = retained.filter((row: any) => row.source?.messageId === 'large')
+      assert.equal(largeRows.length, count, 'the page remains complete even when one source turn exceeds the budget')
+      assert.ok(largeRows.every((row: any) => row.event.data.text === text))
+      if (kind === 'event-count') assert.ok(retained.some((row: any) => row.source?.messageId === 'm1'))
     } finally { h.release() }
   })
 }

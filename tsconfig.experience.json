@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "rootDir": ".", "lib": ["ES2024", "DOM", "DOM.Iterable"] },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "tests/experience/**/*.ts", "tests/experience/**/*.tsx", "tests/test-impact.test.ts", "vitest.config.ts", "scripts/test-faults.ts"],
+  "exclude": ["node_modules", "dist"]
+}

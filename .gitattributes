@@ -1,0 +1,2 @@
+# Unified patches retain their own context whitespace verbatim.
+source-snapshots/**/*.patch -whitespace

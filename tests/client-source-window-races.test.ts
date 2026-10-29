@@ -7,7 +7,8 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
-import type { SourceHistoryWindowRequest, SourceHistoryWindowValue } from '../src/source-window-types.ts'
+import type { SourceHistoryWindowRequest, SourceHistoryWindowValue, SourceHistoryOutlinePageValue } from '../src/source-window-types.ts'
+import type { SourceFrame } from '../src/shared/source-frames.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
@@ -20,6 +21,7 @@ let runtime: any
 before(async () => {
   const built = await build({
     stdin: { contents: [
+      `export { SourceFrameFeed } from ${JSON.stringify(join(root, 'src/shared/source-frame-feed.ts'))}`,
       `export { SourceSessions } from ${JSON.stringify(join(root, 'src/client/source-sessions.ts'))}`,
       "export { MutableSessionEventSource } from '@deepseek-ai/dsh-api-session-controller/client'",
     ].join('\n'), resolveDir: root, sourcefile: 'source-window-races-entry.ts', loader: 'ts' },
@@ -47,8 +49,26 @@ function annotation(seq: number, surfaceSeq: number, name: string, ordinal: numb
       nativeTurnId: `turn:${ordinal}`, nativeItemId: name, displayTurn: ordinal, displayStep: 1 } },
     source: position(name, ordinal) }
 }
+/** Explicit source protocol fixtures. Numeric event coordinates below are
+ * intentionally local and have no meaning to the canonical window. */
+function canonical(records: Entry[]): SourceFrame[] {
+  return records.map(entry => {
+    const data = entry.event.data, ordinal = data.displayTurn ?? data.turn ?? entry.event.time / 1_000
+    const name = data.message?.content?.[0]?.text ?? data.fingerprint
+    const source = entry.source ?? (name ? position(name, ordinal) : undefined)
+    const turnKey = `turn:${ordinal}`, stepKey = `step:${ordinal}:${data.displayStep ?? data.step ?? 1}`
+    const key = entry.event.type === 'assistant/message' ? `body:${data.message.id}`
+      : entry.event.type === 'plugin:hapi-dsh/native-item' ? `annotation:${data.key}`
+        : entry.event.type === 'plugin:hapi-dsh/execution' ? `execution:${entry.event.seq}`
+          : `${entry.event.type}:${stepKey}`
+    return { key, ...(source ? { source } : {}), turnKey, stepKey,
+      event: { ...entry.event, seq: Number.isFinite(entry.event.seq) ? entry.event.seq : 0,
+        ...(entry.event.type === 'assistant/message' ? { surfaceOp: 'append' as const } : {}) } as unknown as SourceFrame['event'],
+      ...(entry.event.type === 'plugin:hapi-dsh/native-item' ? { refs: { surfaceKey: `body:${data.key}` } } : {}) }
+  })
+}
 function page(records: Entry[], afterOrdinal: number, hasMoreAfter: boolean): { ok: true; value: SourceHistoryWindowValue } {
-  return { ok: true, value: { records, hasMoreBefore: true, hasMoreAfter,
+  return { ok: true, value: { records: [], frames: canonical(records), hasMoreBefore: true, hasMoreAfter,
     before: { at: 1_000, seq: 1 }, after: { at: afterOrdinal * 1_000, seq: afterOrdinal } } }
 }
 function deferred<T>() {
@@ -60,9 +80,17 @@ const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 const bodyNames = (entries: Entry[]): string[] => entries.filter(entry => entry.event.type === 'assistant/message')
   .map(entry => entry.event.data.message.content[0].text as string)
 
-async function harness(handler: (request: SourceHistoryWindowRequest) => Promise<{ ok: true; value: SourceHistoryWindowValue }> | { ok: true; value: SourceHistoryWindowValue }, head?: SourcePosition, outlineEpoch = 1) {
+async function harness(handler: (request: SourceHistoryWindowRequest) => Promise<{ ok: true; value: SourceHistoryWindowValue }> | { ok: true; value: SourceHistoryWindowValue }, head?: SourcePosition, outlineEpoch = 1,
+  lookup?: (seq: number) => Promise<string>, outlinePage?: () => Promise<{ ok: true; value: SourceHistoryOutlinePageValue }>) {
   const source = new runtime.MutableSessionEventSource()
-  source.replace([body(1, 'head', 10), annotation(2, 1, 'head', 10)], true)
+  source.replace([], false)
+  let currentFrames = canonical([body(1, 'head', 10), annotation(2, 1, 'head', 10)])
+  const feed = new runtime.SourceFrameFeed(() => ({ kind: 'replace', frames: currentFrames }))
+  const publish = (records: Entry[], kind: 'replace' | 'merge' = 'merge', reset = false) => {
+    const frames = canonical(records)
+    currentFrames = kind === 'replace' ? frames : [...currentFrames.filter(old => !frames.some(next => next.key === old.key)), ...frames]
+    feed.publish({ kind, frames, ...(reset ? { reset: true } : {}) })
+  }
   const emptyProjection = { getSnapshot: () => [], subscribe: () => () => {} }
   const originalFace = {
     sessionId: SESSION, projections: { faceOf: () => emptyProjection },
@@ -80,27 +108,28 @@ async function harness(handler: (request: SourceHistoryWindowRequest) => Promise
   const requests: SourceHistoryWindowRequest[] = [], anchorRequests: Array<{ sessionId: string; seq: number }> = []
   const facade = new runtime.SourceSessions(original)
   facade.attach({
+    sourceWindowFollow: (_request: unknown, signal: AbortSignal) => feed.watch(signal),
+    ...(outlinePage ? { sourceHistoryOutlinePage: outlinePage } : {}),
     sourceHistoryOutline: async () => ({ ok: true, value: {
       entries: [], seedIndex: 0, firstTurn: 10, epoch: outlineEpoch, complete: true, ...(head ? { head } : {}),
     } }),
     sourceReadingAnchor: async (request: { sessionId: string; seq: number }) => {
       anchorRequests.push(request)
-      return { ok: true, value: { sourceMessageId: 'wrong-host-seq-lookup' } }
+      return { ok: true, value: { sourceMessageId: lookup ? await lookup(request.seq) : 'wrong-host-seq-lookup' } }
     },
     sourceHistoryWindowPage: async (request: SourceHistoryWindowRequest) => { requests.push(request); return handler(request) },
   })
   const reference = facade.retain(SESSION, { source: 'mainView' })
   await reference.ready
   const face = reference.binding.session, eventSource = reference.binding.eventSource
-  return { source, face, eventSource, requests, anchorRequests,
+  return { source, face, eventSource, requests, anchorRequests, publish,
     entries: (): Entry[] => [...eventSource.getSnapshot().entries],
     append(seq: number, name: string, ordinal: number) {
-      // NativeProjector publishes the body before its identity annotation.
-      // A source-order implementation must join the coherent burst.
-      source.append(body(seq, name, ordinal, false))
-      source.append(annotation(seq + 1, seq, name, ordinal))
+      publish([body(seq, name, ordinal), annotation(seq + 1, seq, name, ordinal)])
     },
-    release: () => reference.release(),
+    replace(records: Entry[]) { publish(records, 'replace') },
+    reset(records: Entry[]) { publish(records, 'replace', true) },
+    release: () => { reference.release(); feed.dispose() },
   }
 }
 
@@ -116,6 +145,137 @@ function assertAnnotationsResolve(entries: Entry[]): void {
   }
 }
 
+for (const destination of ['latest', 'another historical window'] as const) {
+  test(`a late older page cannot overwrite ${destination} or its paging cursor`, async () => {
+    const older = deferred<ReturnType<typeof page>>(), entered = deferred<void>()
+    let contexts = 0, holdOlder = true
+    const h = await harness(request => {
+      if (request.beforeSeq !== undefined && holdOlder) {
+        entered.resolve()
+        return older.promise
+      }
+      const ordinal = request.beforeSeq === undefined ? ++contexts * 10 : request.beforeSeq - 1
+      const name = `window-${ordinal}`
+      return { ok: true, value: { ...page([body(0, name, ordinal)], ordinal, false).value,
+        before: { at: ordinal * 1_000, seq: ordinal }, beforeMessageId: `native:${name}`, epoch: ordinal } }
+    }, position('newest', 100))
+    try {
+      await h.face.loadThrough(900)
+      const paging = h.face.loadOlder(20)
+      await entered.promise
+      if (destination === 'latest') assert.equal(await h.face.returnToLive(), true)
+      else await h.face.loadThrough(901)
+      const committed = h.eventSource.getSnapshot()
+      const pagingEdge = h.entries()[0]!.source!
+      older.resolve(page([body(800, 'stale-page', 1)], 1, true))
+      await paging
+      assert.equal(h.eventSource.getSnapshot(), committed, 'an obsolete response must not republish or prepend')
+      assert.deepEqual(bodyNames(h.entries()), ['window-20'])
+      assert.equal(h.face.getSnapshot().loadingOlder, false)
+      holdOlder = false
+      await h.face.loadOlder(20)
+      assert.equal(h.requests.at(-1)!.beforeSeq, pagingEdge.seq, 'the new window keeps its own cursor')
+    } finally { older.resolve(page([], 0, false)); h.release() }
+  })
+}
+
+test('a delayed source-anchor lookup cannot take ownership from a newer navigation', async () => {
+  const first = deferred<string>(), entered = deferred<void>()
+  const h = await harness(request => page([body(0, request.messageId!, 20)], 20, false), undefined, 1,
+    async seq => {
+      if (seq === 900) { entered.resolve(); return first.promise }
+      return 'current-target'
+    })
+  try {
+    const obsolete = h.face.loadThrough(900)
+    await entered.promise
+    await h.face.loadThrough(901)
+    const committed = h.eventSource.getSnapshot()
+    first.resolve('obsolete-target')
+    await obsolete
+    assert.equal(h.eventSource.getSnapshot(), committed)
+    assert.deepEqual(h.requests.map(request => request.messageId), ['current-target'])
+    assert.equal(h.face.getSnapshot().loadingOlder, false)
+  } finally { first.resolve('obsolete-target'); h.release() }
+})
+
+test('older source page measures the live reader immediately before publishing its prepend', async () => {
+  const h = await harness(request => {
+    const ordinal = request.beforeSeq === undefined ? 10 : request.beforeSeq - 1
+    const name = `older-${ordinal}`
+    const value = page([body(0, name, ordinal)], ordinal, false).value
+    return { ok: true, value: { ...value, before: { at: ordinal * 1_000, seq: ordinal },
+      beforeMessageId: `native:${name}`, after: { at: ordinal * 1_000, seq: ordinal }, afterMessageId: `native:${name}` } }
+  }, position('head', 10))
+  const order: string[] = []
+  try {
+    await h.face.loadThrough(900)
+    const stopReader = h.face.registerWindowReader({
+      available: () => true,
+      read: () => undefined,
+      preparePrepend: () => {
+        order.push('measure')
+        return { commit: () => order.push('correct'), cancel: () => order.push('cancel') }
+      },
+    })
+    const stopFeed = h.eventSource.subscribe(() => order.push('publish'))
+    try {
+      await h.face.loadOlder(20)
+      assert.deepEqual(order, ['measure', 'publish', 'correct'])
+    } finally { stopFeed(); stopReader() }
+  } finally { h.release() }
+})
+
+test('a visible source reader warms its first older page and the prepend reuses that read', async () => {
+  const requested = deferred<void>()
+  const response = deferred<ReturnType<typeof page>>()
+  let olderReads = 0
+  const h = await harness(request => {
+    if (request.messageId !== undefined) {
+      const value = page([body(1, 'head', 10), annotation(2, 1, 'head', 10)], 10, true).value
+      return { ok: true, value: { ...value, before: { at: 10_000, seq: 10 }, beforeMessageId: 'native:head',
+        after: { at: 10_000, seq: 10 }, afterMessageId: 'native:head' } }
+    }
+    olderReads++
+    requested.resolve()
+    return response.promise
+  }, position('head', 10))
+  let stopReader = (): void => {}
+  try {
+    await h.face.loadThrough(900)
+    stopReader = h.face.registerWindowReader({ available: () => true, read: () => undefined })
+    await requested.promise
+    assert.equal(h.face.getSnapshot().loadingOlder, false, 'background warming must not put the reader into loading state')
+    const prepend = h.face.loadOlder()
+    assert.equal(h.face.getSnapshot().loadingOlder, true)
+    response.resolve({ ok: true, value: { ...page([body(0, 'older', 9), annotation(1, 0, 'older', 9)], 9, false).value,
+      before: { at: 9_000, seq: 9 }, beforeMessageId: 'native:older',
+      after: { at: 9_000, seq: 9 }, afterMessageId: 'native:older', hasMoreBefore: false } })
+    await prepend
+    assert.equal(olderReads, 1, 'the user-facing prepend must consume the in-flight warmed page')
+    assert.deepEqual(bodyNames(h.entries()), ['older', 'head'])
+  } finally { stopReader(); response.resolve(page([], 9, false)); h.release() }
+})
+
+test('a failed navigation lookup releases the paging busy state and permits retry', async () => {
+  let unavailable = true
+  const h = await harness(request => page([body(0, 'recovered', 20)], 20, false), undefined, 1,
+    async () => {
+      if (unavailable) throw new Error('anchor unavailable')
+      return 'recovered'
+    })
+  try {
+    const before = h.eventSource.getSnapshot()
+    await assert.rejects(h.face.loadThrough(900), /anchor unavailable/)
+    assert.equal(h.face.getSnapshot().loadingOlder, false)
+    assert.equal(h.eventSource.getSnapshot(), before)
+    unavailable = false
+    await h.face.loadThrough(900)
+    assert.deepEqual(bodyNames(h.entries()), ['recovered'])
+    assert.equal(h.face.getSnapshot().loadingOlder, false)
+  } finally { h.release() }
+})
+
 test('pagination keeps each committed edge epoch across newer outlines, opposite pages and failed reads', async () => {
   let olderPages = 0, newerPages = 0, rejectOlder = false
   const h = await harness(request => {
@@ -123,8 +283,8 @@ test('pagination keeps each committed edge epoch across newer outlines, opposite
     const ordinal = request.beforeSeq !== undefined ? 10 - ++olderPages
       : request.afterSeq !== undefined ? 10 + ++newerPages : 10
     const epoch = request.beforeSeq !== undefined ? 7 + olderPages : request.afterSeq !== undefined ? 20 + newerPages : 7
-    const name = `row-${ordinal}`, seq = request.endSeq !== undefined ? request.endSeq - 1 : request.startSeq!
-    return { ok: true, value: { records: [body(seq, name, ordinal)], epoch,
+    const name = `row-${ordinal}`, seq = 0
+    return { ok: true, value: { records: [], frames: canonical([body(seq, name, ordinal)]), epoch,
       before: { at: ordinal * 1_000, seq: ordinal }, after: { at: ordinal * 1_000, seq: ordinal },
       beforeMessageId: `native:${name}`, afterMessageId: `native:${name}`, hasMoreBefore: true, hasMoreAfter: true } }
   }, undefined, 50)
@@ -200,7 +360,7 @@ test('native execution-only updates preserve the first usable tail and its older
       body(base + index * 2, `initial-${index}`, index + 1, false),
       annotation(base + index * 2 + 1, base + index * 2, `initial-${index}`, index + 1),
     ]).flat()
-    h.source.replace(seed, true)
+    h.replace(seed)
     await flush()
     const stop = h.face.registerWindowReader({ available: () => true, read: () => {
       const bodies = h.entries().filter(row => row.event.type === 'assistant/message')
@@ -221,25 +381,26 @@ test('native execution-only updates preserve the first usable tail and its older
 })
 
 for (const followingTail of [false, true]) {
-  test(`a rejected native tail replacement is replayed when its reader releases the old range (following ${followingTail})`, async () => {
-    const h = await harness(() => { throw new Error('tail recovery must use the retained native snapshot') })
+  test(`canonical rebaseline preserves the pinned source row while merging new tail content (following ${followingTail})`, async () => {
+    const h = await harness(() => { throw new Error('a canonical rebaseline must not reload the source window') })
     let visible = true
     const stop = h.face.registerWindowReader({ available: () => visible,
-      read: () => ({ firstSeq: 1, lastSeq: 1, followingTail }) })
+      read: () => { const head = h.entries().find(entry => entry.event.type === 'assistant/message')!; return { firstSeq: head.event.seq, lastSeq: head.event.seq, followingTail } } })
     try {
       const face = h.face, eventSource = h.eventSource
-      // A follow rebaseline no longer contains the currently pinned source row.
-      // Rejecting it must keep the old reader, but cannot acknowledge its contents.
-      h.source.replace([body(3, 'rejected-tail', 20), annotation(4, 3, 'rejected-tail', 20)], true)
+      const pinned = h.entries().find(entry => entry.event.type === 'assistant/message')!
+      // A follow baseline is source data. It may add new content while the
+      // single resident window retains the reader's original source row.
+      h.replace([body(3, 'rejected-tail', 20), annotation(4, 3, 'rejected-tail', 20)])
       await flush()
-      assert.deepEqual(bodyNames(h.entries()), ['head'])
+      assert.deepEqual(bodyNames(h.entries()), ['head', 'rejected-tail'])
+      assert.equal(h.entries().find(entry => entry.event.data.message?.id === pinned.event.data.message.id)!.event.seq, pinned.event.seq)
 
-      // Once the old pane is parked, the next small in-order append alone would
-      // fit. Recovery must still replay the earlier rejected replacement first.
+      // Releasing the reader does not discard acknowledged canonical content.
       visible = false
       h.append(5, 'next-tail', 30)
       await flush()
-      assert.deepEqual(bodyNames(h.entries()), ['rejected-tail', 'next-tail'])
+      assert.deepEqual(bodyNames(h.entries()), ['head', 'rejected-tail', 'next-tail'])
       assertUniqueSeqs(h.entries(), 'after rejected tail recovery')
       assertAnnotationsResolve(h.entries())
       assert.equal(h.requests.length, 0)
@@ -249,163 +410,35 @@ for (const followingTail of [false, true]) {
   })
 }
 
-test('a rejected live burst leaves a gap until forward repair also merges arrivals during the read', { timeout: 5_000 }, async () => {
-  const requested = deferred<SourceHistoryWindowRequest>()
-  const response = deferred<ReturnType<typeof page>>()
-  const h = await harness(request => {
-    if (request.afterAt !== undefined) { requested.resolve(request); return response.promise }
-    const start = request.startSeq ?? WINDOW_BASE
-    // Reach the actual 5,000-event safety ceiling without changing the product
-    // budget. A visible reader with unknown geometry must preserve this range.
+test('a large committed source page and live arrivals remain in one resident history', { timeout: 5_000 }, async () => {
+  const h = await harness(() => {
+    const start = 0
     const controls: Entry[] = Array.from({ length: 4_998 }, (_, index) => ({ type: 'event', event: {
       type: 'plugin:hapi-dsh/execution', seq: start + index + 2, time: 10_000,
       data: { owner: 'native', generation: 1, sequence: index, status: 'active', turnId: 'turn:10' },
     } }))
     return page([body(start, 'head', 10), annotation(start + 1, start, 'head', 10), ...controls], 10, false)
   })
-  let stop = () => {}, geometryKnown = false
   try {
     await h.face.loadThrough(999)
-    stop = h.face.registerWindowReader({ available: () => true, read: () => {
-      if (!geometryKnown) return undefined
-      const last = h.entries().findLast(row => row.event.type === 'assistant/message')!
-      return { firstSeq: last.event.seq, lastSeq: last.event.seq, followingTail: true }
-    } })
-    h.append(3, 'rejected-live', 20)
-    await flush()
-    assert.equal(h.entries().length, 1_500, 'live output replaces evicted history inside the same budget')
-    assert.deepEqual(bodyNames(h.entries()), ['rejected-live'], 'live output is not withheld across an evicted interval')
+    const committed = h.entries()
+    assert.ok(committed.length > 1_500, 'the complete fetched page enters the reader window')
+    const committedBodies = bodyNames(committed)
+    assert.ok(committedBodies.includes('head'))
 
-    // Measurable geometry permits trimming again, but does not prove that the
-    // rejected source interval was received. Do not jump across it with live.
-    geometryKnown = true
-    h.append(5, 'parked-after-gap', 30)
+    h.append(3, 'live-one', 20)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['rejected-live', 'parked-after-gap'],
-      'measurable geometry lets live rows land without jumping the evicted interval')
+    assert.equal(h.entries().length, committed.length + 2)
+    assert.deepEqual(bodyNames(h.entries()), ['head', 'live-one'])
+    assert.ok(committed.every(row => h.entries().includes(row)), 'live arrival retains every committed page row')
+    assert.equal(await h.face.loadAfter(), false, 'continuous history does not invent an evicted forward gap')
 
-    assert.equal(await h.face.loadAfter(), false, 'live eviction leaves no forward gap to repair')
-    h.append(7, 'arrived-during-repair', 40)
+    h.append(5, 'live-two', 30)
     await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['rejected-live', 'parked-after-gap', 'arrived-during-repair'])
-    assertUniqueSeqs(h.entries(), 'after live evictions')
+    assert.deepEqual(bodyNames(h.entries()), ['head', 'live-one', 'live-two'])
+    assertUniqueSeqs(h.entries(), 'after consecutive live arrivals')
     assertAnnotationsResolve(h.entries())
-    assert.equal(await h.face.loadAfter(), false, 'live eviction never leaves a forward gap request')
-
-    h.append(9, 'live-after-repair', 50)
-    await flush()
-    assert.deepEqual(bodyNames(h.entries()).slice(-4),
-      ['rejected-live', 'parked-after-gap', 'arrived-during-repair', 'live-after-repair'])
-    assertUniqueSeqs(h.entries(), 'after live resumes')
-    assertAnnotationsResolve(h.entries())
-  } finally { stop(); h.release() }
-})
-
-test('trimming a newer source interval blocks distant live rows until that interval is paged back', { timeout: 5_000 }, async () => {
-  const requested = deferred<SourceHistoryWindowRequest>()
-  const response = deferred<ReturnType<typeof page>>()
-  const h = await harness(request => {
-    if (request.afterAt !== undefined) { requested.resolve(request); return response.promise }
-    const older = request.beforeAt !== undefined
-    const count = older ? 9 : 24, ordinal = older ? 1 : 10
-    const start = older ? request.endSeq! - count * 2 : request.startSeq ?? WINDOW_BASE
-    const records = Array.from({ length: count }, (_, index) => [
-      body(start + index * 2, `source-${ordinal + index}`, ordinal + index),
-      annotation(start + index * 2 + 1, start + index * 2, `source-${ordinal + index}`, ordinal + index),
-    ]).flat()
-    const result = page(records, ordinal + count - 1, older)
-    result.value.before = { at: ordinal * 1_000, seq: ordinal }
-    result.value.hasMoreBefore = !older
-    return result
-  })
-  let stop = () => {}, stopRepairObservation = () => {}, followingTail = false
-  try {
-    await h.face.loadThrough(999)
-    stop = h.face.registerWindowReader({ available: () => true, read: () => {
-      const bodies = h.entries().filter(row => row.event.type === 'assistant/message')
-      const anchor = followingTail ? bodies.at(-1)! : bodies.find(row => row.event.data.message.id === 'body:source-16')!
-      return { firstSeq: anchor.event.seq, lastSeq: anchor.event.seq, followingTail }
-    } })
-    await h.face.loadOlder()
-    const retained = bodyNames(h.entries())
-    assert.ok(retained.includes('source-16'), 'paging must preserve the actual reader')
-    assert.ok(!retained.includes('source-33'), 'this case must really evict a newer source interval')
-    const lastOrdinal = h.entries().findLast(row => row.event.type === 'assistant/message')!.source!.seq
-    followingTail = true
-    h.append(3, 'new-live', 40)
-    await flush()
-    assert.deepEqual(bodyNames(h.entries()), retained,
-      'following the retained window bottom does not fill the newer interval that was evicted')
-
-    let completeIntervalPublished = false
-    const missingNames = Array.from({ length: 33 - lastOrdinal }, (_, index) => `source-${lastOrdinal + index + 1}`)
-    stopRepairObservation = h.eventSource.subscribe(() => {
-      const names = bodyNames(h.entries())
-      if (missingNames.every(name => names.includes(name)) && names.includes('new-live')) completeIntervalPublished = true
-    })
-    const forward = h.face.loadAfter()
-    const request = await requested.promise
-    assert.equal(request.afterSeq, lastOrdinal)
-    h.append(5, 'during-trim-repair', 50)
-    const ordinals = [...Array.from({ length: 33 - lastOrdinal }, (_, index) => lastOrdinal + index + 1), 40]
-    const start = request.startSeq!
-    response.resolve(page(ordinals.flatMap((ordinal, index) => {
-      const name = ordinal === 40 ? 'new-live' : `source-${ordinal}`
-      return [body(start + index * 2, name, ordinal), annotation(start + index * 2 + 1, start + index * 2, name, ordinal)]
-    }), 40, false))
-    assert.equal(await forward, true)
-    await flush()
-    const names = bodyNames(h.entries())
-    assert.equal(completeIntervalPublished, true, 'the evicted interval must be complete before live following can trim it again')
-    assert.deepEqual(names.slice(-3), ['source-33', 'new-live', 'during-trim-repair'])
-    assertUniqueSeqs(h.entries(), 'after an evicted interval is repaired')
-    assertAnnotationsResolve(h.entries())
-  } finally { stopRepairObservation(); stop(); h.release() }
-})
-
-test('an empty repair page preserves the source cursor needed by the next live gap', async () => {
-  let forwardReads = 0
-  const h = await harness(request => {
-    const start = request.startSeq ?? WINDOW_BASE
-    if (request.afterAt === undefined) {
-      return page([body(start, 'head', 10), annotation(start + 1, start, 'head', 10)], 10, false)
-    }
-    forwardReads++
-    assert.equal(request.afterSeq, 10, 'an empty transport page must not erase the last committed source position')
-    if (forwardReads === 1) {
-      // This is the public empty-page shape emitted by windowAfter when its
-      // source read contains no rows: no records and no replacement cursor.
-      const empty = page([], 10, false)
-      empty.value.after = null
-      return empty
-    }
-    return page([
-      body(start, 'first-gap', 20), annotation(start + 1, start, 'first-gap', 20),
-      body(start + 2, 'second-gap', 30), annotation(start + 3, start + 2, 'second-gap', 30),
-    ], 30, false)
-  })
-  let stop = () => {}
-  try {
-    await h.face.loadThrough(999)
-    stop = h.face.registerWindowReader({ available: () => true, read: () => {
-      const head = h.entries().find(row => row.event.type === 'assistant/message')!
-      return { firstSeq: head.event.seq, lastSeq: head.event.seq, followingTail: false }
-    } })
-    h.append(3, 'first-gap', 20)
-    await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head', 'first-gap'],
-      'live rows land even when the source interval behind them was evicted')
-    assert.equal(await h.face.loadAfter(), false)
-    assert.equal(forwardReads, 0, 'live eviction does not request a forward repair')
-
-    h.append(5, 'second-gap', 30)
-    await flush()
-    assert.deepEqual(bodyNames(h.entries()), ['head', 'first-gap', 'second-gap'])
-    assert.equal(await h.face.loadAfter(), false)
-    assert.equal(forwardReads, 0)
-    assertUniqueSeqs(h.entries(), 'after consecutive live bursts')
-    assertAnnotationsResolve(h.entries())
-  } finally { stop(); h.release() }
+  } finally { h.release() }
 })
 
 test('forward repair captures a live burst until the missing source interval commits without duplicates', { timeout: 5_000 }, async () => {
@@ -413,7 +446,7 @@ test('forward repair captures a live burst until the missing source interval com
   const response = deferred<{ ok: true; value: SourceHistoryWindowValue }>()
   const h = await harness(request => {
     if (request.afterAt !== undefined) { requested.resolve(request); return response.promise }
-    const start = request.startSeq ?? WINDOW_BASE
+    const start = 0
     return page([body(start, 'head', 10), annotation(start + 1, start, 'head', 10)], 10, true)
   })
   try {
@@ -421,7 +454,7 @@ test('forward repair captures a live burst until the missing source interval com
     const face = h.face, eventSource = h.eventSource
     const forward = h.face.loadAfter()
     const request = await requested.promise
-    const reserved = request.startSeq!
+    const reserved = 0
     h.append(3, 'live', 30)
     await flush()
     assert.deepEqual(bodyNames(h.entries()), ['head'], 'the live burst cannot appear across an unfilled source gap')
@@ -479,9 +512,37 @@ test('return to an authoritative resident head preserves the paged reading windo
   } finally { h.release() }
 })
 
+test('returning to the resident bottom keeps loaded history cached and the next upward page advances from it', async () => {
+  const requests: SourceHistoryWindowRequest[] = []
+  const h = await harness(request => {
+    requests.push(request)
+    const ordinal = requests.length === 1 ? 9 : 8
+    const name = requests.length === 1 ? 'cached-page-one' : 'next-page'
+    const response = page([body(ordinal, name, ordinal)], ordinal, false)
+    return { ok: true, value: { ...response.value,
+      before: { at: ordinal * 1_000, seq: ordinal }, beforeMessageId: `native:${name}`,
+      hasMoreBefore: true, hasMoreAfter: false, epoch: 1 } }
+  }, position('head', 10))
+  try {
+    await h.face.loadOlder()
+    assert.deepEqual(bodyNames(h.entries()), ['cached-page-one', 'head'])
+
+    assert.equal(await h.face.returnToLive(), true, 'the authoritative resident tail is reused')
+    assert.deepEqual(bodyNames(h.entries()), ['cached-page-one', 'head'], 'returning to the bottom does not replace the loaded page')
+    assert.equal(requests.length, 1, 'the resident head needs no second transcript read')
+
+    await h.face.loadOlder()
+    assert.equal(requests.length, 2)
+    assert.deepEqual([requests[1]!.beforeSeq, requests[1]!.cursorMessageId], [9, 'native:cached-page-one'],
+      'the next upward page starts at the cached page edge instead of rereading the original tail')
+    assert.deepEqual(bodyNames(h.entries()), ['next-page', 'cached-page-one', 'head'],
+      'all previously read content remains in one continuous resident window')
+  } finally { h.release() }
+})
+
 test('loadThrough uses the resident source identity instead of sending a remapped display seq to Host', { timeout: 5_000 }, async () => {
   const h = await harness(request => {
-    const start = request.startSeq ?? WINDOW_BASE
+    const start = 0
     return page([body(start, 'head', 10), annotation(start + 1, start, 'head', 10)], 10, false)
   })
   try {
@@ -497,7 +558,7 @@ test('loadThrough uses the resident source identity instead of sending a remappe
 
 test('separate transport frames keep the turn, step and surface established before a native annotation', async () => {
   const h = await harness(request => {
-    const start = request.startSeq ?? WINDOW_BASE
+    const start = 0
     return page([body(start, 'head', 10), annotation(start + 1, start, 'head', 10)], 10, false)
   })
   try {
@@ -511,7 +572,10 @@ test('separate transport frames keep the turn, step and surface established befo
       { type: 'event', event: { type: 'turn/end', seq: 8, time: 30_000, data: { turn: 30 } } },
     ]
     frames[3]!.event.data.nativeStepId = 'turn:30:framed-live:item'
-    for (const frame of frames) { h.source.append(frame); await flush() }
+    for (const frame of frames) {
+      frame.source = position('framed-live', 30)
+      h.publish([frame]); await flush()
+    }
     const live = h.entries().slice(2)
     const startedTurn = live.find(row => row.event.type === 'turn/start')!.event.data.turn
     const startedStep = live.find(row => row.event.type === 'step/start')!.event.data.step
@@ -525,10 +589,50 @@ test('separate transport frames keep the turn, step and surface established befo
     assertAnnotationsResolve(h.entries())
     const requests = h.requests.length
     const before = bodyNames(h.entries())
-    const originalSnapshot = h.source.getSnapshot().entries
-    h.source.replace(originalSnapshot.slice(-4), true)
+    h.replace([body(1, 'head', 10), annotation(2, 1, 'head', 10), ...frames])
     await flush()
     assert.deepEqual(bodyNames(h.entries()), before, 'an overlapping follow rebaseline must not replay resident messages')
     assert.equal(h.requests.length, requests, 'same-owner compaction must not reload the source window')
   } finally { h.release() }
 })
+
+
+for (const phase of ['complete', 'first-pending', 'continuation-pending'] as const) {
+  test(`a source rewrite replaces the ${phase} outline and ignores its late same-epoch reply`, async () => {
+    const value = (name: string, complete = true): { ok: true; value: SourceHistoryOutlinePageValue } => ({ ok: true, value: {
+      entries: [{ turn: 1, seq: 2_000_000_000, messageId: `native:${name}`, prompt: name, response: '', at: 1_000, sourceSeq: 1 }],
+      seedIndex: 0, firstTurn: 1, epoch: 1, complete, hasMore: !complete,
+      cursor: complete ? null : { at: 1_000, seq: 1 }, pageSize: 1,
+    } })
+    const obsolete = deferred<ReturnType<typeof value>>(), fresh = deferred<ReturnType<typeof value>>()
+    let calls = 0
+    const h = await harness(() => page([], 1, false), undefined, 1, undefined, async () => {
+      calls++
+      if (phase === 'first-pending') return calls === 1 ? obsolete.promise : fresh.promise
+      if (calls === 1) return value('removed-label', phase === 'complete')
+      if (phase === 'continuation-pending' && calls === 2) return obsolete.promise
+      return fresh.promise
+    })
+    const outline = () => h.face.projections.faceOf('turnOutline').getSnapshot() as Array<{ prompt: string }>
+    try {
+      await flush()
+      assert.equal(calls, phase === 'continuation-pending' ? 2 : 1)
+      if (phase !== 'first-pending') assert.deepEqual(outline().map(row => row.prompt), ['removed-label'])
+      const oldCalls = calls
+      h.reset([body(1, 'rewritten-body', 20), annotation(2, 1, 'rewritten-body', 20)])
+      await flush()
+      assert.equal(calls, oldCalls + 1, 'a fulfilled directory must reopen when the source history changes')
+      assert.deepEqual(outline(), [], 'removed labels disappear before the replacement directory arrives')
+      assert.deepEqual(bodyNames(h.entries()), ['rewritten-body'], 'directory invalidation does not cancel the independent body feed')
+      fresh.resolve(value('current-label'))
+      await flush()
+      assert.deepEqual(outline().map(row => row.prompt), ['current-label'])
+      obsolete.resolve(value('late-removed-label'))
+      await flush()
+      assert.deepEqual(outline().map(row => row.prompt), ['current-label'], 'an obsolete first/continuation result cannot republish routes')
+      h.append(3, 'still-live', 30)
+      await flush()
+      assert.ok(bodyNames(h.entries()).includes('still-live'))
+    } finally { obsolete.resolve(value('closed')); fresh.resolve(value('closed')); h.release() }
+  })
+}

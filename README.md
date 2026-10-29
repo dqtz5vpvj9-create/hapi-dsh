@@ -1,10 +1,10 @@
-# HAPI DSH
+# HHPI / HAPI DSH
 
-把 HAPI 的跨机器会话与 tmux 式工作区，组合进 **未经修改的官方 DSH Web**。
+HHPI 的目标是为 **DSH Web** 提供跨机器的 Agent 远程接入，让 DSH、Codex 等会话进入同一个工作区。HAPI 是可参考、复用或修改的实现，不限定 HHPI 的协议、内部架构或部署方式，也不要求接入 HAPI Web。目标边界见 [HHPI 远程接入架构](docs/hhpi-remote-access-design.md)。
 
 所有聊天仍出现在同一个侧边栏。窗格可以并排打开本机 DSH、远端 DSH、HAPI 原生 Codex 和其他 HAPI 引擎会话；完整聊天界面使用官方 Conversation，包含会话头部、视图切换、消息、输入框及各处插件扩展点。工作区负责窗口、分屏、会话路由和布局保存，执行与审批继续由会话原来的引擎负责。
 
-这是普通 DSH 插件组合：主机安装 `hapi-dsh`，远端 DSH 主机安装包内独立的 `hapi-dsh-runner` Host 插件。没有 DSH fork、源码补丁、iframe 机器页面或另一套插件管理器。
+本仓库当前包名仍为 `hapi-dsh`，实现包含既有 HAPI 桥和远端 DSH Runner，使用项目维护的 DSH 扩展；目标架构尚未全部实现。主机安装 `hapi-dsh`，远端 DSH 主机安装包内独立的 `hapi-dsh-runner` Host 插件。下文 HAPI Hub 的安装步骤描述当前实现，不表示 HHPI 长期必须依赖 HAPI 部署。
 
 完整替代的对照基准是原 HAPI 的实际功能和使用体验。已实现能力、尚有差距的行为及对应证据逐项记录在[功能与 UX 对照表](docs/feature-parity.md)；当前源码不能据此宣称已完成全部替代。
 
@@ -153,6 +153,8 @@ Hub 自动重新加载配对策略并断开该机器。断线时已发送请求�
 
 ## 架构与验证
 
+开发时运行 `npm run test:fast`；按改动选测用 `npm run test:changed`，完整验证用 `npm run check`。新套件包含进程内契约与真实 React 组件的 DOM 交互测试，`npm run test:faults` 检查典型回归是否会触发断言。命令、覆盖边界与发布 UI 检查见[测试套件说明](docs/testing.md)。
+
 Conversation 窗格默认复用所属 Host 的一个真实官方 Client graph，各窗格通过显式 SessionProvider 绑定会话，保留独立的视图、草稿和滚动状态。Host chrome、settings 和官方右栏共享，按 focused pane 路由；文件、文档等非 conversation 插件视图暂用兼容路径。统一侧边栏聚合所有 Host 和源引擎目录。HAPI Codex 与其他 HAPI 引擎在主 Host 注册源会话适配器，同样进入官方 Conversation。
 
 详见[架构与扩展边界](docs/architecture.md)、[可复现验证](docs/validation.md)和[维护者分发流程](docs/distribution.md)。测试区分模型桩、真实传输和真实官方 DSH 进程。发布前仍需使用实际 HAPI、原生 Codex app-server 和模型凭据做部署验收；自动化 fixture 不能证明这项验收已经完成。
@@ -161,7 +163,7 @@ Conversation 窗格默认复用所属 Host 的一个真实官方 Client graph，
 
 源消息同步使用有界接收 journal、历史/live 合并与后台对账。生产 composition 自 `58800d1` 起显式启用快速尾部 seed；底层构造参数缺省值仍为 false。补入更早历史可能替换 display generation，其 rich draft、附件与滚动锚点的安全迁移尚未完整验收；具体保证见[消息连续性说明](docs/live-history.md)。
 
-隐藏且未绑定的窗格保持 deferred 状态，首次可见时才绑定。首次打开会在首屏后有界预取上一轮；源会话的 composer 使用模型/推理强度与权限 capsule。启动反馈、正文与 composer 的独立计时及当前边界见[启动与窗格反馈](docs/startup-feedback.md)。日常客户端验证可使用[常驻官方环境](docs/warm-validation.md)，它复用 Host 和浏览器进程，并支持客户端重建后通过官方 HMR 重载。
+隐藏且未绑定的窗格保持 deferred 状态，首次可见时才绑定。首次打开会在首屏后有界预取上一轮；源会话的 composer 使用模型/推理强度与权限 capsule。启动反馈、正文与 composer 的独立计时及当前边界见[启动与窗格反馈](docs/startup-feedback.md)。日常客户端验证使用[快速测试入口](docs/testing.md)；[常驻官方环境](docs/warm-validation.md)保留为旧浏览器流程的历史记录。
 
 针对实际部署截图中的源会话恢复、目录外文档、聊天事件和界面问题，代码修复、16 条实际官方浏览器专项及仍未定因的原生空白问题记录在[现场修复说明](docs/live-site-fixes.md)。线上验收新增实际源聊天正文检查；离线诊断只输出结构计数，详见[历史诊断](docs/source-history-diagnostics.md)。
 
@@ -171,4 +173,4 @@ Conversation 窗格默认复用所属 Host 的一个真实官方 Client graph，
 
 ### 本机一键发布
 
-在已有本机部署上运行 `npm run deploy` 发布客户端，或运行 `npm run deploy:host` 发布 Host 与客户端。命令使用当前账号的私有 `~/.config/hapi-dsh/launch-url`，完成类型检查、逻辑测试、构建及 HTTP 可达性检查。Host 发布会先确认本机没有普通 DSH 会话执行，只重启 `hapi-dsh-host.service`。界面由用户手测；该命令不会提交工作树或推送 Git。插件的执行边界见[插件兼容说明](docs/plugin-compatibility.md)。
+在已有本机部署上运行 `npm run deploy` 发布客户端，或运行 `npm run deploy:host` 发布 Host 与客户端。命令使用当前账号的私有 `~/.config/hapi-dsh/launch-url`，完成类型检查、全量自动化测试、构建及 HTTP/认证 WebSocket 检查。Host 发布会先确认本机没有普通 DSH 会话执行，只重启 `hapi-dsh-host.service`。发布后的真实界面由 Agent 按[测试说明](docs/testing.md)检查并单独报告；该命令不会提交工作树或推送 Git。插件的执行边界见[插件兼容说明](docs/plugin-compatibility.md)。

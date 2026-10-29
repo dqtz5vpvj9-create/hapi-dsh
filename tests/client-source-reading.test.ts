@@ -27,7 +27,7 @@ class Events {
 async function microtasks() { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
 function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>;
-    latestControl?: 'button' | 'following' | 'missing' } = {}) {
+    latestControl?: 'button' | 'following' | 'missing'; sourceHistory?: boolean } = {}) {
     const observer = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver')
     Object.defineProperty(globalThis, 'MutationObserver', { configurable: true, value: class { observe() {} disconnect() {} } })
     let now = 0, id = 0, top = 300, rowTop = 500, rowPresent = true
@@ -79,9 +79,10 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
     const state = store({ visible: true, focused: true }), reading = store<PaneReadingIntent | undefined>(undefined)
     const events = store({ revision: 0, change: { kind: 'append' } })
     const history = store({ openState: 'open', loadingOlder: false, removed: false })
+    const sourceWindow = store({ hasMoreAfter: false, historyId: 'host-a', historyVersion: 0 })
     let completeLoad: (() => void) | undefined
     const reference = { sessionId: 'session', ready: Promise.resolve(), binding: { eventSource: events,
-        session: { ...history, returnToLive: options.returnToLive,
+        session: { ...history, returnToLive: options.returnToLive, ...(options.sourceHistory ? { sourceWindow } : {}),
             loadThrough(seq: number) { loads.push(seq); return new Promise<void>(resolve => { completeLoad = resolve }) } } } } as unknown as SessionReference
     const ctx = { sessions: { list: { getSnapshot: () => ({ byId: { session: {} } }) } },
         locale: { bind: () => () => 'To bottom', getSnapshot: () => ({ active: 'en' }) },
@@ -90,7 +91,7 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
     const dispose = bindPaneReading(ctx, root as unknown as HTMLElement, reference, navigation)
     const framesNow = () => { const current = [...frames.values()]; frames.clear(); for (const run of current) run(now) }
     return {
-        root, document, window, port, row, writes, loads, officialClicks, state, reading,
+        root, document, window, port, row, writes, loads, officialClicks, state, reading, sourceWindow,
         async ready() { await microtasks(); root.emit('scroll', port); framesNow() },
         replace() { events.set({ revision: events.getSnapshot().revision + 1, change: { kind: 'replace' } }) },
         gesture(type: string, values: Record<string, unknown> = {}) { root.emit(type, row, values) },
@@ -110,6 +111,33 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
             else Reflect.deleteProperty(globalThis, 'MutationObserver')
         },
     }
+}
+
+test('source paging and item revision replacements do not turn ordinary reading into recovery navigation', async t => {
+    const f = fixture({ sourceHistory: true }); t.after(() => f.dispose()); await f.ready()
+    f.shift(120); f.replace(); await microtasks()
+    f.sourceWindow.set({ ...f.sourceWindow.getSnapshot(), hasMoreAfter: true })
+    f.replace(); await microtasks()
+    assert.deepEqual(f.loads, [], 'same-history replacement must not load the retained bookmark again')
+    assert.deepEqual(f.writes, [], 'ordinary commits cannot reposition the reader')
+    assert.equal(f.root.dataset.hapiReading, undefined, 'a data update is not a navigation lifecycle')
+})
+
+for (const change of ['rewrite', 'host-restart'] as const) {
+    test(`source ${change} still restores the reader after body publication`, async t => {
+        const f = fixture({ sourceHistory: true }); t.after(() => f.dispose()); await f.ready()
+        f.shift(120); f.replace(); await microtasks()
+        assert.deepEqual(f.loads, [], 'a replace alone carries no source-reset meaning')
+        f.sourceWindow.set({ ...f.sourceWindow.getSnapshot(),
+            ...(change === 'rewrite' ? { historyVersion: 1 } : { historyId: 'host-b' }) })
+        await microtasks()
+        assert.deepEqual(f.loads, [50], 'the committed history identity/version owns recovery')
+        await f.complete()
+        assert.deepEqual(f.writes, [420])
+        f.replace(); f.sourceWindow.set({ ...f.sourceWindow.getSnapshot(), hasMoreAfter: true })
+        await microtasks()
+        assert.deepEqual(f.loads, [50], 'later same-version commits do not repeat the recovery')
+    })
 }
 
 test('source replace waits through held touch and post-release inertia before recovering current reading', async t => {

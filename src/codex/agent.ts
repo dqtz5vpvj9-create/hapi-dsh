@@ -1,5 +1,9 @@
+import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
+import { boundedProjectionRows, SOURCE_PROJECTION_MAX_EVENTS, SOURCE_PROJECTION_MAX_BYTES } from '../shared/source-projection-window.ts'
+import type { SourceFrameBatch, SourceFrame } from '../shared/source-frames.ts'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
 import { checkedQueueMessage } from '../hapi/queue-receipt.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import {
@@ -20,10 +24,10 @@ import { NativeApprovals } from './approvals.js'
 import { DeliveryJournal } from './delivery.js'
 import { NativeHistoryEpochChangedError, readNativeHistoryForward, readNativeHistorySnapshot, readNativeHistoryTail, readNativeHistoryUpdate } from './history.js'
 import { NativeHistoryCache } from './history-cache.js'
-import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, sourceHistoryKey, type HistoryCheckpoint } from './history-journal.js'
+import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, mergeSourceRows, sourceHistoryKey, type HistoryCheckpoint } from './history-journal.js'
 import { SourceHistorySync } from './history-sync.js'
 import { NativeContent, type NativeArtifactImporter } from './content.js'
-import { assertBinding, bindingFor, compareNativeMessages, nativeSessionId, parseNativeRow, type NativeBinding, type NativeRow } from './native.js'
+import { assertBinding, bindingFor, compareNativeMessages, nativeSessionId, parseNativeRow, record, type NativeBinding, type NativeRow } from './native.js'
 import { NativeHistoryChangedError, NativeProjector } from './projector.js'
 import { DISPLAY_TURN_BASE, isSourceTurnStart, sourcePosition, sourceTurnKey, type HistoryWindowAnchor, type RenderedHistoryPage } from './source-window.js'
 import type { DeliveryView, HapiProjectionState } from './projection-types.js'
@@ -93,7 +97,7 @@ export interface NativeCodexOptions {
   displayRevision?: number
   resolveAttachments?: (hapiSessionId: string, message: UserMessage) => Promise<HapiAttachment[]>
   importArtifact?: NativeArtifactImporter
-  /** Allows the service to replace a display generation after authoritative native rewind. */
+  /** Rebuild the canonical read model after authoritative native history changes. */
   onHistoryChanged?: (agent: NativeCodexAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number) => Promise<void>
   historyEpoch?: number
   /**
@@ -244,19 +248,19 @@ export class NativeCodexAgent implements Agent {
   readonly logicalSessionId: SessionId
   readonly displayRevision: number
   readonly ctx: Context
-  private currentSession: Session
+  private readonly currentSession: Session
   readonly inbox: NativeInbox
   readonly dispatch: AgentEventDispatch
   readonly binding: NativeBinding
   readonly journal: DeliveryJournal
   private readonly approvals: NativeApprovals
   private readonly scope: Scope
-  private readonly projector: NativeProjector
+  private projector: NativeProjector
   private readonly cache: NativeHistoryCache
   private readonly content: NativeContent
   private readonly observations: NativeObservations
   private readonly childContent: ObservedContent
-  private readonly childScopes = new ObservedScopeIndex()
+  private childScopes = new ObservedScopeIndex()
   private readonly children: ObservedChildren
   /** Settles after child/subagent sessions have registered in the background. */
   childrenReady: Promise<void> = Promise.resolve()
@@ -290,9 +294,14 @@ export class NativeCodexAgent implements Agent {
   private historyAnchor: HistoryWindowAnchor | undefined
   private structuralResetPending = false
   private historyFallback = false
-  private historyPageId = 0
   private historyStale = false
   private rowWork: Promise<void> = Promise.resolve()
+  private residentRows: readonly HapiMessage[] = []
+  private transientSources = new Set<string>()
+  private transientKeys = new Set<string>()
+  private readonly sourceFeed = new SourceFrameFeed(() => ({ kind: 'replace', frames: this.currentSourceFrames(), hasMoreBefore: this.projectedHasMoreBefore ?? this.historyWindowAnchor()?.hasOlder === true }))
+  private projectionEventBytes = 0
+  private projectedHasMoreBefore: boolean | undefined
   /** Live rows arriving during one forward read are merged, not committed early. */
   private constructor(
     parent: Context,
@@ -353,12 +362,16 @@ export class NativeCodexAgent implements Agent {
     this.approvals = new NativeApprovals(stateDirectory, this.logicalSessionId, source.id, transport, () => {
       if (!this.disposed && !this.initializing) this.publishProjection()
     })
-    this.projector = new NativeProjector(this.session, {
+    this.projector = this.createProjector()
+  }
+
+  private createProjector(): NativeProjector {
+    return NativeProjector.history({
       model: () => this.options.model ?? 'codex-native', provider: () => this.options.provider ?? 'codex-native',
-      turnBase: DISPLAY_TURN_BASE,
+      turnBase: DISPLAY_TURN_BASE, streamRevisionBase: this.projector?.streamRevision() ?? 0,
       submittedMessage: localId => this.journal.get(localId)?.message,
       content: row => this.content.get(row),
-      stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }),
+      stream: () => {},
     })
   }
 
@@ -420,13 +433,7 @@ export class NativeCodexAgent implements Agent {
       }
       if (!rows) rows = []
       if (agent.historyAnchor?.partial) agent.projector.setSuppressFirstTurnStart()
-      agent.projector.beginHistorySeed()
       await agent.applyRows(rows, true, checkpoint)
-      agent.currentSession = agent.ctx.sessions.prepare(agent.id, {
-        seed: agent.projector.historySeed(),
-        meta: { cwd: sessionHeaderCwd(source.metadata?.path), createdAt: source.createdAt },
-      })
-      agent.projector.finishHistorySeed(agent.session)
       agent.initializing = false
       agent.observe(source)
       if (agent.fault === null) await agent.journal.reconcileSource()
@@ -462,30 +469,94 @@ export class NativeCodexAgent implements Agent {
   requestHistorySync(): void { this.historyStale = true; this.historySync.request(true) }
   async settled(): Promise<void> { await this.liveSync.settled(); await this.historySync.settled(); await this.rowWork }
 
-  historyWindowAnchor(): HistoryWindowAnchor | undefined { return this.historyAnchor }
+  currentSourceFrames(): SourceFrame[] {
+    return [...toSourceFrames({ events: this.projector.historySeed(), eventSources: this.projector.eventSources()!,
+      turnAnchors: this.projector.turnAnchorEntries(), stepAnchors: this.projector.stepAnchorEntries() }),
+      ...this.projector.activeSourceFrames()]
+  }
+  sourceFrameBaseline(): SourceFrameBatch { return this.sourceFeed.baseline() }
+  sourceHistoryVersion(): number { return this.sourceFeed.version }
+  sourceFrames(signal: AbortSignal): AsyncIterable<SourceFrameBatch> { return this.sourceFeed.watch(signal) }
+  publishHistoryPageEnrichment(frames: readonly SourceFrame[]): void {
+    if (!this.disposed && frames.length) this.sourceFeed.publish({ kind: 'merge', frames: [...frames] })
+  }
 
-  /** Render one older source page in a detached Session; no live log changes. */
+  private publishSourceFrames(start: number, replace: boolean, reset = false): void {
+    this.projectionEventBytes = (replace ? 0 : this.projectionEventBytes)
+      + this.projector.historySeed().slice(start).reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event), 'utf8'), 0)
+    const all = this.currentSourceFrames()
+    const active = new Set(all.flatMap(frame => frame.transient && frame.source ? [frame.source.messageId] : []))
+    const activeKeys = new Set(all.flatMap(frame => frame.transient ? [frame.key] : []))
+    const removeKeys = [...this.transientKeys].filter(key => !all.some(frame => frame.key === key))
+    const replaceSources = new Set([...this.transientSources, ...active])
+    const frames = replace ? all : all.filter((frame, index) => index >= start
+      || !!frame.source && replaceSources.has(frame.source.messageId))
+    if (frames.length || replace || replaceSources.size || removeKeys.length) this.sourceFeed.publish(
+      { kind: replace ? 'replace' : 'merge', frames, ...(replace ? { hasMoreBefore: this.projectedHasMoreBefore ?? this.historyWindowAnchor()?.hasOlder === true } : {}), ...(reset ? { reset: true } : {}), ...(!replace && replaceSources.size ? { replaceSources: [...replaceSources] } : {}),
+        ...(removeKeys.length ? { removeKeys } : {}) })
+    this.transientSources = active; this.transientKeys = activeKeys
+  }
+
+
+  /** Replace only read-model state; journals, inbox, approvals and the Session
+   * transport continue to belong to this exact Agent throughout preparation. */
+  rebaseDisplayHistory(rows: readonly HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number): Promise<void> {
+    const work = this.rowWork.then(async () => {
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      const retained = boundedProjectionRows(this.historyJournal.merge(rows, checkpoint))
+      await this.applyRowsNow(retained.rows, true, checkpoint, true, true, retained.trimmed)
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      this.residentRows = retained.rows
+      this.historyOrder.accept(retained.rows, true)
+      this.historyEpoch = epoch ?? this.historyEpoch
+      this.historyAnchor = completeHistoryAnchor(retained.rows, this.historyEpoch ?? 0)
+      if (retained.trimmed && this.historyAnchor) this.historyAnchor = { ...this.historyAnchor, hasOlder: true }
+      this.historyStale = false; this.historyFallback = false; this.structuralResetPending = false
+      this.fault = null; this.historyReadFault = false
+      this.cache.writeOpening(retained.rows, !retained.trimmed, this.historyEpoch)
+      this.syncInbox(); this.publishProjection()
+    })
+    this.rowWork = work.catch(() => {})
+    return work
+  }
+
+  historyWindowAnchor(): HistoryWindowAnchor | undefined { return this.historyAnchor }
+  historyTurnAnchors(): RenderedHistoryPage['turnAnchors'] { return this.projector.turnAnchorEntries() }
+
+  /** Project one bounded source page without creating a display Session. */
   async renderHistoryPage(rows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
-    const detached = Session.create(SessionId(`hapi-history-${this.logicalSessionId}-${++this.historyPageId}`))
     const parsed = rows.flatMap(message => {
       const row = parseNativeRow(message, this.binding)
       return row ? [row] : []
     })
-    // Import rich user/tool content and attachments before the detached fold.
-    await this.content.prepare(parsed)
-    const history = new NativeProjector(detached, {
-      model: () => this.options.model ?? 'codex-native', provider: () => this.options.provider ?? 'codex-native',
-      submittedMessage: () => undefined, content: row => this.content.get(row), stream: () => {}, turnBase: 0,
-    })
-    if (!rows.length || !isSourceTurnStart(rows[0]!)) history.setSuppressFirstTurnStart()
-    history.beginHistorySeed()
-    history.apply(parsed)
-    return {
-      events: history.historySeed(), lastTurn: history.lastTurn,
-      sources: history.sourceSeqEntries(), rewinds: history.rewindSeqEntries(), forks: history.forkBoundaryEntries(),
-      turnAnchors: history.turnAnchorEntries(),
-      stepAnchors: history.stepAnchorEntries(),
+    const project = (): RenderedHistoryPage => {
+      const history = NativeProjector.history({
+        model: () => this.options.model ?? 'codex-native', provider: () => this.options.provider ?? 'codex-native',
+        submittedMessage: localId => this.journal.get(localId)?.message, content: row => this.content.get(row), stream: () => {}, turnBase: 0,
+      })
+      if (!rows.length || !isSourceTurnStart(rows[0]!)) history.setSuppressFirstTurnStart()
+      history.apply(parsed)
+      return {
+        events: history.historySeed(), lastTurn: history.lastTurn,
+        sources: history.sourceSeqEntries(), rewinds: history.rewindSeqEntries(), forks: history.forkBoundaryEntries(),
+        turnAnchors: history.turnAnchorEntries(), stepAnchors: history.stepAnchorEntries(),
+        eventSources: history.eventSources()!,
+      }
     }
+    const rendered = project()
+    const hasRemoteResources = parsed.some(row => {
+      const raw = row.kind === 'user' ? row.parts : row.kind === 'tool-result' ? record(row.output)?.content : undefined
+      if (!Array.isArray(raw)) return false
+      return raw.some(part => {
+        const artifact = record(record(part)?.artifact)
+        return record(part)?.type === 'artifact' && typeof artifact?.id === 'string' && artifact.externalUrl === undefined
+      })
+    })
+    if (!hasRemoteResources) return rendered
+    // A message page is readable before old artifact bytes finish importing.
+    return { ...rendered, resourceEnrichment: this.content.prepare(parsed).then(project) }
   }
 
   get options(): AgentOptions {
@@ -914,14 +985,13 @@ export class NativeCodexAgent implements Agent {
     if (revision.hasMore) this.historySync.request(true)
   }
 
-  /** A proven native rewind/fork may own a new display. */
+  /** Reconcile source content while preserving the execution and operation owners. */
   private async replaceForStructuralChange(): Promise<void> {
     const checkpoint = this.historyJournal.checkpoint()
     const snapshot = await readNativeHistorySnapshot(this.transport, this.binding.hapiSessionId)
     if (this.disposed) return
     if (!this.config.onHistoryChanged) throw new NativeHistoryChangedError('The native source history changed structurally')
     const merged = this.historyJournal.merge(snapshot.rows, checkpoint)
-    this.historyAnchor = undefined
     await this.config.onHistoryChanged(this, merged, checkpoint, snapshot.epoch)
   }
 
@@ -979,10 +1049,15 @@ export class NativeCodexAgent implements Agent {
       if (!this.initializing && authoritative && !this.config.fastHistorySeed && this.historyOrder.needsReseed(rows)) {
         throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
       }
-      await this.applyRowsNow(rows, authoritative, checkpoint)
+      const retained = boundedProjectionRows(authoritative ? rows : mergeSourceRows(this.residentRows, rows))
+      const rebase = retained.trimmed || this.projector.historySeed().length > SOURCE_PROJECTION_MAX_EVENTS
+        || this.projectionEventBytes > SOURCE_PROJECTION_MAX_BYTES
+      await this.applyRowsNow(rebase ? retained.rows : rows, rebase || authoritative, checkpoint, rebase, false, retained.trimmed ? true : undefined)
+      this.residentRows = retained.rows
+      if (retained.trimmed) this.historyAnchor = { ...completeHistoryAnchor(retained.rows, this.historyEpoch ?? 0), hasOlder: true }
       if (this.disposed) return
       this.historyJournal.assertCurrent(checkpoint)
-      this.historyOrder.accept(rows, authoritative)
+      this.historyOrder.accept(retained.rows, retained.trimmed || authoritative)
       if (authoritative && !this.initializing) {
         this.historyStale = false
       }
@@ -991,11 +1066,12 @@ export class NativeCodexAgent implements Agent {
     return work
   }
 
-  private async applyRowsNow(messages: readonly HapiMessage[], authoritative: boolean, checkpoint: HistoryCheckpoint): Promise<void> {
+  private async applyRowsNow(messages: readonly HapiMessage[], authoritative: boolean, checkpoint: HistoryCheckpoint, rebase = false, reset = false, hasMoreBefore?: boolean): Promise<void> {
     this.observations.observe(messages)
-    this.childScopes.update(messages, authoritative)
-    const children = (authoritative ? parseObservedHistory(messages, this.childScopes)
-      : messages.flatMap(message => parseObservedMessage(message, this.childScopes))).filter(item => item.scopeId !== null)
+    const scopes = rebase ? new ObservedScopeIndex() : this.childScopes
+    scopes.update(messages, authoritative)
+    const children = (authoritative ? parseObservedHistory(messages, scopes)
+      : messages.flatMap(message => parseObservedMessage(message, scopes))).filter(item => item.scopeId !== null)
     await this.childContent.prepare(children)
     const parsed = messages.flatMap(message => {
       const row = parseNativeRow(message, this.binding)
@@ -1007,14 +1083,20 @@ export class NativeCodexAgent implements Agent {
     this.historyJournal.assertCurrent(checkpoint)
     if (authoritative) {
       const observed = new Set(parsed.map(item => item.row.key))
-      for (const key of this.projector.projectedKeys) if (!observed.has(key)) {
+      for (const key of rebase ? [] : this.projector.projectedKeys) if (!observed.has(key)) {
         throw new NativeHistoryChangedError('The native Codex history was rewound or replaced')
       }
       this.queued.clear()
     }
     // Project the transcript before retiring optimistic/native pending input.
-    this.projector.apply(parsed.map(item => item.row), !authoritative)
-    await this.children.apply(children, this.childScopes.scopes(), authoritative)
+    const projector = rebase ? this.createProjector() : this.projector
+    const start = rebase ? 0 : projector.historySeed().length
+    projector.apply(parsed.map(item => item.row), !authoritative)
+    if (rebase) { this.projector.abandonStream(); this.projector = projector }
+    if (hasMoreBefore !== undefined) this.projectedHasMoreBefore = hasMoreBefore
+    this.publishSourceFrames(start, rebase || this.initializing, reset)
+    this.childScopes = scopes
+    await this.children.apply(children, scopes.scopes(), authoritative, reset)
     for (const { row, message } of parsed) {
       if (row.kind !== 'user' || !row.localId) continue
       if (row.invoked) { this.journal.update(row.localId, 'invoked'); this.queued.delete(row.localId) }
@@ -1086,6 +1168,7 @@ export class NativeCodexAgent implements Agent {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    this.sourceFeed.dispose()
     this.historySync.dispose()
     this.liveSync.dispose()
     this.rejectIdleWaiters('The native Codex observation was detached')

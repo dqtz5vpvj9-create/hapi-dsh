@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import SessionStore from '@deepseek-ai/dsh-session'
+import SessionStore, { type SessionEvent } from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import CommandRuntime from '@deepseek-ai/dsh-commands'
@@ -19,6 +19,9 @@ import { HapiObservedAgent, type HapiObservedTransport } from '../src/hapi-agent
 import { HapiAgentService } from '../src/hapi-agent/service.js'
 import type { NativeArtifactBlock } from '../src/codex/content.js'
 import { HistoryReadInvalidatedError, SourceHistoryJournal } from '../src/codex/history-journal.js'
+import { SOURCE_FRAME_EVENT } from '../src/shared/source-frames.ts'
+import { SourceWindowStore } from '../src/client/source-window-store.ts'
+import { SOURCE_PROJECTION_MAX_ROWS } from '../src/shared/source-projection-window.ts'
 
 function stream(text: string, final: boolean): HapiMessage {
   return { id: `${final ? 'committed' : 'provisional'}:${text}`, seq: 4, localId: final ? 'shared-stream' : null,
@@ -95,9 +98,11 @@ async function fixture(kind: Kind) {
       machineId: 'synthetic-machine', ...(kind === 'native' ? { flavor: 'codex', codexNativeSession: true, codexSessionId: 'race-thread' }
         : { flavor: 'claude', claudeSessionId: 'race-thread' }) } }
   let rows: HapiMessage[] = []
-  const mutations: string[] = [], created: string[] = []
+  const mutations: string[] = [], created: string[] = [], createdAgents: string[] = [], operationEvents: SessionEvent[] = []
+  ctx.on('session/event', (_session, event) => { operationEvents.push(event) })
   const listeners = new Set<(event: HapiEvent) => void>()
   ctx.on('session/created', session => { created.push(session.id) })
+  ctx.on('agent/created', ({ agent }) => { createdAgents.push(agent.id); return undefined })
   const transport: HapiObservedTransport = {
     hubId: 'history-race-fixture', listSessions: async () => [structuredClone(source)], getSession: async () => structuredClone(source),
     readMessages: async () => page(rows), getQueuedState: async () => ({ queuedLocalIds: [], invokedLocalMessages: [] }),
@@ -120,7 +125,7 @@ async function fixture(kind: Kind) {
     await service.start()
     return service
   }
-  return { ctx, source, journal, created, mutations, create, startService, setRows(next: HapiMessage[]) { rows = next },
+  return { ctx, source, journal, created, createdAgents, mutations, operationEvents, create, startService, setRows(next: HapiMessage[]) { rows = next },
     emit(event: HapiEvent) { for (const listener of listeners) listener(event) },
     async close() { await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }) } }
 }
@@ -135,6 +140,58 @@ function importGate() {
 }
 
 for (const kind of ['native', 'observed'] as const) {
+  test(`${kind} live partial and final body share canonical identity without an operation-stream sequence bridge`, async () => {
+    const f = await fixture(kind), gate = importGate(), agent = await f.create([], gate.importer)
+    const streamAbort = new AbortController(), bodyStore = new SourceWindowStore()
+    const sourceFrames = agent.sourceFrames(streamAbort.signal)[Symbol.asyncIterator]()
+    bodyStore.apply((await sourceFrames.next()).value!)
+    const operationEvents: SessionEvent[] = []
+    const stopOperations = f.ctx.on('session/event', (session, event) => { if (session.id === agent.id) operationEvents.push(event) })
+    let assistantEvents = 0
+    const stop = f.ctx.on('agent/assistant-stream', () => { assistantEvents++ })
+    const body = (text: string, final: boolean) => {
+      const value = stream(text, final)
+      return { ...value, content: { ...(value.content as object), meta: { nativeExecution: { threadId: 'race-thread', turnId: 'stream-turn', itemId: 'shared-stream' } } } }
+    }
+    try {
+      await agent.handleEvent({ type: 'message-received', sessionId: f.source.id, message: body('Partial source answer', false) })
+      bodyStore.apply((await sourceFrames.next()).value!)
+      const partial = bodyStore.frames.find(frame => frame.transient)
+      assert.ok(partial)
+      const operationOwner = agent.session
+      await agent.handleEvent({ type: 'message-received', sessionId: f.source.id, message: body('Partial source answer completed', true) })
+      bodyStore.apply((await sourceFrames.next()).value!)
+      const final = bodyStore.frames.find(frame => frame.key === partial.key)
+      assert.ok(final && !final.transient)
+      assert.equal(agent.session, operationOwner)
+      assert.equal(assistantEvents, 0, 'source body updates have one canonical channel, without fabricated operation event references')
+      assert.ok(!operationEvents.some(event => String(event.type) === SOURCE_FRAME_EVENT))
+      assert.equal(bodyStore.frames.filter(frame => frame.key === partial.key).length, 1)
+    } finally { streamAbort.abort(); await sourceFrames.return?.(); stopOperations(); stop(); await agent.dispose(); await f.close() }
+  })
+
+  test(`${kind} resident history trims old turns and rebuilds projection indexes without replacing its operation owner`, async () => {
+    const f = await fixture(kind), gate = importGate()
+    const rows = Array.from({ length: SOURCE_PROJECTION_MAX_ROWS + 2 }, (_, index) => input(`bounded-${index}`, index + 1, kind))
+    const agent = await f.create(rows, gate.importer), owner = agent.session
+    try {
+      const users = () => agent.currentSourceFrames().filter(frame => frame.event.type === 'user/message')
+      assert.equal(users().length, SOURCE_PROJECTION_MAX_ROWS)
+      assert.ok(users().every(frame => frame.source!.seq >= 3))
+      const next = input('bounded-next', SOURCE_PROJECTION_MAX_ROWS + 3, kind)
+      await agent.handleEvent({ type: 'message-received', sessionId: f.source.id, message: next })
+      assert.equal(users().length, SOURCE_PROJECTION_MAX_ROWS)
+      assert.ok(users().every(frame => frame.source!.seq >= 4))
+      assert.equal(agent.session, owner)
+      assert.equal(f.ctx.agents.get(agent.id), agent)
+      assert.deepEqual(f.created, [agent.id]); assert.deepEqual(f.createdAgents, [agent.id])
+      assert.equal(agent.historyWindowAnchor()?.hasOlder, true)
+      assert.equal(agent.sourceFrameBaseline().hasMoreBefore, true)
+      assert.equal(agent.sourceHistoryVersion(), 0, 'bounded clipping is not an authoritative source rewrite')
+      assert.ok(!f.operationEvents.some(event => String(event.type) === SOURCE_FRAME_EVENT), 'neither initial seed nor clipped body enters the operation log')
+    } finally { await agent.dispose(); await f.close() }
+  })
+
   test(`${kind} seed invalidated during content preparation never enters or announces its obsolete display`, { timeout: 10_000 }, async () => {
     const f = await fixture(kind), gate = importGate()
     let agent: Awaited<ReturnType<typeof f.create>> | undefined
@@ -162,7 +219,7 @@ for (const kind of ['native', 'observed'] as const) {
       const replacement = input('replacement-source-input', 3, kind)
       f.setRows([original, replacement]); gate.release()
       assert.ok(await outcome instanceof HistoryReadInvalidatedError)
-      const userText = () => agent.session.snapshotEvents().flatMap(event => event.type === 'user/message'
+      const userText = () => agent.currentSourceFrames().map(frame => frame.event as SessionEvent).flatMap(event => event.type === 'user/message'
         ? event.data.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
       assert.deepEqual(userText(), ['retained-original'])
       await agent.refresh(true)
@@ -171,25 +228,53 @@ for (const kind of ['native', 'observed'] as const) {
     } finally { gate.release(); await agent.dispose(); await f.close() }
   })
 
-  test(`${kind} replacement retires the old writable journal owner before preparing another generation`, { timeout: 10_000 }, async () => {
+  test(`${kind} invalidated rebaseline preparation keeps the published body and operation owner intact`, async () => {
+    const f = await fixture(kind), gate = importGate(), original = input('visible-owner-history', 2, kind)
+    const agent = await f.create([original], gate.importer), owner = agent.session
+    const before = agent.sourceFrameBaseline(), checkpoint = f.journal.checkpoint()
+    const rebuilding = agent.rebaseDisplayHistory([input('obsolete-prefix', 1, kind, true), original], checkpoint)
+    const outcome = rebuilding.then(() => undefined, error => error)
+    try {
+      await gate.started
+      f.journal.capture({ type: 'messages-invalidated', sessionId: f.source.id, reason: 'rewind' })
+      gate.release()
+      assert.ok(await outcome instanceof HistoryReadInvalidatedError)
+      assert.deepEqual(agent.sourceFrameBaseline(), before)
+      assert.equal(agent.session, owner); assert.equal(f.ctx.agents.get(agent.id), agent)
+      assert.deepEqual(f.createdAgents, [agent.id]); assert.deepEqual(f.created, [agent.id])
+      assert.deepEqual(f.mutations, [])
+    } finally { gate.release(); await outcome; await agent.dispose(); await f.close() }
+  })
+
+  test(`${kind} history rebaseline keeps one writable Agent and the same display identity while preparing replacement content`, { timeout: 10_000 }, async () => {
     const f = await fixture(kind), gate = importGate(), tail = input('retained-tail', 2, kind)
     f.setRows([tail])
     const service = await f.startService(gate.importer)
     const previous = service.list()[0]!
+    const previousSession = previous.session, previousRevision = previous.displayRevision, previousHistoryVersion = previous.sourceHistoryVersion()
     let replacing: Promise<unknown> | undefined
     try {
       f.setRows([input('earlier-backfill', 1, kind, true), tail])
       replacing = previous.refresh(true)
       const outcome = replacing.then(() => undefined, error => error as unknown)
       await Promise.race([gate.started, outcome.then(error => { throw error ?? new Error('The replacement preparation gate was not reached') })])
-      assert.throws(() => previous.followup(createUserMessage({ content: [{ type: 'text', text: 'Must not enter the retired delivery journal' }],
-        source: { kind: 'user' } })), /detached/)
-      assert.deepEqual(f.mutations, [], 'the old view cannot race the replacement journal with another source write')
+      assert.equal(service.list()[0], previous)
+      assert.equal(f.ctx.agents.get(previous.id), previous)
+      assert.doesNotThrow(() => previous.followup(createUserMessage({ content: [{ type: 'text', text: 'Input stays with its original execution owner' }],
+        source: { kind: 'user' } })))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.deepEqual(f.mutations, ['send'], 'history preparation cannot retire the only delivery owner or create another writer')
       gate.release(); assert.equal(await outcome, undefined)
       const current = service.list()[0]!
-      assert.notEqual(current.id, previous.id)
+      assert.equal(current, previous)
+      assert.equal(current.id, previous.id)
+      assert.equal(current.displayRevision, previousRevision)
+      assert.ok(current.sourceHistoryVersion() > previousHistoryVersion, 'authoritative rebaseline remains detectable after reconnect')
+      assert.equal(current.session, previousSession)
+      assert.deepEqual(f.created, [previous.id])
       assert.equal(current.logicalSessionId, previous.logicalSessionId)
-      assert.deepEqual(current.session.snapshotEvents().flatMap(event => event.type === 'user/message'
+      assert.deepEqual(f.createdAgents, [previous.id], 'history revisions announce no replacement Agent')
+      assert.deepEqual(current.currentSourceFrames().map(frame => frame.event as SessionEvent).flatMap(event => event.type === 'user/message'
         ? event.data.content.flatMap(part => part.type === 'text' ? [part.text] : []) : []), ['earlier-backfill', 'retained-tail'])
     } finally { gate.release(); await replacing?.catch(() => {}); await service.dispose(); await f.close() }
   })

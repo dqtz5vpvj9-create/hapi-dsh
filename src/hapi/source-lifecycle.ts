@@ -32,6 +32,7 @@ export interface SourceLifecycleSessions {
   get(id: string): SourceLifecycleAgent | undefined
   /** Resolve a display seq, including a paged historical row. */
   resolveRewind?(sessionId: string, seq: number): string | undefined
+  resolveRewindMessage?(sessionId: string, messageId: string): string | undefined
   reconcileSource(sourceId: string): Promise<SourceLifecycleAgent | undefined>
   detachSource(sourceId: string): Promise<void>
 }
@@ -154,7 +155,7 @@ export class SourceLifecycle {
         ? action.displayMessageId === undefined
           ? (() => { const seq = (action as { displayMessageSeq?: number }).displayMessageSeq!
             return this.sessions.resolveRewind?.(agent.id, seq) ?? agent.resolveRewindLocalIdAtSeq(seq) })()
-          : agent.resolveRewindLocalId(action.displayMessageId) : undefined
+          : this.sessions.resolveRewindMessage?.(agent.id, action.displayMessageId) ?? agent.resolveRewindLocalId(action.displayMessageId) : undefined
       if (hasBoundary && !boundary) throw new Error('Only an invoked original user message can be a source history boundary')
       if (action.kind === 'resume' && action.permissionMode !== undefined) {
         const modes: readonly string[] = agent.binding.flavor === 'codex' ? ['default', 'read-only', 'safe-yolo', 'yolo']

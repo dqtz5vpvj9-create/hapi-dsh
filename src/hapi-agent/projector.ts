@@ -3,7 +3,7 @@ import {
   type AssistantMessage, type AssistantStreamRecord, type ContentBlock, type StreamChunk, type UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
-import { appendPluginRecord, type PluginRecordMap, type Session, type SessionEvent, type SessionEventMap,
+import { SessionSeq, type PluginRecordMap, type Session, type SessionEvent, type SessionEventMap,
   type SessionEventType, type SurfaceEventType, type SurfaceIntent } from '@deepseek-ai/dsh-session'
 import { NativeHistoryChangedError } from '../codex/projector.js'
 import type { ObservedItem } from './parser.js'
@@ -14,6 +14,9 @@ import { canonicalJson } from '../codex/native.js'
 import type { SourceCodexReviewRecord } from './codex-review.js'
 import './projection-state.js'
 import { independentStreamDelta } from '../shared/stream-text.js'
+import { HistoryProjectionSink, SessionProjectionSink, type ProjectionEventSink, type ProjectionEventSource } from '../shared/projection-event-sink.js'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
+import type { SourceFrame } from '../shared/source-frames.ts'
 
 interface Step { sourceStepId: string; turn: number; step: number; open: boolean }
 type SteppedItem = Extract<ObservedItem, { kind: 'assistant' | 'tool-call' | 'tool-result' }>
@@ -34,12 +37,15 @@ export interface ObservedProjectorOptions {
   stream(frame: AssistantStreamFrame): void
   /** First display Turn number. History pages render below the live seed. */
   turnBase?: number
+  /** Keep streaming revisions monotonic when only the projection is rebuilt. */
+  streamRevisionBase?: number
 }
 
 /** Display grouping only. Every message/tool/terminal comes from an observed source fact. */
 export class ObservedProjector {
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
+  private sourceOrigin: ProjectionEventSource | undefined
   private readonly committed = new Map<string, string>()
   private readonly rowKeys = new Set<string>()
   private readonly rewindIds = new Map<string, string>()
@@ -56,10 +62,31 @@ export class ObservedProjector {
   private responseInTurn = false
   private live: Live | undefined
   private revision = 0
-  constructor(private current: Session, private readonly options: ObservedProjectorOptions) {
+  private sink: ProjectionEventSink
+  constructor(target: Session | HistoryProjectionSink, private readonly options: ObservedProjectorOptions) {
+    this.sink = target instanceof HistoryProjectionSink ? target : new SessionProjectionSink(target)
     this.turn = options.turnBase ?? 0
+    this.revision = options.streamRevisionBase ?? 0
   }
-  get session(): Session { return this.current }
+  static history(options: ObservedProjectorOptions): ObservedProjector { return new ObservedProjector(new HistoryProjectionSink(), options) }
+  streamRevision(): number { return this.revision }
+  /** Current source text is a replaceable frame, never an executed DSH step. */
+  activeSourceFrames(): SourceFrame[] {
+    const live = this.live
+    if (!live || !live.text) return []
+    const content: ContentBlock[] = [{ type: live.item.reasoning ? 'reasoning' : 'text', text: live.text }]
+    const event: SessionEvent<'assistant/message'> = { type: 'assistant/message', seq: SessionSeq(this.sink.seq), time: this.sourceTime,
+      data: { turn: live.step.turn, step: live.step.step, stream: [], message: this.assistant(live.item, content) }, surfaceOp: 'append' }
+    return toSourceFrames({ events: [event], eventSources: new Map([[event.seq, this.origin(live.item)]]),
+      turnAnchors: this.turnAnchorEntries(), stepAnchors: this.stepAnchorEntries() }).map(frame => ({ ...frame, transient: true }))
+  }
+  get session(): Session {
+    if (!(this.sink instanceof SessionProjectionSink)) throw new Error('A pure history projection has no Session')
+    return this.sink.session
+  }
+  eventSources(): ReadonlyMap<number, ProjectionEventSource> | undefined {
+    return this.sink instanceof HistoryProjectionSink ? this.sink.eventSources : undefined
+  }
   get projectedKeys(): ReadonlySet<string> { return this.rowKeys }
   /** Source row identity -> display event seq for the rendered page. */
   sourceSeqEntries(): ReadonlyMap<string, number> { return this.sourceSeqs }
@@ -79,23 +106,30 @@ export class ObservedProjector {
     if (this.session.seq || this.seed) throw new Error('Observed history requires a detached new Session')
     this.seed = []
   }
-  historySeed(): readonly SessionEvent[] { if (!this.seed) throw new Error('History seed was not started'); return this.seed }
+  historySeed(): readonly SessionEvent[] {
+    if (this.sink instanceof HistoryProjectionSink) return this.sink.events
+    if (!this.seed) throw new Error('History seed was not started')
+    return this.seed
+  }
   finishHistorySeed(session: Session): void {
+    if (this.sink instanceof HistoryProjectionSink) {
+      if (session.firstLiveSeq !== this.sink.seq) throw new Error('The prepared observed Session does not match its projected history')
+      this.sink = new SessionProjectionSink(session)
+      return
+    }
     if (!this.seed || session.id !== this.session.id || session.firstLiveSeq !== this.seed.length) throw new Error('Observed history seed does not match the prepared Session')
-    this.current = session; this.seed = undefined
+    this.sink = new SessionProjectionSink(session); this.seed = undefined
   }
   private append<T extends SessionEventType>(type: T, data: SessionEventMap[T], ...intent: T extends SurfaceEventType ? [SurfaceIntent<T>] : []): SessionEvent<T> {
-    const event = this.session.append(type, data, ...intent)
+    const event = this.sink.append(type, data, this.sourceTime, ...intent)
     if (this.seed) this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
     return event
   }
 
   /** Source records share the same bounded page and chronology as their body. */
   private appendRecord<K extends Extract<keyof PluginRecordMap, `plugin:${string}`>>(type: K, data: PluginRecordMap[K]): void {
-    const seq = appendPluginRecord(this.session, type, data)
+    const event = this.sink.appendRecord(type, data, this.sourceTime)
     if (this.seed) {
-      const event = this.session.eventAt(seq)
-      if (!event) throw new Error('The source annotation was not committed to its detached Session')
       this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
     }
   }
@@ -105,6 +139,8 @@ export class ObservedProjector {
       if (item.scopeId !== (this.options.scopeId ?? null) || item.kind === 'notice' || item.kind === 'usage') continue
       if (item.kind === 'user' && !item.invoked) continue
       this.sourceTime = item.createdAt
+      this.sourceOrigin = this.origin(item)
+      this.sink.setSource(this.sourceOrigin)
       const previous = this.committed.get(item.key)
       if (previous !== undefined) {
         const seq = this.surfaceSeqs.get(item.key)
@@ -321,6 +357,7 @@ export class ObservedProjector {
   private flushLive(interrupted = false): void {
     const live = this.live
     if (!live) return
+    this.sink.setSource(this.origin(live.item))
     this.chunk(live, { type: 'block-end', index: 0, block: { type: live.item.reasoning ? 'reasoning' : 'text', text: live.text } })
     const display = projectNotifySummaries(this.content(live.item))
     const event = this.append('assistant/message', { turn: live.step.turn, step: live.step.step,
@@ -331,6 +368,11 @@ export class ObservedProjector {
     this.options.stream({ type: 'end', attemptId: live.attemptId, revision: ++this.revision, index: live.index,
       outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
     this.closeStep(live.step); this.live = undefined
+    if (this.sourceOrigin) this.sink.setSource(this.sourceOrigin)
+  }
+  private origin(item: ObservedItem): ProjectionEventSource {
+    return { messageId: item.rowId, at: item.sourceAt ?? item.createdAt, seq: item.seq ?? 0,
+      ...(item.nativeExecution?.turnId === undefined ? {} : { turnKey: item.nativeExecution.turnId }), itemKey: item.key }
   }
   abandonStream(): void {
     const live = this.live

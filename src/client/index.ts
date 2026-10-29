@@ -1,3 +1,4 @@
+import type { SourceViewportSession } from './source-sessions.ts'
 /** HAPI's workspace composition, loaded by DSH's unchanged official plugin runtime. */
 import { taggedRemote } from '../client-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -123,9 +124,11 @@ function diagnosticMark(name: string): void {
 
 function attachSourceSessions(ctx: Context, api: HapiRemoteApi): void {
     ctx.hapiSourceSessions.attach({
+        sourceWindowFollow: (request, signal) => api.sourceWindowFollow(request, signal),
         sourceHistoryOutline: request => api.sourceHistoryOutline(request),
         sourceHistoryOutlinePage: request => api.sourceHistoryOutlinePage(request),
         sourceHistoryWindowPage: request => api.sourceHistoryWindowPage(request),
+        sourceHistoryWindowPageStream: (request, signal) => api.sourceHistoryWindowPageStream(request, signal),
         sourceHistoryHead: request => api.sourceHistoryHead(request),
         sourceHistoryAttachment: request => api.sourceHistoryAttachment(request),
         sourceReadingAnchor: request => api.sourceReadingAnchor(request),
@@ -175,13 +178,25 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     // Load earlier control so upstream paging/anchoring stays authoritative.
     // The optional data seams below are only the public source facade's forward
     // page and explicit live-tail restore; they never write scroll state.
-    const sourceControl = (sessionId: string | null): { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } | undefined =>
-        sessionId ? ctx.sessions.binding(sessionId as SessionId)?.session as unknown as
-            { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } : undefined
+    const sourceControl = (sessionId: string | null): (Partial<SourceViewportSession> & { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> }) | undefined =>
+        sessionId ? ctx.sessions.binding(sessionId as SessionId)?.session as unknown as Partial<SourceViewportSession> & { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } : undefined
     disposers.push(installSeamlessHistory(document, {
         loadEarlierLabel: () => ctx.locale.bind('chat')('chat.loadOlder'),
-        loadOlderProgrammatically: async (pane, _sessionId, signal) =>
-            requestOlderThroughMountedChat(resolveMountedChatForPane(pane), signal),
+        loadOlderProgrammatically: async (pane, sessionId, signal) => {
+            if (signal.aborted) return false
+            const cancel = (): void => sourceControl(sessionId)?.cancelOlderPage?.(signal.reason)
+            signal.addEventListener('abort', cancel, { once: true })
+            try { return await requestOlderThroughMountedChat(resolveMountedChatForPane(pane), signal) }
+            finally { signal.removeEventListener('abort', cancel) }
+        },
+        prefetchOlderPage: sessionId => { void sourceControl(sessionId)?.prefetchOlderPage?.() },
+        cancelSourcePage: (sessionId, reason) => { sourceControl(sessionId)?.cancelOlderPage?.(reason) },
+        sourceWindowProgress: sessionId => {
+            const value = sourceControl(sessionId)?.sourceWindow?.getSnapshot()
+            return value?.before === undefined ? undefined : { before: value.before,
+                historyId: value.historyId, historyVersion: value.historyVersion }
+        },
+        subscribeSourceWindow: (sessionId, listener) => sourceControl(sessionId)?.sourceWindow?.subscribe(listener),
         loadAfter: async (_pane, sessionId) => {
             const control = sourceControl(sessionId)
             return control?.loadAfter ? await control.loadAfter() : false

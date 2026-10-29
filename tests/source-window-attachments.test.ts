@@ -1,3 +1,4 @@
+import { HistoryProjectionSink } from '../src/shared/projection-event-sink.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -75,14 +76,13 @@ function nativeUserRow(): NativeRow {
 
 /** The same real detached NativeProjector path renderHistoryPage uses. */
 function detachedHistoryPage(ref: ImageAttachmentRef): SessionHistoryRecord[] {
-  const detached = Session.create(SessionId(`hapi-history-${Date.now()}-${Math.random().toString(36).slice(2)}`))
+  const detached = new HistoryProjectionSink()
   const projector = new NativeProjector(detached, {
     model: () => 'fixture', provider: () => 'fixture', submittedMessage: () => undefined,
     content: () => [{ type: 'image', attachment: ref }], stream: () => {}, turnBase: 0,
   })
-  projector.beginHistorySeed()
   projector.apply([nativeUserRow()])
-  return projector.historySeed().map(event => ({ type: 'event', event })) as SessionHistoryRecord[]
+  return detached.events.map(event => ({ type: 'event', event })) as SessionHistoryRecord[]
 }
 
 function seedSession(id: string, content: Parameters<typeof createUserMessage>[0]['content']): Session {
@@ -419,13 +419,16 @@ function sourceFixture(ref: ImageAttachmentRef, displayId = DISPLAY_A) {
     content: { role: 'user', content: { type: 'text', text: 'history image' } },
   }
   const cursor = { at: 1000, seq: 1 }
-  const state = { epoch: 1, sourceEpoch: 1, reset: false, reads: 0 }
+  const state = { epoch: 1, sourceEpoch: 1, historyVersion: 0, reset: false, reads: 0 }
   const agent: HistoryWindowAgent = {
     id: SessionId(displayId), binding: { hapiSessionId: 'fixture-source' },
+    sourceHistoryVersion: () => state.historyVersion,
     historyWindowAnchor: () => ({ epoch: state.epoch, before: { at: 2000, seq: 2 }, firstTurn: 10,
       hasOlder: true, oldest: { id: 'seed', at: 2000, seq: 2 } }),
     renderHistoryPage: async () => ({
       events: detachedHistoryPage(ref).map(record => record.event as unknown as SessionEvent),
+      eventSources: new Map(detachedHistoryPage(ref).map(record => [record.event.seq,
+        { messageId: row.id, at: row.createdAt, seq: row.seq!, itemKey: row.id, turnKey: 'turn-1' }])),
       lastTurn: 1, sources: new Map(), rewinds: new Map(), forks: new Map(),
     }),
   }
@@ -440,8 +443,8 @@ function sourceFixture(ref: ImageAttachmentRef, displayId = DISPLAY_A) {
   const outline: SourceOutlineReader = async () => ({ entries: [], page: {
     epoch: state.sourceEpoch, reset: state.reset, hasMore: false, beforeCursor: null,
   } })
-  const context = async () => ({ messages: [row], page: { beforeCursor: cursor, afterCursor: cursor,
-    hasMoreBefore: false, hasMoreAfter: false, epoch: state.sourceEpoch, reset: state.reset } })
+  const context = async () => { state.reads++; return { messages: [row], page: { beforeCursor: cursor, afterCursor: cursor,
+    hasMoreBefore: false, hasMoreAfter: false, epoch: state.sourceEpoch, reset: state.reset } } }
   const contiguous = async () => ({ messages: [row], hasMore: false, next: cursor,
     epoch: state.sourceEpoch, reset: state.reset })
   const request = { address: { kind: 'session' as const, sessionId: agent.id }, throughSeq: DISPLAY_SEQ_OFFSET,
@@ -450,7 +453,7 @@ function sourceFixture(ref: ImageAttachmentRef, displayId = DISPLAY_A) {
   return { row, cursor, state, agent, transport, outline, context, contiguous, request, ordinary }
 }
 
-test('real source windows grant only served records, retain grants across page eviction and revoke on retirement', async () => {
+test('real source windows grant only served frames, retain no page bodies and revoke on retirement', async () => {
   const f = await app()
   try {
     const image = await f.store.saveImage({ data: PNG, mediaType: 'image/png' })
@@ -461,17 +464,16 @@ test('real source windows grant only served records, retain grants across page e
     const otherWindow = registry.window(DISPLAY_B, other.agent, other.transport)
     const id = String(image.attachmentId)
     assert.equal(window.attachments.count, 0)
-    const page = await window.page(fixture.request, undefined, fixture.ordinary)
-    assert.equal(collectRecordImageRefs(page.records).length, 1)
+    const page = await window.windowAt('history-image', 1, 0, fixture.context)
+    assert.equal(collectRecordImageRefs(page.frames.map(frame => ({ type: 'event' as const, event: frame.event as unknown as SessionHistoryRecord['event'] }))).length, 1)
     assert.equal((await window.attachments.read(f.store, id, window.epoch)).ref.attachmentId, image.attachmentId)
     await assert.rejects(() => otherWindow.attachments.read(f.store, id, otherWindow.epoch),
       (error: unknown) => sourceAttachmentErrorOf(error)?.reason === 'ATTACHMENT_NOT_REFERENCED')
 
     window.attachments.trimTo(0)
-    await window.page(fixture.request, undefined, fixture.ordinary)
-    assert.equal(fixture.state.reads, 1, 'cached page re-grants only its own references')
+    await window.windowAt('history-image', 1, 0, fixture.context)
+    assert.equal(fixture.state.reads, 2, 'a source page is request-local and re-grants only the newly served references')
     assert.equal(window.attachments.count, 1)
-    window.trimTo(0)
     assert.equal(window.cacheBytes, 0)
     assert.ok(window.attachmentBytes > 0)
     assert.equal(window.retainedBytes, window.attachmentBytes)
@@ -487,7 +489,7 @@ test('real source windows grant only served records, retain grants across page e
 
 test('source snapshot changes revoke old image grants without closing the display owner', async () => {
   const image = syntheticRef(1)
-  for (const route of ['context', 'before', 'after', 'history', 'outline', 'agent'] as const) {
+  for (const route of ['context', 'before', 'after', 'outline', 'agent'] as const) {
     const fixture = sourceFixture(image)
     const window = new SourceHistoryWindow(fixture.agent, fixture.transport,
       undefined, route === 'outline' ? fixture.outline : undefined)
@@ -502,7 +504,6 @@ test('source snapshot changes revoke old image grants without closing the displa
       const read = route === 'context' ? () => window.windowAt('history-image', 1, 3_000_000_000, fixture.context)
         : route === 'before' ? () => window.windowBefore(fixture.cursor, 3_000_000_000, fixture.contiguous)
         : route === 'after' ? () => window.windowAfter(fixture.cursor, 3_000_000_000, fixture.contiguous)
-        : route === 'history' ? () => window.page(fixture.request, undefined, fixture.ordinary)
         : () => window.canonicalOutline()
       if (route === 'context' || route === 'outline') await read()
       else await assert.rejects(read, SourceHistoryWindowError)
@@ -617,12 +618,12 @@ test('real source RPC page callbacks deliver reset evidence to the window before
     await assert.rejects(() => controller.sourceHistoryWindowPage({ sessionId: DISPLAY_A, ...route }), SourceHistoryWindowError)
     assert.equal(window.attachments.count, 0, JSON.stringify(route))
     assert.equal(window.attachments.disposed, false, 'a rejected stale page does not close the display owner')
-    assert.equal(fixture.state.reads, 1)
+    assert.equal(fixture.state.reads, 2, 'one context read grants the image, one stale page read revokes it')
     registry.clear()
   }
 })
 
-test('source outline head reads revoke image grants when they observe a reset or new epoch', async () => {
+test('independent source head reads revoke image grants when they observe a reset or new epoch', async () => {
   for (const change of [{ sourceEpoch: 2 }, { reset: true }]) {
     const image = syntheticRef(1)
     const fixture = sourceFixture(image)
@@ -631,11 +632,114 @@ test('source outline head reads revoke image grants when they observe a reset or
     await window.windowAt('history-image', 1, 3_000_000_000, fixture.context)
     const controller = controllerFixture(registry, {} as AttachmentStore, fixture)
     Object.assign(fixture.state, change)
-    await controller.sourceHistoryOutline({ sessionId: DISPLAY_A })
+    await controller.sourceHistoryHead({ sessionId: DISPLAY_A })
     assert.equal(window.attachments.count, 0)
     assert.equal(window.attachments.disposed, false)
     assert.throws(() => window.attachments.authorize(String(image.attachmentId), 1),
       (error: unknown) => sourceAttachmentErrorOf(error)?.reason === 'ATTACHMENT_NOT_REFERENCED')
     registry.clear()
   }
+})
+
+
+test('same-epoch history rewrite revokes old attachments and permits only newly served frames', async () => {
+  const image = syntheticRef(1), fixture = sourceFixture(image)
+  const window = new SourceHistoryWindow(fixture.agent, fixture.transport)
+  const page = await window.windowAt('history-image', 1, 0, fixture.context)
+  const oldGrants = window.attachments
+  assert.equal(oldGrants.authorize(String(image.attachmentId), 1).attachmentId, image.attachmentId)
+  fixture.state.historyVersion++
+  window.grantSourceFrames([], fixture.state.historyVersion)
+  assert.equal(oldGrants.disposed, true)
+  assert.throws(() => window.attachments.authorize(String(image.attachmentId), 1), SourceAttachmentError)
+  window.grantSourceFrames(page.frames, 0)
+  assert.equal(window.attachments.count, 0, 'a delayed pre-rewrite feed cannot re-grant')
+  await window.windowAt('history-image', 1, 0, fixture.context)
+  assert.equal(window.attachments.authorize(String(image.attachmentId), 1).attachmentId, image.attachmentId)
+  window.dispose()
+})
+
+test('same-epoch rewrite rejects each in-flight page before old content can be granted', async () => {
+  for (const route of ['context', 'before', 'after'] as const) {
+    const image = syntheticRef(1), fixture = sourceFixture(image)
+    const window = new SourceHistoryWindow(fixture.agent, fixture.transport)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const read = route === 'context'
+      ? window.windowAt('history-image', 1, 0, async () => { await gate; return fixture.context() })
+      : route === 'before'
+        ? window.windowBefore(fixture.cursor, 0, async () => { await gate; return fixture.contiguous() })
+        : window.windowAfter(fixture.cursor, 0, async () => { await gate; return fixture.contiguous() })
+    const rejected = assert.rejects(read, /source history changed while reading/)
+    fixture.state.historyVersion++
+    release()
+    await rejected
+    assert.equal(window.attachments.count, 0, route)
+    window.dispose()
+  }
+})
+
+test('same-epoch rewrite during pure projection rejects its old rendered result', async () => {
+  const image = syntheticRef(1), fixture = sourceFixture(image)
+  const render = fixture.agent.renderHistoryPage.bind(fixture.agent)
+  let release!: () => void, started!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const entered = new Promise<void>(resolve => { started = resolve })
+  fixture.agent.renderHistoryPage = async rows => { started(); await gate; return render(rows) }
+  const window = new SourceHistoryWindow(fixture.agent, fixture.transport)
+  const read = window.windowAt('history-image', 1, 0, fixture.context)
+  const rejected = assert.rejects(read, /source history changed while reading/)
+  await entered
+  fixture.state.historyVersion++
+  release()
+  await rejected
+  assert.equal(window.attachments.count, 0)
+  window.dispose()
+})
+
+
+test('a pre-rewrite outline cannot republish old same-epoch labels after a new scan', async () => {
+  const fixture = sourceFixture(syntheticRef(1))
+  let release!: (page: Awaited<ReturnType<typeof fixture.outline>>) => void
+  const oldPage = new Promise<Awaited<ReturnType<typeof fixture.outline>>>(resolve => { release = resolve })
+  let reads = 0
+  const outline: SourceOutlineReader = async () => ++reads === 1 ? oldPage : { entries: [{ messageId: 'new-label', label: 'current', at: 2000, seq: 2, createdAt: 2000 }],
+    page: { epoch: 1, hasMore: false, beforeCursor: null, complete: true } }
+  const window = new SourceHistoryWindow(fixture.agent, fixture.transport, undefined, outline)
+  const stale = window.canonicalOutline()
+  const rejected = assert.rejects(stale, /source history changed while reading/)
+  fixture.state.historyVersion++
+  const fresh = await window.canonicalOutline()
+  assert.deepEqual(fresh?.entries.map(row => row.messageId), ['new-label'])
+  release({ entries: [{ messageId: 'deleted-label', label: 'old', at: 1000, seq: 1, createdAt: 1000 }],
+    page: { epoch: 1, hasMore: false, beforeCursor: null, complete: true } })
+  await rejected
+  assert.deepEqual((await window.canonicalOutline())?.entries.map(row => row.messageId), ['new-label'])
+  window.dispose()
+})
+
+
+test('parent image RPC rejects a same-epoch rewrite during byte reading without any live subscriber', async () => {
+  const f = await app()
+  try {
+    const image = await f.store.saveImage({ data: PNG, mediaType: 'image/png' })
+    const fixture = sourceFixture(image), registry = new DisplayHistoryWindows()
+    const window = registry.window(DISPLAY_A, fixture.agent, fixture.transport)
+    await window.windowAt('history-image', 1, 0, fixture.context)
+    let release!: () => void, started!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const entered = new Promise<void>(resolve => { started = resolve })
+    const slow = { imageLimits: f.store.imageLimits, readImage: async (ref: ImageAttachmentRef) => {
+      started(); await gate; return f.store.readImage(ref)
+    } } as unknown as AttachmentStore
+    const controller = controllerFixture(registry, slow, fixture)
+    const read = controller.sourceHistoryAttachment({ sessionId: DISPLAY_A, attachmentId: String(image.attachmentId) })
+    const rejected = assert.rejects(read, (error: unknown) => error instanceof RemoteError
+      && error.details?.sourceCode === 'attachment_not_referenced')
+    await entered
+    fixture.state.historyVersion++
+    release()
+    await rejected
+    registry.clear()
+  } finally { await f.close() }
 })

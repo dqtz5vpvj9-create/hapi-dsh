@@ -129,7 +129,7 @@ export class EarlierLoadPolicy {
      * @param now - monotonic milliseconds.
      * @returns `request` or the first gate that refused.
      */
-    evaluate(state: EarlierViewState, intent: ReaderIntent, now: number): EarlierLoadDecision {
+    evaluate(state: EarlierViewState, intent: ReaderIntent, now: number, budgeted = true): EarlierLoadDecision {
         if (intent !== 'up') return { request: false, reason: 'no-intent' }
         if (!state.open) return { request: false, reason: 'not-open' }
         if (!state.hasMore) return { request: false, reason: 'exhausted' }
@@ -143,6 +143,7 @@ export class EarlierLoadPolicy {
         if (!this.eligible(state)) return { request: false, reason: 'not-open' }
         const lead = this.nearTop(state.clientHeight)
         if (!(state.scrollTop <= lead)) return { request: false, reason: 'not-near-top' }
+        if (!budgeted) return { request: true }
         const verdict = this.budget.allow(now)
         if (!verdict.allowed) return { request: false, reason: verdict.reason === 'suspended' ? 'suspended' : 'budget' }
         return { request: true }

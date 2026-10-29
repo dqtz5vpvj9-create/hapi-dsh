@@ -85,7 +85,7 @@ export async function extractBundleTarball({ file, dshHome }: { file: string; ds
             await tar.extractTgz(archive, temporary);
             const extracted = join(temporary, 'package');
             if (!(await pathExists(join(extracted, 'manifest.json')))) throw new Error('the archive is not a hapi-dsh bundle (no package/manifest.json)');
-            await rename(extracted, target).catch(async (error: NodeJS.ErrnoException) => {
+            await rename(temporary, target).catch(async (error: NodeJS.ErrnoException) => {
                 if (error.code === 'EEXIST' || error.code === 'ENOTEMPTY') return;
                 throw error;
             });

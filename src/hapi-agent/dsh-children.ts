@@ -1,3 +1,4 @@
+import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
 import { createHash } from 'node:crypto'
@@ -25,6 +26,8 @@ import type { HapiObservedProjection, ObservedSidechainSummary } from './project
 import { hapiObservedProjectionDefinition } from './projection-state.js'
 import { ObservedProjector } from './projector.js'
 import { establishSourceChild } from './subagent-metadata.js'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
+import type { SourceFrame, SourceFrameBatch } from '../shared/source-frames.ts'
 
 export interface SourceDshChildrenOwner {
   agent: Agent
@@ -72,8 +75,10 @@ export class HapiDshChildAgent implements Agent {
   readonly dispatch: AgentEventDispatch
   readonly journal: SourceDshChildDelivery
   private readonly scope: Scope
-  private current: Session
-  private readonly projector: ObservedProjector
+  private readonly current: Session
+  private projector: ObservedProjector
+  private readonly sourceFeed = new SourceFrameFeed(() => ({ kind: 'replace', frames: this.currentSourceFrames(), hasMoreBefore: false }))
+  private hasProjectedHistory = false
   private readonly cacheFile: string
   private history: SourceDshChildHistory | undefined
   private lastReadAt: number | null = null
@@ -91,11 +96,11 @@ export class HapiDshChildAgent implements Agent {
   private readonly idleWaiters = new Set<{ resolve(): void; reject(error: Error): void }>()
 
   private constructor(readonly owner: SourceDshChildrenOwner, readonly transport: HapiObservedTransport,
-    directory: string, private descriptor: SourceDshChildDescriptor) {
+    directory: string, private descriptor: SourceDshChildDescriptor, generation: number) {
     this.binding = sourceDshChildBinding(transport.hubId, owner.source(), descriptor)
     this.parentVersion = owner.source().metadataVersion
     const scopeId = `dsh-child:${descriptor.sessionId}`
-    this.id = sourceChildSessionId(owner.agent.id, scopeId)
+    this.id = sourceChildSessionId(owner.agent.id, scopeId, generation)
     this.logicalSessionId = sourceChildSessionId(owner.logicalSessionId, scopeId)
     this.parentSessionId = owner.agent.id
     this.scope = createScope(owner.agent.ctx, this, { parent: owner.agent }); this.ctx = withSourceAgentServices(this.scope.ctx, owner.agent.ctx)
@@ -107,18 +112,35 @@ export class HapiDshChildAgent implements Agent {
     this.journal = new SourceDshChildDelivery(directory, this.binding, transport, () => this.validateForMutation(), () => {
       if (!this.initializing && !this.disposed) this.publish()
     })
-    this.projector = new ObservedProjector(this.current, { scopeId, model: () => 'dsh',
-      submittedMessage: () => undefined, content: () => undefined,
-      stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }) })
+    this.projector = this.createProjector()
   }
+  private createProjector(): ObservedProjector {
+    return ObservedProjector.history({ scopeId: `dsh-child:${this.binding.childDshSessionId}`, model: () => 'dsh',
+      submittedMessage: () => undefined, content: () => undefined, stream: () => {} })
+  }
+  private projectHistory(history: SourceDshChildHistory, reset = false): void {
+    const projector = this.createProjector()
+    projector.apply(sourceDshChildItems(history, this.binding.childDshSessionId))
+    const frames = [...toSourceFrames({ events: projector.historySeed(), eventSources: projector.eventSources()!,
+      turnAnchors: projector.turnAnchorEntries(), stepAnchors: projector.stepAnchorEntries() }), ...projector.activeSourceFrames()]
+    this.projector.abandonStream(); this.projector = projector
+    this.sourceFeed.publish({ kind: 'replace', frames, ...(reset ? { reset: true } : {}) }); this.hasProjectedHistory = true
+  }
+  currentSourceFrames(): SourceFrame[] {
+    return [...toSourceFrames({ events: this.projector.historySeed(), eventSources: this.projector.eventSources()!,
+      turnAnchors: this.projector.turnAnchorEntries(), stepAnchors: this.projector.stepAnchorEntries() }), ...this.projector.activeSourceFrames()]
+  }
+  sourceFrameBaseline(): SourceFrameBatch { return this.sourceFeed.baseline() }
+  sourceHistoryVersion(): number { return this.sourceFeed.version }
+  sourceFrames(signal: AbortSignal): AsyncIterable<SourceFrameBatch> { return this.sourceFeed.watch(signal) }
   private meta() {
     return { cwd: sessionHeaderCwd(this.owner.state().path), createdAt: this.descriptor.createdAt,
       parentSession: this.parentSessionId, origin: 'subagent' as const,
       delegationDepth: (this.owner.agent.session.header.delegationDepth ?? 0) + 1, agentPreset: 'hapi-source-dsh-child' }
   }
   static async create(owner: SourceDshChildrenOwner, transport: HapiObservedTransport, directory: string,
-    descriptor: SourceDshChildDescriptor, options: { cacheOnly?: boolean } = {}): Promise<HapiDshChildAgent> {
-    const child = new HapiDshChildAgent(owner, transport, directory, descriptor)
+    descriptor: SourceDshChildDescriptor, options: { cacheOnly?: boolean; generation?: number } = {}): Promise<HapiDshChildAgent> {
+    const child = new HapiDshChildAgent(owner, transport, directory, descriptor, options.generation ?? 0)
     try {
       child.readCache()
       if (options.cacheOnly === true) {
@@ -141,10 +163,7 @@ export class HapiDshChildAgent implements Agent {
         child.observeParent(await child.transport.getSession(child.binding.sourceSessionId))
         child.lastReadAt = Date.now(); child.persistHistory(); child.historyError = null
       } catch (error) { child.historyError = describe(error) }
-      child.projector.beginHistorySeed()
-      if (child.history && options.cacheOnly !== true) child.projector.apply(sourceDshChildItems(child.history, child.binding.childDshSessionId))
-      child.current = child.ctx.sessions.prepare(child.id, { seed: child.projector.historySeed(), meta: child.meta() })
-      child.projector.finishHistorySeed(child.current)
+      if (child.history && options.cacheOnly !== true) child.projectHistory(child.history)
       child.session.append('model/selection', { provider: 'hapi-observed', model: 'dsh' })
       establishSourceChild(owner.agent.session, child.session, child.scopeInfo.label, descriptor.mode === 'continuable')
       child.initializing = false; child.publish()
@@ -210,6 +229,10 @@ export class HapiDshChildAgent implements Agent {
     if ((descriptor.mode === 'continuable') !== (this.descriptor.mode === 'continuable')) throw new NativeHistoryChangedError('The original child continuation capability changed; acquire the current display generation')
     this.descriptor = descriptor; this.publish()
   }
+  matchesDescriptor(descriptor: SourceDshChildDescriptor): boolean {
+    return descriptor.sessionId === this.binding.childDshSessionId && descriptor.createdAt === this.binding.childCreatedAt
+      && (descriptor.mode === 'continuable') === (this.descriptor.mode === 'continuable')
+  }
   publish(): void {
     if (this.disposed || this.initializing) return
     const title = this.scopeInfo.label
@@ -242,10 +265,19 @@ export class HapiDshChildAgent implements Agent {
       if (this.owner.state().connection !== 'connected') { this.publish(); throw new SourceDshChildUnavailable('The source Hub connection is unavailable') }
       try {
         this.observeParent(await this.transport.getSession(this.binding.sourceSessionId))
-        const history = await readSourceDshChildHistory(this.transport, this.binding, this.history, authoritative)
+        let history: SourceDshChildHistory
+        try { history = await readSourceDshChildHistory(this.transport, this.binding, this.history, authoritative) }
+        catch (error) {
+          if (!(error instanceof NativeHistoryChangedError)) throw error
+          history = await readSourceDshChildHistory(this.transport, this.binding)
+        }
         this.observeParent(await this.transport.getSession(this.binding.sourceSessionId))
         if (this.disposed || !this.owner.isCurrent()) throw new SourceDshChildUnavailable('The DSH child observation changed while reading history')
-        this.projector.apply(sourceDshChildItems(history, this.binding.childDshSessionId))
+        if (!this.hasProjectedHistory || canonicalJson(history) !== canonicalJson(this.history)) {
+          const reset = this.history !== undefined && (this.history.epoch !== history.epoch
+            || this.history.rows.some((row, index) => canonicalJson(row) !== canonicalJson(history.rows[index])))
+          this.projectHistory(history, reset)
+        }
         this.history = history; this.lastReadAt = Date.now(); this.persistHistory(); this.historyError = null
       } catch (error) {
         this.historyError = describe(error)
@@ -316,7 +348,7 @@ export class HapiDshChildAgent implements Agent {
   private rejectWaiters(message: string): void { for (const waiter of this.idleWaiters) waiter.reject(new Error(message)); this.idleWaiters.clear() }
   async dispose(): Promise<void> {
     if (this.disposed) return
-    this.disposed = true; this.rejectWaiters('The source DSH child view was detached'); this.projector.abandonStream()
+    this.disposed = true; this.sourceFeed.dispose(); this.rejectWaiters('The source DSH child view was detached'); this.projector.abandonStream()
     this.detachAgent?.(); this.detachSession?.(); await this.journal.settled(); await this.scope.dispose()
   }
 }
@@ -324,6 +356,7 @@ export class HapiDshChildAgent implements Agent {
 /** Register actual source catalog members without turning them into HAPI roots. */
 export class SourceDshChildren {
   private readonly children = new Map<string, HapiDshChildAgent>()
+  private readonly generations = new Map<string, number>()
   private mounted = false
   private disposed = false
   private pendingRefresh: Promise<void> | undefined
@@ -371,7 +404,8 @@ export class SourceDshChildren {
       if (this.disposed) return
       const existing = this.children.get(descriptor.sessionId)
       if (existing) { existing.update(descriptor); continue }
-      const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor, { cacheOnly: true })
+      const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor,
+        { cacheOnly: true, generation: this.generations.get(descriptor.sessionId) ?? 0 })
       if (this.disposed) { await child.dispose(); return }
       this.children.set(descriptor.sessionId, child)
     }
@@ -384,10 +418,13 @@ export class SourceDshChildren {
     const task = (async () => {
       const all = sourceDshChildCatalog(this.owner.source())
       const descriptors = options.onlyActive === true ? all.filter(descriptor => descriptor.activity === 'running') : all
-      const ids = new Map(descriptors.map(descriptor => [descriptor.sessionId, descriptor]))
+      const ids = new Map(all.map(descriptor => [descriptor.sessionId, descriptor]))
       for (const child of this.children.values()) {
         const descriptor = ids.get(child.binding.childDshSessionId)
-        if (!descriptor || descriptor.createdAt !== child.binding.childCreatedAt) throw new NativeHistoryChangedError('The original DSH child membership changed; acquire the current display generation')
+        if (!descriptor || !child.matchesDescriptor(descriptor)) {
+          await child.dispose(); this.children.delete(child.binding.childDshSessionId)
+          this.generations.set(child.binding.childDshSessionId, (this.generations.get(child.binding.childDshSessionId) ?? 0) + 1)
+        }
       }
       if (!descriptors.length) { this.owner.changed(); return }
       // Child transcripts are independent; opening a parent with dozens of
@@ -408,7 +445,8 @@ export class SourceDshChildren {
             existing.update(descriptor)
             await existing.refresh(authoritative, false)
           } else {
-            const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor)
+            const child = await HapiDshChildAgent.create(this.owner, this.transport, this.directory, descriptor,
+              { generation: this.generations.get(descriptor.sessionId) ?? 0 })
             if (this.disposed) { await child.dispose(); return }
             this.children.set(descriptor.sessionId, child)
           }

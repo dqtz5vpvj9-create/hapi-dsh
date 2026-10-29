@@ -4,12 +4,21 @@
     "commit": "1f81c047fc48fa190a683e469daa699857e9afe8",
     "version": "0.2.1-rc.3",
     "license": "MIT",
-    "modified": false
+    "modified": true,
+    "sourceSnapshot": "source-snapshots/dsh-ext/source.patch",
+    "sourceSnapshotManifest": "source-snapshots/manifest.json"
   },
   "hapi": {
     "repository": "https://github.com/dqtz5vpvj9-create/hapi",
     "commit": "55166cf8d87814ccfb383b538a8e8c55283bed81",
     "license": "AGPL-3.0-only",
-    "modified": false
+    "modified": true,
+    "sourceSnapshot": "source-snapshots/hapi/source.patch",
+    "sourceSnapshotManifest": "source-snapshots/manifest.json"
+  },
+  "codex": {
+    "minimumVersion": "0.154.0",
+    "validatedVersion": "0.165.0",
+    "emptyPaginatedThread": "supported"
   }
 }

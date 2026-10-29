@@ -303,9 +303,19 @@ export class CodexService {
       ...(this.options.resolveAttachments ? { resolveAttachments: this.options.resolveAttachments } : {}),
       ...(this.options.importArtifact ? { importArtifact: this.options.importArtifact } : {}),
       ...(this.options.resumeSession ? { resumeSession: this.options.resumeSession } : {}),
-      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.replaceDisplay(agent, snapshot, undefined, checkpoint, epoch),
+      onHistoryChanged: (agent, snapshot, checkpoint, epoch) => this.rebaseDisplayHistory(agent, snapshot, checkpoint, epoch),
       ...(rows ? { initialRowsMerged: true } : {}),
     }, rows)
+  }
+
+  /** History revisions belong to the existing source observation. Only a
+   * versioned native identity change may retire its execution/journal owner. */
+  private async rebaseDisplayHistory(agent: NativeCodexAgent, rows: HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number): Promise<void> {
+    const sourceId = agent.binding.hapiSessionId
+    if (this.disposed || this.agents.get(sourceId) !== agent || this.lifetimes.removed(sourceId)) return
+    this.historyFor(sourceId).assertCurrent(checkpoint)
+    await agent.rebaseDisplayHistory(rows, checkpoint, epoch)
+    if (!this.disposed && this.agents.get(sourceId) === agent) this.errors.delete(sourceId)
   }
 
   private async replaceDisplay(previous: NativeCodexAgent, rows: HapiMessage[], source?: HapiSession, checkpoint = this.historyFor(previous.binding.hapiSessionId).checkpoint(), epoch?: number): Promise<void> {

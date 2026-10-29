@@ -30,13 +30,15 @@ export interface MountedChatControlV1 {
     read(): MountedChatReadingV1;
     subscribe(listener: () => void): () => void;
     loadOlder(signal?: AbortSignal): Promise<void>;
+    /** Sample the official reader immediately before source history publishes. */
+    preparePageCommit?(): void;
     reveal(target: MountedChatTargetV1, signal?: AbortSignal): Promise<void>;
     toLatest(signal?: AbortSignal): Promise<void>;
 }
 
 /** Consumer registered on the Chat plugin's optional service. */
 export interface MountedChatConsumerV1 {
-    onMountedChat?: (control: MountedChatControlV1 | null) => void;
+    onMountedChat?: (control: MountedChatControlV1 | null, element?: HTMLElement) => void;
     readLatest?: (sessionId: string, signal: AbortSignal) => Promise<void>;
 }
 
@@ -45,6 +47,8 @@ export type ReadLatestV1 = (sessionId: string, signal: AbortSignal) => Promise<v
 
 /** Attribute a Pane element carries while one Chat control is mounted. */
 export const MOUNTED_CHAT_ATTRIBUTE = 'data-hapi-mounted-chat';
+/** DOMStringMap uses camelCase names, independently of the CSS attribute. */
+const MOUNTED_CHAT_DATASET_KEY = 'hapiMountedChat';
 
 interface RegisteredControl { control: MountedChatControlV1; readLatest: boolean }
 const controls = new Map<string, RegisteredControl>();
@@ -70,7 +74,7 @@ export function publishPaneMountedChat(pane: MountedChatPane, control: MountedCh
     const key = tokens.get(pane);
     if (control === null || control === undefined) {
         if (key !== undefined) { controls.delete(key); tokens.delete(pane); }
-        delete pane.dataset[MOUNTED_CHAT_ATTRIBUTE];
+        delete pane.dataset[MOUNTED_CHAT_DATASET_KEY];
         return;
     }
     let token = key;
@@ -80,7 +84,7 @@ export function publishPaneMountedChat(pane: MountedChatPane, control: MountedCh
         tokens.set(pane, token);
     }
     controls.set(token, { control, readLatest });
-    pane.dataset[MOUNTED_CHAT_ATTRIBUTE] = token;
+    pane.dataset[MOUNTED_CHAT_DATASET_KEY] = token;
 }
 
 /**
@@ -90,7 +94,7 @@ export function publishPaneMountedChat(pane: MountedChatPane, control: MountedCh
  */
 export function resolveMountedChatForPane(element: MountedChatOwnerLookup): MountedChatControlV1 | undefined {
     const owner = element.closest(`[${MOUNTED_CHAT_ATTRIBUTE}]`);
-    const token = owner?.dataset?.[MOUNTED_CHAT_ATTRIBUTE];
+    const token = owner?.dataset?.[MOUNTED_CHAT_DATASET_KEY];
     return token === undefined ? undefined : controls.get(token)?.control;
 }
 
@@ -102,7 +106,7 @@ export function resolveMountedChatForPane(element: MountedChatOwnerLookup): Moun
  */
 export function resolveMountedChatLatestForPane(element: MountedChatOwnerLookup): MountedChatControlV1 | undefined {
     const owner = element.closest(`[${MOUNTED_CHAT_ATTRIBUTE}]`);
-    const token = owner?.dataset?.[MOUNTED_CHAT_ATTRIBUTE];
+    const token = owner?.dataset?.[MOUNTED_CHAT_DATASET_KEY];
     const registered = token === undefined ? undefined : controls.get(token);
     return registered?.readLatest ? registered.control : undefined;
 }
@@ -117,8 +121,8 @@ export async function requestOlderThroughMountedChat(
     control: MountedChatControlV1 | undefined, signal: AbortSignal,
 ): Promise<boolean> {
     if (!control) return false;
-    try { await control.loadOlder(signal); return true }
-    catch { return false }
+    await control.loadOlder(signal);
+    return true;
 }
 
 /**
@@ -158,6 +162,40 @@ export function installPaneMountedChatConsumer(ctx: Context, pane: MountedChatPa
         publishPaneMountedChat(pane, null);
         unprovide?.();
     };
+}
+
+/**
+ * Deliver shared-graph Chat occurrences to their actual Pane owners.
+ * @param ctx - graph rendering all its Session portals.
+ * @param owner - resolves a visible occurrence; offscreen preparation views are excluded.
+ * @param readLatest - authoritative newest-window read for this graph.
+ * @returns disposer clearing only the occurrences installed by this consumer.
+ */
+export function installSharedMountedChatConsumer(
+    ctx: Context, owner: (element: HTMLElement) => MountedChatPane | undefined, readLatest: ReadLatestV1,
+): () => void {
+    const occurrences = new Map<HTMLElement, { pane: MountedChatPane; control: MountedChatControlV1 }>();
+    const release = (element: HTMLElement): void => {
+        const previous = occurrences.get(element);
+        if (!previous) return;
+        const token = tokens.get(previous.pane);
+        if (token !== undefined && controls.get(token)?.control === previous.control) publishPaneMountedChat(previous.pane, null);
+        occurrences.delete(element);
+    };
+    const consumer: MountedChatConsumerV1 = {
+        readLatest,
+        onMountedChat(control, element) {
+            if (!element) return;
+            release(element);
+            if (!control) return;
+            const pane = owner(element);
+            if (!pane) return;
+            occurrences.set(element, { pane, control });
+            publishPaneMountedChat(pane, control, true);
+        },
+    };
+    const unprovide = ctx.reflect.provide('mountedChatConsumer', consumer);
+    return () => { for (const element of occurrences.keys()) release(element); unprovide?.(); };
 }
 
 /** Clear all registrations; only for tests and full client teardown. */

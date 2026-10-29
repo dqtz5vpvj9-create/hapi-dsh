@@ -1,13 +1,14 @@
-/** Synthetic indexed-native wire rows projected through the pinned public Session. */
+/** Synthetic indexed-native wire rows projected through the pure source pipeline. */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { HapiMessage, HapiTransport } from '../src/codex/contracts.ts'
 import { parseNativeRow, type NativeBinding } from '../src/codex/native.ts'
 import { NativeProjector, NativeHistoryChangedError } from '../src/codex/projector.ts'
 import { SourceHistoryWindow, sourcePosition, type RenderedHistoryPage } from '../src/codex/source-window.ts'
 import { parseObservedMessage } from '../src/hapi-agent/parser.ts'
 import { ObservedProjector } from '../src/hapi-agent/projector.ts'
+import { SourceWindowStore } from '../src/client/source-window-store.ts'
 
 const binding: NativeBinding = { hubId: 'cursor-fixture', hapiSessionId: 'source', threadId: 'thread', home: null, homeId: null, machineId: null }
 const toolRow: HapiMessage = {
@@ -17,18 +18,17 @@ const toolRow: HapiMessage = {
   content: { type: 'codex', data: { id: 'stable-tool', type: 'tool-call', callId: 'call', name: 'Bash', input: { command: 'fixture' } } } },
 }
 type Kind = 'native' | 'observed'
-let nextId = 0
 function projection(kind: Kind, rows: readonly HapiMessage[], seed: boolean) {
-  const session = Session.create(SessionId(`cursor-coordinates-${++nextId}`))
   const options = { model: () => 'fixture', provider: () => 'fixture', submittedMessage: () => undefined,
     content: () => undefined, stream: () => {} }
-  const projector = kind === 'native' ? new NativeProjector(session, options) : new ObservedProjector(session, options)
-  if (seed) projector.beginHistorySeed()
-  if (projector instanceof NativeProjector) projector.apply(rows.map(row => {
-    const parsed = parseNativeRow(row, binding); assert.ok(parsed); return parsed
-  }))
-  else projector.apply(rows.flatMap(row => parseObservedMessage(row)))
-  return { projector, events: seed ? projector.historySeed() : session.snapshotEvents() }
+  const projector = kind === 'native' ? NativeProjector.history(options) : ObservedProjector.history(options)
+  for (const batch of seed ? [rows] : rows.map(row => [row])) {
+    if (projector instanceof NativeProjector) projector.apply(batch.map(row => {
+      const parsed = parseNativeRow(row, binding); assert.ok(parsed); return parsed
+    }))
+    else projector.apply(batch.flatMap(row => parseObservedMessage(row)))
+  }
+  return { projector, events: projector.historySeed() }
 }
 function annotation(events: readonly SessionEvent[], kind: Kind) {
   const type = kind === 'native' ? 'plugin:hapi-dsh/native-item' : 'plugin:hapi-dsh-observed/item'
@@ -52,7 +52,8 @@ for (const kind of ['native', 'observed'] as const) {
   test(`${kind} context source and projected annotation agree for the same indexed tool`, async () => {
     const render = async (rows: readonly HapiMessage[]): Promise<RenderedHistoryPage> => {
       const { projector, events } = projection(kind, rows, true)
-      return { events, lastTurn: projector.lastTurn, sources: projector.sourceSeqEntries(), rewinds: projector.rewindSeqEntries(),
+      return { events, eventSources: projector.eventSources()!, lastTurn: projector.lastTurn,
+        sources: projector.sourceSeqEntries(), rewinds: projector.rewindSeqEntries(),
         forks: projector instanceof NativeProjector ? projector.forkBoundaryEntries() : new Map(),
         turnAnchors: projector.turnAnchorEntries(), stepAnchors: projector.stepAnchorEntries() }
     }
@@ -63,11 +64,20 @@ for (const kind of ['native', 'observed'] as const) {
       const result = await window.windowAt(toolRow.id, 1, 3_000_000_000, async () => ({ messages: [toolRow], page: {
         epoch: 1, reset: false, beforeCursor: sourcePosition(toolRow), afterCursor: sourcePosition(toolRow), hasMoreBefore: true, hasMoreAfter: false,
       } }))
-      const data = annotation(result.records.map(row => row.event), kind)
-      const record = result.records.find(row => row.event.seq === data.surfaceSeq)!
-      assert.ok(record.source)
-      assert.equal(record.source.messageId, toolRow.id)
-      assert.deepEqual({ at: data.sourceAt, seq: data.sourceSeq }, { at: record.source.at, seq: record.source.seq })
+      const annotationType = kind === 'native' ? 'plugin:hapi-dsh/native-item' : 'plugin:hapi-dsh-observed/item'
+      const item = result.frames.find(frame => frame.event.type === annotationType)
+      assert.ok(item?.refs?.surfaceKey)
+      const surface = result.frames.find(frame => frame.key === item.refs!.surfaceKey)
+      assert.equal(surface?.event.type, 'assistant/message')
+      assert.deepEqual(surface?.source, { messageId: toolRow.id, ...sourcePosition(toolRow) })
+      assert.deepEqual(item.source, surface?.source)
+      const store = new SourceWindowStore()
+      store.apply({ kind: 'replace', frames: result.frames })
+      const data = annotation(store.entries.flatMap(entry => entry.type === 'event' ? [entry.event] : []), kind)
+      assert.equal(store.entries.find(entry => entry.event.seq === data.surfaceSeq)?.event.type, 'assistant/message')
+      const source = store.sourceForSeq(data.surfaceSeq)
+      assert.equal(source?.messageId, toolRow.id)
+      assert.deepEqual({ at: data.sourceAt, seq: data.sourceSeq }, { at: source?.at, seq: source?.seq })
     } finally { window.dispose() }
   })
 

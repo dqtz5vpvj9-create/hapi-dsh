@@ -1,15 +1,8 @@
-/**
- * A display-side history window over an original HAPI Session.
- *
- * The official Session keeps only the bounded opening seed. This adapter
- * serves older DSH event pages from the original source cursors on demand and
- * maps their sequence/turn coordinates into the same wire journal, so the
- * official Conversation can prepend history without replacing the display
- * Session, its editor, or its operation owner.
+/** Source-owned history cursors, navigation metadata and attachment grants.
+ * Body projection is request-local; only the client assigns display coordinates.
  */
 import type {
-  SessionFollowFrame, SessionHistoryRecord, SessionPage, SessionPageRequest, SessionProjectionBaseline,
-  SessionProjectionValues, SessionWireEvent,
+  SessionHistoryRecord, SessionWireEvent,
 } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { HapiMessage, HapiMessagesPage, HapiTransport } from './contracts.js'
@@ -17,13 +10,14 @@ import { compareNativeMessages, envelopeFor, nativeExecutionFor, record } from '
 import type { NativeForkBoundary } from './control-types.ts'
 import { SourceWindowAttachments } from '../source-window-attachments.ts'
 import { DISPLAY_SEQ_OFFSET } from '../shared/history-window.ts'
+import type { ProjectionEventSource } from '../shared/projection-event-sink.ts'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
+import type { SourceFrame, SourceFrameBatch } from '../shared/source-frames.ts'
 
 /** Leaves room below the live seed for every page of a long source history. */
 export { DISPLAY_SEQ_OFFSET } from '../shared/history-window.ts'
 /** Live displays start above every rendered source-history page. */
 export const DISPLAY_TURN_BASE = 1_000_000
-/** Detached source steps cannot collide with the original seed's local steps. */
-export const SOURCE_WINDOW_STEP_BASE = 1_000_000_000
 
 export interface SourcePosition { readonly at: number; readonly seq: number }
 export interface HistoryWindowAnchor {
@@ -41,6 +35,8 @@ export interface HistoryWindowAnchor {
 
 export interface RenderedHistoryPage {
   readonly events: readonly SessionEvent[]
+  /** Source row captured when each event was emitted, including lifecycle events. */
+  readonly eventSources?: ReadonlyMap<number, ProjectionEventSource>
   readonly lastTurn: number
   readonly sources: ReadonlyMap<string, number>
   readonly rewinds: ReadonlyMap<number, string>
@@ -49,6 +45,8 @@ export interface RenderedHistoryPage {
   readonly turnAnchors?: ReadonlyMap<number, { readonly id: string; readonly at: number; readonly seq: number; readonly key: string | null }>
   /** Stable source step key mapped to this detached renderer's coordinates. */
   readonly stepAnchors?: ReadonlyMap<string, { readonly turn: number; readonly step: number }>
+  /** Optional attachment conversion that must not delay transcript paging. */
+  readonly resourceEnrichment?: Promise<RenderedHistoryPage>
 }
 
 /** Native Codex message ids carry their stable turn identity in part 2. */
@@ -116,6 +114,7 @@ export interface CanonicalOutlinePageValue extends CanonicalOutlineValue {
 }
 export interface SourceWindowPage {
   readonly records: readonly SessionHistoryRecord[]
+  readonly frames: SourceFrame[]
   readonly hasMoreBefore: boolean
   readonly hasMoreAfter: boolean
   readonly before: SourcePosition | null
@@ -123,6 +122,53 @@ export interface SourceWindowPage {
   readonly epoch?: number
   readonly beforeMessageId?: string
   readonly afterMessageId?: string
+  /** Internal background update; removed before the RPC response is serialized. */
+  readonly resourceEnrichment?: Promise<SourceFrame[]>
+}
+type CachedSourcePage = Omit<SourceWindowPage, 'resourceEnrichment'>
+type SourcePageCacheEntry = { owner: string; source: string; value: CachedSourcePage; bytes: number }
+
+/** HAPI-shaped bounded LRU for already projected history pages. */
+export class SourceHistoryPageCache {
+  private readonly entries = new Map<string, SourcePageCacheEntry>()
+  private readonly sourceBytes = new Map<string, number>()
+  private total = 0
+  constructor(private readonly limits = { totalBytes: 32 * 1024 * 1024, sourceBytes: 8 * 1024 * 1024, sources: 8 }) {}
+  get bytes(): number { return this.total }
+  private id(owner: string, key: string): string { return JSON.stringify([owner, key]) }
+  get(owner: string, key: string): CachedSourcePage | undefined {
+    const id = this.id(owner, key), entry = this.entries.get(id)
+    if (!entry) return undefined
+    this.entries.delete(id); this.entries.set(id, entry)
+    return entry.value
+  }
+  set(owner: string, source: string, key: string, value: CachedSourcePage): void {
+    const id = this.id(owner, key), previous = this.entries.get(id)
+    if (previous) this.remove(id)
+    const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength
+    if (bytes > this.limits.sourceBytes) return
+    this.entries.set(id, { owner, source, value, bytes }); this.total += bytes
+    this.sourceBytes.set(source, (this.sourceBytes.get(source) ?? 0) + bytes)
+    this.trim()
+  }
+  removeOwner(owner: string): void { for (const [id, entry] of this.entries) if (entry.owner === owner) this.remove(id) }
+  clear(): void { this.entries.clear(); this.sourceBytes.clear(); this.total = 0 }
+  private remove(id: string): void {
+    const entry = this.entries.get(id)
+    if (!entry) return
+    this.entries.delete(id); this.total -= entry.bytes
+    const remaining = (this.sourceBytes.get(entry.source) ?? 0) - entry.bytes
+    if (remaining <= 0) this.sourceBytes.delete(entry.source)
+    else this.sourceBytes.set(entry.source, remaining)
+  }
+  private trim(): void {
+    while (this.total > this.limits.totalBytes || [...this.sourceBytes.values()].some(size => size > this.limits.sourceBytes)
+      || this.sourceBytes.size > this.limits.sources) {
+      const oldest = this.entries.keys().next().value as string | undefined
+      if (oldest === undefined) break
+      this.remove(oldest)
+    }
+  }
 }
 interface SourceCursorPage {
   readonly messages: readonly HapiMessage[]
@@ -140,7 +186,12 @@ export interface HistoryWindowAgent {
   readonly id: SessionId
   readonly binding: { readonly hapiSessionId: string }
   historyWindowAnchor(): HistoryWindowAnchor | undefined
+  /** Source identities already projected into the live seed, without I/O. */
+  historyTurnAnchors?(): RenderedHistoryPage['turnAnchors']
+  sourceFrameBaseline?(): SourceFrameBatch
+  sourceHistoryVersion?(): number
   renderHistoryPage(rows: readonly HapiMessage[]): Promise<RenderedHistoryPage>
+  publishHistoryPageEnrichment?(frames: readonly SourceFrame[]): void
 }
 
 export class SourceHistoryWindowError extends Error {
@@ -175,140 +226,20 @@ export function uniqueSourceRows(rows: readonly HapiMessage[]): HapiMessage[] {
   return [...byKey.values()].sort(compareNativeMessages)
 }
 
-function pluginSurfaceSeq(type: string): boolean {
-  return type === 'plugin:hapi-dsh/native-item' || type === 'plugin:hapi-dsh/notify-summary'
-    || type === 'plugin:hapi-dsh/codex-review' || type === 'plugin:hapi-dsh/generated-media'
-    || type === 'plugin:hapi-dsh-observed/item'
-}
-
-/** Translate one durable display event into the virtual journal coordinates. */
-export function wireEvent(event: SessionEvent, offset = DISPLAY_SEQ_OFFSET): SessionWireEvent {
-  const data = event.data as Record<string, unknown> | null
-  let nextData = data
-  if (data && pluginSurfaceSeq(event.type) && typeof data.surfaceSeq === 'number') {
-    nextData = { ...data, surfaceSeq: data.surfaceSeq + offset }
-  }
-  const sourceEventSeqs = event.sourceEventSeqs?.map(seq => seq + offset)
-  const surfaceOp = typeof event.surfaceOp === 'object' && event.surfaceOp !== null
-    ? { ...event.surfaceOp, startSeq: event.surfaceOp.startSeq + offset, endSeq: event.surfaceOp.endSeq + offset }
-    : event.surfaceOp
-  return {
-    type: event.type, seq: event.seq + offset, time: event.time, data: nextData as never,
-    ...(event.ignorable === true ? { ignorable: true as const } : {}),
-    ...(sourceEventSeqs === undefined ? {} : { sourceEventSeqs }),
-    ...(surfaceOp === undefined ? {} : { surfaceOp }),
-  }
-}
-
-/** Apply the virtual sequence range to a rendered detached history page. */
-export function wireRenderedEvent(event: SessionEvent, localSeq: number, start: number): SessionWireEvent {
-  const shifted = { ...event, seq: localSeq }
-  return wireEvent(shifted as SessionEvent, start)
-}
-
-function shiftTurnValue(value: unknown, delta: number): Record<string, unknown> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const recordValue = value as Record<string, unknown>
-  let next: Record<string, unknown> | undefined
-  for (const key of ['turn', 'displayTurn']) {
-    if (typeof recordValue[key] === 'number') {
-      next ??= { ...recordValue }
-      next[key] = (recordValue[key] as number) + delta
-    }
-  }
-  return next
-}
-
-/** History pages render from 1; move their turn coordinates under the live seed. */
-export function shiftEventTurns(event: SessionEvent, delta: number): SessionEvent {
-  if (delta === 0) return event
-  const data = event.data as Record<string, unknown> | null
-  const shifted = shiftTurnValue(data, delta)
-  return shifted ? { ...event, data: shifted as never } : event
-}
-
-export function wireRecord(event: SessionEvent, localSeq: number, start: number): SessionHistoryRecord {
-  return { type: 'event', event: wireRenderedEvent(event, localSeq, start) }
-}
-
-function wireAssistantStream(frame: NonNullable<Extract<SessionFollowFrame, { type: 'snapshot' }>['assistantStream']>, offset: number): NonNullable<Extract<SessionFollowFrame, { type: 'snapshot' }>['assistantStream']> {
-  const attempt = frame.activeAttempt
-  return {
-    ...frame,
-    ...(attempt === undefined ? {} : { activeAttempt: {
-      ...attempt,
-      startedAfterSeq: (attempt.startedAfterSeq === -1 ? -1 : attempt.startedAfterSeq + offset) as typeof attempt.startedAfterSeq,
-    } }),
-  }
-}
-
-export function translateProjectionValues(values: SessionProjectionValues, offset = DISPLAY_SEQ_OFFSET): SessionProjectionValues {
-  const outline = values.turnOutline
-  if (!Array.isArray(outline)) return values
-  return { ...values, turnOutline: outline.map(entry => entry && typeof entry === 'object' && typeof (entry as { seq?: unknown }).seq === 'number'
-    ? { ...entry, seq: (entry as { seq: number }).seq + offset } : entry) } as unknown as SessionProjectionValues
-}
-
-export function translateProjectionBaseline(baseline: SessionProjectionBaseline, offset = DISPLAY_SEQ_OFFSET): SessionProjectionBaseline {
-  return { asOfSeq: baseline.asOfSeq < 0 ? -1 : baseline.asOfSeq + offset, values: translateProjectionValues(baseline.values, offset) }
-}
-
-export function translateFollowFrame(frame: SessionFollowFrame, offset = DISPLAY_SEQ_OFFSET): SessionFollowFrame {
-  if (frame.type === 'snapshot') return {
-    ...frame,
-    cursor: frame.cursor + offset,
-    records: frame.records.map(entry => ({ type: 'event', event: wireEvent(entry.event as unknown as SessionEvent, offset) })),
-    projections: translateProjectionBaseline(frame.projections, offset),
-    ...(frame.assistantStream === undefined ? {} : { assistantStream: wireAssistantStream(frame.assistantStream, offset) }),
-  }
-  if (frame.type === 'event') return { type: 'event', event: wireEvent(frame.event as unknown as SessionEvent, offset) }
-  const assistant = frame.frame
-  if (assistant.type !== 'start' && assistant.type !== 'chunk') {
-    if (assistant.type === 'end' && assistant.outcome.kind === 'committed') {
-      return { ...frame, frame: { ...assistant, outcome: { ...assistant.outcome, seq: assistant.outcome.seq + offset } } }
-    }
-    return frame
-  }
-  if (assistant.type === 'start') return { ...frame, frame: { ...assistant,
-    startedAfterSeq: (assistant.startedAfterSeq === -1 ? -1 : assistant.startedAfterSeq + offset) as typeof assistant.startedAfterSeq } }
-  return frame
-}
-
-interface Descriptor {
-  readonly end: number
-  before: SourcePosition
-  turnTop: number
-  hasOlder: boolean
-  epoch?: number
-  records?: { readonly rows: readonly SessionHistoryRecord[]; readonly bytes: number; readonly sources: ReadonlyMap<string, number>;
-    readonly rewinds: ReadonlyMap<number, string>; readonly forks: ReadonlyMap<string, NativeForkBoundary> }
-}
-
-const MAX_FETCH_PAGES = 80
-const MAX_PAGE_ROWS = 400
-const MAX_GIANT_ROWS = 2_000
-const PAGE_CACHE_BYTES = 8 * 1024 * 1024
 const MAX_SOURCE_MAPPINGS = 20_000
-const MAX_DESCRIPTORS = 4_096
 
 export class SourceHistoryWindow {
-  private readonly descriptors = new Map<number, Descriptor>()
-  private readonly cache = new Map<number, Descriptor & { records: NonNullable<Descriptor['records']> }>()
-  private readonly sourceSeq = new Map<number, string>()
-  private readonly sourceVSeq = new Map<string, number>()
-  private readonly rewindsBySeq = new Map<number, string>()
+  private readonly rewindsByMessageId = new Map<string, string>()
   private readonly forksByMessageId = new Map<string, NativeForkBoundary>()
-  private readonly sourceSteps = new Map<string, number>()
   private readonly cursorAnchors = new Map<string, { id: string; at: number; seq: number }>()
   private snapshotEpoch: number | undefined
-  private nextSourceStep = SOURCE_WINDOW_STEP_BASE
-  private byteTotal = 0
-  private work: Promise<unknown> = Promise.resolve()
   private anchor: HistoryWindowAnchor | undefined
   private disposed = false
   /** Bounded grants for image refs this window actually served. */
-  readonly attachments: SourceWindowAttachments
-  private oldestKey = DISPLAY_SEQ_OFFSET
+  private attachmentIndex: SourceWindowAttachments
+  private historyVersion: number | undefined
+  private readonly pageCache: SourceHistoryPageCache
+  get attachments(): SourceWindowAttachments { this.syncHistoryVersion(); return this.attachmentIndex }
 
   private outlineRead: Promise<CanonicalOutlineValue | undefined> | undefined
   private outlineValue: CanonicalOutlineValue | undefined
@@ -327,12 +258,14 @@ export class SourceHistoryWindow {
   private outlinePageCount = 0
   constructor(
     readonly agent: HistoryWindowAgent,
-    private readonly transport: HapiTransport,
-    private readonly budget?: { added(window: SourceHistoryWindow, bytes: number): void; removed(window: SourceHistoryWindow, bytes: number): void },
+    _transport: HapiTransport,
+    _budget?: undefined,
     private readonly readOutline?: SourceOutlineReader,
     private readonly readContext?: SourceContextReader,
+    pageCache = new SourceHistoryPageCache(),
   ) {
-    this.attachments = new SourceWindowAttachments(agent.id, agent.binding.hapiSessionId)
+    this.pageCache = pageCache
+    this.attachmentIndex = new SourceWindowAttachments(agent.id, agent.binding.hapiSessionId)
     this.refreshAnchor()
   }
 
@@ -349,6 +282,7 @@ export class SourceHistoryWindow {
     if (!anchor?.oldest || !this.readOutline) { this.outlineValue = undefined; return undefined }
     if (this.outlineRead) return this.outlineRead
     if (this.outlineComplete && Date.now() - this.outlineAt < 5_000) return this.outlineValue
+    const historyVersion = this.syncHistoryVersion()
     const read = (async () => {
       // Compatibility entry point: a fresh full scan, one bounded page at a
       // time. Callers that need progressive availability use outlinePage().
@@ -358,6 +292,7 @@ export class SourceHistoryWindow {
       while (pages++ < 80) {
         last = await this.outlinePage({ limit: 100 })
         if (!last) return undefined
+        this.assertHistoryVersion(historyVersion)
         if (this.outlineComplete || this.outlineIndexing || this.outlineUnreadable || !last.hasMore) break
       }
       // A provisional reply is returned but not published; the caller can see
@@ -415,8 +350,10 @@ export class SourceHistoryWindow {
     if (explicitCursor) { request.beforeAt = explicitCursor.at; request.beforeSeq = explicitCursor.seq }
     const requestEpoch = query.epoch ?? this.outlineEpoch
     if (requestEpoch !== undefined) request.epoch = requestEpoch
+    const historyVersion = this.syncHistoryVersion()
     const value = await this.readOutline(request)
     if (this.disposed) return undefined
+    this.assertHistoryVersion(historyVersion)
     this.observeSnapshotEpoch(value.page.epoch)
     if (value.page.reset || this.outlineEpoch !== undefined && value.page.epoch !== this.outlineEpoch) {
       this.invalidateSnapshot(this.outlineEpoch ?? value.page.epoch)
@@ -487,107 +424,44 @@ export class SourceHistoryWindow {
     return { ...value, cursor: this.outlineCursor, hasMore, pageSize: this.outlinePageCount }
   }
 
-  private canonicalTurn(at: number, seq: number, key?: string | null): number | undefined {
-    const outline = this.outlineValue
-    if (!outline) return undefined
-    // A native turn's first body row may precede its directory label. Its stable
-    // identity still names that turn; position alone would select the prior one.
-    if (key != null) {
-      const entry = outline.entries.find(row => outlineTurnKey(row.messageId) === key)
-      if (entry) return entry.turn
+  /** Pure source frames are independent of directory and display coordinates. */
+  private sourcePage(rendered: RenderedHistoryPage, rows: readonly HapiMessage[], epoch: number | undefined): Pick<SourceWindowPage, 'records' | 'frames'> {
+    if (!rendered.eventSources) throw new SourceHistoryWindowError('Source projection omitted event origins')
+    this.observeSnapshotEpoch(epoch)
+    const frames = toSourceFrames({ ...rendered, eventSources: rendered.eventSources })
+    if (epoch !== undefined) for (const row of rows) this.rememberCursor(sourcePosition(row), row, epoch)
+    for (const [messageId, boundary] of rendered.forks) this.forksByMessageId.set(messageId, boundary)
+    for (const event of rendered.events) {
+      const localId = rendered.rewinds.get(event.seq)
+      if (localId && event.type === 'user/message') this.rewindsByMessageId.set(event.data.id, localId)
     }
-    let found = -1
-    for (let index = 0; index < outline.entries.length; index++) {
-      const row = outline.entries[index]!
-      if (row.at < at || row.at === at && row.sourceSeq <= seq) found = index
-      else break
+    for (const mapping of [this.rewindsByMessageId, this.forksByMessageId]) {
+      while (mapping.size > MAX_SOURCE_MAPPINGS) mapping.delete(mapping.keys().next().value!)
     }
-    return found < 0 ? undefined : outline.firstTurn + found - outline.seedIndex
+    const records: SessionHistoryRecord[] = frames.map(frame => ({ type: 'event', event: frame.event as unknown as SessionWireEvent }))
+    this.attachments.grant(records, epoch ?? this.anchor?.epoch)
+    return { records: [], frames }
   }
 
-  private remapTurns(rendered: RenderedHistoryPage, start: number, rows?: readonly HapiMessage[], epoch?: number, turnDelta = 0): SessionHistoryRecord[] {
-    if (rows && epoch !== undefined) for (const row of rows) this.rememberCursor(sourcePosition(row), row, epoch)
-    const seqs = new Map(rendered.events.map((event, index) => [Number(event.seq), start + index]))
-    const byLocal = new Map<number, { messageId: string; at: number; seq: number }>()
-    if (rows) {
-      const byId = new Map(rows.map(row => [row.id, row]))
-      for (const [rowId, localSeq] of rendered.sources) {
-        const row = byId.get(rowId)
-        if (!row) continue
-        byLocal.set(localSeq, { messageId: rowId, at: row.invokedAt ?? row.createdAt, seq: row.seq ?? 0 })
-      }
-    }
-    let currentSource: { messageId: string; at: number; seq: number } | undefined
-    if (rows?.length) currentSource = { messageId: rows[0]!.id, at: rows[0]!.invokedAt ?? rows[0]!.createdAt, seq: rows[0]!.seq ?? 0 }
-    const turns = new Map<number, number>()
-    for (const [turn, anchor] of rendered.turnAnchors ?? []) {
-      const canonical = this.canonicalTurn(anchor.at, anchor.seq, anchor.key)
-      if (canonical !== undefined) turns.set(turn, canonical)
-    }
-    const steps = new Map<string, number>()
-    for (const [key, local] of rendered.stepAnchors ?? []) {
-      const step = this.sourceSteps.get(key) ?? ++this.nextSourceStep
-      this.sourceSteps.delete(key)
-      this.sourceSteps.set(key, step)
-      steps.set(`${local.turn}:${local.step}`, step)
-    }
-    for (const [rowId, local] of rendered.sources) {
-      const virtual = seqs.get(local)
-      if (virtual === undefined) continue
-      const previous = this.sourceSeq.get(virtual)
-      if (previous !== undefined && previous !== rowId && this.sourceVSeq.get(previous) === virtual) this.sourceVSeq.delete(previous)
-      this.sourceSeq.set(virtual, rowId)
-      this.sourceVSeq.set(rowId, virtual)
-    }
-    for (const [local, localId] of rendered.rewinds) {
-      const virtual = seqs.get(local)
-      if (virtual !== undefined) this.rewindsBySeq.set(virtual, localId)
-    }
-    for (const [messageId, boundary] of rendered.forks) this.forksByMessageId.set(messageId, boundary)
-    this.trimMappings()
-    const records = rendered.events.map((event, index) => {
-      const localSeq = rendered.events[index]!.seq
-      const source = byLocal.get(localSeq) ?? currentSource
-      if (source) currentSource = source
-      const data = event.data as Record<string, unknown> | null
-      let next = event
-      if (data) {
-        let changed: Record<string, unknown> | undefined
-        for (const key of ['turn', 'displayTurn'] as const) {
-          const value = data[key]
-          if (typeof value === 'number' && (turns.has(value) || turnDelta !== 0)) {
-            changed ??= { ...data }
-            changed[key] = turns.get(value) ?? value + turnDelta
-          }
-        }
-        for (const [turnKey, stepKey] of [['turn', 'step'], ['displayTurn', 'displayStep']] as const) {
-          if (typeof data[turnKey] !== 'number' || typeof data[stepKey] !== 'number') continue
-          const step = steps.get(`${data[turnKey]}:${data[stepKey]}`)
-          if (step === undefined) continue
-          changed ??= { ...data }
-          changed[stepKey] = step
-        }
-        if (changed) next = { ...event, data: changed as never }
-      }
-      const nextData = next.data as Record<string, unknown> | null
-      const sourceEventSeqs = next.sourceEventSeqs?.map(seq => seqs.get(seq) ?? seq)
-      const surfaceOp = typeof next.surfaceOp === 'object' && next.surfaceOp !== null
-        ? { ...next.surfaceOp, startSeq: seqs.get(next.surfaceOp.startSeq) ?? next.surfaceOp.startSeq,
-          endSeq: seqs.get(next.surfaceOp.endSeq) ?? next.surfaceOp.endSeq }
-        : next.surfaceOp
-      return { type: 'event' as const, event: { ...next, seq: start + index,
-        ...(nextData && typeof nextData.surfaceSeq === 'number'
-          ? { data: { ...nextData, surfaceSeq: seqs.get(nextData.surfaceSeq) ?? nextData.surfaceSeq } } : {}),
-        ...(sourceEventSeqs === undefined ? {} : { sourceEventSeqs }),
-        ...(surfaceOp === undefined ? {} : { surfaceOp }),
-      } as SessionEvent,
-        ...(source ? { source: { ...source, ...(epoch === undefined ? {} : { epoch }) } } : {}) } as unknown as SessionHistoryRecord
-    })
-    // Authorization is scoped to the exact refs this display's page presents.
+  /** Keep message paging independent from optional resource bytes. */
+  private pageBody(rendered: RenderedHistoryPage, rows: readonly HapiMessage[], epoch: number | undefined,
+    historyVersion: number | undefined): Pick<SourceWindowPage, 'records' | 'frames' | 'resourceEnrichment'> {
+    const body = this.sourcePage(rendered, rows, epoch)
+    if (!rendered.resourceEnrichment) return body
+    return { ...body, resourceEnrichment: rendered.resourceEnrichment.then(enriched => {
+      this.assertHistoryVersion(historyVersion)
+      const hydrated = this.sourcePage(enriched, rows, epoch)
+      return hydrated.frames.map(frame => ({ ...frame, contentRevision: 1 }))
+    }) }
+  }
+
+  sourceFrameBaseline(): SourceFrameBatch | undefined { return this.agent.sourceFrameBaseline?.() }
+
+  grantSourceFrames(frames: readonly SourceFrame[], historyVersion?: number): void {
+    this.syncHistoryVersion(historyVersion)
     this.refreshAnchor()
-    this.observeSnapshotEpoch(epoch)
-    this.attachments.grant(records, epoch ?? this.anchor?.epoch)
-    return records
+    if (historyVersion !== undefined && this.historyVersion !== historyVersion) return
+    this.attachments.grant(frames.map(frame => ({ type: 'event', event: frame.event as unknown as SessionWireEvent })), this.epoch)
   }
 
   /** Canonical source outline for the official rail. */
@@ -600,96 +474,129 @@ export class SourceHistoryWindow {
    * transcript is read; the caller owns the returned records.
    * @param messageId - source outline/anchor message identity.
    * @param radius - HAPI context radius cap (1..99).
-   * @param startSeq - first display seq assigned to this window.
+   * @param _startSeq - ignored compatibility input; source identity owns the page.
    * @param readContext - HAPI context route.
    */
-  async windowAt(messageId: string, radius: number, startSeq: number,
+  async windowAt(messageId: string, radius: number, _startSeq: number,
     readContext: SourceContextReader = this.readContext!,
   ): Promise<SourceWindowPage> {
     this.assertLive()
-    // Turn mapping uses whatever pages are published; a direct window read
-    // primes at most one page instead of waiting for a full directory scan.
-    await this.primeOutlineForMapping()
-    this.assertLive()
+    const historyVersion = this.syncHistoryVersion()
     const context = await readContext(messageId, Math.max(1, Math.min(99, radius)))
-    this.assertLive()
+    this.assertHistoryVersion(historyVersion)
     this.observeSnapshotEpoch(context.page.epoch)
     if (context.page.reset) {
       this.invalidateSnapshot(context.page.epoch)
       throw new SourceHistoryWindowError('The source context changed while reading; retry the message')
     }
     const rows = uniqueSourceRows(context.messages)
-    if (!rows.length) return { records: [], hasMoreBefore: false, hasMoreAfter: false, before: context.page.beforeCursor, after: context.page.afterCursor, epoch: context.page.epoch }
+    if (!rows.length) return { records: [], frames: [], hasMoreBefore: false, hasMoreAfter: false, before: context.page.beforeCursor, after: context.page.afterCursor, epoch: context.page.epoch }
     this.rememberCursor(context.page.beforeCursor, rows[0]!, context.page.epoch)
     this.rememberCursor(context.page.afterCursor, rows[rows.length - 1]!, context.page.epoch)
     const rendered = await this.agent.renderHistoryPage(rows)
-    this.assertLive()
-    return { records: this.remapTurns(rendered, startSeq, rows, context.page.epoch), hasMoreBefore: context.page.hasMoreBefore,
+    this.assertHistoryVersion(historyVersion)
+    const body = this.pageBody(rendered, rows, context.page.epoch, historyVersion)
+    return { ...body, hasMoreBefore: context.page.hasMoreBefore,
       hasMoreAfter: context.page.hasMoreAfter, before: context.page.beforeCursor, after: context.page.afterCursor, epoch: context.page.epoch,
       beforeMessageId: rows[0]!.id, afterMessageId: rows[rows.length - 1]!.id }
   }
 
   /** Older contiguous page below an existing direct window. */
-  /** One bounded page, only when a window read has no turn map at all. */
-  private async primeOutlineForMapping(): Promise<void> {
-    if (this.outlineValue || this.outlineSettled || this.disposed) return
-    try { await this.outlinePage({ limit: 100 }) } catch { /* mapping stays native */ }
-  }
-
-  async windowBefore(before: SourcePosition, endSeq: number,
+  async windowBefore(before: SourcePosition, _endSeq: number,
     readBefore: (before: SourcePosition, epoch?: number) => Promise<{ messages: readonly HapiMessage[]; hasMore: boolean; next: SourcePosition | null;
       epoch?: number; reset?: boolean }>,
     epoch?: number,
     cursorMessageId?: string,
+    signal?: AbortSignal,
+    limit?: number,
   ): Promise<SourceWindowPage> {
     this.assertLive()
-    await this.primeOutlineForMapping()
-    this.assertLive()
-    const page = await this.readCursorPage(before, epoch, readBefore, cursorMessageId)
+    signal?.throwIfAborted()
+    const historyVersion = this.syncHistoryVersion()
+    const cacheKey = this.pageCacheKey('before', before, epoch, cursorMessageId, limit, historyVersion)
+    const cached = this.pageCache.get(this.agent.binding.hapiSessionId, cacheKey)
+    if (cached) { this.grantCachedPage(cached); return cached }
+    const page = await this.readCursorPage(before, epoch, readBefore, cursorMessageId, signal)
+    this.assertHistoryVersion(historyVersion)
+    signal?.throwIfAborted()
     const rows = uniqueSourceRows(page.messages)
     if (page.next && rows.length && page.epoch !== undefined) this.rememberCursor(page.next, rows[0]!, page.epoch)
     const rendered = await this.agent.renderHistoryPage(rows)
-    this.assertLive()
-    const records = this.remapTurns(rendered, Math.max(1, endSeq - rendered.events.length), rows, page.epoch)
+    this.assertHistoryVersion(historyVersion)
+    signal?.throwIfAborted()
+    const body = this.pageBody(rendered, rows, page.epoch, historyVersion)
     // A prepended page cannot name the upper edge of the combined resident
     // interval; report that honestly instead of a cursor that cannot route.
-    return { records, hasMoreBefore: page.hasMore, hasMoreAfter: false, before: page.next, after: null,
+    const result = { ...body, hasMoreBefore: page.hasMore, hasMoreAfter: false, before: page.next, after: null,
       ...(page.epoch === undefined ? {} : { epoch: page.epoch }),
       ...(rows[0] ? { beforeMessageId: rows[0].id } : {}) }
+    this.rememberPage(cacheKey, result)
+    return result
   }
 
   /** Newer contiguous page above an existing direct window. */
-  async windowAfter(after: SourcePosition, startSeq: number,
+  async windowAfter(after: SourcePosition, _startSeq: number,
     readAfter: (after: SourcePosition, epoch?: number) => Promise<{ messages: readonly HapiMessage[]; hasMore: boolean; next: SourcePosition | null;
       epoch?: number; reset?: boolean }>,
     epoch?: number,
     cursorMessageId?: string,
+    signal?: AbortSignal,
+    limit?: number,
   ): Promise<SourceWindowPage> {
     this.assertLive()
-    this.assertLive()
-    const page = await this.readCursorPage(after, epoch, readAfter, cursorMessageId)
+    signal?.throwIfAborted()
+    const historyVersion = this.syncHistoryVersion()
+    const cacheKey = this.pageCacheKey('after', after, epoch, cursorMessageId, limit, historyVersion)
+    const cached = this.pageCache.get(this.agent.binding.hapiSessionId, cacheKey)
+    if (cached) { this.grantCachedPage(cached); return cached }
+    const page = await this.readCursorPage(after, epoch, readAfter, cursorMessageId, signal)
+    this.assertHistoryVersion(historyVersion)
+    signal?.throwIfAborted()
     const rows = uniqueSourceRows(page.messages)
     if (page.next && rows.length && page.epoch !== undefined) this.rememberCursor(page.next, rows[rows.length - 1]!, page.epoch)
     const rendered = await this.agent.renderHistoryPage(rows)
-    this.assertLive()
-    return { records: this.remapTurns(rendered, startSeq, rows, page.epoch), hasMoreBefore: true, hasMoreAfter: page.hasMore,
+    this.assertHistoryVersion(historyVersion)
+    signal?.throwIfAborted()
+    const body = this.pageBody(rendered, rows, page.epoch, historyVersion)
+    const result = { ...body, hasMoreBefore: true, hasMoreAfter: page.hasMore,
       before: null, after: page.next, ...(page.epoch === undefined ? {} : { epoch: page.epoch }),
       ...(rows.length ? { afterMessageId: rows[rows.length - 1]!.id } : {}) }
+    this.rememberPage(cacheKey, result)
+    return result
   }
 
   /** Older page below the seed's oldest resident source row. */
   async windowOldest(endSeq: number,
     readBefore: (before: SourcePosition, epoch?: number) => Promise<{ messages: readonly HapiMessage[]; hasMore: boolean; next: SourcePosition | null;
       epoch?: number; reset?: boolean }>,
+    signal?: AbortSignal, limit?: number,
   ): Promise<SourceWindowPage> {
+    signal?.throwIfAborted()
     this.refreshAnchor()
     // The tail reader's authoritative `before` cursor is always a valid HAPI
     // position. A viewport row may have no source seq (compaction/system rows),
     // so never pass a synthetic zero to the strict before route.
     const before = this.anchor?.before ?? this.anchor?.oldest
-    if (!before) return { records: [], hasMoreBefore: false, hasMoreAfter: true, before: null, after: null }
+    if (!before) return { records: [], frames: [], hasMoreBefore: false, hasMoreAfter: true, before: null, after: null }
     if (this.anchor?.oldest) this.rememberCursor(before, this.anchor.oldest, this.anchor.epoch)
-    return this.windowBefore({ at: before.at, seq: before.seq }, endSeq, readBefore, this.anchor?.epoch)
+    return this.windowBefore({ at: before.at, seq: before.seq }, endSeq, readBefore, this.anchor?.epoch, undefined, signal, limit)
+  }
+
+  private pageCacheKey(direction: 'before' | 'after', cursor: SourcePosition, epoch: number | undefined,
+    cursorMessageId: string | undefined, limit: number | undefined, historyVersion: number | undefined): string {
+    return JSON.stringify([direction, this.agent.binding.hapiSessionId, epoch ?? this.anchor?.epoch,
+      historyVersion, cursor.at, cursor.seq, cursorMessageId, limit ?? null])
+  }
+
+  private rememberPage(key: string, page: SourceWindowPage): void {
+    const { resourceEnrichment: _resourceEnrichment, ...cached } = page
+    this.pageCache.set(this.agent.binding.hapiSessionId, this.agent.binding.hapiSessionId, key, cached)
+  }
+
+  private grantCachedPage(page: CachedSourcePage): void {
+    const epoch = page.epoch ?? this.anchor?.epoch
+    this.attachments.grant(page.frames.map(frame => ({ type: 'event' as const,
+      event: frame.event as unknown as SessionWireEvent })), epoch)
   }
 
   private rememberCursor(cursor: SourcePosition, row: HapiMessage | NonNullable<HistoryWindowAnchor['oldest']>, epoch: number): void {
@@ -707,9 +614,11 @@ export class SourceHistoryWindow {
     // source identity. A late older response cannot restore revoked grants.
     if (previous !== undefined && epoch <= previous) return
     if (previous !== undefined) {
+      this.pageCache.removeOwner(this.agent.binding.hapiSessionId)
       this.attachments.clear('source-snapshot-changed')
-      this.trimTo(0)
       this.outlineAt = 0
+      this.rewindsByMessageId.clear()
+      this.forksByMessageId.clear()
     }
     this.snapshotEpoch = epoch
   }
@@ -721,16 +630,18 @@ export class SourceHistoryWindow {
   /** A reset invalidates a cursor snapshot, not the native execution owner.
    * Reuse it only after its stable source row proves the coordinates survived. */
   private async readCursorPage(position: SourcePosition, epoch: number | undefined,
-    read: (position: SourcePosition, epoch?: number) => Promise<SourceCursorPage>, cursorMessageId?: string): Promise<SourceCursorPage> {
+    read: (position: SourcePosition, epoch?: number, signal?: AbortSignal) => Promise<SourceCursorPage>,
+    cursorMessageId?: string, signal?: AbortSignal): Promise<SourceCursorPage> {
     const expected = epoch ?? this.anchor?.epoch
-    let page = await read(position, expected)
+    signal?.throwIfAborted()
+    let page = await read(position, expected, signal)
+    signal?.throwIfAborted()
     this.assertLive()
     this.observeSnapshotEpoch(page.epoch)
     const changed = (value: SourceCursorPage, expectedEpoch: number | undefined): boolean => value.reset === true
       || value.epoch !== undefined && expectedEpoch !== undefined && value.epoch !== expectedEpoch
     if (!changed(page, expected)) return page
     this.invalidateSnapshot(expected)
-    this.trimTo(0)
     const anchor = this.cursorAnchors.get(`${expected}:${position.at}:${position.seq}`)
       ?? (cursorMessageId ? { id: cursorMessageId, ...position } : undefined)
     if (!anchor || !this.readContext) {
@@ -745,7 +656,8 @@ export class SourceHistoryWindow {
     }
     // Exactly one recovery attempt. Never append a response that was obtained
     // using coordinates invalidated again during this bounded read.
-    page = await read(position, context.page.epoch)
+    page = await read(position, context.page.epoch, signal)
+    signal?.throwIfAborted()
     this.assertLive()
     this.observeSnapshotEpoch(page.epoch)
     if (changed(page, context.page.epoch)) {
@@ -756,35 +668,22 @@ export class SourceHistoryWindow {
     return page
   }
 
-  get cacheBytes(): number { return this.byteTotal }
-  /** Grant metadata only; image bytes remain owned by the official store. */
+  /** Bytes retained by the shared bounded source-page cache. */
+  get cacheBytes(): number { return this.pageCache.bytes }
   get attachmentBytes(): number { return this.attachments.bytes }
-  get retainedBytes(): number { return this.byteTotal + this.attachments.bytes }
+  get retainedBytes(): number { return this.attachments.bytes }
   get epoch(): number | undefined { this.refreshAnchor(); return this.snapshotEpoch ?? this.anchor?.epoch }
-  get mappingCount(): number { return this.sourceSeq.size + this.sourceVSeq.size + this.forksByMessageId.size + this.rewindsBySeq.size + this.sourceSteps.size }
+  get mappingCount(): number { return this.rewindsByMessageId.size + this.forksByMessageId.size }
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.attachments.dispose('window-disposed')
-    this.cache.clear(); this.descriptors.clear(); this.sourceSeq.clear(); this.sourceVSeq.clear()
-    this.rewindsBySeq.clear(); this.forksByMessageId.clear()
-    this.sourceSteps.clear()
+    this.rewindsByMessageId.clear(); this.forksByMessageId.clear()
     this.cursorAnchors.clear()
+    this.resetOutlineAccumulator()
     this.outlineRead = undefined
     this.outlineValue = undefined
     this.outlineAt = 0
-    this.byteTotal = 0
-  }
-  /** Remove oldest cached page bodies first; descriptors and tiny maps remain. */
-  trimTo(bytes: number): void {
-    let removed = 0
-    while (this.byteTotal > bytes && this.cache.size > 0) {
-      const oldest = this.cache.keys().next().value as number
-      const page = this.cache.get(oldest)
-      if (!page) break
-      this.cache.delete(oldest); this.byteTotal -= page.records.bytes; removed += page.records.bytes
-    }
-    if (removed) this.budget?.removed(this, removed)
   }
 
   private assertLive(signal?: AbortSignal): void {
@@ -792,19 +691,34 @@ export class SourceHistoryWindow {
     if (this.disposed) throw new SourceHistoryWindowError('The source history window was released')
   }
 
-  private refreshAnchor(): void {
-    if (this.anchor) {
-      this.observeSnapshotEpoch(this.agent.historyWindowAnchor()?.epoch)
-      return
+  private syncHistoryVersion(version = this.agent.sourceHistoryVersion?.()): number | undefined {
+    if (version === undefined || this.historyVersion !== undefined && version <= this.historyVersion) return this.historyVersion
+    if (this.historyVersion !== undefined) {
+      this.pageCache.removeOwner(this.agent.binding.hapiSessionId)
+      // A rewrite can keep the HAPI epoch. Retire the old grant owner so an
+      // in-flight byte read cannot survive while fresh content can be granted.
+      this.attachmentIndex.dispose('source-history-rewritten')
+      this.attachmentIndex = new SourceWindowAttachments(this.agent.id, this.agent.binding.hapiSessionId)
+      this.rewindsByMessageId.clear(); this.forksByMessageId.clear(); this.cursorAnchors.clear()
+      this.resetOutlineAccumulator(); this.outlineValue = undefined; this.outlineAt = 0; this.outlineRead = undefined
     }
+    this.historyVersion = version
+    return version
+  }
+
+  private assertHistoryVersion(version: number | undefined): void {
+    this.assertLive()
+    if (this.syncHistoryVersion() !== version) throw new SourceHistoryWindowError('The source history changed while reading; retry the page')
+  }
+
+  private refreshAnchor(): void {
+    this.syncHistoryVersion()
     const anchor = this.agent.historyWindowAnchor()
     if (!anchor) return
-    this.anchor = anchor
+    if (this.anchor?.epoch === anchor.epoch && this.anchor.oldest?.id === anchor.oldest?.id) return
     this.observeSnapshotEpoch(anchor.epoch)
+    this.anchor = anchor
     if (anchor.oldest) this.rememberCursor(anchor.before, anchor.oldest, anchor.epoch)
-    if (!this.descriptors.has(DISPLAY_SEQ_OFFSET)) this.descriptors.set(DISPLAY_SEQ_OFFSET, {
-      end: DISPLAY_SEQ_OFFSET, before: anchor.before, turnTop: anchor.firstTurn - 1, hasOlder: anchor.hasOlder, epoch: anchor.epoch,
-    })
   }
 
   get offset(): number { return DISPLAY_SEQ_OFFSET }
@@ -812,162 +726,9 @@ export class SourceHistoryWindow {
   hasOlder(): boolean { this.refreshAnchor(); return this.anchor?.hasOlder === true }
   get oldest(): HistoryWindowAnchor['oldest'] { this.refreshAnchor(); return this.anchor?.oldest }
   get partial(): boolean { this.refreshAnchor(); return this.anchor?.partial === true }
-  sourceMessageAtVirtualSeq(seq: number): string | undefined { return this.sourceSeq.get(seq) }
-  virtualSeqForSourceMessage(id: string): number | undefined { return this.sourceVSeq.get(id) }
+  resolveRewindMessage(messageId: string): string | undefined { this.syncHistoryVersion(); return this.rewindsByMessageId.get(messageId) }
+  resolveFork(messageId: string): NativeForkBoundary | undefined { this.syncHistoryVersion(); return this.forksByMessageId.get(messageId) }
 
-  /** Resolve a virtual display seq back through the loaded history window. */
-  resolveRewind(seq: number): string | undefined { return this.rewindsBySeq.get(seq) }
-  resolveFork(messageId: string): NativeForkBoundary | undefined { return this.forksByMessageId.get(messageId) }
-
-  /** Read a page in virtual coordinates, or delegate a live-seed page. */
-  async page(request: SessionPageRequest, signal: AbortSignal | undefined,
-    ordinaryPage: (request: SessionPageRequest) => Promise<SessionPage>): Promise<SessionPage> {
-    this.assertLive(signal)
-    const before = request.beforeSeq ?? request.throughSeq + 1
-    if (before > DISPLAY_SEQ_OFFSET) return this.realPage(request, before, signal, ordinaryPage)
-    this.refreshAnchor()
-    if (!this.anchor) return Promise.resolve({ records: [], hasMore: false })
-    return this.enqueue(() => this.historyPage(before, signal))
-  }
-
-  private enqueue<T>(work: () => Promise<T>): Promise<T> {
-    const task = this.work.then(work, work)
-    this.work = task.catch(() => {})
-    return task
-  }
-
-  private async realPage(request: SessionPageRequest, before: number, signal: AbortSignal | undefined,
-    ordinaryPage: (request: SessionPageRequest) => Promise<SessionPage>): Promise<SessionPage> {
-    const realBefore = before - DISPLAY_SEQ_OFFSET
-    const page = await ordinaryPage({ ...request,
-      throughSeq: Math.max(0, request.throughSeq - DISPLAY_SEQ_OFFSET),
-      ...(request.beforeSeq === undefined ? {} : { beforeSeq: Math.max(0, realBefore) }) })
-    this.assertLive(signal)
-    const records: SessionHistoryRecord[] = page.records.map(entry => ({
-      type: 'event', event: wireEvent(entry.event as unknown as SessionEvent),
-    }))
-    const first = records[0]?.event.seq
-    return { records, hasMore: page.hasMore || first === DISPLAY_SEQ_OFFSET && this.hasOlder() }
-  }
-
-  private async historyPage(end: number, signal?: AbortSignal): Promise<SessionPage> {
-    this.assertLive(signal)
-    const cached = this.cache.get(end)
-    if (cached) {
-      this.cache.delete(end); this.cache.set(end, cached)
-      // A cached body may outlive a metadata trim; re-assert only its refs.
-      this.attachments.grant(cached.records.rows, cached.epoch)
-      return { records: cached.records.rows, hasMore: cached.hasOlder }
-    }
-    const descriptor = this.descriptors.get(end)
-    if (!descriptor) throw new SourceHistoryWindowError('The source history window has no cursor for this page; reopen the conversation')
-    if (!descriptor.hasOlder) return { records: [], hasMore: false }
-    const fetched = await this.fetchOlder(descriptor.before, descriptor.epoch, signal)
-    this.assertLive(signal)
-    if (!fetched.rows.length) { descriptor.hasOlder = false; return { records: [], hasMore: false } }
-    const rendered = await this.agent.renderHistoryPage(fetched.rows)
-    this.assertLive(signal)
-    const delta = descriptor.turnTop - rendered.lastTurn
-    const start = end - rendered.events.length
-    if (start < 1) throw new SourceHistoryWindowError('The source history page exceeds the display journal range')
-    const rows = this.remapTurns(rendered, start, fetched.rows, fetched.epoch, delta)
-    const bytes = rows.reduce((total, entry) => total + Buffer.byteLength(JSON.stringify(entry), 'utf8'), 0)
-    const next: Descriptor = {
-      end: start, before: fetched.nextBefore, turnTop: descriptor.turnTop - rendered.lastTurn,
-      hasOlder: fetched.hasOlder,
-      ...(fetched.epoch === undefined ? {} : { epoch: fetched.epoch }),
-    }
-    this.descriptors.set(start, next)
-    this.oldestKey = Math.min(this.oldestKey, start)
-    while (this.descriptors.size > MAX_DESCRIPTORS) {
-      const oldest = this.descriptors.keys().next().value as number | undefined
-      if (oldest === undefined || oldest === DISPLAY_SEQ_OFFSET) break
-      this.descriptors.delete(oldest)
-    }
-    const page = { ...next, records: { rows, bytes, sources: rendered.sources, rewinds: rendered.rewinds, forks: rendered.forks } }
-    // A single page larger than the per-window budget is served once but never
-    // retained; the retained cache therefore has a hard ceiling.
-    if (bytes <= PAGE_CACHE_BYTES) {
-      this.cache.set(end, page)
-      this.byteTotal += bytes
-      this.budget?.added(this, bytes)
-      this.trimTo(PAGE_CACHE_BYTES)
-    }
-    return { records: rows, hasMore: next.hasOlder }
-  }
-
-  private trimMappings(): void {
-    while (this.sourceSeq.size > MAX_SOURCE_MAPPINGS) {
-      const key = this.sourceSeq.keys().next().value as number | undefined
-      if (key === undefined) break
-      this.sourceSeq.delete(key)
-    }
-    while (this.sourceVSeq.size > MAX_SOURCE_MAPPINGS) {
-      const key = this.sourceVSeq.keys().next().value as string | undefined
-      if (key === undefined) break
-      this.sourceVSeq.delete(key)
-    }
-    while (this.rewindsBySeq.size > MAX_SOURCE_MAPPINGS) {
-      const key = this.rewindsBySeq.keys().next().value as number | undefined
-      if (key === undefined) break
-      this.rewindsBySeq.delete(key)
-    }
-    while (this.forksByMessageId.size > MAX_SOURCE_MAPPINGS) {
-      const key = this.forksByMessageId.keys().next().value as string | undefined
-      if (key === undefined) break
-      this.forksByMessageId.delete(key)
-    }
-    while (this.sourceSteps.size > MAX_SOURCE_MAPPINGS) {
-      const key = this.sourceSteps.keys().next().value
-      if (key === undefined) break
-      this.sourceSteps.delete(key)
-    }
-  }
-
-  private async fetchOlder(before: SourcePosition, expectedEpoch: number | undefined, signal?: AbortSignal): Promise<{ rows: HapiMessage[]; nextBefore: SourcePosition; hasOlder: boolean; epoch?: number }> {
-    const result = await this.readCursorPage(before, expectedEpoch, async (before, epoch) => {
-      let rows: HapiMessage[] = []
-      let cursor = before
-      let exhausted = false
-      let pages = 0
-      for (; pages < MAX_FETCH_PAGES && rows.length < MAX_GIANT_ROWS; pages++) {
-        const page: HapiMessagesPage = await this.transport.readMessages(this.agent.binding.hapiSessionId, {
-          limit: 200, bounded: true, ...(epoch === undefined ? {} : { epoch }), beforeAt: cursor.at, beforeSeq: cursor.seq,
-        })
-        signal?.throwIfAborted()
-        if (page.page.reset || page.page.epoch !== epoch) {
-          return { messages: [], next: null, hasMore: false, reset: true, epoch: page.page.epoch }
-        }
-        const batch = uniqueSourceRows(page.messages)
-        if (!batch.length) { exhausted = true; break }
-        rows = [...batch, ...rows]
-        const oldest = batch[0]!
-        cursor = sourcePosition(oldest)
-        if (rows.flatMap((row, index) => isSourceTurnStart(row) ? [index] : []).length >= 2) break
-        if (!page.page.hasMore) { exhausted = true; break }
-        if (page.page.nextBeforeAt === null || page.page.nextBeforeSeq === null) { exhausted = true; break }
-      }
-      rows = uniqueSourceRows(rows)
-      // A partial oldest source turn is valid resident history: never discard
-      // rows just because their user/start already lives in the live seed. The
-      // page's first synthetic turn/start is suppressed below and its turn
-      // coordinates continue the seed turn.
-      // Cut at the oldest invoked human input so a page never splits one source
-      // turn. Two turns are preferred; one is used when the source starts there.
-      const starts = rows.flatMap((row, index) => isSourceTurnStart(row) ? [index] : [])
-      let cut = 0
-      if (starts.length >= 2) cut = starts[0]!
-      else if (starts.length === 1) cut = starts[0]!
-      // A giant single source turn is delivered as bounded partial pages. Its
-      // stable native turnId/itemId keep the display turn open across pages;
-      // no valid prefix is discarded and no hard oversized-turn error is raised.
-      const selected = rows.slice(cut)
-      const nextBefore = cut < rows.length ? sourcePosition(rows[cut]!) : cursor
-      return { messages: selected, next: nextBefore, hasMore: cut > 0 || !exhausted, ...(epoch === undefined ? {} : { epoch }) }
-    })
-    return { rows: [...result.messages], nextBefore: result.next ?? before, hasOlder: result.hasMore,
-      ...(result.epoch === undefined ? {} : { epoch: result.epoch }) }
-  }
 }
 
 /** Count imported pages only as diagnostics; no source body is retained here. */
@@ -979,20 +740,15 @@ export function historyWindowNumbers(window: SourceHistoryWindow): { bound: bool
 /** Process-wide bounded registry; display retirement drops source/agent refs. */
 export class DisplayHistoryWindows {
   private readonly windows = new Map<string, SourceHistoryWindow>()
-  private total = 0
-  constructor(private readonly globalBytes = 24 * 1024 * 1024) {}
+  private readonly pageCache = new SourceHistoryPageCache()
+
   get size(): number { return this.windows.size }
-  get bytes(): number { return this.total }
+  get bytes(): number { return this.pageCache.bytes }
   window(displayId: string, agent: HistoryWindowAgent, transport: HapiTransport, readOutline?: SourceOutlineReader, readContext?: SourceContextReader): SourceHistoryWindow {
     const existing = this.windows.get(displayId)
     if (existing && existing.agent === agent) return existing
     if (existing) this.retire(displayId)
-    let value: SourceHistoryWindow
-    const budget = {
-      added: (window: SourceHistoryWindow, bytes: number) => { this.total += bytes; this.enforce() },
-      removed: (window: SourceHistoryWindow, bytes: number) => { this.total = Math.max(0, this.total - bytes) },
-    }
-    value = new SourceHistoryWindow(agent, transport, budget, readOutline, readContext)
+    const value = new SourceHistoryWindow(agent, transport, undefined, readOutline, readContext, this.pageCache)
     this.windows.set(displayId, value)
     this.pruneWindowOrder()
     return value
@@ -1001,7 +757,6 @@ export class DisplayHistoryWindows {
   retire(displayId: string): void {
     const window = this.windows.get(displayId)
     if (!window) return
-    this.total -= window.cacheBytes
     window.dispose(); this.windows.delete(displayId)
   }
   retireSource(sourceId: string): void {
@@ -1010,17 +765,7 @@ export class DisplayHistoryWindows {
   prune(valid: (displayId: string) => boolean): void {
     for (const id of [...this.windows.keys()]) if (!valid(id)) this.retire(id)
   }
-  clear(): void { for (const id of [...this.windows.keys()]) this.retire(id); this.total = 0 }
-  private enforce(): void {
-    while (this.total > this.globalBytes) {
-      let largest: [string, SourceHistoryWindow] | undefined
-      for (const entry of this.windows) if (!largest || entry[1].cacheBytes > largest[1].cacheBytes) largest = entry
-      if (!largest || largest[1].cacheBytes === 0) break
-      const before = largest[1].cacheBytes
-      largest[1].trimTo(Math.max(0, before - Math.ceil((this.total - this.globalBytes) / Math.max(1, this.windows.size))))
-      if (largest[1].cacheBytes >= before) break
-    }
-  }
+  clear(): void { for (const id of [...this.windows.keys()]) this.retire(id); this.pageCache.clear() }
   private pruneWindowOrder(): void {
     while (this.windows.size > 12) {
       const oldest = this.windows.keys().next().value as string | undefined

@@ -17,7 +17,7 @@
 
 /** One row's position relative to the conversation scrollport. */
 export interface AnchorReading {
-    /** Stable official row identity (`[data-chat-anchor-key]`). */
+    /** Stable official row identity (`[data-chat-node-key]` or anchor key). */
     readonly key: string
     /** Row border-box top minus scrollport border-box top, in CSS pixels. */
     readonly offset: number
@@ -83,7 +83,7 @@ export function planAnchorCorrection(input: AnchorCorrectionInput): AnchorCorrec
  */
 export function readAnchor(row: Element | null, scrollport: Element | null): AnchorReading | null {
     if (row === null || scrollport === null) return null
-    const key = row.getAttribute('data-chat-anchor-key')
+    const key = row.getAttribute('data-chat-node-key') ?? row.getAttribute('data-chat-anchor-key')
     if (key === null || key === '') return null
     const rowBox = row.getBoundingClientRect()
     const portBox = scrollport.getBoundingClientRect()
@@ -105,7 +105,7 @@ export function readAnchor(row: Element | null, scrollport: Element | null): Anc
  * @returns the topmost readable anchor, or null when the view has no rows yet.
  */
 export function firstAnchor(scrollport: Element, flow: Element): AnchorReading | null {
-    const rows = flow.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')
+    const rows = flow.querySelectorAll<HTMLElement>('[data-chat-node-key], [data-chat-anchor-key]')
     for (const row of rows) {
         if (row.closest('[hidden]') !== null) continue
         const reading = readAnchor(row, scrollport)
@@ -122,9 +122,9 @@ export function firstAnchor(scrollport: Element, flow: Element): AnchorReading |
  * @returns the row's relative offset, or null when a rewind/reresync removed it.
  */
 export function findAnchor(scrollport: Element, key: string): AnchorReading | null {
-    const rows = scrollport.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')
+    const rows = scrollport.querySelectorAll<HTMLElement>('[data-chat-node-key], [data-chat-anchor-key]')
     for (const row of rows) {
-        if (row.getAttribute('data-chat-anchor-key') !== key) continue
+        if ((row.getAttribute('data-chat-node-key') ?? row.getAttribute('data-chat-anchor-key')) !== key) continue
         const reading = readAnchor(row, scrollport)
         return reading === null ? null : { key, offset: reading.offset }
     }

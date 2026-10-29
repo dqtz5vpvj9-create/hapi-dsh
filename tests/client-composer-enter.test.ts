@@ -1,4 +1,4 @@
-/** Event/attachment owners below are explicit fixtures. Real Lexical, menus and uploads are covered by Playwright. */
+/** Boundary unit tests supplement the mounted keyboard scenarios in experience/composer-keyboard.test.tsx. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { AttachmentId } from '@deepseek-ai/dsh-attachment'
@@ -42,14 +42,6 @@ test('send mode leaves the official Enter, accelerated Enter and candidate behav
     assert.equal(f.behavior.handle(event, true), false); assert.equal(event.defaultPrevented, false); assert.equal(event.stopped, false)
   }
   assert.equal(f.arbitration(), 0); assert.equal(f.sent(), 0)
-})
-
-test('admitted newline retains native beforeinput under the original editor owner', () => {
-  const f = fixture(), event = key()
-  assert.equal(f.behavior.handle(event, true), true)
-  assert.equal(event.defaultPrevented, false); assert.equal(event.stopped, true)
-  assert.equal(f.sent(), 0); assert.equal(f.arbitration(), 1)
-  assert.deepEqual(f.notices, [])
 })
 
 test('both Ctrl and Cmd submit once through the ordinary owner and never insert a line break', () => {

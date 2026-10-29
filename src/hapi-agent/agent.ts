@@ -1,5 +1,9 @@
+import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
+import { boundedProjectionRows, SOURCE_PROJECTION_MAX_EVENTS, SOURCE_PROJECTION_MAX_BYTES } from '../shared/source-projection-window.ts'
+import type { SourceFrameBatch, SourceFrame } from '../shared/source-frames.ts'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
 import { checkedQueueMessage } from '../hapi/queue-receipt.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { agentEvents, type Agent, type AgentCancelCause, type AgentEventDispatch, type AgentOptions, type AgentStatus, type Inbox, type InboxTarget } from '@deepseek-ai/dsh-agent'
@@ -13,10 +17,11 @@ import { NativeApprovals } from '../codex/approvals.js'
 import { DeliveryJournal } from '../codex/delivery.js'
 import { readNativeHistory, readNativeHistoryForward, readNativeHistorySnapshot, readNativeHistoryTail } from '../codex/history.js'
 import { NativeHistoryCache } from '../codex/history-cache.js'
-import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, sourceHistoryKey, type HistoryCheckpoint } from '../codex/history-journal.js'
+import { HistoryReadInvalidatedError, SourceHistoryJournal, SourceHistoryOrder, mergeSourceRows, sourceHistoryKey, type HistoryCheckpoint } from '../codex/history-journal.js'
 import { SourceHistorySync } from '../codex/history-sync.js'
 import { NativeHistoryChangedError } from '../codex/projector.js'
 import { NativeHistoryEpochChangedError } from '../codex/history.js'
+import { record } from '../codex/native.js'
 import { HapiRequestError, type HapiApprovalAnswer, type HapiAttachment, type HapiEvent, type HapiMessage, type HapiSession, type HapiTransport } from '../codex/contracts.js'
 import { DISPLAY_TURN_BASE, isSourceTurnStart, sourcePosition, sourceTurnKey, type HistoryWindowAnchor, type RenderedHistoryPage } from '../codex/source-window.js'
 import { compareNativeMessages } from '../codex/native.js'
@@ -103,12 +108,12 @@ export class HapiObservedAgent implements Agent {
   readonly journal: DeliveryJournal
   private source: HapiSession
   private bound: ObservedBinding
-  private currentSession: Session
+  private readonly currentSession: Session
   private readonly scope: Scope
-  private readonly projector: ObservedProjector
+  private projector: ObservedProjector
   private readonly cache: NativeHistoryCache
   private readonly content: ObservedContent
-  private readonly sourceScopes = new ObservedScopeIndex()
+  private sourceScopes = new ObservedScopeIndex()
   private readonly children: ObservedChildren
   private readonly dshChildren: SourceDshChildren
   /** Settles after child/subagent sessions have registered in the background. */
@@ -141,9 +146,14 @@ export class HapiObservedAgent implements Agent {
   private historyAnchor: HistoryWindowAnchor | undefined
   private structuralResetPending = false
   private historyFallback = false
-  private historyPageId = 0
   private historyStale = false
   private rowWork: Promise<void> = Promise.resolve()
+  private residentRows: readonly HapiMessage[] = []
+  private transientSources = new Set<string>()
+  private transientKeys = new Set<string>()
+  private readonly sourceFeed = new SourceFrameFeed(() => ({ kind: 'replace', frames: this.currentSourceFrames(), hasMoreBefore: this.projectedHasMoreBefore ?? this.historyWindowAnchor()?.hasOlder === true }))
+  private projectionEventBytes = 0
+  private projectedHasMoreBefore: boolean | undefined
   private constructor(parent: Context, readonly transport: HapiObservedTransport, source: HapiSession, private readonly config: HapiObservedOptions) {
     this.source = source; this.bound = observedBinding(transport.hubId, source)
     this.historyJournal = config.historyJournal ?? new SourceHistoryJournal()
@@ -168,13 +178,7 @@ export class HapiObservedAgent implements Agent {
       }) })
     this.dshChildren = new SourceDshChildren({ agent: this, logicalSessionId: this.logicalSessionId, displayRevision: this.displayRevision,
       source: () => this.source, isCurrent: () => !this.disposed, changed: () => this.publish(),
-      historyChanged: async () => {
-        if (this.disposed) return
-        const checkpoint = this.historyJournal.checkpoint()
-        const rows = await readNativeHistory(this.transport, this.bound.hapiSessionId)
-        if (!this.config.onHistoryChanged) throw new NativeHistoryChangedError('The original DSH child history changed; reacquire the source display')
-        await this.config.onHistoryChanged(this, this.historyJournal.merge(rows, checkpoint), checkpoint)
-      },
+      historyChanged: async () => { if (!this.disposed) await this.refresh(true) },
       state: () => ({ hubId: this.bound.hubId, hapiSessionId: this.bound.hapiSessionId, flavor: this.bound.flavor,
         machineId: this.bound.machineId, machineName: this.source.metadata?.host ?? this.bound.machineId,
         path: this.source.metadata?.path ?? '/', active: this.source.active, connection: this.connected ? 'connected' : 'disconnected',
@@ -203,10 +207,13 @@ export class HapiObservedAgent implements Agent {
     this.approvals = new NativeApprovals(directory, this.logicalSessionId, source.id, transport, () => {
       if (!this.initializing && !this.disposed) this.publish()
     })
-    this.projector = new ObservedProjector(this.session, { model: () => this.options.model ?? this.bound.flavor,
-      turnBase: DISPLAY_TURN_BASE,
+    this.projector = this.createProjector()
+  }
+  private createProjector(): ObservedProjector {
+    return ObservedProjector.history({ model: () => this.options.model ?? this.bound.flavor,
+      turnBase: DISPLAY_TURN_BASE, streamRevisionBase: this.projector?.streamRevision() ?? 0,
       submittedMessage: id => this.journal.get(id)?.message, content: item => this.content.get(item),
-      stream: frame => this.dispatch.emit('agent/assistant-stream', { frame }) })
+      stream: () => {} })
   }
   private meta() { return { cwd: sessionHeaderCwd(this.source.metadata?.path), createdAt: this.source.createdAt } }
   static async create(ctx: Context, transport: HapiObservedTransport, source: HapiSession, config: HapiObservedOptions, initialRows?: readonly HapiMessage[]): Promise<HapiObservedAgent> {
@@ -258,9 +265,7 @@ export class HapiObservedAgent implements Agent {
         agent.historyAnchor = completeObservedHistoryAnchor(rows, agent.historyEpoch ?? 0)
         agent.historyStale = false
       }
-      agent.projector.beginHistorySeed(); await agent.applyRows(rows, true, checkpoint)
-      agent.currentSession = agent.ctx.sessions.prepare(agent.id, { seed: agent.projector.historySeed(), meta: agent.meta() })
-      agent.projector.finishHistorySeed(agent.session)
+      await agent.applyRows(rows, true, checkpoint)
       agent.initializing = false; agent.observe(source)
       if (!agent.fault) await agent.journal.reconcileSource()
       agent.syncInbox(); agent.publish()
@@ -298,25 +303,87 @@ export class HapiObservedAgent implements Agent {
   requestHistorySync(): void { this.historyStale = true; this.historySync.request(true) }
   async settled(): Promise<void> { await this.historySync.settled(); await this.rowWork }
 
-  historyWindowAnchor(): HistoryWindowAnchor | undefined { return this.historyAnchor }
+  currentSourceFrames(): SourceFrame[] {
+    return [...toSourceFrames({ events: this.projector.historySeed(), eventSources: this.projector.eventSources()!,
+      turnAnchors: this.projector.turnAnchorEntries(), stepAnchors: this.projector.stepAnchorEntries() }),
+      ...this.projector.activeSourceFrames()]
+  }
+  sourceFrameBaseline(): SourceFrameBatch { return this.sourceFeed.baseline() }
+  sourceHistoryVersion(): number { return this.sourceFeed.version }
+  sourceFrames(signal: AbortSignal): AsyncIterable<SourceFrameBatch> { return this.sourceFeed.watch(signal) }
+  publishHistoryPageEnrichment(frames: readonly SourceFrame[]): void {
+    if (!this.disposed && frames.length) this.sourceFeed.publish({ kind: 'merge', frames: [...frames] })
+  }
 
-  /** Render one older source page in a detached Session; no live log changes. */
-  async renderHistoryPage(rows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
-    const detached = Session.create(SessionId(`hapi-observed-history-${this.logicalSessionId}-${++this.historyPageId}`))
-    const items = parseObservedHistory(rows, new ObservedScopeIndex()).filter(item => item.scopeId === null)
-    await this.content.prepare(items)
-    const history = new ObservedProjector(detached, {
-      scopeId: null, model: () => this.options.model ?? this.bound.flavor,
-      turnBase: 0, submittedMessage: () => undefined, content: item => this.content.get(item), stream: () => {},
+  private publishSourceFrames(start: number, replace: boolean, reset = false): void {
+    this.projectionEventBytes = (replace ? 0 : this.projectionEventBytes)
+      + this.projector.historySeed().slice(start).reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event), 'utf8'), 0)
+    const all = this.currentSourceFrames()
+    const active = new Set(all.flatMap(frame => frame.transient && frame.source ? [frame.source.messageId] : []))
+    const activeKeys = new Set(all.flatMap(frame => frame.transient ? [frame.key] : []))
+    const removeKeys = [...this.transientKeys].filter(key => !all.some(frame => frame.key === key))
+    const replaceSources = new Set([...this.transientSources, ...active])
+    const frames = replace ? all : all.filter((frame, index) => index >= start
+      || !!frame.source && replaceSources.has(frame.source.messageId))
+    if (frames.length || replace || replaceSources.size || removeKeys.length) this.sourceFeed.publish(
+      { kind: replace ? 'replace' : 'merge', frames, ...(replace ? { hasMoreBefore: this.projectedHasMoreBefore ?? this.historyWindowAnchor()?.hasOlder === true } : {}), ...(reset ? { reset: true } : {}), ...(!replace && replaceSources.size ? { replaceSources: [...replaceSources] } : {}),
+        ...(removeKeys.length ? { removeKeys } : {}) })
+    this.transientSources = active; this.transientKeys = activeKeys
+  }
+
+
+  /** Replace only read-model state; journals, inbox, approvals and the Session
+   * transport continue to belong to this exact Agent throughout preparation. */
+  rebaseDisplayHistory(rows: readonly HapiMessage[], checkpoint: HistoryCheckpoint, epoch?: number): Promise<void> {
+    const work = this.rowWork.then(async () => {
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      const retained = boundedProjectionRows(this.historyJournal.merge(rows, checkpoint))
+      await this.applyRowsNow(retained.rows, true, checkpoint, true, true, retained.trimmed)
+      if (this.disposed) return
+      this.historyJournal.assertCurrent(checkpoint)
+      this.residentRows = retained.rows
+      this.historyOrder.accept(retained.rows, true)
+      this.historyEpoch = epoch ?? this.historyEpoch
+      this.historyAnchor = completeObservedHistoryAnchor(retained.rows, this.historyEpoch ?? 0)
+      if (retained.trimmed && this.historyAnchor) this.historyAnchor = { ...this.historyAnchor, hasOlder: true }
+      this.historyStale = false; this.historyFallback = false; this.structuralResetPending = false
+      this.fault = null; this.historyReadFault = false
+      this.cache.writeOpening(retained.rows, !retained.trimmed, this.historyEpoch)
+      this.syncInbox(); this.publish()
     })
-    if (!rows.length || !isSourceTurnStart(rows[0]!)) history.setSuppressFirstTurnStart()
-    history.beginHistorySeed()
-    history.apply(items)
-    return {
-      events: history.historySeed(), lastTurn: history.lastTurn,
-      sources: history.sourceSeqEntries(), rewinds: history.rewindSeqEntries(), forks: new Map(),
-      turnAnchors: history.turnAnchorEntries(), stepAnchors: history.stepAnchorEntries(),
+    this.rowWork = work.catch(() => {})
+    return work
+  }
+
+  historyWindowAnchor(): HistoryWindowAnchor | undefined { return this.historyAnchor }
+  historyTurnAnchors(): RenderedHistoryPage['turnAnchors'] { return this.projector.turnAnchorEntries() }
+
+  /** Project one bounded source page without creating a display Session. */
+  async renderHistoryPage(rows: readonly HapiMessage[]): Promise<RenderedHistoryPage> {
+    const items = parseObservedHistory(rows, new ObservedScopeIndex()).filter(item => item.scopeId === null)
+    const project = (): RenderedHistoryPage => {
+      const history = ObservedProjector.history({
+        scopeId: null, model: () => this.options.model ?? this.bound.flavor,
+        turnBase: 0, submittedMessage: localId => this.journal.get(localId)?.message, content: item => this.content.get(item), stream: () => {},
+      })
+      if (!rows.length || !isSourceTurnStart(rows[0]!)) history.setSuppressFirstTurnStart()
+      history.apply(items)
+      return {
+        events: history.historySeed(), lastTurn: history.lastTurn,
+        sources: history.sourceSeqEntries(), rewinds: history.rewindSeqEntries(), forks: new Map(),
+        turnAnchors: history.turnAnchorEntries(), stepAnchors: history.stepAnchorEntries(),
+        eventSources: history.eventSources()!,
+      }
     }
+    const rendered = project()
+    const needsResourceRead = items.some(item => 'parts' in item && item.parts.some(part => {
+      if (part.type === 'artifact') return record(part.artifact)?.externalUrl === undefined
+      return part.type === 'upload' || part.type === 'inline' || part.type === 'generated-media'
+    }))
+    if (!needsResourceRead) return rendered
+    // Keep remote resource downloads out of the history-page critical path.
+    return { ...rendered, resourceEnrichment: this.content.prepare(items).then(project) }
   }
 
   get binding(): ObservedBinding { return this.bound }
@@ -663,7 +730,6 @@ export class HapiObservedAgent implements Agent {
     const snapshot = await readNativeHistorySnapshot(this.transport, this.bound.hapiSessionId)
     if (this.disposed) return
     if (!this.config.onHistoryChanged) throw new NativeHistoryChangedError('The original source history changed structurally')
-    this.historyAnchor = undefined
     await this.config.onHistoryChanged(this, this.historyJournal.merge(snapshot.rows, checkpoint), checkpoint, snapshot.epoch)
   }
 
@@ -705,30 +771,42 @@ export class HapiObservedAgent implements Agent {
       if (!this.initializing && authoritative && !this.config.fastHistorySeed && this.historyOrder.needsReseed(merged)) {
         throw new NativeHistoryChangedError('Earlier source history is ready; acquiring its complete display generation')
       }
-      await this.applyRowsNow(merged, authoritative, checkpoint)
+      const retained = boundedProjectionRows(authoritative ? merged : mergeSourceRows(this.residentRows, merged))
+      const rebase = retained.trimmed || this.projector.historySeed().length > SOURCE_PROJECTION_MAX_EVENTS
+        || this.projectionEventBytes > SOURCE_PROJECTION_MAX_BYTES
+      await this.applyRowsNow(rebase ? retained.rows : merged, rebase || authoritative, checkpoint, rebase, false, retained.trimmed ? true : undefined)
+      this.residentRows = retained.rows
+      if (retained.trimmed) this.historyAnchor = { ...completeObservedHistoryAnchor(retained.rows, this.historyEpoch ?? 0), hasOlder: true }
       if (this.disposed) return
       this.historyJournal.assertCurrent(checkpoint)
-      this.historyOrder.accept(merged, authoritative)
+      this.historyOrder.accept(retained.rows, retained.trimmed || authoritative)
       if (authoritative && !this.initializing) { this.cache.write(merged); this.historyStale = false }
     })
     this.rowWork = work.catch(() => {})
     return work
   }
 
-  private async applyRowsNow(rows: readonly HapiMessage[], authoritative: boolean, checkpoint: HistoryCheckpoint): Promise<void> {
-    this.sourceScopes.update(rows, authoritative)
-    const items = authoritative ? parseObservedHistory(rows, this.sourceScopes) : rows.flatMap(row => parseObservedMessage(row, this.sourceScopes))
+  private async applyRowsNow(rows: readonly HapiMessage[], authoritative: boolean, checkpoint: HistoryCheckpoint, rebase = false, reset = false, hasMoreBefore?: boolean): Promise<void> {
+    const scopes = rebase ? new ObservedScopeIndex() : this.sourceScopes
+    scopes.update(rows, authoritative)
+    const items = authoritative ? parseObservedHistory(rows, scopes) : rows.flatMap(row => parseObservedMessage(row, scopes))
     await this.content.prepare(items)
     if (this.disposed) return
     this.config.assertSourceCurrent?.()
     this.historyJournal.assertCurrent(checkpoint)
     if (authoritative) {
       const observed = new Set(items.filter(item => item.scopeId === null).map(item => item.key))
-      for (const key of this.projector.projectedKeys) if (!observed.has(key)) throw new NativeHistoryChangedError('The original HAPI history was truncated or replaced')
+      for (const key of rebase ? [] : this.projector.projectedKeys) if (!observed.has(key)) throw new NativeHistoryChangedError('The original HAPI history was truncated or replaced')
       this.queued.clear()
     }
-    this.projector.apply(items)
-    await this.children.apply(items, this.sourceScopes.scopes(), authoritative)
+    const projector = rebase ? this.createProjector() : this.projector
+    const start = rebase ? 0 : projector.historySeed().length
+    projector.apply(items)
+    if (rebase) { this.projector.abandonStream(); this.projector = projector }
+    if (hasMoreBefore !== undefined) this.projectedHasMoreBefore = hasMoreBefore
+    this.publishSourceFrames(start, rebase || this.initializing, reset)
+    this.sourceScopes = scopes
+    await this.children.apply(items, scopes.scopes(), authoritative, reset)
     const sourceRows = new Map(rows.map(row => [row.id, row]))
     for (const item of items) {
       if (item.kind === 'notice' && item.scopeId === null) this.notices.set(item.key, item.notice)
@@ -789,7 +867,7 @@ export class HapiObservedAgent implements Agent {
   private rejectWaiters(message: string): void { for (const waiter of this.idleWaiters) waiter.reject(new Error(message)); this.idleWaiters.clear() }
   async dispose(): Promise<void> {
     if (this.disposed) return
-    this.disposed = true; this.rejectWaiters('The source observation was detached'); this.projector?.abandonStream()
+    this.disposed = true; this.sourceFeed.dispose(); this.rejectWaiters('The source observation was detached'); this.projector?.abandonStream()
     this.historySync.dispose()
     await this.children?.dispose()
     await this.dshChildren?.dispose()

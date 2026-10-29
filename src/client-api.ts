@@ -1,12 +1,13 @@
 /** Shared, browser-safe API contract. Every method is carried by the official DSH Typert gateway. */
 import { z } from 'zod';
+import type { SourceFrameBatch } from './shared/source-frames.ts';
 import { sourceDiscoverySchema, type SourceDiscovery } from './source-discovery-types.ts';
 import { deliveryRecoveryRequestSchema, type DeliveryRecoveryRequest } from './codex/delivery-recovery-types.ts';
-import type { InvocationDescriptor, RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
+import type { InvocationDescriptor, RemoteResult, RemoteStreamHandle, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { HapiApprovalAnswer, HapiCancelResult, HapiSteerResult, HapiRetryResult } from './codex/contracts.ts';
 import { deliveryViewSchema, type DeliveryView } from './codex/projection-types.ts';
 import { parseWorkspaceState, type WorkspaceState } from './client/model.ts';
-import { sourceHistoryHeadRequestSchema, sourceHistoryHeadValueSchema, sourceHistoryOutlinePageRequestSchema, sourceHistoryOutlinePageValueSchema, sourceHistoryOutlineValueSchema, sourceHistoryWindowRequestSchema, sourceHistoryWindowValueSchema, type SourceHistoryHeadRequest, type SourceHistoryHeadValue, type SourceHistoryOutlinePageRequest, type SourceHistoryOutlinePageValue, type SourceHistoryOutlineValue, type SourceHistoryWindowRequest, type SourceHistoryWindowValue } from './source-window-types.ts';
+import { sourceHistoryHeadRequestSchema, sourceHistoryHeadValueSchema, sourceHistoryOutlinePageRequestSchema, sourceHistoryOutlinePageValueSchema, sourceHistoryOutlineValueSchema, sourceHistoryWindowPageStreamItemSchema, sourceHistoryWindowRequestSchema, sourceHistoryWindowValueSchema, type SourceHistoryHeadRequest, type SourceHistoryHeadValue, type SourceHistoryOutlinePageRequest, type SourceHistoryOutlinePageValue, type SourceHistoryOutlineValue, type SourceHistoryWindowPageStreamItem, type SourceHistoryWindowRequest, type SourceHistoryWindowValue } from './source-window-types.ts';
 import {
     sourceHistoryAttachmentRequestSchema, sourceHistoryAttachmentValueSchema,
     type SourceHistoryAttachmentRequest, type SourceHistoryAttachmentValue,
@@ -156,8 +157,12 @@ export interface HapiRemoteApi extends NativeLibraryApi, NativeWorkbenchApi, Ses
     sourceHistoryHead(request: SourceHistoryHeadRequest): Promise<RemoteResult<SourceHistoryHeadValue>>;
     /** One bounded outline page; the preview reflects every page read so far. */
     sourceHistoryOutlinePage(request: SourceHistoryOutlinePageRequest): Promise<RemoteResult<SourceHistoryOutlinePageValue>>;
+    /** Independent bounded source-body stream; reconnect begins with a current baseline. */
+    sourceWindowFollow(request: { sessionId: string }, signal?: AbortSignal): RemoteStreamHandle<SourceFrameBatch, never>;
     /** Direct bounded source window at a message, or a contiguous older/newer page. */
     sourceHistoryWindowPage(request: SourceHistoryWindowRequest): Promise<RemoteResult<SourceHistoryWindowValue>>;
+    /** The interactive older page uses small downlink frames and one final cursor commit. */
+    sourceHistoryWindowPageStream(request: SourceHistoryWindowRequest, signal?: AbortSignal): RemoteStreamHandle<SourceHistoryWindowPageStreamItem, never>;
     /** Read an image ref actually served by this display's bounded source history page. */
     sourceHistoryAttachment(request: SourceHistoryAttachmentRequest): Promise<RemoteResult<SourceHistoryAttachmentValue>>;
     sourceLocateMessage(request: { sessionId: string; sourceMessageId: string }): Promise<RemoteResult<{ sessionId: string; seq: number | null }>>;
@@ -250,7 +255,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/sourceHistoryOutline': HapiRemoteApi['sourceHistoryOutline'];
         'hapi/sourceHistoryHead': HapiRemoteApi['sourceHistoryHead'];
         'hapi/sourceHistoryOutlinePage': HapiRemoteApi['sourceHistoryOutlinePage'];
+        'hapi/sourceWindowFollow': HapiRemoteApi['sourceWindowFollow'];
         'hapi/sourceHistoryWindowPage': HapiRemoteApi['sourceHistoryWindowPage'];
+        'hapi/sourceHistoryWindowPageStream': HapiRemoteApi['sourceHistoryWindowPageStream'];
         'hapi/sourceHistoryAttachment': HapiRemoteApi['sourceHistoryAttachment'];
         'hapi/nativeSettings': HapiRemoteApi['nativeSettings'];
         'hapi/nativeApplySetting': HapiRemoteApi['nativeApplySetting'];
@@ -335,7 +342,9 @@ const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     sourceHistoryOutline: z.strictObject({ sessionId: id }),
     sourceHistoryHead: sourceHistoryHeadRequestSchema,
     sourceHistoryOutlinePage: sourceHistoryOutlinePageRequestSchema,
+    sourceWindowFollow: z.object({ sessionId: id }).strict(),
     sourceHistoryWindowPage: sourceHistoryWindowRequestSchema,
+    sourceHistoryWindowPageStream: sourceHistoryWindowRequestSchema,
     sourceHistoryAttachment: sourceHistoryAttachmentRequestSchema,
     sourceLocateMessage: z.strictObject({ sessionId: id, sourceMessageId: id }),
     nativeSettings: sessionRequest, nativeApplySetting: nativeApplySettingSchema,
@@ -393,7 +402,14 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     sourceHistoryOutline: sourceHistoryOutlineValueSchema,
     sourceHistoryHead: sourceHistoryHeadValueSchema,
     sourceHistoryOutlinePage: sourceHistoryOutlinePageValueSchema,
+    sourceWindowFollow: z.object({
+        kind: z.enum(['replace', 'merge']), frames: sourceHistoryWindowValueSchema.shape.frames.unwrap(),
+        replaceSources: z.array(z.string()).optional(), removeKeys: z.array(z.string()).optional(),
+        reset: z.literal(true).optional(), historyVersion: z.number().int().nonnegative().optional(),
+        hasMoreBefore: z.boolean().optional(), historyId: z.string().optional(),
+    }).strict(),
     sourceHistoryWindowPage: sourceHistoryWindowValueSchema,
+    sourceHistoryWindowPageStream: sourceHistoryWindowPageStreamItemSchema,
     sourceHistoryAttachment: sourceHistoryAttachmentValueSchema,
     sourceLocateMessage: z.object({ sessionId: id, seq: z.number().int().nonnegative().nullable() }),
     nativeSettings: nativeSettingsSchema, nativeApplySetting: nativeSettingReceiptSchema,
@@ -410,7 +426,9 @@ export const HAPI_REMOTE: TypertRemoteContribution = {
     descriptors: (Object.keys(outputs) as Array<keyof HapiRemoteApi>).map((method): InvocationDescriptor => ({
         id: `hapi-dsh#hapi/${method}`, service: 'hapi', namespace: 'hapi', method,
         invocation: { kind: 'direct' },
+        ...(method === 'sourceWindowFollow' || method === 'sourceHistoryWindowPageStream' ? { mode: 'stream' as const } : {}),
         ...(method === 'nativeTerminalText' || method === 'sourceLegacyTerminalOpen' || method === 'sourceLegacyTerminalText'
+            || method === 'sourceWindowFollow' || method === 'sourceHistoryWindowPageStream'
             || method === 'sourceDisplayLease' || method === 'sourceSessionResolve'
             || method in voiceInputs || method in notificationInputs ? { cancellation: { parameter: 'signal' as const } } : {}),
         parameters: inputs[method] === undefined ? [] : [{ name: 'request', wire: 'request', source: 'json', codec: codec(`${method}Input`, inputs[method]!) }],

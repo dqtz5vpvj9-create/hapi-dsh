@@ -3,16 +3,24 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import * as gateway from '@deepseek-ai/dsh-api-gateway/client'
 import type { RemoteStreamOptions } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
-import type { LlmAttemptId } from '@deepseek-ai/dsh-llm'
-import type { SessionFollowFrame, SessionFollowRequest, SessionHistoryRecord, SessionAssistantStreamBaseline, SessionControlFrame } from '@deepseek-ai/dsh-api-session-controller/types'
+import { createUserMessage, type LlmAttemptId } from '@deepseek-ai/dsh-llm'
+import type { SessionFollowFrame, SessionFollowRequest, SessionHistoryRecord, SessionAssistantStreamBaseline, SessionControlFrame, SessionProjectionValues } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { ISessions, SessionJournalChange } from '@deepseek-ai/dsh-api-session-controller/client'
 import { boundedSourceFollow } from '../src/codex/bounded-follow.ts'
+import { SourceFrameFeed } from '../src/shared/source-frame-feed.ts'
+import type { SourceFrameBatch } from '../src/shared/source-frames.ts'
+import { officialChat } from './official-conversation-fixture.ts'
+import { NativeProjector } from '../src/codex/projector.ts'
+import { toSourceFrames } from '../src/shared/source-frame-builder.ts'
 
 // Execute the unchanged published browser factory with its public dependencies.
 const require = createRequire(import.meta.url)
@@ -24,7 +32,7 @@ assert.ok(published)
 const client = published.factory(name => name === '@deepseek-ai/dsh-api-gateway/client' ? gateway : require(name))
 const { SessionEventStream, MutableSessionEventSource } = client
 const { RemoteStream } = gateway
-const id = 'bounded-follow-fixture' as SessionId
+const id = 'hapi-codex-00000000000000000000000000000001' as SessionId
 type Snapshot = Extract<SessionFollowFrame, { type: 'snapshot' }>
 
 function event(seq: number, text = ''): SessionHistoryRecord {
@@ -76,9 +84,9 @@ class Channel implements AsyncIterable<SessionFollowFrame>, AsyncIterator<Sessio
   [Symbol.asyncIterator](): AsyncIterator<SessionFollowFrame> { return this }
 }
 
-function transport(maxEvents: number) {
+function transport(maxEvents: number, options: { initial?: SessionHistoryRecord[]; opening?: (frame: Snapshot) => Snapshot; projections?: SessionProjectionValues } = {}) {
   const connection = { generation: createSnapshotStore({}) } as unknown as Pick<ConnectionHandle, 'generation'>
-  const log = [event(0)], channels: Channel[] = [], requests: SessionFollowRequest[] = []
+  const log = options.initial ?? [event(0)], channels: Channel[] = [], requests: SessionFollowRequest[] = []
   let closed = 0, pages = 0
   let baseline: SessionAssistantStreamBaseline = { revision: 0 }
   const wire = {
@@ -90,7 +98,9 @@ function transport(maxEvents: number) {
         const channel = new Channel(signal, () => { closed++ }); channels.push(channel)
         // The source fixture owns its opening window, just as the official
         // pager does. The generation wrapper must not choose another cut.
-        channel.push(snapshot(log.slice(-2), baseline))
+        const captured = snapshot(options.opening ? log : log.slice(-2), baseline)
+        const opening = options.projections ? { ...captured, projections: { asOfSeq: captured.cursor, values: options.projections } } : captured
+        channel.push(options.opening ? options.opening(opening) : opening)
         return boundedSourceFollow(channel, { maxEvents, maxBytes: 1_000_000 })
       },
       async page() { pages++; throw new Error('A contiguous rollover must not require gap repair') },
@@ -175,6 +185,156 @@ test('published SessionEventStream reopens multiple generations into the same ev
     assert.deepEqual(failures, [])
   } finally { await journal.dispose() }
   assert.equal(fixture.closed, 3)
+})
+
+test('operation snapshots retain official inbox and approval projections and the same Session pending input', async () => {
+  const queued = createUserMessage({ content: [{ type: 'text', text: 'Queued original input' }], source: { kind: 'user' } })
+  const inbox = { 'next-turn': [queued], 'next-step': [] }
+  const approvals = { pendingRequests: [{ id: 'source-request', tool: 'synthetic-tool' }] }
+  const fixture = transport(1, { initial: [event(0, 'earlier queue event'), event(1, 'operation status')],
+    projections: { inbox, hapi: approvals } as unknown as SessionProjectionValues })
+  const root = new Context()
+  root.provide('connection', fixture.connection)
+  root.provide('remote', { ...fixture.wire, $on: () => () => {}, commands: {}, subagents: {}, session: {
+    ...fixture.wire.session,
+    async list() { return { ok: true, value: { items: [{ sessionId: id, running: false, blank: false, updatedAt: 1000 }] } } },
+    async *control(signal: AbortSignal): AsyncIterable<SessionControlFrame> {
+      yield { type: 'baseline', value: { projections: {} } }
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+    },
+  } })
+  root.provide('typert', { contexts: { registerClient() {} } })
+  try {
+    await root.plugin({ apply: client.apply })
+    const sessions = root.get('sessions') as unknown as ISessions
+    await sessions.refresh()
+    const reference = sessions.retain(id, { source: 'controllerOperation' })
+    try {
+      await reference.ready
+      const binding = reference.binding, owner = binding.session
+      assert.deepEqual(binding.eventSource.getSnapshot().entries.map(entry => entry.event.seq), [0, 1])
+      assert.deepEqual(owner.projections.faceOf('inbox').getSnapshot(), inbox)
+      assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
+      const input = owner.beginSubmission({ mode: 'queue', text: 'Unconfirmed user input', attachments: [] })
+      try {
+        fixture.append(event(2, 'new operation status'))
+        await until(() => fixture.requests.length === 2)
+        assert.equal(reference.binding, binding)
+        assert.ok(owner.getSnapshot().pendingSubmissions.some(value => value.requestId === input.requestId))
+        assert.deepEqual(owner.projections.faceOf('inbox').getSnapshot(), inbox)
+        assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
+        assert.equal(owner.getSnapshot().openState, 'open')
+      } finally { input.abandon() }
+    } finally { reference.release() }
+  } finally { await root.fiber.dispose() }
+})
+
+test('real ClientSession operations and an independent source body share one stable facade through history rewrites', { timeout: 5_000 }, async () => {
+  const controllerRoot = dirname(require.resolve('@deepseek-ai/dsh-api-session-controller/package.json'))
+  const sourceFile = fileURLToPath(new URL('../src/client/source-sessions.ts', import.meta.url))
+  const bundle = await build({ stdin: { contents: `export { SourceSessions } from ${JSON.stringify(sourceFile)}`,
+    resolveDir: dirname(sourceFile), loader: 'ts' }, bundle: true, platform: 'node', target: 'node24', format: 'esm',
+    alias: { '@deepseek-ai/dsh-api-session-controller/client': join(controllerRoot, 'lib/types/client/contract/events.js') },
+    write: false, logLevel: 'silent' })
+  const { SourceSessions } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0]!.text).toString('base64')}`) as typeof import('../src/client/source-sessions.ts')
+  const queued = createUserMessage({ content: [{ type: 'text', text: 'Queued source input' }], source: { kind: 'user' } })
+  const inbox = { 'next-turn': [queued], 'next-step': [] }
+  const approvals = { pendingRequests: [{ id: 'source-request', tool: 'synthetic-tool' }] }
+  const fixture = transport(100, { initial: [], projections: { inbox, hapi: approvals } as unknown as SessionProjectionValues })
+  const root = new Context(), chat = officialChat()
+  let prompts = 0
+  root.provide('connection', fixture.connection)
+  root.provide('remote', { ...fixture.wire, $on: () => () => {}, commands: {}, subagents: {}, session: {
+    ...fixture.wire.session,
+    async prompt() { prompts++; return { ok: true, value: { accepted: true } } },
+    async list() { return { ok: true, value: { items: [{ sessionId: id, running: false, blank: true, updatedAt: 1000 }] } } },
+    async *control(signal: AbortSignal): AsyncIterable<SessionControlFrame> {
+      yield { type: 'baseline', value: { projections: {} } }
+      if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+    },
+  } })
+  root.provide('typert', { contexts: { registerClient() {} } })
+  const sourceBody = (text: string): SourceFrameBatch => {
+    const projector = NativeProjector.history({ model: () => 'fixture', provider: () => 'fixture', submittedMessage: () => undefined, stream: () => {} })
+    projector.apply([{ key: text, rowId: text, localId: text, seq: 1, createdAt: 1000, sourceAt: 1000, fingerprint: text,
+      execution: { threadId: 'fixture-thread', turnId: text, itemId: text }, kind: 'user', text, invoked: true, mode: 'queue', parts: [] }])
+    return { kind: 'replace', hasMoreBefore: false, frames: toSourceFrames({ events: projector.historySeed(),
+      eventSources: projector.eventSources()!, turnAnchors: projector.turnAnchorEntries(), stepAnchors: projector.stepAnchorEntries() }) }
+  }
+  let baseline: SourceFrameBatch = { kind: 'replace', frames: [], hasMoreBefore: false }
+  const body = new SourceFrameFeed(() => baseline)
+  let facade: InstanceType<typeof SourceSessions> | undefined
+  try {
+    await root.plugin({ apply: client.apply })
+    const sessions = root.get('sessions') as unknown as ISessions
+    await sessions.refresh()
+    const operation = sessions.retain(id, { source: 'controllerOperation' })
+    try {
+      await operation.ready
+      const original = operation.binding
+      assert.deepEqual(original.eventSource.getSnapshot().entries, [], 'the operation owner starts without source transcript events')
+      const status = { nativeSessionId: 'native-owner', status: 'ready' }
+      fixture.append({ type: 'event', event: { type: 'plugin:hapi-dsh/state', seq: 0, time: 1000, data: status } } as unknown as SessionHistoryRecord)
+      await until(() => original.eventSource.getSnapshot().entries.length === 1)
+      facade = new SourceSessions(sessions)
+      facade.attach({ sourceWindowFollow: (_request, signal) => body.watch(signal!),
+        async sourceHistoryOutline() { return { ok: true, value: { entries: [], tailStartTurn: 0 } } },
+        async sourceHistoryOutlinePage() { return { ok: true, value: { entries: [], before: null, hasMore: false, tailStartTurn: 0 } } },
+        async sourceHistoryWindowPage() { throw new Error('An exhausted source baseline must not page') },
+      })
+      const reference = facade.retain(id, { source: 'mainView' })
+      try {
+        const binding = await reference.ready, owner = binding.session
+        assert.equal(binding.ctx, original.ctx)
+        assert.equal(owner.getSnapshot().blank, true, 'a source without body remains an empty first-send view')
+        assert.equal(owner.getSnapshot().hasMore, false)
+        const firstInput = owner.beginSubmission({ mode: 'queue', text: 'First source prompt', attachments: [] })
+        try {
+          await owner.prompt([{ type: 'text', text: 'First source prompt' }], 'queue', undefined, firstInput.requestId)
+          assert.equal(prompts, 1)
+          assert.equal(owner.getSnapshot().awaitingFirstTurn, true, 'an accepted first prompt still waits for actual source body')
+          baseline = sourceBody('Opening source body')
+          body.publish(baseline)
+          await until(() => !owner.getSnapshot().blank)
+          assert.equal(original.session.getSnapshot().awaitingFirstTurn, true, 'no synthetic turn/start was inserted into the operation owner')
+          assert.equal(owner.getSnapshot().awaitingFirstTurn, false, 'actual source body admits the conversation after first send')
+        } finally { firstInput.abandon() }
+        const assemble = (): string => {
+          const entries = binding.eventSource.getSnapshot().entries
+          chat.assembler.replaceWindow(entries as Parameters<typeof chat.assembler.replaceWindow>[0], false)
+          chat.assembler.activateTarget('chat'); chat.assembler.flush()
+          const rendered = chat.assembler.snapshot('chat')
+          return rendered.order.flatMap(key => rendered.nodes.get(key)?.data.content ?? []).map(part => part.type === 'text' ? part.text : '').join('')
+        }
+        assert.equal(assemble(), 'Opening source body')
+        const state = () => binding.eventSource.getSnapshot().entries.find(entry => String(entry.event.type) === 'plugin:hapi-dsh/state')?.event.data
+        assert.deepEqual(state(), status, 'opening body replacement keeps the initial native status')
+        assert.equal(owner.projections.faceOf('inbox'), original.session.projections.faceOf('inbox'))
+        assert.deepEqual(owner.projections.faceOf('inbox').getSnapshot(), inbox)
+        assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
+        const input = owner.beginSubmission({ mode: 'queue', text: 'Unconfirmed input', attachments: [] })
+        try {
+          assert.ok(original.session.getSnapshot().pendingSubmissions.some(value => value.requestId === input.requestId))
+          await owner.prompt([{ type: 'text', text: 'A later source prompt' }], 'queue', undefined, input.requestId)
+          assert.equal(prompts, 2)
+          assert.equal(owner.getSnapshot().awaitingFirstTurn, false, 'a later prompt never hides the existing conversation')
+          baseline = sourceBody('Rewritten source body')
+          body.publish({ ...baseline, reset: true })
+          await until(() => assemble() === 'Rewritten source body')
+          assert.equal(reference.binding, binding); assert.equal(operation.binding, original)
+          assert.equal(binding.ctx, original.ctx)
+          assert.deepEqual(state(), status, 'rewriting body alone must not clear native status')
+          assert.ok(owner.getSnapshot().pendingSubmissions.some(value => value.requestId === input.requestId))
+          assert.deepEqual(owner.projections.faceOf('inbox').getSnapshot(), inbox)
+          assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
+          assert.equal(original.eventSource.getSnapshot().entries.length, 1, 'neither body generation enters the append-only operation Session')
+          assert.equal(fixture.requests.length, 1, 'body reset never reopens the operation Session')
+          await owner.loadOlder()
+          assert.equal(fixture.pages, 0)
+        } finally { input.abandon() }
+      } finally { reference.release() }
+    } finally { operation.release() }
+  } finally { facade?.dispose(); body.dispose(); await chat.close(); await root.fiber.dispose() }
 })
 
 test('the published Session owner installs replacement baselines without losing its scope or pending input', async () => {

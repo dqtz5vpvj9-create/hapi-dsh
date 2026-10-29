@@ -36,15 +36,18 @@ export function installNativeRewindAction(ctx: Context, api: HapiRemoteApi, refr
                 const observed = props.useProjection('hapiObserved')
                 const anchor = useRef<HTMLDivElement>(null)
                 const source = Boolean(native || observed && !observed.sidechain)
+                const entry = ctx.sessions.binding(props.sessionId)?.eventSource.getSnapshot().entries
+                    .find(row => Number(row.event.seq) === props.node.data.seq && row.event.type === 'user/message')
+                const messageId = entry?.event.type === 'user/message' ? entry.event.data.id : undefined
                 useLayoutEffect(() => {
                     if (source && anchor.current) return navigation.anchor(props.sessionId, props.node.data.seq, anchor.current)
                 }, [source, props.sessionId, props.node.data.seq])
-                const row = <>{createElement(Official, props)}{native && <div className="hapi-native-user-actions">
-                    <NativeRewindButton api={api} sessionId={props.sessionId} messageSeq={props.node.data.seq}
+                const row = <>{createElement(Official, props)}{native && messageId && <div className="hapi-native-user-actions">
+                    <NativeRewindButton api={api} sessionId={props.sessionId} messageId={messageId}
                         language={ctx.locale.getSnapshot().active} onChanged={refresh}/>
-                </div>}{observed && !observed.sidechain && (observed.capabilities.forkAtMessage || observed.capabilities.rewindToMessage) && <div className="hapi-native-user-actions">
+                </div>}{observed && messageId && !observed.sidechain && (observed.capabilities.forkAtMessage || observed.capabilities.rewindToMessage) && <div className="hapi-native-user-actions">
                     {(['fork', 'rewind'] as const).filter(kind => kind === 'fork' ? observed.capabilities.forkAtMessage : observed.capabilities.rewindToMessage).map(kind =>
-                        <SourceHistoryAction key={kind} api={api} sessionId={props.sessionId} messageSeq={props.node.data.seq} kind={kind}
+                        <SourceHistoryAction key={kind} api={api} sessionId={props.sessionId} messageId={messageId} kind={kind}
                             language={ctx.locale.getSnapshot().active} onChanged={refresh} onOpen={id => {
                                 if (pane) pane.openSession(id)
                                 else ctx.uiWorkspace.openSession(id as SessionId)

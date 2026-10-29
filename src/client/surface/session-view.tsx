@@ -8,6 +8,8 @@
  * Temporary latest-window measurements borrow its authorized chat-only seat.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import { installSharedMountedChatConsumer, resolveMountedChatForPane } from '../mounted-chat-control.ts'
 import { Component, createContext, memo, useContext, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -27,6 +29,12 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
         'hapi.workspace.session-view': { kind: 'single'; scope: 'session' }
         'hapi.workspace.shared-rightbar': { kind: 'single'; scope: 'session' }
+    }
+}
+
+declare module '@deepseek-ai/cordis' {
+    interface Context {
+        chatPresentationConsumer: { presentation(sessionId: SessionId): { foldCompletedTurns: boolean; stepGrouping: 'collapsed' | 'history' | 'none'; virtualizeGroupMembers?: boolean } | undefined }
     }
 }
 
@@ -211,6 +219,12 @@ export function registerVisibleWindowReader(ctx: Context, target: HTMLElement, r
         const entries = reference.binding.eventSource.getSnapshot().entries
         const snapshot = ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot()
         return readSourceWindowViewport(target, snapshot, entries.at(-1)?.event.seq ?? 0)
+    }, preparePrepend: () => {
+        if (!available()) return undefined
+        // The same official viewport used by the paging button samples the
+        // current reader immediately before publication and restores in layout.
+        resolveMountedChatForPane(target)?.preparePageCommit?.()
+        return undefined
     } }) ?? (() => {})
 }
 
@@ -227,9 +241,9 @@ function chatContentFillsViewport(port: HTMLElement): boolean {
 }
 
 /** Folded tools can consume a page without adding readable height. Use the
- * previous page's measured gain to size the next read, instead of paying one
- * network and React commit cycle for every twenty source messages. This stays
- * within the existing source API limit and retained-window byte/event bounds. */
+ * previous page's measured gain to size the next read, but keep every visible
+ * commit within HAPI's normal 50-message page. A DSH source message can expand
+ * into many display events, so the old 200-row cap caused long browser tasks. */
 class ViewportPagePlan {
     private height: number | undefined
     private limit = 20
@@ -241,7 +255,7 @@ class ViewportPagePlan {
             const gain = height - this.height
             const missing = chatViewportHeight(port) + 9 - height
             const needed = gain > 0 ? Math.ceil(this.limit * missing / gain) : this.limit * 4
-            this.limit = Math.max(20, Math.min(200, this.limit * 4, needed))
+            this.limit = Math.max(20, Math.min(50, this.limit * 4, needed))
         }
         this.height = height
         return this.limit
@@ -278,8 +292,9 @@ function preparationBudget(document: Document, pane?: WorkspacePaneNavigation['s
 }
 
 /** Measure the official candidate chat, without changing the visible owner. */
-export async function prepareCandidateViewport(target: HTMLElement, reference: SessionReference, signal: AbortSignal): Promise<boolean> {
-    const budget = preparationBudget(target.ownerDocument)
+export async function prepareCandidateViewport(target: HTMLElement, reference: SessionReference, signal: AbortSignal,
+    pane?: WorkspacePaneNavigation['state']): Promise<boolean> {
+    const budget = preparationBudget(target.ownerDocument, pane)
     const stopped = AbortSignal.any([signal, budget.signal])
     const wait = (work: Promise<unknown>): Promise<boolean> => new Promise(resolve => {
         if (stopped.aborted) { resolve(false); return }
@@ -334,11 +349,14 @@ export interface WindowPreparationMount {
     dispose(): Promise<void>
 }
 
-/** Serialize temporary occurrences, including their asynchronous unmount. */
+/** One view owns its temporary occurrences, including asynchronous unmount.
+ * Only a newer destination of that same view may supersede its preparation. */
 export class WindowPreparationCoordinator {
     private revision = 0
     private active: { abort: AbortController; done: Promise<boolean> } | undefined
     private disposed = false
+
+    constructor(private readonly pane?: WorkspacePaneNavigation['state']) {}
 
     async prepare(reference: SessionReference, signal: AbortSignal,
         mount: (failed: () => void) => WindowPreparationMount): Promise<boolean> {
@@ -354,7 +372,7 @@ export class WindowPreparationCoordinator {
             let ready = false
             try {
                 occurrence = mount(() => abort.abort())
-                ready = await prepareCandidateViewport(occurrence.target, reference, stopped)
+                ready = await prepareCandidateViewport(occurrence.target, reference, stopped, this.pane)
             } catch { ready = false }
             finally { await occurrence?.dispose() }
             return ready && !stopped.aborted
@@ -391,9 +409,9 @@ export function initialComposerReady(target: HTMLElement, snapshot: SessionSnaps
         && input.closest('[inert], [hidden], [aria-hidden="true"]') === null
 }
 
-/** One owner prepares the visible window. Source readiness and the outline are
- * already part of reference.ready; additional history is read only if the
- * actual viewport needs it, never to meet an arbitrary turn count. */
+/** One owner prepares the visible window after source readiness. Additional
+ * history is read only if the actual viewport needs it, never to meet an
+ * arbitrary turn count. */
 export async function prepareInitialViewport(
     target: HTMLElement,
     reference: SessionReference,
@@ -495,11 +513,12 @@ interface Entry extends SessionViewMount {
     readonly lifetime: ViewLifetime
     readonly phase: 'loading' | 'measuring' | 'ready' | 'error'
     readonly error?: unknown
+    readonly retryAdmission?: (() => void) | undefined
+    readonly onRenderError: (error: unknown) => void
 }
 
 interface PreparationEntry {
     readonly key: number
-    readonly ownerKey: number
     readonly target: HTMLElement
     readonly reference: SessionReference
     readonly lifetime: ViewLifetime
@@ -551,8 +570,9 @@ function SessionContent({ sessionId, useSession, useConversation, useSessions, r
     }, { slots: { views: ChatViews } })
 }
 
-function Failure({ error }: { error: unknown }): ReactNode {
-    return <div className="hapi-empty" role="alert"><p>{error instanceof Error ? error.message : String(error)}</p></div>
+function Failure({ error, retry }: { error: unknown; retry?: (() => void) | undefined }): ReactNode {
+    return <div className="hapi-empty" role="alert"><p>{error instanceof Error ? error.message : String(error)}</p>
+        {retry && <button type="button" onClick={retry}>重试打开</button>}</div>
 }
 
 class ViewBoundary extends Component<{ onError?: ((error: unknown) => void) | undefined; children: ReactNode }, { error?: unknown }> {
@@ -574,7 +594,10 @@ function ViewFrame({ entry, children }: { entry: Entry; children: ReactNode }): 
     const settling = entry.phase === 'loading' || entry.phase === 'measuring'
     return <div data-hapi-session-view={entry.reference.sessionId} data-hapi-session-pane={entry.paneId}
         style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%', width: '100%', overflow: 'hidden', position: 'relative' }}>
-        {entry.phase === 'error' ? <Failure error={entry.error}/> : children}
+        {children}
+        {entry.phase === 'error' && <div className="hapi-session-loading hapi-session-loading-overlay">
+            <Failure error={entry.error} retry={entry.retryAdmission}/>
+        </div>}
         {settling && <div className={`hapi-session-loading${entry.phase === 'measuring' ? ' hapi-session-loading-overlay' : ''}`}
             role="status" aria-live="polite" data-hapi-session-loading={entry.phase}>
             <span className="hapi-session-loading-spinner" aria-hidden="true"/>
@@ -586,13 +609,18 @@ function ViewFrame({ entry, children }: { entry: Entry; children: ReactNode }): 
 
 /** The pin caches both public faces; unchanged entries need no sibling render.
  * Session, locale, and slot subscriptions below remain independently active. */
-const SessionOccurrence = memo(function SessionOccurrence({ entry, candidate, SessionProvider, renderSlot }:
-    Pick<HostProps, 'SessionProvider' | 'renderSlot'> & { entry: Entry; candidate?: PreparationEntry | undefined }): ReactNode {
+const SessionOccurrence = memo(function SessionOccurrence({ ctx, entry, candidate, SessionProvider, renderSlot }:
+    Pick<HostProps, 'SessionProvider' | 'renderSlot'> & { ctx: Context; entry: Entry; candidate?: PreparationEntry | undefined }): ReactNode {
+    useLayoutEffect(() => {
+        if (entry.phase !== 'ready') return
+        return registerVisibleWindowReader(ctx, entry.target, entry.reference, () =>
+            entry.lifetime.mounted && entry.phase === 'ready' && entry.navigation.state.getSnapshot().visible)
+    }, [ctx, entry.phase, entry.reference, entry.target, entry.navigation])
     return <WorkspacePaneProvider value={entry.navigation}>
         <PreparationContext.Provider value={candidate}>
-        <ViewBoundary onError={entry.onError}>
+        <ViewBoundary onError={entry.onRenderError}>
             <ViewFrame entry={entry}>
-                {entry.phase === 'loading' || entry.phase === 'error' ? null : <div data-hapi-session-reveal={entry.phase === 'ready' ? 'ready' : 'pending'}
+                {entry.phase === 'loading' || (entry.phase === 'error' && !entry.retryAdmission) ? null : <div data-hapi-session-reveal={entry.phase === 'ready' ? 'ready' : 'pending'}
                     style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, width: '100%', height: '100%',
                         visibility: entry.phase === 'ready' ? 'visible' : 'hidden', pointerEvents: entry.phase === 'ready' ? 'auto' : 'none' }}>
                     <SessionProvider session={entry.reference}>
@@ -619,16 +647,15 @@ export function installSessionViewHost(ctx: Context): {
     const entries = new Map<string, Entry>()
     const initialHistory = new Map<string, () => void>()
     const preparers = new Map<string, () => void>()
-    const readers = new Map<string, () => void>()
-    const preparation = new WindowPreparationCoordinator()
+    const preparations = new Map<number, WindowPreparationCoordinator>()
+    const candidates = new Map<number, PreparationEntry>()
     const hostAbort = new AbortController()
     const listeners = new Set<() => void>()
-    let candidate: PreparationEntry | undefined
-    let snapshot: { views: readonly Entry[]; candidate: PreparationEntry | undefined } = { views: [], candidate }
+    let snapshot: { views: readonly Entry[]; candidates: ReadonlyMap<number, PreparationEntry> } = { views: [], candidates: new Map() }
     let sequence = 0
     let disposed = false
     const publish = (): void => {
-        snapshot = { views: [...entries.values()], candidate }
+        snapshot = { views: [...entries.values()], candidates: new Map(candidates) }
         for (const listener of listeners) listener()
     }
     const subscribe = (listener: () => void): (() => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
@@ -636,7 +663,7 @@ export function installSessionViewHost(ctx: Context): {
     const Host = ({ SessionProvider, renderSlot }: HostProps): ReactNode => {
         const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
         return <>{current.views.map(entry => createPortal(
-            <SessionOccurrence entry={entry} candidate={current.candidate?.ownerKey === entry.key ? current.candidate : undefined}
+            <SessionOccurrence ctx={ctx} entry={entry} candidate={current.candidates.get(entry.key)}
                 SessionProvider={SessionProvider} renderSlot={renderSlot}/>, entry.target, String(entry.key),
         ))}</>
     }
@@ -661,17 +688,33 @@ export function installSessionViewHost(ctx: Context): {
         // Match the real conversation's geometry without putting candidate
         // anchors inside the visible reading owner's DOM query boundary.
         visibleTarget.parentElement.appendChild(target)
-        const entry: PreparationEntry = { key: ++sequence, ownerKey: owner.key, target, reference, lifetime: { mounted: false }, onError }
-        candidate = entry; publish()
+        const entry: PreparationEntry = { key: ++sequence, target, reference, lifetime: { mounted: false }, onError }
+        candidates.set(owner.key, entry); publish()
         return { target, async dispose() {
             const removed = entry.lifetime.mounted ? new Promise<void>(resolve => { entry.lifetime.removed = resolve }) : Promise.resolve()
-            if (candidate === entry) { candidate = undefined; publish() }
+            if (candidates.get(owner.key) === entry) { candidates.delete(owner.key); publish() }
             await removed
             target.remove()
         } }
     }
     const disposers: Array<() => void> = []
     try {
+        disposers.push(ctx.reflect.provide('chatPresentationConsumer', {
+            presentation: (sessionId: SessionId) => {
+                const session = ctx.sessions.binding(sessionId)?.session as
+                    (SessionReference['binding']['session'] & Partial<SourceViewportSession>) | undefined
+                return session?.sourceWindow === undefined ? undefined : {
+                    foldCompletedTurns: false, stepGrouping: 'none' as const, virtualizeGroupMembers: true,
+                }
+            },
+        }))
+        disposers.push(installSharedMountedChatConsumer(ctx,
+            element => [...entries.values()].find(entry => entry.target.contains(element))?.target,
+            async (sessionId, signal) => {
+                const session = ctx.sessions.binding(sessionId as SessionReference['sessionId'])?.session as
+                    { returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } | undefined
+                if (await session?.returnToLive?.(signal) !== true) throw new Error('The source has no newer window to land on')
+            }))
         disposers.push(ctx.slots.inject('shell.overlay', () => ctx.slots.register({
             name: 'shell.overlay', id: 'hapi.workspace.session-views',
             children: {
@@ -688,7 +731,10 @@ export function installSessionViewHost(ctx: Context): {
             if (disposed) throw new Error('The Host session-view surface is disposed')
             const identity = options.instanceId ?? options.paneId
             if (entries.has(identity)) throw new Error(`Pane ${options.paneId} already has a session view on this Host`)
-            let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading' }
+            let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading',
+                onRenderError: error => fail(error) }
+            const preparation = new WindowPreparationCoordinator(options.navigation.state)
+            preparations.set(entry.key, preparation)
             entries.set(identity, entry); publish()
             const stopReading = bindPaneReading(ctx, options.target, options.reference, options.navigation)
             let readingStopped = false
@@ -698,20 +744,21 @@ export function installSessionViewHost(ctx: Context): {
             const preparationAbort = new AbortController()
             let removed: Promise<void> | undefined
             const fail = (error: unknown): void => {
-                if (!live || disposed || entry.phase === 'error') return
+                if (!live || disposed || (entry.phase === 'error' && !entry.retryAdmission)) return
                 preparationAbort.abort()
+                void preparation.dispose()
                 preparers.get(identity)?.(); preparers.delete(identity)
                 uninitialHistory()
-                entry = { ...entry, phase: 'error', error }; entries.set(identity, entry); publish()
+                entry = { ...entry, phase: 'error', error, retryAdmission: undefined }; entries.set(identity, entry); publish()
                 entry.onError?.(error)
             }
-            // Outline failure must end this occurrence even if the original
+            // Source failure must end this occurrence even if the original
             // Session open is still pending. Both waits share one error path.
             const preparationReady = (options.reference as Partial<SourcePreparationReference>).preparationReady ?? options.reference.ready
             const mounted = preparationReady.then(() => {
                 if (!live || disposed || entry.phase === 'error') return
-                // Build the same official factory hidden while the outline is
-                // loading. Reading and viewport admission retain full readiness.
+                // Build the same official factory before viewport admission.
+                // Reading and viewport admission retain source readiness.
                 entry = { ...entry, phase: 'measuring' }; entries.set(identity, entry); publish()
                 const session = options.reference.binding.session as SessionReference['binding']['session'] & Partial<SourceViewportSession>
                 const available = (): boolean => {
@@ -739,32 +786,32 @@ export function installSessionViewHost(ctx: Context): {
                 const block = ctx.get('conversation')?.blocks.storeFor(options.reference.sessionId)
                 const alive = (): boolean => live && !disposed && entries.get(identity)?.key === entry.key
                 const lifetime = AbortSignal.any([preparationAbort.signal, hostAbort.signal])
-                // A mobile/second pane can be hidden or still measuring its first
-                // geometry when this occurrence mounts. Retry the viewport admission
-                // instead of failing the whole conversation on one false sample.
-                let ok = false
-                for (let attempt = 0; attempt < 240 && !lifetime.aborted; attempt++) {
-                    ok = await prepareInitialViewport(options.target, options.reference, options.navigation, alive,
+                // Admission already waits through editor assembly and zero-sized
+                // layouts, pausing while the pane or document is hidden. One
+                // occurrence gets one foreground budget; failure never restarts it.
+                const admit = async (): Promise<void> => {
+                    const ok = await prepareInitialViewport(options.target, options.reference, entry.navigation, alive,
                         () => block?.getSnapshot(), lifetime)
-                    if (ok) break
-                    // A pane can be visible while its measured editor is still
-                    // settling (restore, split, mobile keyboard). Keep retrying
-                    // for a bounded minute instead of failing the occurrence
-                    // after two seconds; detached targets still stop early.
-                    if (!alive()) break
-                    if (!options.target.hidden && attempt >= 40) break
-                    await new Promise<void>(resolve => {
-                        const timer = setTimeout(resolve, 250)
-                        lifetime.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
-                    })
+                    if (!live || disposed || lifetime.aborted) return
+                    if (!ok) {
+                        const error = new Error('The source conversation could not open its usable editor and first history viewport')
+                        // Keep the original editor and reading owner. Only an
+                        // explicit user retry starts another admission budget;
+                        // source/renderer failures still use the terminal path.
+                        const retryAdmission = (): void => {
+                            if (!live || disposed || entry.phase !== 'error') return
+                            entry = { ...entry, phase: 'measuring', error: undefined, retryAdmission: undefined }
+                            entries.set(identity, entry); publish()
+                            void admit().catch(fail)
+                        }
+                        entry = { ...entry, phase: 'error', error, retryAdmission }
+                        entries.set(identity, entry); publish(); entry.onError?.(error)
+                        return
+                    }
+                    entry = { ...entry, phase: 'ready', error: undefined, retryAdmission: undefined }; entries.set(identity, entry)
+                    publish()
                 }
-                if (!live || disposed) return
-                if (!ok) throw new Error('The source conversation could not open its usable editor and first history viewport')
-                entry = { ...entry, phase: 'ready' }; entries.set(identity, entry)
-                readers.set(identity, registerVisibleWindowReader(ctx, options.target, options.reference,
-                    () => live && !disposed && entry.phase === 'ready' && entry.navigation.state.getSnapshot().visible
-                        && options.target.isConnected && !options.target.hidden))
-                publish()
+                await admit()
             }).catch(fail)
             return {
                 suspendReading: uninitialHistory,
@@ -777,10 +824,11 @@ export function installSessionViewHost(ctx: Context): {
                     live = false
                     preparationAbort.abort()
                     preparers.get(identity)?.(); preparers.delete(identity)
-                    readers.get(identity)?.(); readers.delete(identity)
                     uninitialHistory()
                     initialHistory.delete(identity)
-                    removed = entry.lifetime.mounted ? new Promise<void>(resolve => { entry.lifetime.removed = resolve }) : Promise.resolve()
+                    const unmounted = entry.lifetime.mounted ? new Promise<void>(resolve => { entry.lifetime.removed = resolve }) : Promise.resolve()
+                    removed = Promise.all([unmounted, preparation.dispose()]).then(() => {})
+                    preparations.delete(entry.key)
                     if (entries.get(identity)?.key === entry.key) { entries.delete(identity); publish() }
                     return removed
                 },
@@ -791,11 +839,10 @@ export function installSessionViewHost(ctx: Context): {
             if (disposed) return
             disposed = true
             hostAbort.abort()
-            void preparation.dispose()
+            for (const preparation of preparations.values()) void preparation.dispose()
+            preparations.clear()
             for (const stop of preparers.values()) stop()
             preparers.clear()
-            for (const stop of readers.values()) stop()
-            readers.clear()
             for (const dispose of initialHistory.values()) dispose()
             initialHistory.clear(); entries.clear(); publish()
             for (const dispose of disposers.reverse()) dispose()

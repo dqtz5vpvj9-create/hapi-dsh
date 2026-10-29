@@ -5,6 +5,7 @@ import { remoteValue, type HapiRemoteApi } from '../client-api.ts';
 import { messageNodeTarget, placeReadingAnchor, revealChatElement } from './reading-anchor.ts';
 import { loadHistoryThrough } from './history-navigation.ts';
 import { sourceMessageForSequence, sourceSequenceForMessage } from './source-event-order.ts';
+import type { SourceViewportSession } from './source-sessions.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hapiMessageNavigation: SourceMessageNavigation } }
 
@@ -37,10 +38,11 @@ export class SourceMessageNavigation {
         const entries = this.ctx.sessions.binding(sessionId)?.eventSource.getSnapshot().entries
         const resident = entries && sourceSequenceForMessage(entries, sourceMessageId)
         if (resident !== undefined) return { sessionId, seq: resident as SessionSeq }
-        const located = remoteValue(await this.api.sourceLocateMessage({ sessionId, sourceMessageId }));
+        const session = this.ctx.sessions.binding(sessionId)?.session as SourceViewportSession | undefined;
+        const seq = await session?.loadSourceMessage?.(sourceMessageId, signal);
         signal?.throwIfAborted();
-        if (located.seq === null) throw new Error('This source message has not been observed in the conversation yet.');
-        return { sessionId: located.sessionId as SessionId, seq: located.seq as SessionSeq };
+        if (seq === undefined) throw new Error('The source message is no longer available in this conversation.');
+        return { sessionId, seq };
     }
     async reveal(sessionId: SessionId, sourceMessageId: string, signal?: AbortSignal, root?: HTMLElement): Promise<void> {
         const located = await this.locate(sessionId, sourceMessageId, signal);

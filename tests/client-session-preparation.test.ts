@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { test, type TestContext } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { act, createElement, useLayoutEffect } from 'react'
-import type { SessionBinding, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionBinding, SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConversationContentProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SourcePreparationReference, SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
@@ -68,7 +68,8 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
     install(globalThis, 'IS_REACT_ACT_ENVIRONMENT', true)
     install(globalThis, 'MutationObserver', class { observe() {} disconnect() {} })
     install(document, 'visibilityState', 'visible')
-    install(window, 'performance', { now: () => performance.now(), getEntriesByType: () => [] })
+    let elapsed = 0
+    install(window, 'performance', { now: () => elapsed, getEntriesByType: () => [] })
     install(window, 'sessionStorage', { getItem: () => null, setItem() {}, removeItem() {} })
     const frames = new Map<number, FrameRequestCallback>()
     let frameId = 0
@@ -77,6 +78,11 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
     // Domino supplies DOM identity, parsing, mutation, selectors and React's
     // events. Only the browser's layout and missing modern conveniences are seats.
     const elementPrototype = window.HTMLElement.prototype
+    define(elementPrototype, 'clientHeight', { get() { return 600 } })
+    define(elementPrototype, 'clientWidth', { get() { return 800 } })
+    // Candidate geometry borrows dimensions and typography from the visible
+    // pane; Domino has neither layout nor an iterable computed declaration.
+    install(window, 'getComputedStyle', () => Object.assign([], { font: '16px sans-serif', letterSpacing: 'normal', getPropertyValue: () => '' }))
     if (!('isConnected' in elementPrototype)) define(elementPrototype, 'isConnected', {
         get(this: HTMLElement) { return this.ownerDocument.documentElement.contains(this) },
     })
@@ -111,7 +117,8 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
         registerWindowReader(value: SourceWindowReader) { readers.add(value); return () => { readers.delete(value) } },
     } as unknown as SessionBinding['session']
     const binding: SessionBinding = { sessionId: id, session, eventSource: events as unknown as SessionBinding['eventSource'], ctx: root as SessionBinding['ctx'] }
-    const sessions = { list: observable({ byId: {}, ids: [], phase: 'ready' }), binding: (key: string) => key === id ? binding : undefined,
+    const bindings = new Map<string, SessionBinding>([[id, binding]])
+    const sessions = { list: observable({ byId: {}, ids: [], phase: 'ready' }), binding: (key: string) => bindings.get(key),
         retain() { counts.retains++; throw new Error('A borrowed SessionProvider must not retain another reference') },
         retainInfo: () => observable({ retainedBy: {} }),
     }
@@ -152,8 +159,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
                     createElement('div', { 'data-composer-input': '', contentEditable: true, suppressContentEditableWarning: true }, 'Draft'))))
         })
         ctx.slots.register({ name: 'conversation.session' }, ({ sessionId, useSession }: PropsRuntime<'conversation.session'>) => {
-            assert.equal(sessionId, id)
-            assert.equal(useSession(snapshot => snapshot.sessionId), id)
+            assert.equal(useSession(snapshot => snapshot.sessionId), sessionId)
             useLayoutEffect(() => { counts.mounts++; return () => { counts.unmounts++ } }, [])
             return createElement('div', { 'data-chat-flow': '', 'data-preparation-slot': sessionId }, 'Source body')
         })
@@ -171,9 +177,49 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
     let handle!: ReturnType<typeof installedHost.mount>
     await act(() => { handle = installedHost.mount({ paneId: 'pane', target, reference, navigation,
         onReady: () => { counts.ready++ }, onError: error => { errors.push(error) } }) })
-    return { target, host: installedHost, handle, binding, preparation, ready, counts, errors, preparers, readers,
+    const candidate = (name: string) => {
+        const sessionId = name as SessionBinding['sessionId']
+        const source = observable({ ...state.getSnapshot(), sessionId, hasMore: true })
+        const page = deferred<void>(), started = deferred<void>()
+        const candidateBinding = { ...binding, sessionId, session: { ...session, sessionId,
+            getSnapshot: source.getSnapshot, subscribe: source.subscribe,
+            async loadViewportPage() {
+                started.resolve(); await page.promise
+                source.set({ ...source.getSnapshot(), hasMore: false })
+            },
+        } } as SessionBinding
+        bindings.set(sessionId, candidateBinding)
+        const candidateReference: SessionReference = { sessionId, binding: candidateBinding, ready: Promise.resolve(candidateBinding),
+            release() { throw new Error('Candidate references remain owned by the source') },
+            [Symbol.dispose]() { throw new Error('Candidate references remain owned by the source') } }
+        return { reference: candidateReference, started: started.promise, finish: () => page.resolve() }
+    }
+    return { target, document, host: installedHost, handle, binding, preparation, ready, counts, errors, preparers, readers, candidate,
+        failProvider(error: Error) {
+            // The official SlotRenderer contains plugin-slot errors itself.
+            // Lose the borrowed binding at the public SessionProvider boundary
+            // to exercise the surrounding occurrence's terminal cleanup.
+            Object.defineProperty(reference, 'binding', { configurable: true, get() { throw error } })
+            handle.update({ navigation: { ...navigation } })
+        },
+        async addPane(paneId: string) {
+            const nextTarget = document.createElement('section'); document.body.appendChild(nextTarget)
+            let nextHandle!: typeof handle
+            await act(async () => {
+                nextHandle = installedHost.mount({ paneId, target: nextTarget, reference,
+                    navigation: { ...navigation, paneId, state: observable({ visible: true, focused: true }) },
+                    onReady: () => { counts.ready++ }, onError: error => { errors.push(error) } })
+                await tick()
+            })
+            return { target: nextTarget, handle: nextHandle }
+        },
         frames: () => frames.size,
-        async frame() { await act(async () => { const current = [...frames.values()]; frames.clear(); for (const callback of current) callback(performance.now()); await tick() }) },
+        async frame(milliseconds = 16) { await act(async () => {
+            elapsed += milliseconds
+            const current = [...frames.values()]; frames.clear()
+            for (const callback of current) callback(elapsed)
+            await tick()
+        }) },
         async settle(work: () => void) { await act(async () => { work(); await tick() }) },
     }
 }
@@ -207,6 +253,115 @@ test('source preparation mounts the real scoped slot hidden before outline readi
     assert.equal(f.counts.retains, 0)
     assert.equal(f.counts.releases, 0)
     assert.deepEqual(f.errors, [])
+})
+
+test('two panes prepare latest windows concurrently without replacing either official occurrence', async t => {
+    const f = await fixture(t)
+    await f.settle(() => { f.preparation.resolve(f.binding); f.ready.resolve(f.binding) })
+    await f.frame()
+    const second = await f.addPane('second')
+    await f.frame()
+    assert.equal(f.counts.ready, 2)
+    const originalEditors = [f.target, second.target].map(target => target.querySelector('[data-composer-input]'))
+    const [firstPreparer, secondPreparer] = [...f.preparers]
+    assert.ok(firstPreparer && secondPreparer)
+    const alpha = f.candidate('latest-alpha'), beta = f.candidate('latest-beta')
+    let first!: Promise<boolean>, last!: Promise<boolean>
+    await f.settle(() => { first = firstPreparer.prepare(alpha.reference, new AbortController().signal) })
+    await f.frame(); await alpha.started
+    await f.settle(() => { last = secondPreparer.prepare(beta.reference, new AbortController().signal) })
+    await f.frame(); await beta.started
+    assert.equal(f.document.querySelectorAll('[data-hapi-window-preparation]').length, 2)
+    assert.ok(f.document.querySelector('[data-preparation-slot="latest-alpha"]'), 'opening B cannot unmount A\'s in-flight official candidate')
+    assert.ok(f.document.querySelector('[data-preparation-slot="latest-beta"]'))
+    await f.settle(beta.finish)
+    for (let index = 0; index < 3; index++) await f.frame()
+    assert.equal(await last, true)
+    assert.ok(f.document.querySelector('[data-preparation-slot="latest-alpha"]'), 'finishing B cannot dispose A\'s candidate')
+    assert.equal(f.document.querySelectorAll('[data-hapi-window-preparation]').length, 1)
+    await f.settle(alpha.finish)
+    for (let index = 0; index < 3; index++) await f.frame()
+    assert.equal(await first, true)
+    assert.equal(f.document.querySelectorAll('[data-hapi-window-preparation]').length, 0)
+    assert.deepEqual([f.target, second.target].map(target => target.querySelector('[data-composer-input]')), originalEditors,
+        'candidate measurement preserves both original composer nodes')
+    assert.equal(f.counts.ready, 2)
+    assert.deepEqual(f.errors, [])
+})
+
+test('closing one pane cancels only its candidate and waits for its official unmount', async t => {
+    const f = await fixture(t)
+    await f.settle(() => { f.preparation.resolve(f.binding); f.ready.resolve(f.binding) })
+    await f.frame()
+    const second = await f.addPane('second')
+    await f.frame()
+    const [firstPreparer, secondPreparer] = [...f.preparers]
+    assert.ok(firstPreparer && secondPreparer)
+    const alpha = f.candidate('closing-alpha'), beta = f.candidate('surviving-beta')
+    let first!: Promise<boolean>, last!: Promise<boolean>, closed!: Promise<void>
+    await f.settle(() => {
+        first = firstPreparer.prepare(alpha.reference, new AbortController().signal)
+        last = secondPreparer.prepare(beta.reference, new AbortController().signal)
+    })
+    await f.frame(); await Promise.all([alpha.started, beta.started])
+    await f.settle(() => { closed = f.handle.dispose() })
+    await closed
+    assert.equal(await first, false)
+    assert.equal(f.document.querySelector('[data-hapi-window-preparation="closing-alpha"]') ?? null, null)
+    assert.ok(f.document.querySelector('[data-preparation-slot="surviving-beta"]'))
+    assert.ok(second.target.querySelector('[data-composer-input]'))
+    await f.settle(beta.finish)
+    for (let index = 0; index < 3; index++) await f.frame()
+    assert.equal(await last, true)
+    assert.equal(f.document.querySelectorAll('[data-hapi-window-preparation]').length, 0)
+    assert.deepEqual(f.errors, [])
+})
+
+test('Host initial admission stops after one foreground budget and only user retry resumes the same editor', async t => {
+    const f = await fixture(t)
+    await f.settle(() => { f.preparation.resolve(f.binding); f.ready.resolve(f.binding) })
+    const editor = f.target.querySelector('[data-composer-input]')!
+    editor.setAttribute('contenteditable', 'false')
+    editor.textContent = 'Unsent draft survives admission'
+    await f.frame(5_001)
+    assert.equal(f.errors.length, 1, 'exhausted admission must fail now, not sleep and obtain another five seconds')
+    assert.equal(f.counts.ready, 0)
+    assert.equal(f.target.querySelector('[data-composer-input]'), editor)
+    assert.equal(f.target.querySelector<HTMLElement>('[data-hapi-session-reveal]')!.style.visibility, 'hidden')
+    assert.match(f.target.querySelector('[role="alert"]')!.textContent!, /usable editor and first history viewport/)
+    assert.equal(f.readers.size, 0)
+    assert.equal(f.frames(), 0, 'no new admission or measurement survives the failed occurrence')
+    assert.equal(f.counts.pages, 0)
+    editor.setAttribute('contenteditable', 'true')
+    const retry = f.target.querySelector<HTMLButtonElement>('[role="alert"] button')!
+    assert.equal(retry.textContent, '重试打开')
+    await f.settle(() => { retry.click(); retry.click() })
+    await f.frame()
+    assert.equal(f.counts.ready, 1)
+    assert.equal(f.target.querySelector('[data-composer-input]'), editor)
+    assert.equal(editor.textContent, 'Unsent draft survives admission')
+    assert.equal(f.counts.mounts, 1, 'retry must not rebuild the official conversation or its editor')
+    assert.equal(f.target.querySelector<HTMLElement>('[data-hapi-session-reveal]')!.style.visibility, 'visible')
+    assert.equal(f.errors.length, 1)
+})
+
+test('a renderer failure during retryable admission becomes terminal and releases its preparation owner', async t => {
+    const f = await fixture(t)
+    await f.settle(() => { f.preparation.resolve(f.binding); f.ready.resolve(f.binding) })
+    f.target.querySelector('[data-composer-input]')!.setAttribute('contenteditable', 'false')
+    await f.frame(5_001)
+    assert.ok(f.target.querySelector('[role="alert"] button'))
+    assert.equal(f.preparers.size, 1)
+    const error = new Error('official renderer failed while admission was paused')
+    await f.settle(() => f.failProvider(error))
+    assert.equal(f.errors.at(-1), error, 'the terminal failure cannot be ignored because the previous phase was already error')
+    assert.equal(f.target.querySelector('[role="alert"]')?.textContent, error.message)
+    assert.equal(f.target.querySelector('[role="alert"] button'), null)
+    assert.equal(f.target.querySelector('[data-composer-input]'), null)
+    assert.equal(f.preparers.size, 0)
+    assert.equal(f.readers.size, 0)
+    assert.equal(f.frames(), 0)
+    assert.equal(f.counts.ready, 0)
 })
 
 test('outline failure unmounts the hidden scoped slot and clears its preparation without releasing the borrowed reference', async t => {

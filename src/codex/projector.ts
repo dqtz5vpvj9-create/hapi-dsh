@@ -3,7 +3,7 @@ import {
   type AssistantMessage, type AssistantStreamRecord, type ContentBlock, type StreamChunk, type UserMessage,
 } from '@deepseek-ai/dsh-llm'
 import {
-  appendPluginRecord, type PluginRecordMap, type Session, type SessionEvent, type SessionEventMap,
+  SessionSeq, type PluginRecordMap, type Session, type SessionEvent, type SessionEventMap,
   type SessionEventType, type SurfaceEventType, type SurfaceIntent, type TurnEndReason,
 } from '@deepseek-ai/dsh-session'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
@@ -13,6 +13,9 @@ import { projectNotifySummaries, stripNotifySummaryFooter, type SourceNotifySumm
 import { parseSourceCodexReview, type SourceCodexReviewRecord } from '../hapi-agent/codex-review.js'
 import './projection-state.js'
 import { independentStreamDelta } from '../shared/stream-text.js'
+import { HistoryProjectionSink, SessionProjectionSink, type ProjectionEventSink, type ProjectionEventSource } from '../shared/projection-event-sink.js'
+import { toSourceFrames } from '../shared/source-frame-builder.ts'
+import type { SourceFrame } from '../shared/source-frames.ts'
 
 interface Step {
   key: string
@@ -35,6 +38,7 @@ interface Stream {
   text: string
   rawText: string
   sourceRowId: string
+  source: ProjectionEventSource
   reasoning: boolean
   step: Step
   records: AssistantStreamRecord[]
@@ -52,6 +56,8 @@ export interface NativeProjectorOptions {
   stream(frame: AssistantStreamFrame): void
   /** First display Turn number. History pages render below the live seed. */
   turnBase?: number
+  /** Keep streaming revisions monotonic when only the projection is rebuilt. */
+  streamRevisionBase?: number
 }
 
 /**
@@ -76,17 +82,40 @@ export class NativeProjector {
   private revision = 0
   private seed: SessionEvent[] | undefined
   private sourceTime = 0
+  private sourceOrigin: ProjectionEventSource | undefined
 
   private readonly turnBase: number
   private suppressFirstTurn = false
-  constructor(private currentSession: Session, private readonly options: NativeProjectorOptions) {
+  private sink: ProjectionEventSink
+  constructor(target: Session | HistoryProjectionSink, private readonly options: NativeProjectorOptions) {
+    this.sink = target instanceof HistoryProjectionSink ? target : new SessionProjectionSink(target)
     this.turnBase = options.turnBase ?? 0
+    this.revision = options.streamRevisionBase ?? 0
+  }
+
+  static history(options: NativeProjectorOptions): NativeProjector { return new NativeProjector(new HistoryProjectionSink(), options) }
+  streamRevision(): number { return this.revision }
+  /** Current source text is a replaceable frame, never an executed DSH step. */
+  activeSourceFrames(): SourceFrame[] {
+    const stream = this.activeStream
+    if (!stream || !stream.text) return []
+    const event: SessionEvent<'assistant/message'> = { type: 'assistant/message', seq: SessionSeq(this.sink.seq), time: this.sourceTime,
+      data: { turn: stream.step.turn, step: stream.step.step, stream: [],
+        message: this.assistant(stream.key, [{ type: stream.reasoning ? 'reasoning' : 'text', text: stream.text }]) }, surfaceOp: 'append' }
+    return toSourceFrames({ events: [event], eventSources: new Map([[event.seq, stream.source]]),
+      turnAnchors: this.turnAnchorEntries(), stepAnchors: this.stepAnchorEntries() }).map(frame => ({ ...frame, transient: true }))
   }
 
   /** A live seed/history page begins inside its first source turn. */
   setSuppressFirstTurnStart(): void { this.suppressFirstTurn = true }
 
-  get session(): Session { return this.currentSession }
+  get session(): Session {
+    if (!(this.sink instanceof SessionProjectionSink)) throw new Error('A pure history projection has no Session')
+    return this.sink.session
+  }
+  eventSources(): ReadonlyMap<number, ProjectionEventSource> | undefined {
+    return this.sink instanceof HistoryProjectionSink ? this.sink.eventSources : undefined
+  }
 
   /** Collect a detached historical seed without altering any published log. */
   beginHistorySeed(): void {
@@ -95,23 +124,29 @@ export class NativeProjector {
   }
 
   historySeed(): readonly SessionEvent[] {
+    if (this.sink instanceof HistoryProjectionSink) return this.sink.events
     if (!this.seed) throw new Error('Native history seeding was not started')
     return this.seed
   }
 
   /** Bind only a freshly prepared Session that validated our historical seed. */
   finishHistorySeed(session: Session): void {
+    if (this.sink instanceof HistoryProjectionSink) {
+      if (session.firstLiveSeq !== this.sink.seq) throw new Error('The prepared native Session does not match its projected history')
+      this.sink = new SessionProjectionSink(session)
+      return
+    }
     if (!this.seed || session.id !== this.session.id || session.firstLiveSeq !== this.seed.length) {
       throw new Error('The prepared native history does not match its display seed')
     }
-    this.currentSession = session
+    this.sink = new SessionProjectionSink(session)
     this.seed = undefined
   }
 
   private append<T extends SessionEventType>(
     type: T, data: SessionEventMap[T], ...options: T extends SurfaceEventType ? [options: SurfaceIntent<T>] : []
   ): SessionEvent<T> {
-    const event = this.session.append(type, data, ...options)
+    const event = this.sink.append(type, data, this.sourceTime, ...options)
     // append already validated the discriminated type/data pair. TypeScript
     // cannot distribute a generic T through the mapped SessionEvent union.
     if (this.seed) this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
@@ -122,10 +157,8 @@ export class NativeProjector {
    * Deferring them until after the whole seed made every initial/older page
    * carry annotations for the entire transcript instead of its own window. */
   private appendRecord<K extends Extract<keyof PluginRecordMap, `plugin:${string}`>>(type: K, data: PluginRecordMap[K]): void {
-    const seq = appendPluginRecord(this.session, type, data)
+    const event = this.sink.appendRecord(type, data, this.sourceTime)
     if (this.seed) {
-      const event = this.session.eventAt(seq)
-      if (!event) throw new Error('The native annotation was not committed to its detached Session')
       this.seed.push({ ...event, time: this.sourceTime } as SessionEvent)
     }
   }
@@ -170,6 +203,9 @@ export class NativeProjector {
       let ending: NativeExecution['turn']
       for (const row of group) {
         this.sourceTime = row.createdAt
+        this.sourceOrigin = { messageId: row.rowId, at: row.sourceAt ?? row.createdAt, seq: row.seq ?? 0,
+          ...(row.execution?.turnId === undefined ? {} : { turnKey: row.execution.turnId }), itemKey: row.key }
+        this.sink.setSource(this.sourceOrigin)
         if (row.execution?.turn?.ended) ending = row.execution.turn
         if (row.kind !== 'user' || row.invoked) this.applyRow(row, lateTolerant && this.isLateSourceRow(row), lateTolerant)
         const sourceAt = row.sourceAt ?? row.createdAt
@@ -379,18 +415,19 @@ export class NativeProjector {
     if (!stream || stream.key !== row.key || stream.reasoning !== row.reasoning || !projectedText.startsWith(stream.text)) {
       this.abandonStream()
       stream = { key: row.key, attemptId: LlmAttemptId(`native:${row.key}:${++this.revision}`),
-        revision: this.revision, index: 0, text: '', rawText: '', sourceRowId: row.rowId, reasoning: row.reasoning, step, records: [] }
+        revision: this.revision, index: 0, text: '', rawText: '', sourceRowId: row.rowId,
+        source: this.sourceOrigin!, reasoning: row.reasoning, step, records: [] }
       this.activeStream = stream
       this.options.stream({ type: 'start', attemptId: stream.attemptId, revision: stream.revision, turn: step.turn, step: step.step })
       this.emitChunk(stream, { type: 'block-start', index: 0, blockType: row.reasoning ? 'reasoning' : 'text' })
     }
     const text = independentStreamDelta(projectedText, stream.text.length)
     if (text) this.emitChunk(stream, { type: row.reasoning ? 'reasoning-delta' : 'text-delta', index: 0, text })
-    stream.text = projectedText; stream.rawText = row.text; stream.sourceRowId = row.rowId
+    stream.text = projectedText; stream.rawText = row.text; stream.sourceRowId = row.rowId; stream.source = this.sourceOrigin!
   }
 
   private emitChunk(stream: Stream, chunk: StreamChunk): void {
-    const time = Date.now()
+    const time = this.seed || this.sink instanceof HistoryProjectionSink ? this.sourceTime : Date.now()
     stream.records.push({ type: 'chunk', time, chunk })
     this.options.stream({ type: 'chunk', attemptId: stream.attemptId, revision: ++this.revision,
       index: stream.index++, time, chunk })
@@ -411,6 +448,7 @@ export class NativeProjector {
       // An interrupted native item may never emit item/completed. Its visible
       // partial is committed only after an authoritative non-success terminal.
       if (status !== 'completed' && stream.rawText) {
+        this.sink.setSource(stream.source)
         const block: ContentBlock = stream.reasoning ? { type: 'reasoning', text: stream.text } : { type: 'text', text: stream.text }
         const event = this.append('assistant/message', {
           turn: stream.step.turn, step: stream.step.step,
@@ -422,6 +460,7 @@ export class NativeProjector {
         this.options.stream({ type: 'end', attemptId: stream.attemptId, revision: ++this.revision,
           index: stream.index, outcome: { kind: 'committed', eventType: 'assistant/message', seq: event.seq } })
         this.activeStream = undefined
+        if (this.sourceOrigin) this.sink.setSource(this.sourceOrigin)
       } else this.abandonStream()
     }
     for (const step of this.steps.values()) if (step.nativeTurnId === id) this.closeStep(step)

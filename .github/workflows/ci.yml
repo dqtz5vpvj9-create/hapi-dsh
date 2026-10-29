@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,40 +25,12 @@ jobs:
         run: npm install --global pnpm@11.28.5
       - name: Install exact dependencies
         run: npm ci
-      - name: Types, unit cases, and distributable build
+      - name: Types, behavior contracts, component tests, regression fault checks, and build
         run: npm run check
       - name: Unmodified official DSH federation integration
         env:
           HAPI_DSH_OFFICIAL_TESTS: '1'
         run: node --import tsx --test --test-isolation=none tests/federation-official.test.ts
-      - name: Install Chromium
-        run: npm exec -- playwright install --with-deps chromium
-      - name: Check UI measurement negative controls
-        run: npm run test:ui:probe
-      - name: Official UI acceptance with one shared Host and browser
-        env:
-          HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-ui
-        run: npm run test:ui:ci
-      - name: Full browser regression suite
-        env:
-          HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-browser
-          HAPI_DSH_VISUAL_DIR: ${{ runner.temp }}/hapi-dsh-visual
-          # The fixed webshot utility is installed on the Agent host. CI runs
-          # gesture assertions but does not claim a human screenshot review.
-          HAPI_DSH_VISUAL_REVIEW: 'off'
-        run: npm run test:e2e
-      - name: Upload browser reports
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: browser-reports
-          path: |
-            playwright-report/
-            test-results/
-            ${{ runner.temp }}/hapi-dsh-ui/hapi-ui-acceptance-*.json
-            ${{ runner.temp }}/hapi-dsh-visual/
-          if-no-files-found: ignore
-          retention-days: 7
   package:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

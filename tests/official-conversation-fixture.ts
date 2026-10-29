@@ -32,6 +32,7 @@ export interface OfficialChatSnapshot {
 }
 export interface OfficialChatAssembler {
     replaceWindow(entries: readonly { type: 'event'; event: SessionEvent }[], hasMore: boolean): unknown
+    append(entry: { type: 'event'; event: SessionEvent }): unknown
     prepend(entries: readonly { type: 'event'; event: SessionEvent }[], hasMore: boolean): unknown
     flush(): boolean
     activateTarget(target: string): unknown

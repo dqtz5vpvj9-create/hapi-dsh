@@ -1,3 +1,4 @@
+import type { SourceWindowProgress } from '../../shared/source-frames.ts'
 /**
  * Seamless earlier-history loading — strategy B (drive the official control).
  *
@@ -8,8 +9,10 @@
  * reader position after the prepend commit. No public seam exposes that action
  * programmatically, so this controller automates the *user* action instead of
  * reimplementing the anchor owner: it watches the conversation scrollport for a
- * deliberate upward gesture near the top and clicks the official control. All
- * paging and rendering stay upstream. Normal paging anchors stay upstream too;
+ * deliberate upward gesture, warms one source-backed page within the reader's
+ * estimated runway, then clicks the official control at the page boundary. The
+ * warm-up stays private until the official load commits. All paging and rendering
+ * stay upstream. Normal paging anchors stay upstream too;
  * the sole exception is an in-flight page interrupted by a new reader gesture,
  * after the official reader has released its anchor. One visible row supplies
  * a commit-time correction during motion or a gesture gap at the upper edge.
@@ -30,16 +33,16 @@
  * - Reader arbitration: tail following, active selection, editing focus, a
  *   pointer drag on transcript text, hidden panes, nested scrollports, and
  *   panes the reader is not touching all suppress the automation.
- * - Cross-pane aggregate concurrency/rate and a per-session automatic page
- *   ceiling bound requests and retained history growth (the upstream window is
- *   append-only and has no trim API).
+ * - Cross-pane aggregate concurrency/rate bounds automatic requests. The
+ *   per-session page ceiling applies to ordinary append-only Sessions; HAPI
+ *   source windows have their own event/byte retention limit and can continue
+ *   following the reader beyond that legacy ceiling.
  *
  * Automation is best effort and fully removable: if the official DOM contract
  * changes, every helper returns null and the plugin degrades to the stock
  * manual control. The pinned dependency version is the compatibility contract.
  */
 
-import { markReaderActivity } from '../reader-activity.ts'
 import { captureInterruptedPrepend, INTERRUPTED_PREPEND_STYLE, type InterruptedPrependAnchor } from './interrupted-anchor.ts'
 import type { AggregateLoadGate, SessionPageLedger, AggregateLoadLimits } from './concurrency.ts'
 import type { EarlierLoadBudgetLimits } from './budget.ts'
@@ -96,6 +99,14 @@ export interface SeamlessHistoryOptions {
      * DOM control is then clicked as before.
      */
     readonly loadOlderProgrammatically?: (pane: HTMLElement, sessionId: string | null, signal: AbortSignal) => Promise<boolean>
+    /** Warm the next source page on upward reader intent without publishing it. */
+    readonly prefetchOlderPage?: (sessionId: string | null) => void
+    /** Cancel a source-owned page even when this controller only observed the official load. */
+    readonly cancelSourcePage?: (sessionId: string | null, reason: unknown) => void
+    /** Recheck adjacent-page preloading when the source window commits a page. */
+    readonly subscribeSourceWindow?: (sessionId: string | null, listener: () => void) => (() => void) | undefined
+    /** Folded steps can receive older data without adding an outer DOM row. */
+    readonly sourceWindowProgress?: (sessionId: string | null) => SourceWindowProgress | undefined
     /** Data-only forward page at the bottom of a detached source window. */
     readonly loadAfter?: (pane: HTMLElement, sessionId: string | null) => boolean | Promise<boolean>
     /** False synchronously keeps the normal official action. A Promise resolves
@@ -105,6 +116,8 @@ export interface SeamlessHistoryOptions {
 
 /** How long a scroll/hit sample stays attributable to a real reader input. */
 const FRESH_INPUT_MS = 250
+/** Keep the HAPI-style preload runway active through native scroll momentum. */
+const PREFETCH_INPUT_WINDOW_MS = 1_000
 /** Scrollend fallback for older engines; every outer scroll sample postpones it. */
 const TOUCH_SCROLL_QUIET_MS = 180
 /** Earliest point at which "control re-enabled without progress" is a failure. */
@@ -115,7 +128,7 @@ const PENDING_POLL_MS = 400
 const QUIET_AFTER_JUMP_MS = 400
 /** Throttle between emitted aggregate-deferral events. */
 const DEFERRAL_EVENT_MS = 1_000
-/** Default per-session ceiling on automatic pages. */
+    /** Default ceiling for automatic pages in append-only ordinary Sessions. */
 export const DEFAULT_MAX_AUTOMATIC_PAGES_PER_SESSION = 20
 /** Attribute the controller maintains on the workspace pane for diagnostics. */
 export const SEAMLESS_ATTRIBUTE = 'data-hapi-seamless'
@@ -139,6 +152,7 @@ interface ProgressProbe {
     readonly count: number
     /** Position of the requested head in this window; -1 means it was removed. */
     readonly retainedHeadIndex?: number
+    readonly source?: SourceWindowProgress
 }
 
 /** One measurement of the pane's chat surface. */
@@ -200,7 +214,20 @@ export function probeHistoryWindow(column: HTMLElement, retainedHead?: string | 
  * @param after - probe read after the request settled.
  * @returns whether the loaded window moved toward older history.
  */
+function sourceChanged(before: ProgressProbe, after: ProgressProbe): boolean {
+    return !!before.source && !!after.source && (before.source.historyId !== after.source.historyId
+        || before.source.historyVersion !== after.source.historyVersion)
+}
+
+function olderSourceCursor(before: ProgressProbe, after: ProgressProbe): boolean {
+    const old = before.source?.before, next = after.source?.before
+    return !!old && !!next && !sourceChanged(before, after)
+        && (next.at < old.at || next.at === old.at && next.seq < old.seq)
+}
+
 export function historyWindowProgressed(before: ProgressProbe, after: ProgressProbe): boolean {
+    if (sourceChanged(before, after)) return false
+    if (olderSourceCursor(before, after)) return true
     if (after.firstKey === null) return false
     if (before.firstKey === null) return after.count > 0
     return after.firstKey !== before.firstKey && after.retainedHeadIndex !== undefined && after.retainedHeadIndex > 0
@@ -218,6 +245,8 @@ export function historyWindowProgressed(before: ProgressProbe, after: ProgressPr
  * @returns whether a smaller window also replaced its earliest identity.
  */
 export function historyWindowWasReset(before: ProgressProbe, after: ProgressProbe): boolean {
+    if (sourceChanged(before, after)) return true
+    if (olderSourceCursor(before, after)) return false
     return after.count < before.count && after.firstKey !== before.firstKey
         && (after.retainedHeadIndex === undefined || after.retainedHeadIndex < 0)
 }
@@ -308,6 +337,10 @@ class ConversationHistoryController {
     private deferredEarlier: ReturnType<typeof setTimeout> | undefined
     private lastUserInputAt = Number.NEGATIVE_INFINITY
     private lastUserIntent: ReaderIntent = 'none'
+    private lastUserVelocity = 0
+    private lastPrefetchKey: string | null = null
+    private sourceWindowSubscriptionSession: string | null | undefined
+    private sourceWindowUnsubscribe: (() => void) | undefined
     private quietUntil = Number.NEGATIVE_INFINITY
     private touchY: number | null = null
     private touchActive = false
@@ -359,6 +392,7 @@ class ConversationHistoryController {
         })
         this.sessionId = content.getAttribute('data-conversation-session')
         this.unwatchReadingIntent = registerLatestCancellation(content, () => this.cancelLatest())
+        this.bindSourceWindow()
         this.listen('scroll', this.onScroll, { capture: true, passive: true })
         this.listen('scrollend', this.onScrollEnd, { capture: true, passive: true })
         this.listen('wheel', this.onWheel, { passive: true })
@@ -421,7 +455,9 @@ class ConversationHistoryController {
 
     /** Read the transcript probe used to prove a prepend; only while watching. */
     private probeOf(measured: Measured, retainedHead?: string | null): ProgressProbe {
-        return probeHistoryWindow(measured.column, retainedHead)
+        const probe = probeHistoryWindow(measured.column, retainedHead)
+        const source = this.options.sourceWindowProgress?.(this.sessionId)
+        return source ? { ...probe, source } : probe
     }
 
     /** Read the official state the policy needs, including reader fixation. */
@@ -456,6 +492,7 @@ class ConversationHistoryController {
             const range = selection.getRangeAt(0)
             if (this.content.contains(range.commonAncestorContainer)) return true
         }
+        if (this.touchMotion) return false
         const pointer = this.shared.pointerTarget
         if (pointer === null || pointer === scroller) return false
         if (!this.content.contains(pointer)) return false
@@ -473,7 +510,7 @@ class ConversationHistoryController {
     /** Reset when the same pane occurrence renders a different session. */
     private ensureSession(): void {
         const next = this.content.getAttribute('data-conversation-session')
-        if (next === this.sessionId) return
+        if (next === this.sessionId) { this.bindSourceWindow(); return }
         const previous = this.sessionId
         this.cancelLatest()
         this.cancelPending('session-changed')
@@ -483,14 +520,47 @@ class ConversationHistoryController {
         this.lastScrollTop = null
         this.lastUserInputAt = Number.NEGATIVE_INFINITY
         this.lastUserIntent = 'none'
+        this.lastUserVelocity = 0
+        this.lastPrefetchKey = null
         this.quietUntil = Number.NEGATIVE_INFINITY
         this.touchY = null
         this.cancelTouchPaging()
         this.recoveryProbe = null
         this.awaitingRecovery = false
+        this.bindSourceWindow()
         this.mark(null)
         this.observe(null)
         if (previous !== null && next !== null) this.emit('reset', 'session-changed')
+    }
+
+    /** Subscribe once to the mounted source facade; ordinary Sessions have no source feed. */
+    private bindSourceWindow(): void {
+        const sessionId = this.sessionId
+        if (sessionId === null || this.sourceWindowSubscriptionSession === sessionId
+            && this.sourceWindowUnsubscribe !== undefined) return
+        this.sourceWindowUnsubscribe?.()
+        this.sourceWindowUnsubscribe = undefined
+        this.sourceWindowSubscriptionSession = sessionId
+        const unsubscribe = this.options.subscribeSourceWindow?.(sessionId, () => this.prefetchOlderIfReady())
+        if (unsubscribe) this.sourceWindowUnsubscribe = unsubscribe
+    }
+
+    /** Match HAPI's preload hook: a committed page can warm the next cursor while upward intent is fresh. */
+    private prefetchOlderIfReady(): void {
+        const sessionId = this.sessionId
+        if (sessionId === null || this.options.prefetchOlderPage === undefined || !this.usable()
+            || this.lastUserIntent !== 'up' || this.now() - this.lastUserInputAt > PREFETCH_INPUT_WINDOW_MS) return
+        const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
+        if (scroller === null || scroller.clientHeight <= 0) return
+        const progress = this.options.sourceWindowProgress?.(sessionId)
+        if (progress === undefined) return
+        const key = JSON.stringify([sessionId, progress.before, progress.historyId, progress.historyVersion])
+        if (key === this.lastPrefetchKey) return
+        const lead = Math.max(scroller.clientHeight * 3,
+            Math.min(scroller.scrollHeight * 0.75, this.lastUserVelocity * 800))
+        if (scroller.scrollTop > lead) return
+        this.lastPrefetchKey = key
+        this.options.prefetchOlderPage(sessionId)
     }
 
     /** Mark the pane element with the current automation state for diagnostics. */
@@ -532,6 +602,11 @@ class ConversationHistoryController {
 
     /** Keep the pending/recovery mutation observer on the current column. */
     private observe(column: HTMLElement | null): void {
+        // Source sessions commit through their own history-window state and
+        // HAPI's virtual list. Watching every descendant mutation here makes
+        // a large React commit trigger repeated DOM-wide progress probes.
+        // The pending timer still checks progress, but only once per interval.
+        if (column !== null && this.options.sourceWindowProgress?.(this.sessionId) !== undefined) column = null
         if (column === this.observedColumn) return
         this.observer?.disconnect()
         this.observedColumn = column
@@ -568,15 +643,28 @@ class ConversationHistoryController {
     }
 
     /** Record reader input and, when it asks for earlier content, run the policy. */
-    private input(intent: ReaderIntent, now: number, gesture = true): void {
+    private input(intent: ReaderIntent, now: number, _gesture = true, distance = 0): void {
         if (intent !== 'up' && intent !== 'down') return
-        if (gesture) { this.lastUserInputAt = now; this.lastUserIntent = intent }
+        const previousIntent = this.lastUserIntent
+        const previousInputAt = this.lastUserInputAt
+        const elapsed = previousIntent === intent && now - previousInputAt < 250
+            ? Math.max(16, now - previousInputAt) : 100
+        this.lastUserInputAt = now
+        this.lastUserIntent = intent
+        this.lastUserVelocity = Math.abs(distance) / elapsed
+        if (intent === 'up' && this.options.prefetchOlderPage !== undefined && this.usable()) {
+            this.bindSourceWindow()
+            this.prefetchOlderIfReady()
+        }
         if (this.touchMotion) {
             const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
             const atBottom = scroller !== null && scroller.scrollTop >= scroller.scrollHeight - scroller.clientHeight - 2
             this.touchWantsEarlier = !this.touchCancelled && intent === 'up' && scroller !== null
                 && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)
             this.touchWantsLater = !this.touchCancelled && intent === 'down' && atBottom
+            if (this.touchWantsEarlier && this.options.sourceWindowProgress?.(this.sessionId) !== undefined) {
+                this.requestEarlier(now)
+            }
             return
         }
         if (intent === 'down') { this.requestLater(now); return }
@@ -596,8 +684,17 @@ class ConversationHistoryController {
         const now = this.now()
         if (this.touchMotion) {
             this.touchScrolling = true
-            if (previous !== null && scrollIntent(previous, current) === this.lastUserIntent)
-                this.input(this.lastUserIntent, now, false)
+            const intent = previous === null ? 'none' : scrollIntent(previous, current)
+            if (intent !== 'none' && intent === this.lastUserIntent) {
+                this.input(this.lastUserIntent, now, false, previous === null ? 0 : Math.abs(current - previous))
+                if (this.pending !== null) {
+                    if (intent === 'up' && current <= 1 && !this.interruptedAnchor?.waitingAtUpperEdge) {
+                        this.releaseInterruptedAnchor()
+                        this.interruptedAnchor = this.capturePageAnchor(target)
+                        this.interruptedAnchor?.retainAtUpperEdge()
+                    } else this.releaseInterruptedAnchor()
+                }
+            }
             this.scheduleTouchFallback(target)
             return
         }
@@ -614,22 +711,20 @@ class ConversationHistoryController {
             }
             return
         }
-        markReaderActivity(now)
-        this.input(intent, now, false)
+        this.input(intent, now, false, Math.abs(current - previous))
+        // Actual reader movement hands anchor ownership back to HAPI's viewport.
+        // Only a gesture blocked at scrollTop=0 needs our retained edge anchor.
         if (this.pending !== null && intent !== 'none') {
-            // A reader scroll can start a page itself, or arrive after its
-            // originating wheel has clicked loadEarlier. The official reader
-            // sample releases that newly retained anchor in either case, even
-            // when no second wheel arrives before the page commits.
-            this.releaseInterruptedAnchor()
-            this.interruptedAnchor = captureInterruptedPrepend(target)
-            if (intent === 'up') this.interruptedAnchor?.retainAtUpperEdge()
+            if (intent === 'up' && current <= 1 && !this.interruptedAnchor?.waitingAtUpperEdge) {
+                this.releaseInterruptedAnchor()
+                this.interruptedAnchor = this.capturePageAnchor(target)
+                this.interruptedAnchor?.retainAtUpperEdge()
+            } else this.releaseInterruptedAnchor()
         }
     }
 
     /** A wheel sample is the primary desktop gesture; respect nested scrollports. */
     private readonly onWheel = (event: WheelEvent): void => {
-        if (event.isTrusted) this.releaseInterruptedAnchor()
         if (!this.usable()) return
         this.ensureSession()
         const intent = wheelIntent(event.deltaY, event.deltaMode)
@@ -641,18 +736,22 @@ class ConversationHistoryController {
         if (this.innerScrollConsumes(target, scroller, intent)) return
         if (event.isTrusted) {
             this.cancelLatest()
+            const alreadyPending = this.pending !== null
+            const keepUpperEdge = alreadyPending && intent === 'up' && scroller.scrollTop <= 1
+                && this.interruptedAnchor?.waitingAtUpperEdge === true
+            if (!keepUpperEdge) this.releaseInterruptedAnchor()
             // Wheel input also releases the official paging anchor. At zero
             // another upward wheel may produce no scroll/scrollend at all,
             // leaving an in-flight prepend with no reading-position owner.
             // Cover manual pages too, without issuing or budgeting a new load.
             if (this.pending === null
                 && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)) this.observeEarlierPage()
-            if (this.pending !== null) {
-                this.interruptedAnchor = captureInterruptedPrepend(scroller)
+            if (!alreadyPending && this.pending !== null && intent === 'up' && scroller.scrollTop <= 1) {
+                this.interruptedAnchor = this.capturePageAnchor(scroller)
                 if (intent === 'up') this.interruptedAnchor?.retainAtUpperEdge()
             }
         }
-        this.input(intent, this.now())
+        this.input(intent, this.now(), true, Math.abs(event.deltaY))
     }
 
     /** Touch start only records the finger position for inertial intent. */
@@ -678,7 +777,7 @@ class ConversationHistoryController {
             // Manual paging and official prefetch use the same loading state.
             // Observe an already-running page; never request or budget it here.
             if (this.pending === null) this.observeEarlierPage()
-            if (this.pending !== null) this.interruptedAnchor = captureInterruptedPrepend(scroller)
+            if (this.pending !== null) this.interruptedAnchor = this.capturePageAnchor(scroller)
         }
     }
 
@@ -690,7 +789,8 @@ class ConversationHistoryController {
         if (!this.touchMotion) return
         const current = event.touches[0]?.clientY
         if (current === undefined) { this.touchY = null; return }
-        const intent = touchIntent(this.touchY, current)
+        const previousY = this.touchY
+        const intent = touchIntent(previousY, current)
         this.touchY = current
         if (intent === 'none') return
         const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
@@ -698,7 +798,7 @@ class ConversationHistoryController {
         const target = event.target
         if (!(target instanceof Element)) return
         if (this.innerScrollConsumes(target, scroller, intent)) { this.touchWantsEarlier = false; return }
-        this.input(intent, this.now())
+        this.input(intent, this.now(), true, Math.abs(current - (previousY ?? current)))
     }
 
     /** The finger leaving is not the end of native momentum scrolling. */
@@ -796,9 +896,18 @@ class ConversationHistoryController {
         this.interruptedAnchor = null
     }
 
+    /** Source pages are corrected exclusively by the mounted official viewport. */
+    private capturePageAnchor(scroller: HTMLElement): InterruptedPrependAnchor | null {
+        return this.options.sourceWindowProgress?.(this.sessionId) === undefined
+            ? captureInterruptedPrepend(scroller) : null
+    }
+
     private readonly onPointerDown = (event: PointerEvent): void => {
         if (event.isTrusted && event.target instanceof Element
-            && event.target.closest(SCROLLER_SELECTOR) !== null && !isEditable(event.target)) this.cancelLatest()
+            && event.target.closest(SCROLLER_SELECTOR) !== null && !isEditable(event.target)) {
+            this.cancelLatest()
+            this.releaseInterruptedAnchor()
+        }
         if (event.isTrusted && event.target instanceof Element
             && event.target.closest('button, a, input, textarea, select, [contenteditable]') !== null) {
             this.releaseInterruptedAnchor()
@@ -909,11 +1018,12 @@ class ConversationHistoryController {
     /** Evaluate policy and, when approved, click the official control once. */
     private requestEarlier(now: number): void {
         if (this.pending !== null) return
-        if (now < this.quietUntil) return
+        const boundedSource = this.options.sourceWindowProgress?.(this.sessionId)
+        if (boundedSource === undefined && now < this.quietUntil) return
         // Never commit a page while a wheel/key gesture is actively moving the
         // transcript: one synchronous merge of a large retained window can cost
         // most of a second. Resume once the gesture has been quiet for a beat.
-        if (this.lastUserIntent === 'up' && now - this.lastUserInputAt < 160) {
+        if (boundedSource === undefined && this.lastUserIntent === 'up' && now - this.lastUserInputAt < 160) {
             if (this.deferredEarlier === undefined) {
                 this.deferredEarlier = setTimeout(() => {
                     this.deferredEarlier = undefined
@@ -943,12 +1053,17 @@ class ConversationHistoryController {
         }
         // Re-point the recovery observer when the view switched away and back.
         if (this.awaitingRecovery) this.observe(measured.column)
-        if (this.ledger.exhausted(identity)) {
+        // Ordinary official windows append every loaded page for the Session
+        // lifetime, so keep their safety ceiling. HAPI source windows evict
+        // away from protected readers under their event/byte budget; applying
+        // the same lifetime cap made a long source transcript stop at an
+        // arbitrary page even though the bounded reader still had capacity.
+        if (this.ledger.exhausted(identity) && boundedSource === undefined) {
             this.mark('limit')
             this.notifySuspended('session-page-ceiling', now)
             return
         }
-        const decision = this.policy.evaluate(this.viewOf(measured), 'up', now)
+        const decision = this.policy.evaluate(this.viewOf(measured), 'up', now, boundedSource === undefined)
         if (!decision.request) {
             if (decision.reason === 'suspended') {
                 this.mark('suspended')
@@ -961,16 +1076,22 @@ class ConversationHistoryController {
         // authorize a click while upstream still reports loading.
         const control = measured.control
         if (control === null || control.disabled) return
-        if (!this.gate.tryStart(now).allowed) {
+        if (boundedSource === undefined && !this.gate.tryStart(now).allowed) {
             if (now - this.lastDeferralAt >= DEFERRAL_EVENT_MS) {
                 this.lastDeferralAt = now
                 this.emit('deferred', 'aggregate-limit')
             }
             return
         }
-        this.policy.requested(now)
+        if (boundedSource === undefined) this.policy.requested(now)
         this.lastScrollTop = measured.scroller.scrollTop
         this.pending = { origin: 'automatic', identity, probe: this.probeOf(measured), startedAt: now }
+        // Capture before asking Chat to load. At scrollTop=0 an upward wheel or
+        // touch cannot generate another scroll event, so waiting for onScroll
+        // leaves the first prepend at that edge without a reading owner.
+        this.releaseInterruptedAnchor()
+        this.interruptedAnchor = this.capturePageAnchor(measured.scroller)
+        if (measured.scroller.scrollTop <= 1) this.interruptedAnchor?.retainAtUpperEdge()
         this.awaitingRecovery = false
         this.recoveryProbe = null
         this.mark(null)
@@ -991,10 +1112,16 @@ class ConversationHistoryController {
                     // A settle/dispose cancels this attempt; a late resolution
                     // must not click the control for a page we no longer track.
                     if (operation.signal.aborted) return
+                    if (boundedSource !== undefined) {
+                        if (handled === true) this.checkSourcePending()
+                        else this.settle('error', this.now(), 'mounted-reader-unavailable')
+                        return
+                    }
                     if (handled !== true) { try { control.click() } catch { this.settle('error', this.now()) } }
                 })
                 .catch(() => {
                     if (operation.signal.aborted) return
+                    if (boundedSource !== undefined) { this.settle('error', this.now(), 'mounted-reader-failed'); return }
                     try { control.click() } catch { this.settle('error', this.now()) }
                 })
                 .finally(() => { if (this.pendingProgrammatic === operation) this.pendingProgrammatic = undefined })
@@ -1003,6 +1130,7 @@ class ConversationHistoryController {
 
     /** Watch an upstream page only when a reader gesture interrupts its anchor. */
     private observeEarlierPage(): void {
+        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) return
         const measured = this.measure()
         if (measured === null || !measured.control?.disabled || measured.followingTail) return
         const identity = this.identityOf(measured.content)
@@ -1016,7 +1144,8 @@ class ConversationHistoryController {
     /** Install the pending-page poll and the hard timeout. */
     private setPendingTimers(): void {
         this.clearPendingTimers()
-        this.poll = setInterval(() => this.checkPending(), PENDING_POLL_MS)
+        const sourceBacked = this.options.sourceWindowProgress?.(this.sessionId) !== undefined
+        if (!sourceBacked) this.poll = setInterval(() => this.checkPending(), PENDING_POLL_MS)
         this.deadline = setTimeout(() => this.expirePending(), this.policy.budget.limits.requestTimeoutMs)
     }
 
@@ -1048,11 +1177,32 @@ class ConversationHistoryController {
         }
     }
 
+    /** Validate source progress only after the mounted reader settles its layout. */
+    private checkSourcePending(): void {
+        const pending = this.pending
+        if (pending === null || this.disposed) return
+        const now = this.now()
+        const source = this.options.sourceWindowProgress?.(this.sessionId)
+        if (source === undefined) { this.checkPending(); return }
+        const afterSource = { ...pending.probe, source }
+        if (sourceChanged(pending.probe, afterSource)) { this.settle('reset', now, 'source-window-reset'); return }
+        if (olderSourceCursor(pending.probe, afterSource)) {
+            const measured = this.measure()
+            if (measured === null) { this.settle('reset', now, 'view-unmounted'); return }
+            const after = this.probeOf(measured, pending.probe.firstKey)
+            if (historyWindowProgressed(pending.probe, after)) { this.commitPending(now); return }
+            if (historyWindowWasReset(pending.probe, after)) { this.settle('reset', now, 'window-reset'); return }
+            return
+        }
+        this.failPending('no-progress', now)
+    }
+
     /** Hard deadline: mark the page failed but never authorize another click. */
     private expirePending(): void {
         const pending = this.pending
         if (pending === null) return
         const now = this.now()
+        if (pending.probe.source !== undefined) { this.failPending('timeout', now); return }
         const measured = this.measure()
         if (measured !== null) {
             const after = this.probeOf(measured, pending.probe.firstKey)
@@ -1066,24 +1216,47 @@ class ConversationHistoryController {
     private commitPending(now: number): void {
         const pending = this.pending
         if (pending === null) return
-        this.interruptedAnchor?.commit()
-        this.interruptedAnchor = null
+        // Direct HAPI source pages capture and correct the live reader at the
+        // publication boundary. The controller's request-time anchor is stale
+        // on a mobile gesture that keeps moving while the page is in flight;
+        // release that provisional owner instead of competing with the
+        // source reader's commit-time correction.
+        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) this.releaseInterruptedAnchor()
+        else this.interruptedAnchor?.commit()
         this.pending = null
         this.clearPendingTimers()
-        if (pending.origin === 'automatic') {
+        if (pending.origin === 'automatic' && pending.probe.source === undefined) {
             this.policy.committed(now)
-            this.ledger.spend(pending.identity)
             this.gate.release()
         } else this.policy.resume()
+        if (pending.origin === 'automatic') this.ledger.spend(pending.identity)
         this.awaitingRecovery = false
         this.recoveryProbe = null
         this.mark(null)
         this.observe(null)
         this.emit('committed', pending.origin === 'observed' ? 'observed-page' : null)
+        // A raw page may extend only a folded process. Re-evaluate the new
+        // boundary through the same reader while the upward gesture is fresh.
+        const measured = this.measure()
+        if (pending.probe.source !== undefined && this.lastUserIntent === 'up'
+            && now - this.lastUserInputAt <= PREFETCH_INPUT_WINDOW_MS
+            && measured !== null && probeHistoryWindow(measured.column).firstKey === pending.probe.firstKey) {
+            this.frame.requestAnimationFrame(() => { if (!this.disposed) this.requestEarlier(this.now()) })
+        }
     }
 
     /** Record one failed page; automatic loading may suspend, the manual control stays. */
     private failPending(detail: 'timeout' | 'no-progress' | 'error', now: number): void {
+        // A timed-out official load must release the actual source request as
+        // well as this observer. Otherwise SourceSession stays loadingOlder,
+        // the button reappears, and every later gesture joins a dead request.
+        const operation = this.pendingProgrammatic
+        this.pendingProgrammatic = undefined
+        const reason = new Error(`Earlier history load ${detail}`)
+        operation?.abort(reason)
+        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) {
+            this.options.cancelSourcePage?.(this.sessionId, reason)
+        }
         this.releaseInterruptedAnchor()
         const pending = this.pending
         if (pending === null) return
@@ -1095,8 +1268,7 @@ class ConversationHistoryController {
             this.observe(this.awaitingRecovery ? this.measure()?.column ?? null : null)
             return
         }
-        this.policy.failed(now)
-        this.gate.release()
+        if (pending.probe.source === undefined) { this.policy.failed(now); this.gate.release() }
         const suspended = this.policy.snapshot(now).suspended
         this.awaitingRecovery = true
         const measured = this.measure()
@@ -1115,7 +1287,7 @@ class ConversationHistoryController {
         if (pending === null) return
         this.pending = null
         this.clearPendingTimers()
-        if (pending.origin === 'automatic') this.gate.release()
+        if (pending.origin === 'automatic' && pending.probe.source === undefined) this.gate.release()
         if (kind === 'reset') {
             this.policy.reset()
             this.mark(null)
@@ -1125,7 +1297,7 @@ class ConversationHistoryController {
             this.emit('reset', detail)
             return
         }
-        if (pending.origin === 'automatic') this.policy.failed(now)
+        if (pending.origin === 'automatic' && pending.probe.source === undefined) this.policy.failed(now)
         const measured = this.measure()
         this.awaitingRecovery = true
         this.recoveryProbe = measured === null ? null : this.probeOf(measured)
@@ -1155,7 +1327,7 @@ class ConversationHistoryController {
         if (pending === null) return
         this.pending = null
         this.clearPendingTimers()
-        if (pending.origin === 'automatic') this.gate.release()
+        if (pending.origin === 'automatic' && pending.probe.source === undefined) this.gate.release()
         this.observe(null)
         this.emit('reset', detail)
     }
@@ -1166,6 +1338,8 @@ class ConversationHistoryController {
         this.pendingProgrammatic = undefined
         if (this.disposed) return
         this.disposed = true
+        this.sourceWindowUnsubscribe?.()
+        this.sourceWindowUnsubscribe = undefined
         this.cancelLatest()
         this.unwatchReadingIntent()
         this.cancelPending('disposed')

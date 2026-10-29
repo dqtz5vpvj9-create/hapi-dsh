@@ -9,6 +9,7 @@ html,body {overscroll-behavior-y:none}
    the scrollport. The dock remains empty when Chat's own action is present. */
 .hapi-source-latest {display:none}
 [data-conversation-content]:has([data-chat-following-tail]) .hapi-source-latest {display:flex;justify-content:center}
+.hapi-source-latest.hapi-history-page-error {display:flex;align-items:center;justify-content:center;gap:8px;padding:4px 8px;color:var(--hapi-danger,#b54747);font-size:12px}
 .hapi-source-latest button {min-height:28px;padding:2px 10px;border:1px solid var(--dsw-alias-border-l2,#d8dedf);border-radius:14px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-secondary,#65717b);font:inherit;font-size:12px;cursor:pointer}
 .hapi-source-latest button:disabled {opacity:.5;cursor:default}
 .hapi-workspace,.hapi-session-sidebar,.hapi-session-rail,.hapi-dialog,.hapi-conversation,.hapi-remote-shell,.hapi-sidebar-context {

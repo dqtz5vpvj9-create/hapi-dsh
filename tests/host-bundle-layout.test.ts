@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { extractBundleTarball } from '../src/cli/bundle.ts'
 import { digest, manifest, release, tar } from '../src/cli/release.ts'
 
 const runFile = promisify(execFile)
@@ -107,6 +108,14 @@ test('the fixture bundle has the layout fixed by the distribution spec', async (
         }
         const installSource = await readFile(join(bundleRoot, 'dist', 'install.mjs'), 'utf8')
         assert.ok(installSource.startsWith('#!/usr/bin/env node\n'), 'the installer keeps its executable hashbang')
+
+        const dshHome = join(root, 'dsh-home')
+        const cachedBundleRoot = await extractBundleTarball({ file: summary.bundle, dshHome })
+        assert.equal(await readFile(join(cachedBundleRoot, 'manifest.json'), 'utf8'),
+            await readFile(join(bundleRoot, 'manifest.json'), 'utf8'),
+            'CLI extraction returns the verified package directory at the documented location')
+        assert.equal(await extractBundleTarball({ file: summary.bundle, dshHome }), cachedBundleRoot,
+            'an already extracted tarball reuses its content-addressed cache')
     } finally {
         await rm(root, { recursive: true, force: true })
     }

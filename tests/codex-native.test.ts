@@ -1,3 +1,4 @@
+import { projectedSourceEvents } from './source-frame-fixture.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -20,6 +21,8 @@ import {
 } from '../src/codex/contracts.js'
 import { bindingFor, nativeSessionId, parseNativeRow } from '../src/codex/native.js'
 import { NativeProjector } from '../src/codex/projector.js'
+import { SourceHistoryWindow, sourcePosition } from '../src/codex/source-window.ts'
+import { SourceWindowStore } from '../src/client/source-window-store.ts'
 import { DeliveryJournal } from '../src/codex/delivery.js'
 import { NativeApprovals } from '../src/codex/approvals.js'
 import { readNativeHistory } from '../src/codex/history.js'
@@ -292,7 +295,7 @@ test('native discovery uses detail facts missing from HAPI summaries and registe
     assert.equal(app.ctx.sessions.get(agent.id), agent.session)
     assert.equal(agent.options.provider, 'hapi-codex-native')
     assert.equal(agent.session.header.agentPreset, undefined, 'an externally owned Codex session is not a DSH preset composition')
-    const events = agent.session.snapshotEvents()
+    const events = projectedSourceEvents(agent)
     assert.equal(agent.session.header.createdAt, fake.source.createdAt)
     assert.deepEqual(events.map(event => event.seq), events.map((_event, index) => index))
     assert.equal(events.find(event => event.type === 'user/message')?.time, 1100)
@@ -335,7 +338,7 @@ test('official command scope sends native control lines through the existing dur
     assert.equal(fake.sent[0]?.text, '/compact')
     assert.equal(fake.sent[0]?.localId, `dsh:native-command:${execution?.commandId}`)
     assert.equal(agent.projection.delivery[0]?.state, 'accepted')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/start').length, 0)
     await agent.dispose()
     assert.equal(app.ctx.commands.find(agent, 'compact')?.definitionId, undefined)
     assert.equal(app.ctx.commands.find(agent, 'compact')?.description, 'DSH-only compaction')
@@ -366,7 +369,7 @@ test('native source notices, usage, and goal state survive a history refresh wit
     assert.equal(agent.projection.usage?.total?.inputTokens, 10000)
     assert.equal(agent.projection.usage?.model, 'model-at-native-turn')
     assert.equal(agent.projection.threadGoal?.status, 'paused')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/start').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/start').length, 0)
     // Native REST history omits Hub-only status events. They are not a rewind.
     await agent.refresh(true)
     assert.equal(app.service.list()[0]?.id, agent.id)
@@ -390,14 +393,14 @@ test('actual native error text reaches the official terminal error and remains a
   const app = await mount(fake, directory)
   try {
     const agent = app.service.list()[0]!
-    const end = agent.session.snapshotEvents().find(event => event.type === 'turn/end')
+    const end = projectedSourceEvents(agent).find(event => event.type === 'turn/end')
     assert.equal(end?.type, 'turn/end')
     if (end?.type === 'turn/end') {
       assert.equal(end.data.reason.kind, 'error')
       if (end.data.reason.kind === 'error') assert.equal(end.data.reason.error.message, 'Codex error: native capacity is unavailable')
     }
     assert.equal(agent.projection.notices[0]?.kind, 'error')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'assistant/message').length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -408,7 +411,7 @@ test('source-confirmed identity rotation retires old native display admission an
   const app = await mount(fake, directory)
   try {
     const original = app.service.list()[0]!
-    const prompt = original.session.snapshotEvents().find(event => event.type === 'user/message')
+    const prompt = projectedSourceEvents(original).find(event => event.type === 'user/message')
     assert.ok(prompt?.type === 'user/message')
     assert.equal(original.resolveRewindLocalId(prompt.data.id), 'native-input-1')
     assert.equal(original.resolveRewindLocalId('item:native-input-1'), undefined)
@@ -501,7 +504,7 @@ test('queued rich input from another native frontend retains official image/file
     assert.equal(agent.inbox.nextTurn.length, 1)
     assert.deepEqual(agent.inbox.nextTurn[0]?.content.map(block => block.type), ['text', 'file'])
     assert.equal(agent.projection.delivery[0]?.localId, 'other-frontend-input')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'user/message').length, 0)
     assert.equal(fake.sent.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -585,14 +588,28 @@ test('native queue cancellation race preserves invoked input and original DSH me
     const entry = agent.journal.values()[0]!
     assert.equal(fake.sent.length, 1)
     assert.equal(agent.inbox.nextTurn[0]?.id, message.id)
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'user/message').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'user/message').length, 0)
     assert.throws(() => agent.inbox.remove(message.id), /asynchronous/)
     fake.cancelResult = { status: 'invoked', message: user(entry.localId, true, entry.text) }
     const result = await agent.cancelQueued(entry.localId)
     assert.equal(result.status, 'invoked')
     assert.equal(agent.inbox.nextTurn.length, 0)
-    const projected = agent.session.snapshotEvents().find(event => event.type === 'user/message')
+    const projected = projectedSourceEvents(agent).find(event => event.type === 'user/message')
     assert.equal(projected?.type === 'user/message' ? projected.data.id : undefined, message.id)
+    const window = new SourceHistoryWindow(agent, fake)
+    try {
+      const row = result.message
+      const page = await window.windowAt(row.id, 1, 0, async () => ({ messages: [row], page: {
+        epoch: 1, reset: false, beforeCursor: sourcePosition(row), afterCursor: sourcePosition(row), hasMoreBefore: false, hasMoreAfter: false,
+      } }))
+      const input = page.frames.find(frame => frame.event.type === 'user/message')!
+      assert.equal((input.event.data as UserMessage).id, message.id, 'detached pages retain the original DSH message identity')
+      assert.equal(window.resolveRewindMessage(message.id), entry.localId, 'rewind resolves the exact source local ID without numeric display coordinates')
+      assert.equal(input.key, agent.sourceFrameBaseline().frames.find(frame => frame.event.type === 'user/message')?.key)
+      const store = new SourceWindowStore()
+      store.apply(agent.sourceFrameBaseline()); store.apply({ kind: 'merge', frames: page.frames })
+      assert.equal(store.entries.filter(entry => entry.event.type === 'user/message').length, 1)
+    } finally { window.dispose() }
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -666,11 +683,11 @@ test('disconnect and disposal never terminate or fabricate completion for the or
     // `readOnly` gates source operations; message input is admitted separately.
     assert.equal(agent.projection.nativeConnection, 'disconnected')
     assert.equal(agent.projection.readOnlyReason, 'unavailable')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/end').length, 0)
     agent.cancel({ kind: 'disposed' })
     await app.close()
     assert.equal(fake.aborts, 0)
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'turn/end').length, 0)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'turn/end').length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
@@ -691,7 +708,7 @@ test('native history epoch resets restart pagination without mixing pages', asyn
   assert.equal(fake.reads.length, 4)
 })
 
-test('native rewind creates a fresh DSH display namespace while retaining thread and durable delivery identity', async () => {
+test('native rewind preserves its DSH owner and replaces only the canonical body', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-rewind-'))
   const fake = new FakeHapi()
   fake.rows = [user(), agentBody('message', { message: 'Old answer', streamSnapshot: true }, 'answer'), terminal()]
@@ -704,13 +721,13 @@ test('native rewind creates a fresh DSH display namespace while retaining thread
     fake.emit({ type: 'messages-invalidated', sessionId: fake.source.id, reason: 'rewind' })
     await app.service.settled()
     const current = app.service.list()[0]!
-    assert.notEqual(current.id, previous.id)
+    assert.equal(current, previous); assert.equal(current.session, previous.session)
     assert.equal(current.logicalSessionId, logicalId)
-    assert.equal(current.displayRevision, 1)
+    assert.equal(current.displayRevision, 0)
     assert.equal(current.binding.threadId, previous.binding.threadId)
     assert.equal(current.binding.home, previous.binding.home)
-    assert.deepEqual(changes, [[previous.id, current.id]])
-    assert.equal(app.ctx.sessions.get(previous.id), undefined)
+    assert.deepEqual(changes, [])
+    assert.equal(app.ctx.sessions.get(previous.id), previous.session)
     assert.equal(app.ctx.agents.get(current.id), current)
     assert.equal(fake.aborts, 0)
     const displayId = current.id
@@ -791,7 +808,7 @@ test('offline native history uses a read cache and keeps the fault diagnostic-on
     const agent = app.service.list()[0]!
     assert.match(agent.projection.error ?? '', /offline/)
     assert.equal(agent.projection.readOnlyReason, 'fault')
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'assistant/message').length, 1)
     // Faults are diagnostics: the durable journal still accepts the message and
     // the delivery path reports the real source outcome instead of a fake lock.
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'Send despite cached history' }], source: { kind: 'user' } }))
@@ -880,7 +897,7 @@ test('original TUI rich user and tool resources become official DSH attachments 
   } }
   let app = await mount(fake, directory, options)
   try {
-    const events = app.service.list()[0]!.session.snapshotEvents()
+    const events = projectedSourceEvents(app.service.list()[0]!)
     const input = events.find(event => event.type === 'user/message')
     const output = events.find(event => event.type === 'tool/result')
     assert.deepEqual(input?.type === 'user/message' ? input.data.content.map(block => block.type) : [], ['text', 'image', 'text'])
@@ -889,13 +906,13 @@ test('original TUI rich user and tool resources become official DSH attachments 
     await app.close()
     fake.historyFailure = new Error('Runner offline')
     app = await mount(fake, directory, { importArtifact: async () => { throw new Error('Offline artifact fetch must not run') } })
-    const cached = app.service.list()[0]!.session.snapshotEvents()
+    const cached = projectedSourceEvents(app.service.list()[0]!)
     const cachedInput = cached.find(event => event.type === 'user/message')
     assert.equal(cachedInput?.type === 'user/message' ? cachedInput.data.content[1]?.type : undefined, 'image')
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('a native resource becoming available refreshes display generation while preserving its source identity', async () => {
+test('a native resource becoming available refreshes its read model while preserving the original owner', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-codex-artifact-recovery-'))
   const fake = new FakeHapi()
   const row = user()
@@ -910,15 +927,15 @@ test('a native resource becoming available refreshes display generation while pr
   } })
   try {
     const previous = app.service.list()[0]!
-    const missing = previous.session.snapshotEvents().find(event => event.type === 'user/message')
+    const missing = projectedSourceEvents(previous).find(event => event.type === 'user/message')
     assert.equal(missing?.type === 'user/message' ? missing.data.content[0]?.type : undefined, 'text')
     available = true
     await previous.refresh(true)
     const current = app.service.list()[0]!
-    assert.notEqual(current.id, previous.id)
+    assert.equal(current, previous)
     assert.equal(current.binding.threadId, previous.binding.threadId)
     assert.equal(current.logicalSessionId, previous.logicalSessionId)
-    const restored = current.session.snapshotEvents().find(event => event.type === 'user/message')
+    const restored = projectedSourceEvents(current).find(event => event.type === 'user/message')
     assert.equal(restored?.type === 'user/message' ? restored.data.content[0]?.type : undefined, 'file')
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -1145,7 +1162,7 @@ test('native turn completion and reconnect snapshot revisions keep the original 
     assert.equal(initial.displayRevision, 0)
     assert.equal(initial.historyWindowAnchor()?.epoch, 2)
     assert.deepEqual(initial.historyWindowAnchor()?.oldest, anchor.oldest)
-    assert.ok(initial.session.snapshotEvents().some(event => event.type === 'turn/end'), 'native metadata completion reaches the existing official turn')
+    assert.ok(projectedSourceEvents(initial).some(event => event.type === 'turn/end'), 'native metadata completion reaches the existing official turn')
     assert.equal(initial.projection.error, null)
     epoch = 3
     await initial.refresh(true); await app.service.settled()
@@ -1157,7 +1174,7 @@ test('native turn completion and reconnect snapshot revisions keep the original 
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native revision missing the known oldest source identity still replaces structurally', async () => {
+test('native revision deleting the oldest source identity rebases only the read model', async () => {
   const directory = await mkdtemp('/mnt/cache/data-cache/hapi-native-revision-delete-'), fake = new FakeHapi()
   const oldest = user(), latest = agentBody('message', { message: 'Retained answer' }, 'retained-revision')
   fake.rows = [oldest, latest]
@@ -1169,7 +1186,7 @@ test('native revision missing the known oldest source identity still replaces st
     fake.rows = [latest]; epoch = 2
     await initial.refresh(true); await app.service.settled()
     const current = app.service.list()[0]!
-    assert.notEqual(current, initial)
+    assert.equal(current, initial)
     assert.equal(current.binding.hapiSessionId, initial.binding.hapiSessionId)
     assert.equal(current.resolveSourceMessageDisplaySeq(oldest.id), undefined)
     assert.equal(current.historyWindowAnchor()?.epoch, 2)
@@ -1249,6 +1266,10 @@ test('native empty opening accepts a first prompt without archive replacement', 
   try {
     const initial = app.service.list()[0]!
     assert.equal(initial.displayRevision, 0)
+    assert.equal(initial.projection.error, null, 'a pre-rollout Codex 0.165 thread is a healthy empty source')
+    assert.equal(initial.session.snapshotEvents().filter(event =>
+      event.type === 'user/message' || event.type === 'assistant/message').length, 0,
+    'the empty source does not synthesize conversation content')
     const before = fake.reads.length
     const inputRow: HapiMessage = { id: 'first-input', localId: 'first-input', seq: 2, createdAt: 2000, invokedAt: 2000,
       content: { role: 'user', content: { type: 'text', text: 'First input' }, meta: { nativeExecution: { threadId: THREAD, turnId: 'first-turn' } } } }
@@ -1264,6 +1285,7 @@ test('native empty opening accepts a first prompt without archive replacement', 
     await app.service.settled()
     assert.equal(app.service.list()[0], initial, 'the first prompt keeps its display owner')
     assert.equal(initial.displayRevision, 0)
+    assert.equal(initial.projection.error, null)
     assert.ok(fake.reads.slice(before).length <= 2, 'the first prompt performs only bounded catch-up reads')
     assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
@@ -1289,7 +1311,7 @@ test('native failed opening read falls back to explicitly stale cache and live o
     const initial = app.service.list()[0]!
     assert.match(initial.projection.error ?? '', /stale/)
     assert.match(initial.projection.error ?? '', /Opening tail unavailable/)
-    assert.equal(initial.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(projectedSourceEvents(initial).filter(event => event.type === 'assistant/message').length, 1)
     await initial.refreshSettings()
     assert.equal(initial.projection.error, null, 'a successful source refresh clears the opening read fault')
     fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
@@ -1297,14 +1319,14 @@ test('native failed opening read falls back to explicitly stale cache and live o
     // The snapshot was taken before the live row reached the source index.
     release!(page([...fake.rows, missing])); release = undefined
     await app.service.settled()
-    const current = app.service.list()[0]!, answers = current.session.snapshotEvents().flatMap(event =>
+    const current = app.service.list()[0]!, answers = projectedSourceEvents(current).flatMap(event =>
       event.type === 'assistant/message' ? event.data.message.content.flatMap(part => part.type === 'text' ? [part.text] : []) : [])
     // The official log is append-only: the live row was committed first and
     // the delayed older row follows. Source order belongs to the annotated
     // history surface, not to the arrival-order Session log.
     assert.ok(answers.includes('Live during backfill'))
     assert.ok(answers.includes('Between cache and attach'))
-    const sourceItems = current.session.snapshotEvents().flatMap(event => {
+    const sourceItems = projectedSourceEvents(current).flatMap(event => {
       if ((event.type as string) !== 'plugin:hapi-dsh/native-item') return []
       const data = (event as unknown as { data?: { sourceSeq?: unknown; nativeItemId?: unknown } }).data
       if (!data) return []
@@ -1415,8 +1437,8 @@ for (const cacheEpoch of [null, undefined, 1, 2]) test(`native opening with ${ca
     // the live suffix is appended. Older rows stay available to the source
     // history window instead of being replayed as a new display generation.
     assert.equal(current, initial)
-    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
-    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 2)
+    assert.equal(projectedSourceEvents(current).filter(event => event.type === 'user/message').length, 1)
+    assert.equal(projectedSourceEvents(current).filter(event => event.type === 'assistant/message').length, 2)
     assert.notEqual(current.resolveSourceMessageDisplaySeq(live.id), undefined)
     assert.equal(current.binding.threadId, initial.binding.threadId)
     assert.equal(current.displayRevision, 0)
@@ -1477,7 +1499,7 @@ test('native events arriving during the first history response are captured befo
     await app.service.settled()
     const agent = app.service.list()[0]!
     assert.notEqual(agent.resolveSourceMessageDisplaySeq(live.id), undefined)
-    assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(projectedSourceEvents(agent).filter(event => event.type === 'assistant/message').length, 1)
     assert.equal(agent.displayRevision, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -1544,8 +1566,8 @@ test('native default seed waits for complete initial history and needs no routin
     await app.service.settled()
     const current = app.service.list()[0]!
     assert.equal(current.displayRevision, 0)
-    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'user/message').length, 1)
-    assert.equal(current.session.snapshotEvents().filter(event => event.type === 'assistant/message').length, 1)
+    assert.equal(projectedSourceEvents(current).filter(event => event.type === 'user/message').length, 1)
+    assert.equal(projectedSourceEvents(current).filter(event => event.type === 'assistant/message').length, 1)
     assert.equal(current.projection.error, null)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
@@ -1570,7 +1592,7 @@ test('native removal during initial history cannot announce or resurrect the del
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
-test('native replacement preparation failure retries after old Agent disposal without another source event', async () => {
+test('native read-model preparation retries without detaching the original Agent', async context => {
   const directory = await mkdtemp(join(tmpdir(), 'hapi-native-replacement-retry-')), fake = new FakeHapi()
   const latest = agentBody('message', { message: 'Latest before repair' }, 'latest')
   latest.createdAt = 1300; latest.seq = 3; fake.rows = [user(), latest]
@@ -1578,19 +1600,23 @@ test('native replacement preparation failure retries after old Agent disposal wi
   const app = await mount(fake, directory, { onDisplayReset: (before, after) => { resets.push([before, after]) }, onError: error => { errors.push(error.message) } })
   try {
     const previous = app.service.list()[0]!, missing = agentBody('message', { message: 'Older recovered answer' }, 'older')
-    const original = fake.getSession.bind(fake); let snapshots = 0
-    fake.getSession = async id => { if (++snapshots === 2) throw new Error('Replacement source temporarily unavailable'); return original(id) }
+    const original = previous.rebaseDisplayHistory.bind(previous); let attempts = 0
+    let failed!: () => void, repaired!: () => void
+    const failure = new Promise<void>(resolve => { failed = resolve }), repair = new Promise<void>(resolve => { repaired = resolve })
+    context.mock.method(previous, 'rebaseDisplayHistory', async (...args: Parameters<typeof original>) => {
+      if (++attempts === 1) { failed(); throw new Error('Read model temporarily unavailable') }
+      await original(...args); repaired()
+    })
     fake.rows = [user(), missing, latest]
     fake.emit({ type: 'message-updated', sessionId: fake.source.id })
-    for (let index = 0; index < 300 && (app.service.list()[0]?.displayRevision ?? 0) < 2; index++) await new Promise(resolve => setTimeout(resolve, 10))
-    await app.service.settled()
+    await failure
+    assert.equal(app.service.list()[0], previous); assert.equal(app.ctx.sessions.get(previous.id), previous.session)
+    await repair; await app.service.settled()
     const current = app.service.list()[0]!
-    assert.ok(current, 'service-owned retry survives disposal of the failed display')
-    assert.ok(current.displayRevision >= 2, 'the failed replacement namespace is never reused')
+    assert.equal(current, previous); assert.equal(current.displayRevision, 0); assert.equal(attempts, 2)
     assert.notEqual(current.resolveSourceMessageDisplaySeq(missing.id), undefined)
-    assert.equal(app.ctx.sessions.get(previous.id), undefined)
-    assert.deepEqual(resets, [[previous.id, current.id]])
-    assert.ok(errors.some(error => error.includes('temporarily unavailable')))
+    assert.equal(app.ctx.sessions.get(previous.id), previous.session)
+    assert.deepEqual(resets, [])
     assert.equal(fake.sent.length, 0); assert.equal(fake.aborts, 0); assert.equal(fake.answers.length, 0)
   } finally { await app.close(); await rm(directory, { recursive: true, force: true }) }
 })

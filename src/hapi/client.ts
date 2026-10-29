@@ -250,10 +250,11 @@ export class HapiClient implements HapiTransport {
     async getSession(id: string): Promise<HapiSession> {
         return (await this.validated<{ session: HapiSession }>(this.sessionPath(id), z.object({ session: schema.sessionSchema }))).session;
     }
-    async readMessages(id: string, query: HapiMessagesQuery = {}): Promise<HapiMessagesPage> {
+    async readMessages(id: string, query: HapiMessagesQuery = {}, signal?: AbortSignal): Promise<HapiMessagesPage> {
         const params = new URLSearchParams();
         for (const [key, value] of Object.entries(query)) if (value !== undefined) params.set(key, String(value));
-        return this.validated(`${this.sessionPath(id)}/messages?${params}`, schema.messagesSchema);
+        return this.validated(`${this.sessionPath(id)}/messages?${params}`, schema.messagesSchema,
+            signal === undefined ? undefined : { signal });
     }
     async sendMessage(id: string, message: HapiSendMessage): Promise<void> {
         await this.request(`${this.sessionPath(id)}/messages`, { method: 'POST', body: message });

@@ -15,7 +15,6 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -158,11 +157,9 @@ function snapshot(id: SessionId): SessionSnapshot {
     openState: 'open', openError: null, hasMore: true, loadingOlder: false, promptError: null,
     blank: false, lastAgentError: null, promptAttempted: false, awaitingFirstTurn: false }
 }
-const event = (seq: number, turn: number) => ({ type: 'event', event: { type: 'turn/start', seq, time: seq, data: { turn } } }) as any
-
 test('real SourceSessions facade: blocked forward, fast live, late earlier ended-turn row', { timeout: 15_000 }, async () => {
   const traceparent = `00-${randomUUID().replace(/-/g, '')}-${randomUUID().replace(/-/g, '').slice(0, 16)}-01`
-  const directory = await mkdtemp(join(tmpdir(), 'hapi-late-merge-')), fake = new FakeHapi()
+  const directory = await mkdtemp('/mnt/cache/data-cache/hapi-late-merge-'), fake = new FakeHapi()
   const oldUser = user('turn-old', 1, 1000, 'old-user')
   const oldAnswer = answer('turn-old', 'old-answer', 2, 1001, 'old answer')
   const oldEnd = terminal('turn-old', 'old-end', 3, 1002)
@@ -176,14 +173,15 @@ test('real SourceSessions facade: blocked forward, fast live, late earlier ended
     return fake.page(query)
   }
   const app = await mount(fake, directory)
+  let releaseView = () => {}
   try {
     const agent = await app.service.openSource(fake.source.id)
     assert.ok(agent)
-    const revision = agent.displayRevision, faceId = agent.id
+    const revision = agent.displayRevision
     const readStart = fake.reads.length
     const id = agent.id as unknown as SessionId
     const source = new runtime.MutableSessionEventSource()
-    source.replace([event(1, 100)], true)
+    source.replace(agent.session.snapshotEvents().map((event: unknown) => ({ type: 'event', event })), false)
     const binding: any = { sessionId: id, eventSource: source, ctx: {},
       session: { sessionId: id, projections: { faceOf: () => ({ getSnapshot: () => [], subscribe: () => () => {} }) },
         getSnapshot: () => snapshot(id), subscribe: () => () => {}, loadOlder: async () => {}, loadThrough: async () => {} } }
@@ -194,26 +192,23 @@ test('real SourceSessions facade: blocked forward, fast live, late earlier ended
     } as unknown as ISessions
     const facade = new runtime.SourceSessions(original)
     facade.attach({
+      sourceWindowFollow: (request: { sessionId: string }, signal: AbortSignal) => {
+        assert.equal(request.sessionId, agent.id)
+        return agent.sourceFrames(signal)
+      },
+      sourceHistoryHead: async () => ({ ok: true, value: { messageId: oldEnd.id, at: oldEnd.createdAt, seq: oldEnd.seq } }),
       sourceHistoryOutline: async () => ({ ok: true, value: { entries: [
-        { turn: 100, seq: 2_000_000_000, prompt: 'head', response: '', messageId: 'm-head', at: 4, sourceSeq: 4 },
-      ], seedIndex: 0, firstTurn: 100, complete: true, head: { messageId: 'm-head', at: 4, seq: 4 } } }),
-      sourceHistoryWindowPage: async () => ({ ok: true, value: { records: [{
-        type: 'event', event: { type: 'assistant/message', seq: 3_000_000_000, time: 3,
-          data: { turn: 200, body: 'head' } },
-      } as any], hasMoreBefore: true, hasMoreAfter: false, before: { at: 2, seq: 2 }, after: { at: 4, seq: 4 } } }),
+        { turn: 100, seq: 2_000_000_000, prompt: 'old question', response: '', messageId: oldUser.id, at: oldUser.createdAt, sourceSeq: oldUser.seq },
+      ], seedIndex: 0, firstTurn: 100, complete: true, head: { messageId: oldEnd.id, at: oldEnd.createdAt, seq: oldEnd.seq } } }),
+      sourceHistoryWindowPage: async () => { throw new Error('The current source head is already in the body baseline') },
     })
     const reference = facade.retain(id, { source: 'mainView' })
+    releaseView = () => { reference.release(); facade.dispose() }
     await reference.ready
     assert.equal(await reference.binding.session.returnToLive(), true)
-    assert.equal((reference.binding.eventSource.getSnapshot().entries[0]?.event.data as any)?.body, 'head',
+    assert.ok(reference.binding.eventSource.getSnapshot().entries.some((entry: any) => textOf(entry) === 'old answer'),
       'returnToLive completes only after publishing the source head window')
     const face = reference.binding.session, eventSource = reference.binding.eventSource
-    let appended = agent.session.snapshotEvents().length
-    const pump = () => {
-      const events = agent.session.snapshotEvents()
-      for (const entry of events.slice(appended)) source.append({ type: 'event', event: entry } as any)
-      appended = events.length
-    }
     // Start the forward read and keep it blocked for >2s.
     const refreshing = agent.refresh(true)
     await started
@@ -227,7 +222,6 @@ test('real SourceSessions facade: blocked forward, fast live, late earlier ended
     const liveStarted = Date.now()
     fake.emit({ type: 'message-received', sessionId: fake.source.id, message: live })
     await new Promise(resolve => setTimeout(resolve, 30))
-    pump()
     for (let index = 0; index < 200; index++) {
       if (reference.binding.eventSource.getSnapshot().entries.some((entry: any) => textOf(entry) === 'live value')) break
       await new Promise(resolve => setTimeout(resolve, 5))
@@ -244,10 +238,8 @@ test('real SourceSessions facade: blocked forward, fast live, late earlier ended
     release()
     await refreshing
     await app.service.settled()
-    pump()
     await new Promise(resolve => setTimeout(resolve, 60))
     const entries = reference.binding.eventSource.getSnapshot().entries
-    const texts = entries.map((entry: any) => textOf(entry)).filter((value: string) => value.length > 0)
     const liveEntries = entries.filter((entry: any) => textOf(entry) === 'live value')
     assert.equal(liveEntries.length, 1, 'same-row update must appear once')
     assert.equal(entries.some((entry: any) => textOf(entry) === 'old live value'), false, 'stale same-row version must not be rendered')
@@ -272,8 +264,9 @@ test('real SourceSessions facade: blocked forward, fast live, late earlier ended
     assert.ok(entries.indexOf(earlierEntry) < entries.indexOf(liveSource),
       `facade source order: earlier must precede live (trace ${traceparent})`)
     assert.equal(fake.sent.length, 0)
-    reference.release()
-  } finally { release(); await app.close(); await rm(directory, { recursive: true, force: true }) }
+    assert.equal(agent.session.snapshotEvents().some((event: any) => event.type === 'assistant/message'), false,
+      'source body stays out of the operation Session throughout the race')
+  } finally { release(); releaseView(); await app.close(); await rm(directory, { recursive: true, force: true }) }
 })
 
 function textOf(entry: any): string {
