@@ -1,0 +1,57 @@
+/** HHPI methods use the official authenticated Typert carrier and its resource policies. */
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import type { Context } from '@deepseek-ai/cordis';
+import { Remote, RemoteError, TypertRemoteService, type RemoteStream, type TypertResource } from '@deepseek-ai/dsh-typert-protocol';
+import type {} from '@deepseek-ai/dsh-typert-registry';
+import type {} from '@deepseek-ai/dsh-api-remote-access';
+import type { SessionId } from '@deepseek-ai/dsh-session';
+import { HHPI_REMOTE } from '../hhpi-api.ts';
+import { SourceGateway, type SourceAccess } from './gateway.ts';
+import { DirectCodexAdapter } from './codex-adapter.ts';
+import { SourceError } from './errors.ts';
+import type { DirectCodexConfig, SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt,
+    SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest } from './protocol.ts';
+
+declare module '@deepseek-ai/cordis' { interface Context { hhpi: HhpiSourceService } }
+declare module '@deepseek-ai/dsh-typert-protocol' { interface TypertResourceMap { hhpiSource: TypertResource<string> } }
+function remoteError(error: unknown): never {
+    if (error instanceof RemoteError || error instanceof DOMException && error.name === 'AbortError') throw error;
+    const source = error instanceof SourceError ? error : new SourceError('TARGET_UNAVAILABLE', 'The source request could not be completed.');
+    throw new RemoteError('hhpi/source', source.message, { sourceCode: source.code, outcome: source.code === 'OUTCOME_UNKNOWN' ? 'indeterminate' : 'rejected' });
+}
+export class HhpiSourceService extends TypertRemoteService {
+    constructor(ctx: Context, private readonly gateway: SourceGateway) {
+        super(ctx, 'hhpi');
+        ctx.typert.resources.register('hhpiSource', { field: 'sourceId' });
+        ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [], invocations: HHPI_REMOTE.descriptors,
+            model: { services: [{ key: 'hhpi', exportName: 'HhpiSourceService', tags: [], members: [], types: [], summary: 'Scoped native source access.' }], events: [], objects: [] } }), 'hhpi: source Remote contract');
+    }
+    private get access(): SourceAccess {
+        // Capture this invocation-derived Context, never an owner Context retained at startup.
+        const ctx = this.ctx;
+        return resource => resource.kind === 'source' ? ctx.remoteAccess.allows({ kind: 'hhpiSource', id: resource.id })
+            : ctx.remoteAccess.allows({ kind: 'session', id: resource.id as SessionId });
+    }
+    @Remote('catalog')
+    async catalog(signal?: AbortSignal): Promise<SourceCatalog> { try { return await this.gateway.catalog(this.access, signal); } catch (error) { remoteError(error); } }
+    @Remote('read')
+    async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error); } }
+    @Remote({ name: 'changes', mode: 'stream' })
+    async *changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStream<SourceChanges> {
+        try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error); }
+    }
+    @Remote('operate')
+    async operate(request: SourceOperation): Promise<SourceReceipt> { try { return await this.gateway.operate(request, this.access); } catch (error) { remoteError(error); } }
+    @Remote('create')
+    async create(request: SourceCreateRequest): Promise<SourceCreationReceipt> { try { return await this.gateway.create(request, this.access); } catch (error) { remoteError(error); } }
+    @Remote('resource')
+    async resource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> { try { return await this.gateway.resource(request, this.access, signal); } catch (error) { remoteError(error); } }
+}
+export function installSources(ctx: Context, sources: readonly DirectCodexConfig[], directory: string, legacyHapi: boolean): SourceGateway {
+    const adapters = sources.map(source => new DirectCodexAdapter(source, join(directory, createHash('sha256').update(JSON.stringify([source.machineId, source.id, source.engine])).digest('hex'))));
+    const gateway = new SourceGateway(adapters, legacyHapi);
+    new HhpiSourceService(ctx, gateway);
+    ctx.effect(() => () => gateway.dispose(), 'hhpi: native source ownership');
+    return gateway;
+}
