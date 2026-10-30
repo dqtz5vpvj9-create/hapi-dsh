@@ -73,10 +73,14 @@ async function collectFailureDiagnostics(page, result) {
       scrollportCount: document.querySelectorAll('[data-conversation-scroll]').length,
       editorCount: document.querySelectorAll('[data-composer-input]').length,
       performanceMarks: performance.getEntriesByType('mark').map(entry => entry.name),
+      reading: window.__hhpiSmoke?.rows ? (() => { const r = window.__hhpiSmoke.rows(); return {
+        exists: r.exists, top: Math.round(r.top), max: Math.round(r.max), viewport: Math.round(r.viewport ?? 0),
+        mountedRows: r.rows.length, visibleRows: r.rows.filter(row => row.visible).length,
+      }; })() : null,
     }));
     result.diagnostics = { available: true, workspaceCount: value.workspaceCount, paneCount: value.paneCount,
       scrollportCount: value.scrollportCount, editorCount: value.editorCount,
-      performanceMarks: safeHhpiDiagnosticMarks(value.performanceMarks) };
+      performanceMarks: safeHhpiDiagnosticMarks(value.performanceMarks), reading: value.reading };
   } catch { /* Keep only the non-sensitive unavailable/count skeleton. */ }
 }
 
@@ -110,7 +114,7 @@ function bodyText(entry) {
     return data.content.flatMap(block => typeof block?.text === 'string' ? [block.text] : []).join('\n');
   }
   if (event?.type === 'assistant/message' && Array.isArray(data?.message?.content)) {
-    return data.message.content.flatMap(block => typeof block?.text === 'string' ? [block.text] : []).join('\n');
+    return data.message.content.flatMap(block => block?.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n');
   }
   return '';
 }
@@ -126,7 +130,14 @@ function pageBodies(record) {
   return (record.page?.entries ?? []).flatMap(entry => {
     const seq = entry?.event?.seq, text = bodyText(entry);
     const callId = entry?.event?.type === 'tool/call' && entry.event.data?.callId;
+    const event = entry?.event, data = event?.data;
+    // Pinned Conversation context identities survive Markdown rendering. Text
+    // still has to be visibly correlated; identity alone is not reading evidence.
+    const contextKind = event?.type === 'assistant/message' ? 'assistant-step' : event?.type === 'user/message' ? 'input-message' : null;
+    const contextId = contextKind === 'assistant-step' && Number.isSafeInteger(data?.turn) && Number.isSafeInteger(data?.step)
+      ? `${data.turn}:${data.step}` : contextKind === 'input-message' && typeof data?.id === 'string' ? data.id : null;
     return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, text: normalizeText(text), marks: textMarks(text),
+      ...(contextKind && contextId !== null ? { nodeKey: `${contextKind.length}:${contextKind}${contextId}` } : {}),
       ...(typeof callId === 'string' ? { anchor: `call:${callId}` } : {}) }] : [];
   });
 }
@@ -140,7 +151,8 @@ function rowContainsBody(row, marks) {
   return marks.length > 0 && marks.every(mark => text.includes(mark));
 }
 function rowMatchesSource(row, body, complete = false) {
-  return (!body.anchor || row.anchor === body.anchor) && (complete ? rowContainsBody(row, body.marks) : rowContains(row, body.marks));
+  return (!body.anchor || row.anchor === body.anchor) && (!body.nodeKey || row.key === body.nodeKey)
+    && (complete && !body.nodeKey ? rowContainsBody(row, body.marks) : rowContains(row, body.marks));
 }
 
 /** Capture a visible source-message identity and its body at the network response boundary. */
@@ -262,17 +274,20 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       })
       .map(row => {
         const owner = ownerOf(row), kind = owner.getAttribute('data-chat-flow-kind');
-        const rect = row.getBoundingClientRect(), text = row.innerText ?? '';
+        const rect = row.getBoundingClientRect(), text = row.textContent ?? '';
         const bodyRoot = row.querySelector(':scope > [data-slot="conversation.chat.node"]') ?? row;
         const excluded = 'script,iframe,object,embed,audio,video,source,input,textarea,select,button,[role="button"],[data-hapi-share-exclude],[data-hapi-share-dialog],[data-chat-group-part="reasoning"],[data-variant="think"],[data-clock],[data-chat-flow-kind="turn-process"],.hapi-native-user-actions,[data-slot="conversation.chat.assistant-actions"]';
         const walker = document.createTreeWalker(bodyRoot, NodeFilter.SHOW_TEXT);
         const parts = [];
-        while (walker.nextNode()) if (!walker.currentNode.parentElement?.closest(excluded)) parts.push(walker.currentNode.textContent);
+        while (walker.nextNode()) {
+          const excludedNode = walker.currentNode.parentElement?.closest(excluded);
+          if (!excludedNode || !bodyRoot.contains(excludedNode)) parts.push(walker.currentNode.textContent);
+        }
         const bodyText = kind === 'tool-call' ? text : parts.join(' ');
         return { key: owner.getAttribute('data-chat-node-key'), anchor: row.getAttribute('data-chat-anchor-key'),
           kind, text, bodyText, normalizedText: compact(text),
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
-            && row.getClientRects().length > 0 && row.closest('[hidden]') === null };
+            && rect.height > 0 && row.closest('[hidden]') === null };
       });
     return { exists: true, rows, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
       viewport: scroll.clientHeight };
@@ -280,11 +295,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
   // Observe a real DOM publication while input is at rest. Continuing to scroll
   // after publication can legitimately recycle the old row; that is a separate check.
   state.layoutCommits = [];
-  state.armLayoutCommit = async () => {
-    const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
-      .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
-    const port = pane?.querySelector('[data-conversation-scroll]');
-    if (!port) throw new Error('No mounted reading port at publication.');
+  const waitForInputIdle = async port => {
     const tracker = trackScroll(port), deadline = performance.now() + 3000;
     let last = port.scrollTop, priorScrolls = tracker.scrolls, stable = 0, quietSince = performance.now(), inputSettled = false;
     while (performance.now() < deadline) {
@@ -297,6 +308,17 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       last = current; priorScrolls = tracker.scrolls;
     }
     if (!inputSettled) throw new Error('Input did not settle before publication.');
+  };
+  state.waitForGestureSettled = async () => {
+    const port = state.scrollTracking?.port;
+    if (port) await waitForInputIdle(port);
+  };
+  state.armLayoutCommit = async () => {
+    const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
+      .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
+    const port = pane?.querySelector('[data-conversation-scroll]');
+    if (!port) throw new Error('No mounted reading port at publication.');
+    await waitForInputIdle(port);
     const bounds = port.getBoundingClientRect();
     const hit = document.elementsFromPoint(bounds.left + bounds.width / 2, bounds.top + 1)
       .map(node => node.closest('[data-chat-anchor-key]'))
@@ -409,6 +431,8 @@ async function runScenario(browser, config, name) {
       const findLegacy = value => {
         if (!value || typeof value !== 'object') return undefined;
         if (value.type === 'pane' && value.resource?.sourceSessionId) return value.resource;
+        if (value.type === 'pane' && value.resource?.kind === 'chat' && value.resource.draftOrigin?.sourceSessionId
+          && value.resource.draftOrigin?.sourceHubId) return { kind: 'chat', ...value.resource.draftOrigin };
         for (const child of Object.values(value)) {
           if (child && typeof child === 'object') { const found = findLegacy(child); if (found) return found; }
         }
@@ -418,6 +442,7 @@ async function runScenario(browser, config, name) {
         const matches = catalog.sessions.filter(session => session.legacyOrigin?.hubId === legacyResource.sourceHubId
           && session.legacyOrigin?.sessionId === legacyResource.sourceSessionId && canonicalHhpiSessionId(session.id));
         if (matches.length === 1) migratedSource = matches[0];
+        if (migratedSource?.id === config.sessionId) workspace.windows[0].root.resource = legacyResource;
         workspace.windows.push({ id: 'saved-source-window', name: 'Saved source', autoName: false,
           root: { type: 'pane', id: 'saved-source-pane', resource: legacyResource } });
         workspace.focused['saved-source-window'] = 'saved-source-pane';
@@ -577,6 +602,7 @@ async function runScenario(browser, config, name) {
       const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
       return !!pane?.querySelector('[data-conversation-scroll] [data-chat-node-key][data-chat-anchor-key]');
     }, config.sessionId, { timeout: 10_000 }));
+    if (migratedSource?.id === config.sessionId) result.savedLegacyReference = 'native-body-and-editor-restored';
     await awaiting('wait-for-initial-source-read', Promise.all([...pending]));
     result.step = 'validate-initial-source-read';
     if (!result.targetReads || sourcePages.some(item => item.error)) fail('initial-source-page-unavailable');
@@ -613,10 +639,10 @@ async function runScenario(browser, config, name) {
           await awaiting(`${step}-touch-move`, cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(startY + distance * index / 8) }));
           await awaiting(`${step}-touch-pause`, pause(12));
         }
-        // End with a stationary finger, as in the component anchor journey;
-        // intentional compositor momentum is separate from prepend correction.
-        await awaiting(`${step}-stationary-contact`, page.evaluate(async () => { for (let i = 0; i < 6; i++) await new Promise(requestAnimationFrame); }));
+        // Let Chromium finish the real gesture, including inertia. The shared
+        // input-idle checkpoint still holds publication until scrolling ends.
         await awaiting(`${step}-touch-end`, cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }));
+        await awaiting(`${step}-wait-for-native-scroll-end`, page.evaluate(() => window.__hhpiSmoke.waitForGestureSettled()));
       } else {
         await awaiting(`${step}-position-pointer`, page.mouse.move(box.x + box.width * .6, box.y + box.height * .35));
         await awaiting(`${step}-wheel-up`, page.mouse.wheel(0, -220));
@@ -641,10 +667,18 @@ async function runScenario(browser, config, name) {
       const priorHead = Math.min(...previousSeqs);
       if (!Number.isFinite(priorHead)) fail('source-page-sequence-not-correlated');
       const oldAnchor = captureVisibleSourceAnchor(before.rows, sourcePages);
-      if (!oldAnchor) fail('reading-anchor-missing');
+      if (!oldAnchor) {
+        result.anchorDiagnostic = before.rows.filter(row => row.visible).slice(0, 8).map(row => ({
+          kind: row.kind, chars: sourceRowText(row).length,
+          sourceMatches: sourcePages.flatMap(record => pageBodies(record)).filter(body => rowMatchesSource(row, body)).map(body => ({
+            sourceChars: body.text.length, exactAnchor: !!body.anchor, marks: body.marks.map(mark => rowContainsBody(row, [mark])),
+          })).slice(0, 8),
+        }));
+        fail('reading-anchor-missing');
+      }
       activePageProbe = { anchor: oldAnchor, iteration: iteration + 1 };
       let committed;
-      for (let gesture = 0; gesture < 24 && performance.now() - start < timeoutMs - 3_000; gesture++) {
+      for (let gesture = 0; performance.now() - start < timeoutMs - 3_000; gesture++) {
         await moveEarlier(`earlier-page-${iteration + 1}-gesture-${gesture + 1}`);
         const historyError = page.locator('[data-history-page-error]');
         const historyFailure = await historyError.count() ? await historyError.first().textContent() : null;

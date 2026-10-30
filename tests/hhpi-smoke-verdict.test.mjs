@@ -11,6 +11,44 @@ import { parseWorkspaceState } from '../src/client/model.ts';
 const target = 'hhpi:runner%3Aone:codex-main:codex:thread%2F42';
 const body = (request = {}) => ({ payload: { args: { request } } });
 
+test('a native DSH assistant anchor matches its visible answer without requiring collapsed reasoning', () => {
+  const text = 'The actual native DSH answer remains visible in this reading window.';
+  const record = { page: { context: [], entries: [{ type: 'event', event: { seq: 80, type: 'assistant/message', data: { message: {
+    content: [{ type: 'reasoning', text: 'Internal reasoning stays folded outside the visible answer.' }, { type: 'text', text }],
+  } } } }] } };
+  const anchor = captureVisibleSourceAnchor([{ key: 'native-step', anchor: 'step:1:2', bodyText: text, text,
+    visible: true }], [record]);
+  assert.equal(anchor?.seq, 80);
+  assert.equal(anchor?.sourceText, text);
+});
+
+test('Markdown native answers correlate through the exact official context and visible source text', () => {
+  const text = 'Clear text survives formatting and remains visible in the original native answer.';
+  const record = { page: { context: [], entries: [{ type: 'event', event: { seq: 80, type: 'assistant/message', data: {
+    turn: 2, step: 3, message: { content: [{ type: 'text', text: `**Clear** text survives formatting and remains visible in the original native answer.` }] },
+  } } }] } };
+  const row = { key: '14:assistant-step2:3', anchor: 'flow:original', bodyText: text, text, visible: true };
+  assert.equal(captureVisibleSourceAnchor([row], [record])?.seq, 80);
+  assert.equal(captureVisibleSourceAnchor([{ ...row, key: '14:assistant-step2:4' }], [record]), null,
+    'similar wording in another original step cannot certify the requested source body');
+});
+
+test('visible native answers inside an official process group remain observable as body text', () => {
+  const dom = new JSDOM(`<section class="hapi-pane" data-session-id="${target}" data-hapi-pane-visible="true">
+    <div data-conversation-scroll><div data-chat-flow-kind="turn-process">
+      <div data-chat-node-key="native-answer" data-chat-anchor-key="step:1:2" data-chat-flow-kind="assistant-step">
+        <div data-slot="conversation.chat.node"><span>Visible native answer.</span><div data-variant="think">Folded reasoning.</div></div>
+      </div></div></div></section>`, { runScripts: 'outside-only', pretendToBeVisual: true });
+  try {
+    dom.window.HTMLElement.prototype.getBoundingClientRect = function() { return new dom.window.DOMRect(0, 0, 390, 200); };
+    dom.window.HTMLElement.prototype.getClientRects = function() { return [this.getBoundingClientRect()]; };
+    dom.window.eval(`(${installObserver.toString()})(${JSON.stringify({ sessionId: target, allowedReadStreams: [] })})`);
+    const row = dom.window.__hhpiSmoke.rows().rows[0];
+    assert.equal(row.visible, true);
+    assert.equal(row.bodyText, 'Visible native answer.');
+  } finally { dom.window.close(); }
+});
+
 test('HHPI smoke admission accepts only canonical IDs and exact-target read/resource calls', () => {
   assert.equal(canonicalHhpiSessionId(target), true);
   assert.equal(canonicalHhpiSessionId('hhpi:runner:codex-main:codex:thread/42'), false);
