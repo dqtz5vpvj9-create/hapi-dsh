@@ -25,11 +25,12 @@ jobs:
           key: hhpi-reading-linux-x64-node24-v1-${{ hashFiles('scripts/dsh-ext/**', 'source-snapshots/dsh-ext/**') }}
           fail-on-cache-miss: true
       - run: node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-ci/packages
-      - name: Package only source and public build dependencies
+      - name: Package only source and public browser dependencies
         run: |
           mkdir -p .tmp/browser-workspace
           git archive HEAD | gzip > .tmp/browser-workspace/checkout.tar.gz
-          tar --exclude='.git' -czf .tmp/browser-workspace/runtime.tar.gz node_modules .tmp/hhpi-ci/source .tmp/hhpi-ci/source.json .tmp/hhpi-ext/installed.json
+          tar -czf .tmp/browser-workspace/dependencies.tar.gz node_modules
+          tar --exclude='.git' --exclude='node_modules' -czf .tmp/browser-workspace/source.tar.gz .tmp/hhpi-ci/source .tmp/hhpi-ci/source.json .tmp/hhpi-ext/installed.json
           cp "$(command -v node)" .tmp/browser-workspace/node
           git rev-parse HEAD > .tmp/browser-workspace/commit.txt
           sha256sum .tmp/browser-workspace/* > .tmp/browser-workspace/checksums.txt
