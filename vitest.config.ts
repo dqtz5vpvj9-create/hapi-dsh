@@ -9,7 +9,8 @@ export default defineConfig({
   plugins: fault ? [{
     name: 'experience-fault', enforce: 'pre',
     transform(code, id) {
-      if (!id.replaceAll('\\', '/').endsWith(`/${fault.file}`)) return
+      const modulePath = id.replaceAll('\\', '/').split('?', 1)[0]!
+      if (!modulePath.endsWith(`/${fault.file}`)) return
       if (code.split(fault.before).length !== 2) throw new Error(`Fault target changed: ${faultName}`)
       return { code: code.replace(fault.before, fault.after), map: null }
     },
