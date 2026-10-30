@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { HAPI_REMOTE, remoteValue, type HapiRemoteApi } from '../client-api.ts'
+import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { WorkspaceController } from './controller.ts'
 import { installFederation } from './federation.tsx'
 import { en, zh } from './locales.ts'
@@ -86,7 +86,7 @@ declare module '@deepseek-ai/cordis' {
 export const name = 'hapi-dsh-client'
 export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
 
-/** Mount the namespace first, then consume it in an explicit Cordis inject scope. */
+/** Consume the namespace installed by the source-session provider. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
     // Composition opt-in for ext 0004 (programmatic live-edge following). The
     // patched upstream ui-chat defaults to the stock behavior; only a shell that
@@ -98,27 +98,24 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     // Pane graphs exclude this bundle; this branch only remains for the primary
     // graph and for profiles that still scan the row.
     if (Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true) {
-        const unmount = await ctx.remote.$mount(HAPI_REMOTE)
         let child: ReturnType<Context['inject']> | undefined
         try {
             child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installPaneNative)
             await child
-            return async () => { await child?.dispose(); await unmount?.() }
+            return async () => { await child?.dispose() }
         } catch (error) {
-            await child?.dispose(); await unmount?.()
+            await child?.dispose()
             throw error
         }
     }
-    let unmount: (() => Promise<void>) | undefined
     let child: ReturnType<Context['inject']> | undefined
     try {
-        unmount = await ctx.remote.$mount(HAPI_REMOTE)
         child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installWorkspace)
         await child
-        return async () => { await child?.dispose(); await unmount?.() }
+        return async () => { await child?.dispose() }
     } catch (error) {
-        console.error('[hapi-dsh] Client activation failed: mount native API and injected consumer', error)
-        await child?.dispose(); await unmount?.()
+        console.error('[hapi-dsh] Client activation failed: await the source provider and install workspace', error)
+        await child?.dispose()
         throw error
     }
 }

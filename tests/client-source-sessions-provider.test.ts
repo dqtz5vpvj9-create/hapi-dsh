@@ -12,7 +12,7 @@ import { apply as applyGateway, inject as gatewayInject } from '@deepseek-ai/dsh
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { SOURCE_SESSIONS_REALM } from '../src/client/source-sessions-composition.ts'
-import { HHPI_REMOTE } from '../src/hhpi-api.ts'
+import { HAPI_DSH_REMOTE } from '../src/shared/client-remote.ts'
 import type {} from '../src/client/remote-sessions.ts'
 
 const require = createRequire(import.meta.url)
@@ -32,7 +32,7 @@ before(async () => {
   provider = module.exports as Plugin.Object
 })
 
-async function fixture() {
+async function fixture({ mountHapiConsumer = false }: { mountHapiConsumer?: boolean } = {}) {
   const ctx = new Context(), started: Array<{ name: string; owner: unknown }> = [], stopped: string[] = []
   let originalSessions: unknown
   let originalRestoreCreates = 0
@@ -51,8 +51,13 @@ async function fixture() {
   } as unknown as ConnectionHandle)
   await ctx.plugin({ inject: gatewayInject, apply: applyGateway })
   await ctx.plugin(Loader)
-  ctx.loader.internal = { version: 'client', import: (name: string) => ({ inject: ['sessions'], apply(owner: Context) {
+  ctx.loader.internal = { version: 'client', import: (name: string) => ({ inject: name === 'hapi-dsh' && mountHapiConsumer
+    ? ['remote', 'remote.hapi', 'remote.hhpi', 'sessions', 'hapiSourceSessions', 'hhpiSessions'] : ['sessions'], apply(owner: Context) {
     started.push({ name, owner: owner.sessions })
+    if (name === 'hapi-dsh' && mountHapiConsumer) {
+      assert.equal(typeof owner.remote.hapi.catalog, 'function')
+      assert.equal(typeof owner.remote.hhpi.catalog, 'function')
+    }
     if (name === '@deepseek-ai/dsh-client-ui-workspace' && owner.sessions === originalSessions) {
       originalRestoreCreates++
       return (owner.sessions as { create(): Promise<unknown> }).create()
@@ -112,24 +117,32 @@ test('registers the sessions boundary before yielding so workspace restore canno
   } finally { await f.ctx.fiber.dispose() }
 })
 
-test('official ClientRemote mount publishes remote.hhpi as a Cordis-injected service', async () => {
-  const f = await fixture()
+test('provider and workspace consumer co-activate through one official composite ClientRemote mount', async () => {
+  const f = await fixture({ mountHapiConsumer: true })
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} }, refresh: async () => {} }
+  f.ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
   try {
     assert.equal(f.ctx.get('remote.hhpi'), undefined)
-    const remoteOwner = f.ctx.inject(['remote'], async owner => {
-      const unmount = await owner.remote.$mount(HHPI_REMOTE)
-      try {
-        assert.equal(typeof f.ctx.get('remote.hhpi'), 'object')
-        let namespace: unknown
-        const dependency = owner.inject(['remote.hhpi'], scope => { namespace = scope.remote.hhpi })
-        await dependency
-        assert.equal(typeof (namespace as { catalog?: unknown }).catalog, 'function')
-        await (namespace as { catalog(): Promise<unknown> }).catalog()
-      } finally { await unmount() }
-    })
-    await remoteOwner
-    await remoteOwner.dispose()
+    assert.equal(f.ctx.get('remote.hapi'), undefined)
+    const installed = f.ctx.plugin(provider)
+    const entries = await f.create()
+    await installed
+    await f.ctx.loader.await()
+    assert.ok(entries.every(entry => entry.options.isolate?.sessions === SOURCE_SESSIONS_REALM))
+    assert.equal(typeof f.ctx.get('remote.hhpi'), 'object')
+    assert.equal(typeof f.ctx.get('remote.hapi'), 'object')
+    const registered = f.ctx.typert.remotes.list().filter(descriptor => descriptor.id.startsWith('hapi-dsh#'))
+    assert.equal(registered.length, HAPI_DSH_REMOTE.descriptors.length)
+    assert.ok(registered.some(descriptor => descriptor.id === 'hapi-dsh#hapi/catalog'))
+    assert.ok(registered.some(descriptor => descriptor.id === 'hapi-dsh#hhpi/catalog'))
+    assert.equal(f.started.length, names.length)
+    assert.ok(f.started.every(entry => entry.owner === f.ctx.hapiSourceSessions))
+    assert.equal(f.ctx.get('hapiSourceSessions'), f.ctx.hapiSourceSessions)
+    assert.ok(f.ctx.get('hhpiSessions'))
+    await f.ctx.hhpiSessions.refresh()
+    await installed.dispose()
     assert.equal(f.ctx.get('remote.hhpi'), undefined)
+    assert.equal(f.ctx.get('remote.hapi'), undefined)
   } finally { await f.ctx.fiber.dispose() }
 })
 
