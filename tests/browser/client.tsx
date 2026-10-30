@@ -12,7 +12,7 @@ import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/client/seamless/controller.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceChanges } from '../../src/remote/protocol.ts'
-import { readingAnchor, anchorDrift, observeReadingCommit } from './reading-probe.ts'
+import { readingAnchor, anchorDrift, stableAnchorDrift, waitForOlderSourceCommit, observeReadingCommit } from './reading-probe.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap { 'hhpi.lab.pane': { kind: 'single'; scope: 'session' } } }
 const runtime = window as unknown as { __HHPI_REQUIRE__(id: string): any; __hhpi: any; __hhpiFailure?: string }
@@ -101,14 +101,17 @@ const stopPaging = installSeamlessHistory(document, {
     const participation = pane.conversation.windowCommit
     if (!participation) throw new Error('The official commit checkpoint is unavailable.')
     const requested = readingAnchor(element)
+    const previousRevision = pane.session.sourceWindow.getSnapshot().olderRevision ?? 0
     const probe = observeReadingCommit(element, participant => participation.register(pane.reference.binding.viewId!, participant))
     const cancel = (): void => pane.session.cancelOlderPage(signal.reason)
     signal.addEventListener('abort', cancel, { once: true })
     try {
       await control.loadOlder(signal)
+      await waitForOlderSourceCommit(pane.session.sourceWindow, pane.session, pane.reading.snapshot, previousRevision, signal)
       const before = probe.anchor()
       if (!before || probe.count() !== 1) throw new Error('The older read did not produce exactly one measured official commit.')
-      corrections.push({ key: before.key, delta: anchorDrift(element, before), requestDelta: requested ? anchorDrift(element, requested) : null })
+      const delta = await stableAnchorDrift(element, before, { signal })
+      corrections.push({ key: before.key, delta, requestDelta: requested ? anchorDrift(element, requested) : null })
       return true
     } catch (error) {
       readingFailures.push(error instanceof Error ? error.stack ?? error.message : String(error))
