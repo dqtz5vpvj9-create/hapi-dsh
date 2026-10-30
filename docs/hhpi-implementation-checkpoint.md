@@ -1,6 +1,6 @@
 # HHPI implementation checkpoint
 
-This document preserves the feature-branch checkpoint below. During the subsequent `main` cutover, the production configuration switched to HHPI-only native Codex sources. Production UI acceptance is still being repaired and is not implied by this historical component result.
+This document preserves the feature-branch checkpoint below. During the subsequent `main` cutover, the production configuration switched to HHPI-only native Codex sources. Production UI acceptance is still being repaired and is not implied by this historical component result. See the [main cutover record](hhpi-main-cutover-2026-10-30.md) for the installed release and the failed live-reading result.
 
 Date: 2026-10-30. Branch: `feat/hhpi-remote-access-20261029`.
 

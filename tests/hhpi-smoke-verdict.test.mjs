@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { hhpiRequestPolicy, canonicalHhpiSessionId, syntheticWorkspace, matchVisibleSourcePage, installObserver,
+import { hhpiRequestPolicy, canonicalHhpiSessionId, syntheticWorkspace, matchVisibleSourcePage, captureVisibleSourceAnchor,
+  sourceAnchorVerdict, installObserver,
   publicConsoleCategory, allowedMissingModuleNames, safeHhpiDiagnosticMarks } from '../scripts/test-hhpi-smoke.mjs';
 import { readStreams, requestPolicy, streamPolicy } from '../scripts/test-history-smoke.mjs';
 import { parseWorkspaceState } from '../src/client/model.ts';
@@ -105,4 +106,34 @@ test('page two and three follow the same source-sequence and visible-text eviden
     assert.equal(match?.seq, seq, `segment ${index + 1} must expose its returned source sequence`);
     keys.add(key); knownSeqs.add(seq); priorHead = seq;
   }
+});
+
+test('source anchor verdict separates identity, body change, virtualization, and stable retention', () => {
+  const sourceText = 'A stable source message body that stays in the conversation.';
+  const anchor = { key: 'user:100', anchor: 'flow:user:100', seq: 100, sourceText };
+  const row = (fields = {}) => ({ key: anchor.key, anchor: anchor.anchor, visible: true,
+    text: `${sourceText} copied edited delete`, bodyText: sourceText, ...fields });
+
+  assert.equal(sourceAnchorVerdict(anchor, [row()]), 'retained',
+    'toolbar text in the containing row does not alter the source body verdict');
+  assert.equal(sourceAnchorVerdict(anchor, [row({ key: 'user:100-rekeyed' })]), 'key-missing');
+  assert.equal(sourceAnchorVerdict(anchor, [row({ anchor: 'flow:user:100-replaced' })]), 'anchor-changed');
+  assert.equal(sourceAnchorVerdict(anchor, [row({ bodyText: 'A revised source message body.' })]), 'source-text-changed');
+  assert.equal(sourceAnchorVerdict(anchor, [row({ visible: false })]), 'old-row-outside-visible-range');
+  assert.equal(sourceAnchorVerdict(anchor, []), 'old-row-outside-virtual-range');
+  assert.equal(sourceAnchorVerdict(null, []), 'pre-response-anchor-unavailable');
+});
+
+test('response-boundary anchor captures a visible source body, not row controls', () => {
+  const sourceText = 'A stable source message body that stays in the conversation.';
+  const record = { page: { context: [], entries: [{ type: 'event', event: { seq: 100, type: 'user/message',
+    data: { content: [{ type: 'text', text: sourceText }] } } }] } };
+  const captured = captureVisibleSourceAnchor([
+    { key: 'user:100', anchor: 'flow:user:100', visible: true, bodyText: sourceText,
+      text: `${sourceText} copied edited delete` },
+  ], [record]);
+  assert.deepEqual(captured, { key: 'user:100', anchor: 'flow:user:100', seq: 100, sourceText });
+  assert.equal(captureVisibleSourceAnchor([
+    { key: 'user:100', anchor: 'flow:user:100', visible: false, bodyText: sourceText },
+  ], [record]), null, 'the response-boundary sample must be a currently visible source body');
 });

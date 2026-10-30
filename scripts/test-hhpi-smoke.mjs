@@ -124,12 +124,56 @@ function pageBodies(record) {
   const context = new Set(record.page?.context ?? []);
   return (record.page?.entries ?? []).flatMap(entry => {
     const seq = entry?.event?.seq, text = bodyText(entry);
-    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, marks: textMarks(text) }] : [];
+    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, text: normalizeText(text), marks: textMarks(text) }] : [];
   });
 }
+function sourceRowText(row) { return normalizeText(row?.bodyText ?? row?.text ?? ''); }
 function rowContains(row, marks) {
-  const text = compactText(row.text);
+  const text = compactText(sourceRowText(row));
   return marks.some(mark => text.includes(mark));
+}
+function rowContainsBody(row, marks) {
+  const text = compactText(sourceRowText(row));
+  return marks.length > 0 && marks.every(mark => text.includes(mark));
+}
+
+/** Capture a visible source-message identity and its body at the network response boundary. */
+export function captureVisibleSourceAnchor(rows, records, fallbackAnchor = null) {
+  for (const row of rows) {
+    if (!row.visible || !row.key || !row.anchor) continue;
+    const body = sourceRowText(row);
+    if (!body) continue;
+    for (const record of records) for (const sourceBody of pageBodies(record)) {
+      if (!rowContainsBody(row, sourceBody.marks)) continue;
+      return { key: row.key, anchor: row.anchor, seq: sourceBody.seq, sourceText: body };
+    }
+    if (fallbackAnchor?.key === row.key && fallbackAnchor.anchor === row.anchor) {
+      return { key: row.key, anchor: row.anchor, seq: fallbackAnchor.seq, sourceText: body };
+    }
+  }
+  return null;
+}
+
+/** Categorize identity/body continuity without exposing source keys or text in reports. */
+export function sourceAnchorVerdict(anchor, rows) {
+  if (!anchor?.key || !anchor.anchor || typeof anchor.sourceText !== 'string') return 'pre-response-anchor-unavailable';
+  const sameKey = rows.filter(row => row.key === anchor.key);
+  if (!sameKey.length) {
+    const sameBodyElsewhere = rows.some(row => sourceRowText(row) === anchor.sourceText);
+    return sameBodyElsewhere ? 'key-missing' : 'old-row-outside-virtual-range';
+  }
+  const sameAnchor = sameKey.find(row => row.anchor === anchor.anchor);
+  if (!sameAnchor) return 'anchor-changed';
+  if (sourceRowText(sameAnchor) !== anchor.sourceText) return 'source-text-changed';
+  if (!sameAnchor.visible) return 'old-row-outside-visible-range';
+  return 'retained';
+}
+
+function recordAnchorVerdict(result, phase, verdict) {
+  if (!verdict) return;
+  result.anchorDiagnostics ??= { baselineAtResponse: {}, committed: {} };
+  const counts = result.anchorDiagnostics[phase];
+  counts[verdict] = (counts[verdict] ?? 0) + 1;
 }
 
 /** A cursor is insufficient: a new source seq must render as a new visible keyed body row. */
@@ -199,8 +243,12 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       .filter(row => ['user', 'assistant-step'].includes(row.getAttribute('data-chat-flow-kind')))
       .map(row => {
         const rect = row.getBoundingClientRect(), text = row.innerText ?? '';
+        const bodyRoot = row.querySelector(':scope > [data-slot="conversation.chat.node"]') ?? row;
+        const body = bodyRoot.cloneNode(true);
+        for (const node of body.querySelectorAll('script,iframe,object,embed,audio,video,source,input,textarea,select,button,[role="button"],[data-hapi-share-exclude],[data-hapi-share-dialog],[data-chat-group-part="reasoning"],[data-variant="think"],[data-clock],[data-chat-flow-kind="turn-process"],.hapi-native-user-actions,[data-slot="conversation.chat.assistant-actions"]')) node.remove();
+        const bodyText = body.innerText ?? body.textContent ?? '';
         return { key: row.getAttribute('data-chat-node-key'), anchor: row.getAttribute('data-chat-anchor-key'),
-          kind: row.getAttribute('data-chat-flow-kind'), text, normalizedText: compact(text),
+          kind: row.getAttribute('data-chat-flow-kind'), text, bodyText, normalizedText: compact(text),
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
             && row.getClientRects().length > 0 && row.closest('[hidden]') === null };
       });
@@ -239,7 +287,8 @@ async function runScenario(browser, config, name) {
     cachedTailReadDelta: null, changesStreams: 0, maxFrameGapMs: 0, blockedWrites: 0, blockedStreams: 0 };
   const start = performance.now(); let context, page, cdp, deadline, timedOut = false;
   let diagnosticCapture;
-  const sourcePages = [], pending = new Set(), socketPages = new Map(), openedReadStreams = new Map();
+  const sourcePages = [], pending = new Set(), socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
+  let activePageProbe = null;
   const awaiting = async (step, promise) => { result.step = step; return await promise; };
   const blocked = method => { result.blockedWrites++; result.blockedMethod ??= cleanMethod(method); };
   const timeoutMs = config.timeoutMs;
@@ -283,6 +332,27 @@ async function runScenario(browser, config, name) {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId,
           result: { ok: true, value: { revision: 0, state: syntheticWorkspace(config.sessionId) } } }) });
       }
+      if (policy === 'read' && method === 'hhpi/read') {
+        let upstream;
+        try { upstream = await route.fetch(); } catch { return route.continue(); }
+        let snapshot = { anchor: null, baselineVerdict: 'pre-response-anchor-unavailable', mountedRows: 0, visibleRows: 0 };
+        try {
+          const state = await page?.evaluate(() => window.__hhpiSmoke?.rows?.() ?? null);
+          if (state?.exists) {
+            const baselineVerdict = activePageProbe
+              ? sourceAnchorVerdict(activePageProbe.anchor, state.rows) : null;
+            recordAnchorVerdict(result, 'baselineAtResponse', baselineVerdict);
+            snapshot = {
+              anchor: captureVisibleSourceAnchor(state.rows, sourcePages, activePageProbe?.anchor),
+              baselineVerdict: baselineVerdict ?? 'no-page-baseline',
+              mountedRows: state.rows.length,
+              visibleRows: state.rows.filter(row => row.visible).length,
+            };
+          }
+        } catch { /* Keep only the anonymous unavailable snapshot. */ }
+        if (typeof body.rpcId === 'string') anchorSnapshots.set(body.rpcId, snapshot);
+        return route.fulfill({ response: upstream });
+      }
       if (policy === 'read') return route.continue();
       const input = body?.payload?.args?.request;
       let value;
@@ -310,28 +380,35 @@ async function runScenario(browser, config, name) {
       result.targetReads++;
     });
     page.on('requestfailed', request => {
-      if (new URL(request.url()).pathname.endsWith('/api/hhpi/read')) sourcePages.push({ request: {}, error: 'read-transport-failed' });
+      if (new URL(request.url()).pathname.endsWith('/api/hhpi/read')) {
+        let rpcId; try { rpcId = request.postDataJSON()?.rpcId; } catch {}
+        if (typeof rpcId === 'string') anchorSnapshots.delete(rpcId);
+        sourcePages.push({ request: {}, error: 'read-transport-failed' });
+      }
     });
     page.on('response', response => {
       const url = new URL(response.url()); if (!url.pathname.includes('/api/')) return;
       const task = (async () => {
         const method = url.pathname.replace(/^.*\/api\//, '');
-        let args; try { args = response.request().postDataJSON()?.payload?.args; } catch {}
+        let requestBody; try { requestBody = response.request().postDataJSON(); } catch {}
+        const args = requestBody?.payload?.args;
         const request = args?.request;
         if (method !== 'hhpi/read') return;
+        const anchorSnapshot = typeof requestBody?.rpcId === 'string' ? anchorSnapshots.get(requestBody.rpcId) : undefined;
+        if (typeof requestBody?.rpcId === 'string') anchorSnapshots.delete(requestBody.rpcId);
         if (request?.sessionId !== config.sessionId) { blocked(method); return; }
-        let envelope; try { envelope = await response.json(); } catch { sourcePages.push({ request, error: 'invalid-json' }); return; }
+        let envelope; try { envelope = await response.json(); } catch { sourcePages.push({ request, anchorSnapshot, error: 'invalid-json' }); return; }
         const pageValue = unwrap(envelope.result?.value);
         if (response.status() >= 400 || envelope.result?.ok !== true || envelope.result?.value?.ok === false) {
-          sourcePages.push({ request, error: 'read-failed' }); return;
+          sourcePages.push({ request, anchorSnapshot, error: 'read-failed' }); return;
         }
         if (request.limit !== undefined && (!Number.isInteger(request.limit) || request.limit < 1 || request.limit > 500)) {
-          sourcePages.push({ request, error: 'invalid-limit' }); return;
+          sourcePages.push({ request, anchorSnapshot, error: 'invalid-limit' }); return;
         }
         if (pageValue?.session?.id !== config.sessionId || !Array.isArray(pageValue.entries)) {
-          sourcePages.push({ request, error: 'wrong-source-or-invalid-page' }); return;
+          sourcePages.push({ request, anchorSnapshot, error: 'wrong-source-or-invalid-page' }); return;
         }
-        sourcePages.push({ request, page: pageValue, receivedAt: performance.now(), used: false });
+        sourcePages.push({ request, page: pageValue, anchorSnapshot, receivedAt: performance.now(), used: false });
       })().catch(() => { sourcePages.push({ request: {}, error: 'read-capture-failed' }); });
       pending.add(task); void task.finally(() => pending.delete(task));
     });
@@ -428,8 +505,9 @@ async function runScenario(browser, config, name) {
       const previousSeqs = new Set(allSourceMatches(before.rows).map(item => item.seq));
       const priorHead = Math.min(...previousSeqs);
       if (!Number.isFinite(priorHead)) fail('source-page-sequence-not-correlated');
-      const oldAnchor = before.rows.find(row => row.visible);
+      const oldAnchor = captureVisibleSourceAnchor(before.rows, sourcePages);
       if (!oldAnchor) fail('reading-anchor-missing');
+      activePageProbe = { anchor: oldAnchor, iteration: iteration + 1 };
       let committed;
       for (let gesture = 0; gesture < 24 && performance.now() - start < timeoutMs - 3_000; gesture++) {
         await moveEarlier(`earlier-page-${iteration + 1}-gesture-${gesture + 1}`);
@@ -437,13 +515,14 @@ async function runScenario(browser, config, name) {
         const after = await readRows(`read-earlier-page-${iteration + 1}-dom-after-gesture`);
         committed = matchesForPage(after.rows, previousKeys, previousSeqs, priorHead);
         if (committed) {
-          const retained = after.rows.find(row => row.key === oldAnchor.key && row.anchor === oldAnchor.anchor
-            && row.normalizedText === oldAnchor.normalizedText);
-          if (!retained) fail('reading-anchor-or-text-changed-during-prepend');
+          const anchorVerdict = sourceAnchorVerdict(committed.record.anchorSnapshot?.anchor, after.rows);
+          recordAnchorVerdict(result, 'committed', anchorVerdict);
+          if (anchorVerdict !== 'retained') fail('reading-anchor-continuity-failed');
           visibleMatches = allSourceMatches(after.rows.filter(row => row.visible));
           knownMatches = allSourceMatches(after.rows);
           if (!visibleMatches.some(item => item.seq === committed.match.seq && item.key === committed.match.key)) fail('new-source-body-not-visible');
           headSeq = Math.min(...knownMatches.map(item => item.seq));
+          activePageProbe = null;
           break;
         }
       }
