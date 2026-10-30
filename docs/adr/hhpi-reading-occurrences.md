@@ -26,7 +26,7 @@ Releasing a Pane invalidates its binding, aborts local reads, releases its offic
 
 ## Source-extension delivery
 
-The `readingOccurrences:1` capability is delivered with one verified nine-package set: Session Controller, Slots, Renderer, UiSession, Conversation, Chat, Trajectory, Tool and Plan. Source transforms are applied only to pinned DSH revision `1f81c047fc48fa190a683e469daa699857e9afe8` before compilation. No compiled-bundle rewriting or alternate Chat renderer is introduced.
+The `readingOccurrences:1` capability is delivered with one verified eleven-package set: Session Controller, Slots, Renderer, UiSession, Conversation, Chat, Trajectory, Tool, Plan, Input Trigger and Commands. Source transforms are applied only to pinned DSH revision `1f81c047fc48fa190a683e469daa699857e9afe8` before compilation. No compiled-bundle rewriting or alternate Chat renderer is introduced. Input Trigger and Commands resolve the exact scoped binding through `ISessions.bindingOf(ctx)` and validate non-canonical occurrences with `ownsBinding`; older session implementations retain the canonical `binding(sessionId)` fallback. Their controllers remain keyed by binding, so panes sharing one native Session keep independent input state.
 
 Setting `globalThis.__DSH_CLIENT_READING_OCCURRENCES = 'off'` before graph construction disables occurrence admission. The default native DSH path remains available. A direct source fails explicitly when the capability is unavailable. Mixed or incomplete source package sets are rejected by the installer.
 

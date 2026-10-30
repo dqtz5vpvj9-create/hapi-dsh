@@ -10,7 +10,7 @@ This procedure builds and installs the optional official DSH reading extensions 
 - Verified runtime: Node 24.19.0, Linux x86-64, git, tar and npm.
 - Source inputs: `source-snapshots/dsh-ext/source.patch`, delivered source overrides and the `scripts/dsh-ext` source transformations. `prepare.mjs` records their checksums.
 
-The complete set contains nine packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, and `dsh-client-ui-plan`. The last three cover history navigation and detail consumers outside Chat. Ordinary registry packages carrying the same rc version do not contain these extensions. The installer rejects incomplete or mixed sets.
+The complete set contains eleven packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, `dsh-client-ui-plan`, `dsh-client-ui-input-trigger`, and `dsh-client-ui-commands`. The history detail packages cover readers outside Chat; Input Trigger and Commands resolve each pane's retained binding so Slash, popups and composer input stay pane-local while legacy consumers keep canonical lookup. Ordinary registry packages carrying the same rc version do not contain these extensions. The installer rejects incomplete or mixed sets.
 
 ## Build and install from the checkout
 
@@ -51,6 +51,6 @@ Setting `globalThis.__DSH_CLIENT_READING_OCCURRENCES = 'off'` before graph const
 
 ## Validation boundaries
 
-`tests/hhpi-extension-install.test.mjs` uses synthetic archives to verify rejection before installation. The installed-extension workflow separately compiles and installs the real nine-package set, tests actual official Session/Conversation/Input/Chat ownership, runs project types, all behavior tests, history and fault checks, and builds the plugin. Source-build caches are keyed by exact source inputs; the package identity check still runs on every installation.
+`tests/hhpi-extension-install.test.mjs` uses synthetic archives to verify rejection before installation. The installed-extension workflow separately compiles and installs the real eleven-package set, tests actual official Session/Conversation/Input Trigger/Commands/Chat ownership, runs project types, all behavior tests, history and fault checks, and builds the plugin. Source-build caches are keyed by exact source inputs; the package identity check still runs on every installation.
 
 The reading contracts use the actual official renderer and view/input implementations. Source RPC and unused external services are controlled fixtures. Component geometry in jsdom does not establish real-browser scrolling, viewport layout, physical keyboard behavior or desktop/mobile release acceptance. Those remain separate bounded acceptance scenarios.

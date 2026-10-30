@@ -16,6 +16,7 @@ export const SOURCE_SESSION_CONSUMERS = [
   '@deepseek-ai/dsh-client-ui-session',
   '@deepseek-ai/dsh-client-ui-conversation',
   '@deepseek-ai/dsh-client-ui-chat',
+  '@deepseek-ai/dsh-client-ui-commands',
   '@deepseek-ai/dsh-client-ui-workspace',
   '@deepseek-ai/dsh-client-ui-sidebar-right',
   '@deepseek-ai/dsh-client-ui-agent-preset',

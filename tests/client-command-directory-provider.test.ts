@@ -154,6 +154,43 @@ test('public Loader namespace isolation reaches ctx.remote.commands without chan
   } finally { await fixture.stop(); await fixture.ctx.fiber.dispose() }
 })
 
+test('official command consumer combines HHPI sessions with the isolated remote.commands namespace', async () => {
+  const ctx = new Context(), received: string[] = [], consumerContexts: Context[] = []
+  const originalSessions = { owner: 'original DSH sessions' }, facade = { owner: 'HHPI source sessions' }
+  await ctx.plugin(sourceSessionsLoader(Loader))
+  ctx.reflect.provide('sessions', originalSessions as unknown as Context['sessions'])
+  class Remote extends Service { constructor(owner: Context) { super(owner, 'remote') } }
+  class Commands extends Service {
+    constructor(owner: Context) { super(owner, 'remote.commands') }
+    async list(id: SessionId) { received.push(id); return { ok: true as const, value: [] } }
+    async execute(..._args: Parameters<Context['remote']['commands']['execute']>) { return { ok: true as const, value: undefined } }
+  }
+  await ctx.plugin(Remote); await ctx.plugin(Commands)
+  ctx.loader.internal = { version: 'client', import: () => ({ inject: ['sessions', 'remote', 'remote.commands'], apply(owner: Context) {
+    consumerContexts.push(owner)
+  } }) } as unknown as NonNullable<Loader['internal']>
+  const stop = await installCommandDirectoryProvider(ctx)
+  try {
+    const entry = ctx.loader.resolve(await ctx.loader.create({ name: COMMAND_DIRECTORY_CONSUMER }))
+    assert.equal(entry.options.isolate?.sessions, 'hapi-dsh:source-sessions')
+    assert.equal(entry.options.isolate?.['remote.commands'], COMMAND_DIRECTORY_REALM)
+    const symbol = entry.context[Context.isolate].sessions
+    assert.ok(symbol)
+    await ctx.isolate('sessions', symbol).plugin({ apply(owner: Context) {
+      owner.reflect.provide('sessions', facade as unknown as Context['sessions'])
+    } })
+    await entry.fiber
+    const consumer = consumerContexts[0]!
+    assert.equal(consumer.sessions, facade)
+    assert.notEqual(consumer.remote.commands, ctx.remote.commands)
+    assert.equal(consumer[Context.isolate].remote, ctx[Context.isolate].remote)
+    assert.equal(consumer[Context.isolate].sessions, symbol)
+    await consumer.remote.commands.list('hhpi-source' as SessionId)
+    await ctx.remote.commands.list('original-dsh' as SessionId)
+    assert.deepEqual(received, ['hhpi-source', 'original-dsh'])
+  } finally { await stop(); await ctx.fiber.dispose() }
+})
+
 test('Host graphs never share same-ID command reads', async () => {
   const first = await graph(), second = await graph()
   try {

@@ -6,7 +6,7 @@ The browser loads the installed official client bundles byte-for-byte, their off
 
 ## Execution
 
-The verified nine-package extension set must already be installed and `HHPI_DSH_SOURCE` must identify its prepared, built source checkout, as described in `docs/hhpi-extension-install.md`.
+The verified eleven-package extension set must already be installed and `HHPI_DSH_SOURCE` must identify its prepared, built source checkout, as described in `docs/hhpi-extension-install.md`.
 
 ```sh
 node --import tsx tests/browser/run.mjs --dom

@@ -1,5 +1,7 @@
 # HHPI implementation checkpoint
 
+This document preserves the feature-branch checkpoint below. During the subsequent `main` cutover, the production configuration switched to HHPI-only native Codex sources. Production UI acceptance is still being repaired and is not implied by this historical component result.
+
 Date: 2026-10-30. Branch: `feat/hhpi-remote-access-20261029`.
 
 Validated code revision: `464fc74186c19908fffc61e1b30b44996b6c16f3`.
@@ -26,11 +28,11 @@ Source-extension rationale: [reading occurrences](adr/hhpi-reading-occurrences.m
 
 DSH is pinned to `0.2.1-rc.3`, upstream source `1f81c047fc48fa190a683e469daa699857e9afe8`. Source transformations run before the pinned official compiler. No alternate Chat renderer or runtime rewriting of compiled bundles implements this feature.
 
-The verified extension set contains nine packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, and `dsh-client-ui-plan`.
+The previously verified extension set contains nine packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, and `dsh-client-ui-plan`. The follow-up Slash and command-popup correction adds Input Trigger and Commands. The complete eleven-package set was built and installed in the development checkout on 2026-10-30, and all five installed official reading/input/mounted-component contracts passed. Its patch fingerprint is `c49b1d1043711139fd10a7271cf6f7fcad5a3a7b2ba214a399febbe02a7eb7ac`; this local result does not claim production UI acceptance.
 
 The installer verifies all archive checksums, exact package identities, pinned upstream revision, matching source markers and actual installed markers. Incomplete or mixed sets are rejected. Tracked `package.json` and `package-lock.json` remain unchanged. Instructions: [source extension installation](hhpi-extension-install.md).
 
-The tested set has patch fingerprint:
+The historical nine-package set has patch fingerprint:
 
 ```text
 eb66f4f35e382d9052f373f53c50e16d79b5f905e88a27d5581b8fc5dc6165fb

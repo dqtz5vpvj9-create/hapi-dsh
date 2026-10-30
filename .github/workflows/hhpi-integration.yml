@@ -52,7 +52,7 @@ jobs:
       - uses: ./.github/actions/prepare-data-cache
       - name: Exact official reading, input and mounted Chat occurrences
         timeout-minutes: 2
-        run: node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts tests/contracts/hhpi-reading-dom.test.ts
+        run: node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts tests/contracts/hhpi-reading-dom.test.ts tests/contracts/hhpi-input-trigger-occurrences.test.ts
       - name: Full Host Client and component typecheck
         timeout-minutes: 2
         run: npm run typecheck

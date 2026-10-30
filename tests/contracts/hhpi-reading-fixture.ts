@@ -131,5 +131,5 @@ export async function fixture(t: TestContext) {
       return [...(data.content ?? []), ...(data.blocks ?? [])].flatMap(block => typeof block.text === 'string' ? [block.text] : [])
     })
   }
-  return { ctx, sessions, remote, canonical, calls, writes, open, body, index, dom }
+  return { ctx, sessions, remote, canonical, calls, writes, open, body, index, dom, officialPlugin: official }
 }
