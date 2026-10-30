@@ -18,12 +18,12 @@ jobs:
         with:
           node-version: 24.19.0
           package-manager-cache: false
-      - name: Extract existing fixture without changing behavior assertions
+      - name: Extract existing fixture and update exact gesture argument assertions
         run: |
           node --input-type=module <<'NODE'
           import { readFile, writeFile, unlink } from 'node:fs/promises';
           import { execFileSync } from 'node:child_process';
-          if (execFileSync('git',['rev-parse','HEAD^'],{encoding:'utf8'}).trim() !== '6fe74e4d746596b11284ddfd2c1f93bd6214f019') throw new Error('Unexpected parent');
+          if (execFileSync('git',['rev-parse','HEAD^'],{encoding:'utf8'}).trim() !== '41309637fbf0735aed06271975014da36f5e2c5a') throw new Error('Unexpected parent');
           const path='tests/contracts/hhpi-reading-occurrences.test.ts', text=await readFile(path,'utf8');
           const marker="test('all official readers and input shells";
           if (text.split(marker).length !== 2) throw new Error('Fixture boundary changed');
@@ -33,19 +33,22 @@ jobs:
             if (fixture.split(before).length!==2) throw new Error('Fixture signature changed');
             fixture=fixture.replace(before,after);
           }
-          await writeFile('tests/contracts/hhpi-reading-fixture.ts',fixture);
+          await writeFile('tests/contracts/hhpi-reading-fixture.ts',fixture.trimEnd()+'\n');
           await writeFile(path,"import assert from 'node:assert/strict'\nimport test from 'node:test'\nimport { createRequire } from 'node:module'\nimport { resolve } from 'node:path'\nimport { fixture } from './hhpi-reading-fixture.ts'\nconst require = createRequire(import.meta.url)\n\n"+text.slice(at));
-          const ci='.github/workflows/hhpi-integration.yml', workflow=await readFile(ci,'utf8');
-          const command='node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts';
-          if(workflow.split(command).length!==2)throw new Error('Test command changed');
-          await writeFile(ci,workflow.replace(command,command+' tests/contracts/hhpi-reading-dom.test.ts'));
+          const experience='tests/experience/seamless-source-page-budget.test.tsx';
+          let assertions=await readFile(experience,'utf8');
+          for(const [before,after,count] of [
+            ['expect(prefetch).toHaveBeenCalledWith(sessionId)', 'expect(prefetch).toHaveBeenCalledWith(sessionId, scroller.closest(\'[data-conversation-content]\'))',1],
+            ['expect(prefetch).toHaveBeenLastCalledWith(sessionId)', 'expect(prefetch).toHaveBeenLastCalledWith(sessionId, scroller.closest(\'[data-conversation-content]\'))',2],
+          ]) { if(assertions.split(before).length!==count+1) throw new Error('Gesture assertion boundary changed'); assertions=assertions.replaceAll(before,after); }
+          await writeFile(experience,assertions);
           await unlink('.github/workflows/hhpi-reading-fixture-extract.yml');
           NODE
-      - name: Commit the extracted fixture and actual renderer contract
+      - name: Commit only test sources
         run: |
           git diff --check
-          git add tests/contracts/hhpi-reading-fixture.ts tests/contracts/hhpi-reading-occurrences.test.ts .github/workflows/hhpi-integration.yml .github/workflows/hhpi-reading-fixture-extract.yml
+          git add tests/contracts/hhpi-reading-fixture.ts tests/contracts/hhpi-reading-occurrences.test.ts tests/experience/seamless-source-page-budget.test.tsx .github/workflows/hhpi-reading-fixture-extract.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'test(hhpi): share the actual official reading graph with mounted DOM contracts'
+          git commit -m 'test(hhpi): validate exact gesture owners and share actual reading graph'
           git push origin HEAD:refs/heads/feat/hhpi-remote-access-20261029
