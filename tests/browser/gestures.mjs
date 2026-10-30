@@ -1,6 +1,7 @@
 /** Browser-input driver; real geometry throughout, explicit bounded positioning. */
 import assert from 'node:assert/strict'
 
+/** @param {import('playwright').Page} page @param {import('playwright').BrowserContext} context */
 export async function createGestures(page, context, mobile, result) {
   const port = page.locator('[data-lab-pane="a"] [data-conversation-scroll]')
   const cdp = mobile ? await context.newCDPSession(page) : undefined
@@ -25,9 +26,27 @@ export async function createGestures(page, context, mobile, result) {
   async function scroll(delta) {
     const box = await port.boundingBox()
     assert.ok(box && box.height > 100 && box.width > 100, 'official scrollport must have real geometry')
-    const x = box.x + box.width / 2, y = box.y + (delta < 0 ? 100 : Math.min(650, box.height - 150))
-    if (mobile) await cdp.send('Input.synthesizeScrollGesture', { x, y, yDistance: -delta, speed: 3000, preventFling: true, gestureSourceType: 'touch' })
-    else { await page.mouse.move(x, y); await page.mouse.wheel(0, delta) }
+    const x = box.x + box.width / 2
+    if (mobile) {
+      // Dispatch trusted touch contacts, rather than synthesizeScrollGesture,
+      // whose touch backend can acknowledge without delivering touchmove.
+      const distance = Math.abs(delta)
+      assert.ok(distance <= box.height - 220, 'one touch gesture must remain inside its scrollport')
+      const y = box.y + (delta < 0 ? 80 : box.height - 140)
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] })
+      try {
+        for (let step = 1; step <= 12; step++) {
+          await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - delta * step / 12, id: 1 }] })
+          await page.evaluate(() => new Promise(requestAnimationFrame))
+        }
+        // End with stationary contacts to avoid adding an uncontrolled fling.
+        // These are browser animation frames, not a fixture scroll correction.
+        await page.evaluate(async () => { for (let i = 0; i < 6; i++) await new Promise(requestAnimationFrame) })
+      } finally { await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }) }
+    } else {
+      const y = box.y + Math.min(200, box.height / 2)
+      await page.mouse.move(x, y); await page.mouse.wheel(0, delta)
+    }
     await settle()
   }
   async function boundary() {

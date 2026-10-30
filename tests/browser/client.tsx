@@ -12,6 +12,7 @@ import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/client/seamless/controller.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceChanges } from '../../src/remote/protocol.ts'
+import { readingAnchor, anchorDrift } from './reading-probe.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap { 'hhpi.lab.pane': { kind: 'single'; scope: 'session' } } }
 const runtime = window as unknown as { __HHPI_REQUIRE__(id: string): any; __hhpi: any; __hhpiFailure?: string }
@@ -87,14 +88,8 @@ async function open(viewId: string) {
 }
 const panes = { a: await open('browser-a'), b: await open('browser-b') }
 function owner(element?: HTMLElement) { const key = element?.closest<HTMLElement>('[data-lab-pane]')?.dataset.labPane; return key === 'a' || key === 'b' ? { id: key, ...panes[key] } : undefined }
-function anchor(element: HTMLElement) {
-  const port = element.querySelector<HTMLElement>('[data-conversation-scroll]') ?? element.closest<HTMLElement>('[data-conversation-scroll]')
-  if (!port) return null
-  const box = port.getBoundingClientRect()
-  const node = [...port.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')].find(node => { const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top + 2 && rect.top < box.bottom - 100 })
-  return node ? { key: node.dataset.chatAnchorKey!, top: node.getBoundingClientRect().top - box.top } : null
-}
 const events: SeamlessHistoryEvent[] = [], corrections: Array<{ key: string; delta: number | null }> = []
+const readingFailures: string[] = []
 const stopPaging = installSeamlessHistory(document, {
   loadEarlierLabel: () => translate('chat')('chat.loadOlder'),
   sourceWindowProgress: (_id, element) => owner(element)?.session.sourceWindow.getSnapshot(),
@@ -103,17 +98,16 @@ const stopPaging = installSeamlessHistory(document, {
   loadOlderProgrammatically: async (element, _id, signal) => {
     const pane = owner(element), control = pane && controls.get(pane.id)
     if (!control) return false
-    const before = anchor(element)
+    const before = readingAnchor(element)
     const cancel = (): void => pane.session.cancelOlderPage(signal.reason)
     signal.addEventListener('abort', cancel, { once: true })
     try {
       await control.loadOlder(signal)
-      if (before) {
-        const port = element.querySelector<HTMLElement>('[data-conversation-scroll]')!
-        const node = port.querySelector<HTMLElement>(`[data-chat-anchor-key="${CSS.escape(before.key)}"]`)
-        corrections.push({ key: before.key, delta: node ? node.getBoundingClientRect().top - port.getBoundingClientRect().top - before.top : null })
-      }
+      if (before) corrections.push({ key: before.key, delta: anchorDrift(element, before) })
       return true
+    } catch (error) {
+      readingFailures.push(error instanceof Error ? error.stack ?? error.message : String(error))
+      throw error
     } finally { signal.removeEventListener('abort', cancel) }
   },
   loadAfter: async element => owner(element)?.session.loadAfter() ?? false,
@@ -144,7 +138,7 @@ function snapshot() {
     const pane = panes[key], state = pane.reading.snapshot.getSnapshot(), chat = pane.conversation.target('chat').getSnapshot()
     return [key, { rows: chat?.order.length ?? 0, before: state.before, busy: state.busy, phase: state.phase, draft: pane.input.state.getSnapshot().draft, control: !!controls.get(key) }]
   }))
-  return { ...result, errors: events.filter(event => event.type === 'failed' || event.type === 'suspended').map(event => ({ type: event.type, detail: event.detail })), corrections,
+  return { ...result, errors: events.filter(event => event.type === 'failed' || event.type === 'suspended').map(event => ({ type: event.type, detail: event.detail })), corrections, readingFailures,
     frames: { samples: frames.length, p95: [...frames].sort((a, b) => a - b)[Math.floor(frames.length * .95)] ?? null, max: frames.length ? Math.max(...frames) : null } }
 }
 runtime.__hhpi = {
