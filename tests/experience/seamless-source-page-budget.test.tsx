@@ -154,7 +154,7 @@ test('upward intent warms a source page before the reader reaches the load bound
   try {
     scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }))
     expect(prefetch).toHaveBeenCalledOnce()
-    expect(prefetch).toHaveBeenCalledWith(sessionId)
+    expect(prefetch).toHaveBeenCalledWith(sessionId, scroller.closest('[data-conversation-content]'))
     expect(events.some(event => event.type === 'requested')).toBe(false)
   } finally { dispose() }
 })
@@ -178,14 +178,14 @@ test('a committed source page warms the next cursor during the same upward readi
   try {
     scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -120 }))
     expect(prefetch).toHaveBeenCalledTimes(1)
-    expect(prefetch).toHaveBeenLastCalledWith(sessionId)
+    expect(prefetch).toHaveBeenLastCalledWith(sessionId, scroller.closest('[data-conversation-content]'))
 
     // HAPI's history-window subscription rechecks the boundary after commit;
     // the next page is ready before another wheel/touch sample is needed.
     cursor = 999
     for (const listener of listeners) listener()
     expect(prefetch).toHaveBeenCalledTimes(2)
-    expect(prefetch).toHaveBeenLastCalledWith(sessionId)
+    expect(prefetch).toHaveBeenLastCalledWith(sessionId, scroller.closest('[data-conversation-content]'))
 
     // Repeated snapshot notifications for one cursor do not start duplicate reads.
     for (const listener of listeners) listener()
