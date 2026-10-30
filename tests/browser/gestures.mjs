@@ -83,15 +83,11 @@ export async function createGestures(page, context, mobile, result) {
     // touch traversal through all 160 rows. Browser input crosses the boundary.
     if (mobile) {
       await port.evaluate(element => element.scrollTo({ top: 900, behavior: 'instant' }))
-      await page.evaluate(async () => {
-        const start = performance.now()
-        while (performance.now() - start < 450) await new Promise(requestAnimationFrame)
-      })
+      await settle()
     } else {
       const top = await port.evaluate(element => element.scrollTop)
       await scroll(900 - top)
     }
-    await settle()
     assert.equal(await page.evaluate(() => window.__hhpi.snapshot().a.rows), before, 'loaded-window positioning must not page the source')
     result.positioning = mobile ? 'native scrollTo inside accepted window; trusted touch crosses each boundary' : 'trusted wheel through accepted window and boundary'
     result.anchorProtocol = mobile ? 'final touch contact crosses runway; stationary contact through official commit' : 'completed wheel displacement followed by official commit'

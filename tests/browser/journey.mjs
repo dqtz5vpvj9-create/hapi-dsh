@@ -72,7 +72,6 @@ export async function runJourney(page, context, origin, mode, result) {
       const firstUserId = lastUserId - 150
       await gestures.boundary()
       await page.waitForFunction(rows => { const value = window.__hhpi.snapshot(); return value.a.rows > rows && !value.a.busy }, before.a.rows)
-      await gestures.settle()
       let body = await visible(), bodyGestures = 0
       // A real tool group can be taller than one gesture. Read past it with
       // bounded browser input; a fixed travel distance is not a body verdict.
