@@ -16,6 +16,8 @@ The UI host must commit React DOM before the coordinator corrects measured reade
 
 Retain the physical virtual row owning a nested tool anchor. Carry the semantic owner through saved positions and reveal it when an exact inner anchor needs remounting. Complete the exact offset correction at the virtual layout checkpoint, without applying an obsolete raw scroll offset while waiting. Use the commit-time position for subsequent content preservation.
 
+Separate range recycling from actual physical layout changes. Finalize the virtual layout checkpoint after the parent's row-measurement effect, using row-model, margin and measured-size revisions to decide whether a correction is needed. Ref/ResizeObserver and fallback measurements both advance that revision. Pending exact-anchor restoration still runs on a pure range update. Keep the before-mutation capture so a late fallback measurement cannot discard the previous text offset.
+
 ## Review and tests
 
 Review the source transformation and generated diff against the pinned upstream revision. Contract tests should cover actual official Conversation nodes and the reader/coordinator publication order. DOM tests do not certify browser scrolling. Release evidence and outstanding combinations are recorded independently in the HHPI implementation checkpoint.

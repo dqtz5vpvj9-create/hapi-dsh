@@ -251,7 +251,14 @@ export async function applyReaderLayout(root) {
       this.releaseDestination()
       return
     }
+    if (!changed) {
+      this.virtualLayoutPosition = null
+      return
+    }
 `);
+    const layout = method(owner, ast, 'restoreVirtualLayout').initializer;
+    if (!layout || !ts.isArrowFunction(layout) || layout.parameters.length !== 0) throw new Error('Pinned virtual layout callback changed.');
+    edits.push({ start: layout.parameters.pos, end: layout.parameters.end, text: 'changed = true' });
     insert(edits, body('stopPreserving').getStart(ast) + 1, '\n    if (this.pendingRestore !== null) this.releaseDestination()\n    this.pendingRestore = null\n');
     const align = body('align');
     const returning = align.statements.find(node => ts.isReturnStatement(node) && node.expression
@@ -284,6 +291,77 @@ export async function applyReaderLayout(root) {
     };
     preserve(body('preserve'));
     insert(edits, owner.end - 1, '\n  private pendingRestore: ChatScrollPosition | null = null\n');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/contract/slots.ts', (ast, edits) => {
+    let count = 0;
+    const visit = node => {
+      if (ts.isPropertySignature(node) && node.name.getText(ast) === 'afterLayout') {
+        edits.push({ start: node.type.getStart(ast), end: node.type.end, text: '(changed?: boolean) => void' }); ++count;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    if (count !== 1) throw new Error('Pinned virtual layout completion contract changed.');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx', (ast, edits) => {
+    const layout = named(ast, 'VirtualLayoutCommit');
+    edits.push({ start: layout.getStart(ast), end: layout.end, text: `interface VirtualLayoutProps {
+  readonly model: readonly VirtualChatRow[]
+  readonly revision: number
+  readonly margin: number
+  readonly before: () => void
+  readonly after: (changed: boolean, revision: number) => void
+  readonly children: ReactNode
+}
+class VirtualLayoutCommit extends Component<VirtualLayoutProps> {
+  override getSnapshotBeforeUpdate(previous: VirtualLayoutProps): { changed: boolean; revision: number } {
+    this.props.before()
+    return { changed: previous.model !== this.props.model || previous.revision !== this.props.revision
+      || previous.margin !== this.props.margin, revision: this.props.revision }
+  }
+  override componentDidUpdate(_previous: VirtualLayoutProps, _state: unknown, snapshot: { changed: boolean; revision: number }): void {
+    this.props.after(snapshot.changed, snapshot.revision)
+  }
+  override render(): ReactNode { return this.props.children }
+}` });
+    let state = 0, measured = 0, resized = 0, wired = 0, completed = 0;
+    const visit = node => {
+      if (ts.isVariableStatement(node) && node.declarationList.declarations.some(declaration => declaration.name.getText(ast) === 'scrollElement')) {
+        insert(edits, node.end, '\n  const layoutRevision = useRef(0)\n  const pendingLayout = useRef<{ changed: boolean; revision: number } | null>(null)\n'); ++state;
+      }
+      if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'measureElement' && ts.isArrowFunction(node.initializer)) {
+        const statement = node.initializer.body.statements?.find(statement => ts.isReturnStatement(statement)
+          && statement.expression?.getText(ast) === 'borderBox + margin');
+        if (!statement) throw new Error('Pinned virtual row measurement changed.');
+        edits.push({ start: statement.getStart(ast), end: statement.end, text: `const size = borderBox + margin
+      const key = instance.options.getItemKey(instance.indexFromElement(element))
+      if (instance.itemSizeCache.get(key) !== size) layoutRevision.current++
+      return size` }); ++measured;
+      }
+      if (ts.isExpressionStatement(node) && node.expression.getText(ast) === 'virtualizer.resizeItem(index, size)') {
+        insert(edits, node.getStart(ast), 'if (virtualizer.itemSizeCache.get(virtualizer.options.getItemKey(index)) !== size) layoutRevision.current++\n      '); ++resized;
+      }
+      if (ts.isJsxOpeningElement(node) && node.tagName.getText(ast) === 'VirtualLayoutCommit') {
+        insert(edits, node.attributes.getStart(ast), 'model={rows} revision={layoutRevision.current} margin={scrollMargin} ');
+        const after = node.attributes.properties.find(property => ts.isJsxAttribute(property) && property.name.getText(ast) === 'after')?.initializer;
+        if (!after || !ts.isJsxExpression(after) || !after.expression) throw new Error('Pinned virtual layout completion changed.');
+        edits.push({ start: after.expression.getStart(ast), end: after.expression.end,
+          text: '(changed, revision) => { pendingLayout.current = { changed, revision } }' }); ++wired;
+      }
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'useLayoutEffect'
+        && node.arguments[0]?.getText(ast).includes('measuredLayout.current = measured')) {
+        const effect = node.arguments[0];
+        if (!ts.isArrowFunction(effect) || !ts.isBlock(effect.body)) throw new Error('Pinned virtual row layout measurement changed.');
+        insert(edits, effect.body.end - 1, `
+    const commit = pendingLayout.current
+    pendingLayout.current = null
+    if (commit !== null) virtualization.afterLayout(commit.changed || commit.revision !== layoutRevision.current)
+  `); ++completed;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    if (state !== 1 || measured !== 1 || resized !== 1 || wired !== 1 || completed !== 1) throw new Error('Pinned virtual layout change signals changed.');
   });
   await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts', (ast, edits) => {
     let retained = 0, restored = 0, saved = 0;
