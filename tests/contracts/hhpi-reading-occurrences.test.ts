@@ -8,6 +8,7 @@ import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
+import { prepareOfficialBrowserLibrary, resolveOfficialBrowserDependency } from './official-browser-library.ts'
 import { SourceEventIndex, type EventInput } from '../../src/remote/event-index.ts'
 import { sourceSessionId, type SourceOperation, type SourceSession } from '../../src/remote/protocol.ts'
 import type { SessionBinding, SessionReference, ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -30,7 +31,7 @@ function official(name: string): { apply(ctx: Context): void; inject: string[]; 
   let registration: { factory(resolve: typeof require): ReturnType<typeof official> } | undefined
   new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })
   assert.ok(registration)
-  return registration.factory(require)
+  return registration.factory(resolveOfficialBrowserDependency)
 }
 async function facadeClasses() {
   const output = await build({ stdin: { contents: "export { RemoteSessions } from './src/client/remote-sessions.ts'; export { SourceSessions } from './src/client/source-sessions.ts';", resolveDir: root, loader: 'ts' },
@@ -76,6 +77,7 @@ async function fixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
     for (const restore of restored.reverse()) restore()
   })
   await remote.refresh()
+  assert.equal(sessions.windowCommit, remote.windowCommit, 'outer facade must retain the actual commit coordinator')
   ctx.reflect.provide('sessions', sessions)
   ctx.reflect.provide('remote', { $on: () => () => {} } as unknown as Context['remote'])
   ctx.reflect.provide('remoteAccess', { source: () => store(true) } as unknown as Context['remoteAccess'])
@@ -86,6 +88,7 @@ async function fixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
   ctx.reflect.provide('uiWorkspace', { openSession: () => {}, openWorkspace: async () => {} } as unknown as Context['uiWorkspace'])
   ctx.reflect.provide('fileUpload', {} as Context['fileUpload'])
   ctx.reflect.provide('sidebarRight', { openResource: () => {}, openTab: () => {} } as unknown as Context['sidebarRight'])
+  await prepareOfficialBrowserLibrary()
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-renderer'))
   ctx.slots.installLocale({ ...localeState, bind: () => (key: string) => key })
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-session'))
@@ -134,7 +137,16 @@ test('all official readers and input shells use exact independent occurrences of
   assert.equal(a.input.state.getSnapshot().draft, 'Independent draft A')
   assert.equal(b.input.state.getSnapshot().draft, 'Independent draft B')
   assert.equal(f.body(a).length, 160); assert.equal(f.body(b).length, 160)
+  const checkpoints: string[] = []
+  assert.ok(a.conversation.windowCommit)
+  const stopReader = a.conversation.windowCommit.register(a.binding.viewId!, {
+    id: 'actual-occurrence-checkpoint',
+    measure: () => { checkpoints.push('measure'); return { revision: 1, anchor: null, following: false, scrollTop: 0, clientHeight: 600, scrollHeight: 10000, nodes: 0, available: false } },
+    correct: () => { checkpoints.push('correct') },
+  })
   for (let i = 0; i < 6; ++i) await a.binding.session.loadOlder()
+  stopReader()
+  assert.deepEqual(checkpoints, Array.from({ length: 6 }, () => ['measure', 'correct']).flat())
   assert.equal(f.body(a).length, 1120); assert.equal(f.body(b).length, 160)
   assert.equal(new Set(f.body(a)).size, 1120)
   assert.equal(a.scoped.hooks.chat!.getSnapshot(), a.conversation.target('chat').getSnapshot())

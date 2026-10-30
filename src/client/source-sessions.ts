@@ -1648,6 +1648,8 @@ class SourceReference implements SourcePreparationReference {
 
 /** Routing ISessions facade: ordinary sessions delegate; HAPI displays are bounded source faces. */
 export class SourceSessions implements ISessions {
+  readonly historySource?: NonNullable<ISessions['historySource']>
+  readonly windowCommit?: NonNullable<ISessions['windowCommit']>
   private readonly records = new Map<SessionId, SourceRecord>()
   private readonly candidates = new Map<SessionId, SessionBinding>()
   private readonly historyPages = new SourceHistoryPageCache()
@@ -1658,6 +1660,8 @@ export class SourceSessions implements ISessions {
   /** Host outline entry identity, kept beside the wire projection. */
   readonly hostEntries = new WeakMap<SourceRecord, ReadonlyMap<number, { messageId: string }>>()
   constructor(private readonly original: ISessions) {
+    if (original.historySource) this.historySource = original.historySource
+    if (original.windowCommit) this.windowCommit = original.windowCommit
     this.attached = new Promise(resolve => { this.attachedResolve = resolve })
   }
 
