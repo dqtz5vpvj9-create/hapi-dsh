@@ -1,0 +1,67 @@
+name: Bind HHPI gesture paging to exact occurrences
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['.github/workflows/hhpi-reading-gesture-wiring.yml']
+permissions:
+  contents: write
+jobs:
+  wire:
+    if: github.repository == 'dqtz5vpvj9-create/hapi-dsh' && github.ref == 'refs/heads/feat/hhpi-remote-access-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Apply exact source gesture wiring
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile, unlink } from 'node:fs/promises';
+          import { execFileSync } from 'node:child_process';
+          if (execFileSync('git',['rev-parse','HEAD^'],{encoding:'utf8'}).trim() !== '05af8008d51724a38ed29c5bb6dfe135d46d2aa5') throw new Error('Unexpected gesture wiring parent');
+          const edit = async (path,before,after,count=1) => { const text=await readFile(path,'utf8'); if(count === null ? !text.includes(before) : text.split(before).length!==count+1) throw new Error(`Changed source seam: ${path}: ${before}`); await writeFile(path,text.replaceAll(before,after)); };
+          await edit('src/client/remote-reading.ts', "import type { Context } from '@deepseek-ai/cordis'", "import type { Context } from '@deepseek-ai/cordis'\nimport { bindRemoteReadingOwner } from './remote-reading-owner.ts'");
+          await edit('src/client/remote-reading.ts', '  let disposed = false, applied = -1', '  const releaseOwner = bindRemoteReadingOwner(root, reference)\n  let disposed = false, applied = -1');
+          await edit('src/client/remote-reading.ts', 'return () => { disposed = true;', 'return () => { releaseOwner(); disposed = true;');
+          await edit('src/shared/source-frames.ts', 'export interface SourceWindowProgress {', 'export interface SourceWindowProgress {\n  /** Successful older commits owned by this exact official reading occurrence. */\n  olderRevision?: number | undefined');
+          const control='src/client/seamless/controller.ts';
+          await edit(control, 'readonly prefetchOlderPage?: (sessionId: string | null)', 'readonly prefetchOlderPage?: (sessionId: string | null, pane?: HTMLElement)');
+          await edit(control, 'readonly cancelSourcePage?: (sessionId: string | null, reason: unknown)', 'readonly cancelSourcePage?: (sessionId: string | null, reason: unknown, pane?: HTMLElement)');
+          await edit(control, 'readonly subscribeSourceWindow?: (sessionId: string | null, listener: () => void)', 'readonly subscribeSourceWindow?: (sessionId: string | null, listener: () => void, pane?: HTMLElement)');
+          await edit(control, 'readonly sourceWindowProgress?: (sessionId: string | null)', 'readonly sourceWindowProgress?: (sessionId: string | null, pane?: HTMLElement)');
+          await edit(control, 'this.options.sourceWindowProgress?.(this.sessionId)', 'this.options.sourceWindowProgress?.(this.sessionId, this.content)', null);
+          await edit(control, 'this.options.sourceWindowProgress?.(sessionId)', 'this.options.sourceWindowProgress?.(sessionId, this.content)', null);
+          await edit(control, 'this.options.subscribeSourceWindow?.(sessionId, () => this.prefetchOlderIfReady())', 'this.options.subscribeSourceWindow?.(sessionId, () => this.prefetchOlderIfReady(), this.content)');
+          await edit(control, 'this.options.prefetchOlderPage(sessionId)', 'this.options.prefetchOlderPage(sessionId, this.content)');
+          await edit(control, 'this.options.cancelSourcePage?.(this.sessionId, reason)', 'this.options.cancelSourcePage?.(this.sessionId, reason, this.content)', null);
+          await edit(control, 'function olderSourceCursor(before: ProgressProbe, after: ProgressProbe): boolean {', `function olderSourceCursor(before: ProgressProbe, after: ProgressProbe): boolean {
+              if (before.source?.olderRevision !== undefined && after.source?.olderRevision !== undefined) {
+                  return !sourceChanged(before, after) && after.source.olderRevision > before.source.olderRevision
+              }`);
+          const client='src/client/index.ts';
+          await edit(client, "import type { SourceViewportSession } from './source-sessions.ts'", "import type { SourceViewportSession } from './source-sessions.ts'\nimport { remoteReadingOwner } from './remote-reading-owner.ts'\nimport { isSourceSessionId } from '../remote/protocol.ts'");
+          await edit(client, 'const sourceControl = (sessionId: string | null) => sessionId', 'const sourceControl = (sessionId: string | null, pane?: HTMLElement) => pane && remoteReadingOwner(pane) || (sessionId && !isSourceSessionId(sessionId)');
+          await edit(client, 'returnToLive?: (signal?: AbortSignal) => Promise<boolean> }) : undefined', 'returnToLive?: (signal?: AbortSignal) => Promise<boolean> }) : undefined)');
+          await edit(client, 'sourceControl(sessionId)?.cancelOlderPage?.(signal.reason)', 'sourceControl(sessionId, pane)?.cancelOlderPage?.(signal.reason)');
+          await edit(client, 'prefetchOlderPage: sessionId => { void sourceControl(sessionId)?.prefetchOlderPage?.() }', 'prefetchOlderPage: (sessionId, pane) => { void sourceControl(sessionId, pane)?.prefetchOlderPage?.() }');
+          await edit(client, 'cancelSourcePage: (sessionId, reason) => { sourceControl(sessionId)?.cancelOlderPage?.(reason) }', 'cancelSourcePage: (sessionId, reason, pane) => { sourceControl(sessionId, pane)?.cancelOlderPage?.(reason) }');
+          await edit(client, 'sourceWindowProgress: sessionId => {\n            const value = sourceControl(sessionId)?.sourceWindow?.getSnapshot()', 'sourceWindowProgress: (sessionId, pane) => {\n            const value = sourceControl(sessionId, pane)?.sourceWindow?.getSnapshot()');
+          await edit(client, 'historyId: value.historyId, historyVersion: value.historyVersion }', 'historyId: value.historyId, historyVersion: value.historyVersion, olderRevision: value.olderRevision }');
+          await edit(client, 'subscribeSourceWindow: (sessionId, listener) => sourceControl(sessionId)?.sourceWindow?.subscribe(listener)', 'subscribeSourceWindow: (sessionId, listener, pane) => sourceControl(sessionId, pane)?.sourceWindow?.subscribe(listener)');
+          await edit(client, 'loadAfter: async (_pane, sessionId) => sourceControl(sessionId)?.loadAfter?.() ?? false', 'loadAfter: async (pane, sessionId) => sourceControl(sessionId, pane)?.loadAfter?.() ?? false');
+          await edit(client, 'return sourceControl(sessionId)?.returnToLive?.(signal) ?? false', 'return sourceControl(sessionId, pane)?.returnToLive?.(signal) ?? false');
+          await unlink('.github/workflows/hhpi-reading-gesture-wiring.yml');
+          NODE
+      - name: Commit only the enumerated source wiring
+        run: |
+          git diff --check
+          git add src/client/remote-reading.ts src/client/index.ts src/client/seamless/controller.ts src/shared/source-frames.ts .github/workflows/hhpi-reading-gesture-wiring.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(hhpi): scope automatic paging and cancellation to the mounted reader'
+          git push origin HEAD:refs/heads/feat/hhpi-remote-access-20261029

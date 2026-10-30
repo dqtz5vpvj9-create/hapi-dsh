@@ -14,10 +14,14 @@ export async function prepareOfficialBrowserLibrary(): Promise<void> {
     nodePaths: [resolve(source, 'packages/client/ui-primitives/node_modules'), resolve(source, 'node_modules')],
     external: ['react', 'react-dom', '@deepseek-ai/cordis'],
     bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false,
-    loader: { '.css': 'empty' }, logLevel: 'silent',
+    outfile: resolve(source, '.hhpi-contract-library.js'),
+    loader: { '.css': 'css', '.module.css': 'local-css' }, logLevel: 'silent',
   })
+  const output = result.outputFiles.find(file => file.path.endsWith('.js'))
+  if (!output) throw new Error('The official browser library produced no JavaScript output.')
   const module = { exports: {} as Record<string, unknown> }
-  new Function('require', 'module', 'exports', result.outputFiles[0]!.text)(require, module, module.exports)
+  new Function('require', 'module', 'exports', output.text)(require, module, module.exports)
+  // CSS is compiled to real class names but not used as layout evidence in jsdom.
   primitives = module.exports
 }
 

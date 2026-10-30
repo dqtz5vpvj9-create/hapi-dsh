@@ -4,6 +4,7 @@ import { createScope } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionBinding, SessionFace, SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConversationHistoryViewV1 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { RemoteSourceSession } from './remote-sessions.ts'
+import type { SourceWindowProgress } from '../shared/source-frames.ts'
 
 const paneScope = Symbol('hhpi.reading-occurrence')
 interface PaneTag { binding?: SessionBinding }
@@ -15,6 +16,8 @@ export class RemotePaneSession implements SessionFace {
   readonly historyRead: RemoteSourceSession['historyRead']
   readonly metadata: RemoteSourceSession['metadata']
   readonly ready: Promise<void>
+  /** Direct sources use accepted-page cache sharing; no speculative prefetch is advertised. */
+  readonly prefetchOlderPage?: () => Promise<void>
   private readonly opened = Promise.withResolvers<void>()
   private readonly abort = new AbortController()
   private readonly listeners = new Set<() => void>()
@@ -23,6 +26,13 @@ export class RemotePaneSession implements SessionFace {
   private window: ConversationHistoryViewV1 | undefined
   private state: SessionSnapshot
   private disposed = false
+  private olderRevision = 0
+  private olderRead: { abort: AbortController; promise: Promise<void> } | undefined
+  private progress: SourceWindowProgress & { hasMoreAfter: boolean } = { before: null, hasMoreAfter: false }
+  readonly sourceWindow = {
+    getSnapshot: (): SourceWindowProgress & { hasMoreAfter: boolean } => this.progress,
+    subscribe: (listener: () => void): (() => void) => this.subscribe(listener),
+  }
 
   constructor(private readonly owner: RemoteSourceSession, ownerReady: Promise<SessionBinding>) {
     this.sessionId = owner.sessionId
@@ -62,9 +72,14 @@ export class RemotePaneSession implements SessionFace {
   private publish(): void {
     if (this.disposed) return
     const base = this.owner.getSnapshot(), reading = this.window?.snapshot.getSnapshot()
-    // Retain readable content on a page failure; the reader carries its separate error.
     this.state = { ...base, openState: reading?.version == null ? 'loading' : 'open',
       hasMore: reading?.hasBefore ?? false, loadingOlder: reading?.busy ?? false }
+    // No HAPI coordinate is synthesized from an opaque native cursor. The
+    // monotonic count proves that this occurrence committed an older request.
+    this.progress = { before: null, hasMoreAfter: reading?.hasAfter ?? false,
+      olderRevision: this.olderRevision,
+      historyId: JSON.stringify([this.sessionId, this.window?.viewId, this.owner.history.sourceEpoch]),
+      ...(reading?.phase === 'error' ? { pagingError: true as const } : {}) }
     for (const listener of this.listeners) listener()
   }
   private assertLive(): void {
@@ -76,10 +91,29 @@ export class RemotePaneSession implements SessionFace {
     return this.window
   }
   async loadOlder(): Promise<void> {
-    const view = this.reader(), state = view.snapshot.getSnapshot()
+    const view = this.reader()
+    if (this.olderRead) return this.olderRead.promise
+    const state = view.snapshot.getSnapshot()
     if (!state.hasBefore) return
     if (state.before == null) throw new Error('The source reader did not provide its older-history cursor.')
-    await view.read({ kind: 'before', cursor: state.before }, this.abort.signal)
+    const abort = new AbortController()
+    const promise = view.read({ kind: 'before', cursor: state.before }, AbortSignal.any([abort.signal, this.abort.signal]))
+      .then(snapshot => {
+        this.assertLive()
+        if (snapshot.before !== state.before) { ++this.olderRevision; this.publish() }
+      })
+      .finally(() => { if (this.olderRead?.abort === abort) this.olderRead = undefined })
+    this.olderRead = { abort, promise }
+    return promise
+  }
+  cancelOlderPage(reason: unknown = new DOMException('Reading cancelled.', 'AbortError')): void {
+    this.olderRead?.abort.abort(reason)
+  }
+  async loadAfter(): Promise<boolean> {
+    const view = this.reader(), state = view.snapshot.getSnapshot()
+    if (!state.hasAfter || state.after == null) return false
+    await view.read({ kind: 'after', cursor: state.after }, this.abort.signal)
+    return true
   }
   async loadThrough(seq: Parameters<SessionFace['loadThrough']>[0]): Promise<void> {
     const view = this.reader(), state = view.snapshot.getSnapshot()
@@ -87,6 +121,7 @@ export class RemotePaneSession implements SessionFace {
     await view.read({ kind: 'around', target: { key: String(seq), seq } }, this.abort.signal)
   }
   async returnToLive(signal?: AbortSignal): Promise<boolean> {
+    this.cancelOlderPage()
     await this.reader().read({ kind: 'latest' }, signal ? AbortSignal.any([signal, this.abort.signal]) : this.abort.signal)
     return true
   }
@@ -121,8 +156,6 @@ export class RemotePaneSession implements SessionFace {
     this.stopWindow(); this.stopOwner()
     this.opened.reject(new Error('The reading occurrence was released.'))
     this.listeners.clear()
-    // The Conversation binding owns the window lease; its scope disposes it.
-    // No native cancel, Session replacement, or operation replay occurs here.
   }
 }
 
@@ -153,7 +186,6 @@ export class RemotePaneViews {
       released = true
       this.records.delete(binding); this.keys.delete(key)
       session.dispose()
-      // Keep the execution lease until every official reader/input scope has torn down.
       void Promise.resolve(scope.fiber.dispose()).finally(() => { held.release() }).catch(() => {})
     }
     this.keys.add(key)
