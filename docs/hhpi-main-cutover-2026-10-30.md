@@ -1,6 +1,6 @@
 # HHPI main cutover: 2026-10-30
 
-The production display Host now uses HHPI-only configuration with two direct native Codex sources. At application revision `ca045213a8dfb846e8d61728799928566df220cd`, the target Pane displays both official Chat content and an editable composer. **Continuous-reading production acceptance has not passed.**
+The production display Host now uses HHPI-only configuration with two direct native Codex sources. At application revision `ca045213a8dfb846e8d61728799928566df220cd`, the target Pane displays both official Chat content and an editable composer. **Continuous-reading production acceptance has not passed.** The subsequent [false capacity-failure correction](hhpi-reader-capacity-2026-10-30.md) is deployed; its six-segment live diagnostic still reports frame hitches.
 
 The architecture comparison is available as [interactive HTML](../.lavish/hapi-hhpi-correspondence.html) and [standalone SVG](../.lavish/hapi-hhpi-correspondence.svg). It compares responsibilities with the local HAPI Native Codex path, not complete call order or measured performance.
 
