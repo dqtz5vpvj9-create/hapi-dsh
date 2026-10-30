@@ -5,7 +5,6 @@ type Factory = { factory(require: ((id: string) => unknown) & { async(id: string
 const factories = new Map<string, Factory>(), instances = new Map<string, unknown>()
 let loading: string | undefined
 const canonical = (id: string): string => id.replace(/\/client$/, '')
-const names = ['api-session-controller', 'client-ui-renderer', 'client-ui-session', 'client-ui-conversation', 'client-ui-chat'].map(name => `@deepseek-ai/dsh-${name}`)
 const carrier = window as unknown as { __ModuleLoader__: { load(value: Factory): void }; __HHPI_REQUIRE__: (id: string) => unknown; __hhpiFailure?: string }
 carrier.__ModuleLoader__ = { load(value) {
   if (!loading || factories.has(loading)) throw new Error('Unexpected or duplicate official module registration')
@@ -40,7 +39,10 @@ async function load(key: string, url: string): Promise<void> {
 }
 carrier.__HHPI_REQUIRE__ = requireOfficial
 try {
-  for (const name of names) await load(name, `/official/${name.split('/')[1]}/client.js`)
+  const response = await fetch('/modules.json')
+  if (!response.ok) throw new Error('Official module manifest unavailable')
+  const names: Array<{ name: string }> = await response.json()
+  for (const { name } of names) await load(name, `/official/${name.split('/')[1]}/client.js`)
   await import('./client.tsx')
 } catch (error) {
   carrier.__hhpiFailure = error instanceof Error ? error.stack ?? error.message : String(error)
