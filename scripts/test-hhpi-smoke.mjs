@@ -239,11 +239,19 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
+  const trackScroll = port => {
+    if (state.scrollTracking?.port === port) return state.scrollTracking;
+    const tracker = state.scrollTracking = { port, scrolls: 0, ended: 0, supportsScrollEnd: 'onscrollend' in port };
+    port.addEventListener('scroll', () => { tracker.scrolls++; }, { passive: true });
+    port.addEventListener('scrollend', () => { tracker.ended = tracker.scrolls; }, { passive: true });
+    return tracker;
+  };
   state.rows = () => {
     const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
       .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
     const scroll = pane?.querySelector('[data-conversation-scroll]');
     if (!scroll) return { exists: false, rows: [], top: 0, max: 0 };
+    trackScroll(scroll);
     const box = scroll.getBoundingClientRect();
     const ownerOf = row => row.closest('[data-chat-node-key]');
     const rows = [...scroll.querySelectorAll('[data-chat-anchor-key]')]
@@ -277,13 +285,18 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
     const port = pane?.querySelector('[data-conversation-scroll]');
     if (!port) throw new Error('No mounted reading port at publication.');
-    let last = port.scrollTop, stable = 0;
-    for (let frame = 0; frame < 120 && stable < 3; frame++) {
+    const tracker = trackScroll(port), deadline = performance.now() + 3000;
+    let last = port.scrollTop, priorScrolls = tracker.scrolls, stable = 0, quietSince = performance.now(), inputSettled = false;
+    while (performance.now() < deadline) {
       await new Promise(requestAnimationFrame);
       const current = port.scrollTop;
-      stable = current === last && !state.touchActive ? stable + 1 : 0; last = current;
+      if (current !== last || tracker.scrolls !== priorScrolls || state.touchActive) { stable = 0; quietSince = performance.now(); }
+      else stable++;
+      const nativePending = tracker.supportsScrollEnd && tracker.ended < tracker.scrolls;
+      if (!state.touchActive && !nativePending && stable >= 6 && performance.now() - quietSince >= 250) { inputSettled = true; break; }
+      last = current; priorScrolls = tracker.scrolls;
     }
-    if (stable < 3) throw new Error('Input did not settle before publication.');
+    if (!inputSettled) throw new Error('Input did not settle before publication.');
     const bounds = port.getBoundingClientRect();
     const hit = document.elementsFromPoint(bounds.left + bounds.width / 2, bounds.top + 1)
       .map(node => node.closest('[data-chat-anchor-key]'))
@@ -292,13 +305,17 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
     });
     const anchor = visible?.dataset.chatGroupKey === undefined ? visible
-      : visible.querySelector('[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)') ?? visible;
+      : [...visible.querySelectorAll('[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)')].find(node => {
+        const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+      }) ?? visible;
     const row = anchor?.closest('[data-chat-virtual-row]');
     if (!anchor || !row) throw new Error('No physical reading anchor at publication.');
     const key = anchor.dataset.chatAnchorKey, oldIndex = row.dataset.index;
     const loadButton = port.querySelector('[data-chat-flow] > div > button:disabled');
     const top = anchor.getBoundingClientRect().top - bounds.top;
-    const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : 'node' };
+    const semanticOwner = anchor.closest('[data-chat-node-key]')?.dataset.chatNodeKey;
+    const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : key?.startsWith('group:') ? 'group' : key?.startsWith('[') ? 'segmented' : 'node',
+      visibleBefore: anchor.getBoundingClientRect().bottom > bounds.top && anchor.getBoundingClientRect().top < bounds.bottom };
     const token = state.layoutCommits.push(record) - 1;
     const observer = new MutationObserver(() => {
       const current = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
@@ -313,6 +330,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const settled = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
         record.retained = !!settled;
+        record.ownerRetained = semanticOwner === undefined ? null : [...port.querySelectorAll('[data-chat-node-key]')].some(node => node.dataset.chatNodeKey === semanticOwner);
         record.delta = settled ? settled.getBoundingClientRect().top - port.getBoundingClientRect().top - top : null;
         record.done = true;
       }));
@@ -415,6 +433,14 @@ async function runScenario(browser, config, name) {
       const method = url.pathname.replace(/^.*\/api\//, '');
       const validApi = request.method() === 'POST' && url.pathname.includes('/api/') && body?.method === method;
       const policy = validApi ? hhpiRequestPolicy(method, body, config.sessionId) : 'block';
+      const savedRequest = body?.payload?.args?.request;
+      if (catalog.legacyHapi === false && legacyResource && policy === 'display-lease' && method === 'hapi/sourceSessionResolve'
+        && savedRequest.hubId === legacyResource.sourceHubId && savedRequest.sourceSessionId === legacyResource.sourceSessionId) {
+        // The verified HAPI-free shell only returns source_not_connected here;
+        // unlike a legacy resolver, it cannot materialize a display or execution.
+        result.savedLegacyResolutionReads = (result.savedLegacyResolutionReads ?? 0) + 1;
+        return route.continue();
+      }
       if (policy === 'read' && method === 'hapi/workspaceGet') {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId,
           result: { ok: true, value: { revision: 0, state: workspace } } }) });
@@ -574,13 +600,19 @@ async function runScenario(browser, config, name) {
     const moveEarlier = async step => {
       const box = await awaiting(`${step}-locate-scrollport`, scroll.boundingBox()); if (!box) fail('conversation-scrollport-disappeared');
       if (name === 'mobile') {
-        const x = box.x + box.width * .6, startY = box.y + box.height * .24, distance = Math.min(260, box.height * .42);
+        const input = await awaiting(`${step}-locate-input-boundary`, editor.boundingBox());
+        const readingHeight = Math.min(box.y + box.height, input?.y ?? box.y + box.height) - box.y;
+        if (readingHeight <= 0) fail('reading-area-covered-by-input');
+        const x = box.x + box.width * .6, startY = box.y + readingHeight * .1, distance = readingHeight * .8;
         const points = y => [{ x, y, id: 1, radiusX: 3, radiusY: 3, force: 1 }];
         await awaiting(`${step}-touch-start`, cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: points(startY) }));
         for (let index = 1; index <= 8; index++) {
           await awaiting(`${step}-touch-move`, cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: points(startY + distance * index / 8) }));
           await awaiting(`${step}-touch-pause`, pause(12));
         }
+        // End with a stationary finger, as in the component anchor journey;
+        // intentional compositor momentum is separate from prepend correction.
+        await awaiting(`${step}-stationary-contact`, page.evaluate(async () => { for (let i = 0; i < 6; i++) await new Promise(requestAnimationFrame); }));
         await awaiting(`${step}-touch-end`, cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }));
       } else {
         await awaiting(`${step}-position-pointer`, page.mouse.move(box.x + box.width * .6, box.y + box.height * .35));
@@ -677,6 +709,9 @@ async function runScenario(browser, config, name) {
     if (result.pageErrors || result.consoleErrors) fail('browser-page-error');
     result.status = 'passed'; result.step = 'complete';
   } catch (error) {
+    if (page && !page.isClosed()) {
+      result.layoutCommits ??= await page.evaluate(() => window.__hhpiSmoke?.layoutCommits ?? []).catch(() => []);
+    }
     await collectFailureDiagnostics(page, result);
     result.status = 'failed';
     result.error = timedOut ? 'scenario-budget-exhausted' : error.smokeCode ?? (error.name === 'TimeoutError' ? 'step-timeout' : 'interaction-failed');

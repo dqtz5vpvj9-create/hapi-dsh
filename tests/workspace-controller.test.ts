@@ -959,6 +959,37 @@ test('a source-only deep link hydrates only after its configured Hub is known', 
     controller.dispose(); source.disposeMain()
 })
 
+test('a saved legacy source on an HHPI-only Host is unavailable immediately and recovers only through its original identity', async () => {
+    const source = fixture(), resource = { kind: 'chat', sessionId: 'old-display', sourceSessionId: 'original-source', sourceHubId: 'original-hub' } as const
+    let sequence = 0, available: boolean | undefined
+    const listeners = new Set<() => void>()
+    const state = initialWorkspace(() => `saved-${++sequence}`)
+    state.windows[0]!.root = { type: 'pane', id: 'legacy-pane', resource }
+    state.focused[state.activeWindowId] = 'legacy-pane'
+    source.memory.set(source.options.storageKey, JSON.stringify(state))
+    const controller = new WorkspaceController({ ...source.options, legacySourceAvailability: {
+        getSnapshot: () => available, subscribe: listener => { listeners.add(listener); return () => { listeners.delete(listener) } },
+    } }), requests: unknown[] = []
+    controller.installSourceResolver(async identity => { requests.push(identity) })
+    controller.setSourceCatalog([], 'hhpi-shell')
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.status, 'opening')
+    available = false; for (const listener of listeners) listener()
+    await turn()
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.status, 'failed')
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.sourceResolution, 'not-connected')
+    assert.deepEqual(controller.store.focusedPane().resource, resource)
+    assert.deepEqual(requests, [], 'an unconfigured source must not queue a resolver call or wait for a calm catalog')
+    assert.equal(source.refs.length, 0)
+    available = true
+    source.add('original-display'); source.project('original-display', { hapi: { hubId: 'original-hub', hapiSessionId: 'original-source' } } as never)
+    controller.setSourceCatalog([], 'original-hub'); await turn()
+    assert.equal(controller.getSnapshot().leases.get('legacy-pane')?.status, 'ready')
+    const recovered = controller.store.focusedPane().resource
+    assert.equal(recovered.kind === 'chat' && recovered.sessionId, 'original-display')
+    assert.deepEqual(source.actions, [], 'reconnection never creates or starts a native conversation')
+    controller.dispose(); source.disposeMain()
+})
+
 test('legacy restored panes wait for the real primary Hub even when a foreign same-ID source arrives first', async () => {
     const source = fixture()
     source.add('foreign-display')

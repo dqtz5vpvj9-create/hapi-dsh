@@ -60,6 +60,8 @@ export interface WorkspaceOptions {
     /** Acquire restored session references only when their window first becomes
      * visible. References already acquired keep their draft/scroll lifetime. */
     deferHiddenSessions?: boolean
+    /** Undefined until source discovery completes; false when legacy HAPI is not configured. */
+    legacySourceAvailability?: { getSnapshot(): boolean | undefined; subscribe(listener: () => void): () => void }
 }
 
 export interface WorkspaceHost {
@@ -402,6 +404,7 @@ export class WorkspaceController {
         this.restoreCachedTitles()
         this.hostMainIds.set('local', this.selectedMain('local'))
         this.unsubscribers.push(this.store.subscribe(this.onLayout), options.sessions.list.subscribe(() => this.onCatalog('local')))
+        if (options.legacySourceAvailability) this.unsubscribers.push(options.legacySourceAvailability.subscribe(() => this.reconcileLeases()))
         if (options.workspaceState) this.unsubscribers.push(options.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
         // The first classification must start from a fresh settle window even
         // when constructing the store took a while.
@@ -1105,6 +1108,15 @@ export class WorkspaceController {
                 }
                 const host = this.hosts.get(hostId)
                 try {
+                    const legacy = this.options.legacySourceAvailability
+                    if (resource.sourceSessionId && legacy && legacy.getSnapshot() !== true) {
+                        const unavailable = legacy.getSnapshot() === false
+                        const typed = sourceResolutionTypedState('not-connected')
+                        this.leases.set(paneId, { hostId, sessionId, status: unavailable ? 'failed' : 'opening', sourceResolution: unavailable ? 'not-connected' : 'loading',
+                            error: 'The saved original source is not connected to this HHPI Host. Its reference is preserved.',
+                            reason: unavailable ? typed.reason : 'catalog-loading', nextStep: typed.nextStep, retryable: true, waitingForCatalog: true })
+                        continue
+                    }
                     const source = this.originalSource(resource)
                     if (resource.sourceSessionId && (!source || !sourceRow({ ...resource, sourceHubId: source.hubId }, this.snapshot.catalog.byId))) {
                         const matches = source ? this.sourceMatches({ sessionId: source.sourceSessionId, hubId: source.hubId }) : []

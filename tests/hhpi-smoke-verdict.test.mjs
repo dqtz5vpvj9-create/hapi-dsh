@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { JSDOM } from 'jsdom';
 import { hhpiRequestPolicy, canonicalHhpiSessionId, syntheticWorkspace, matchVisibleSourcePage, captureVisibleSourceAnchor,
   sourceAnchorVerdict, installObserver,
   publicConsoleCategory, allowedMissingModuleNames, safeHhpiDiagnosticMarks } from '../scripts/test-hhpi-smoke.mjs';
@@ -59,6 +60,38 @@ test('serialized browser observer has no module closure and enforces the HHPI re
     payload: { args: { request: { sessionId: 'hhpi:other:source:codex:thread' } } } })), undefined);
   assert.equal(window.blockedCalls, 1);
   assert.equal(sent.length, 2);
+});
+
+test('publication measurement keeps a visible group instead of its offscreen first child', async () => {
+  // Explicit synthetic geometry tests the probe's selection, not browser layout.
+  const dom = new JSDOM(`<section class="hapi-pane" data-session-id="${target}" data-hapi-pane-visible="true">
+    <div data-conversation-scroll><div data-chat-flow><div><button disabled>Loading</button></div>
+      <div data-chat-virtual-row data-index="1"><div data-chat-anchor-key="group:g" data-chat-group-key="g">
+        Visible group heading<div data-step-process-content><div data-chat-anchor-key="offscreen">Offscreen first child</div></div>
+      </div></div></div></div></section>`, { runScripts: 'outside-only', pretendToBeVisual: true });
+  try {
+    const { window } = dom, port = window.document.querySelector('[data-conversation-scroll]'), group = window.document.querySelector('[data-chat-group-key]');
+    window.HTMLElement.prototype.getBoundingClientRect = function() {
+      const top = this.dataset.chatAnchorKey === 'offscreen' ? -900 : 0;
+      return { x: 0, y: top, left: 0, right: 500, top, bottom: top + 500, width: 500, height: 500 };
+    };
+    window.document.elementsFromPoint = () => [group, port];
+    Object.defineProperty(port, 'onscrollend', { value: null });
+    vm.runInContext(`(${installObserver.toString()})(${JSON.stringify({ sessionId: target, allowedReadStreams: [] })})`, dom.getInternalVMContext());
+    let captured = false;
+    const capture = window.__hhpiSmoke.armLayoutCommit().then(index => { captured = true; return index; });
+    port.dispatchEvent(new window.Event('scroll'));
+    const start = window.performance.now();
+    while (window.performance.now() - start < 300) await new Promise(window.requestAnimationFrame);
+    assert.equal(captured, false, 'stable frames before native scrollend cannot be mistaken for finished touch momentum');
+    port.dispatchEvent(new window.Event('scrollend'));
+    const index = await capture;
+    window.document.querySelector('[data-chat-anchor-key="offscreen"]').remove();
+    window.document.querySelector('button').disabled = false;
+    for (let i = 0; i < 5 && !window.__hhpiSmoke.layoutCommits[index].done; i++) await new Promise(window.requestAnimationFrame);
+    assert.equal(window.__hhpiSmoke.layoutCommits[index].retained, true, 'virtual recycling of an offscreen child cannot invalidate the visible group measurement');
+    assert.equal(window.__hhpiSmoke.layoutCommits[index].delta, 0);
+  } finally { dom.window.close(); }
 });
 
 test('failure diagnostics retain only safe categories, whitelisted missing modules, counts and scrubbed HAPI marks', () => {
