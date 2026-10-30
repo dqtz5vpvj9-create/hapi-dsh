@@ -1,0 +1,51 @@
+name: Share real HHPI reading integration fixture
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['.github/workflows/hhpi-reading-fixture-extract.yml']
+permissions:
+  contents: write
+jobs:
+  extract:
+    if: github.repository == 'dqtz5vpvj9-create/hapi-dsh' && github.ref == 'refs/heads/feat/hhpi-remote-access-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Extract existing fixture without changing behavior assertions
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile, writeFile, unlink } from 'node:fs/promises';
+          import { execFileSync } from 'node:child_process';
+          if (execFileSync('git',['rev-parse','HEAD^'],{encoding:'utf8'}).trim() !== '6fe74e4d746596b11284ddfd2c1f93bd6214f019') throw new Error('Unexpected parent');
+          const path='tests/contracts/hhpi-reading-occurrences.test.ts', text=await readFile(path,'utf8');
+          const marker="test('all official readers and input shells";
+          if (text.split(marker).length !== 2) throw new Error('Fixture boundary changed');
+          const at=text.indexOf(marker);
+          let fixture=text.slice(0,at);
+          for (const [before,after] of [["import test from 'node:test'", "import type { TestContext } from 'node:test'"], ['async function fixture(t: Parameters<Parameters<typeof test>[1]>[0])', 'export async function fixture(t: TestContext)']]) {
+            if (fixture.split(before).length!==2) throw new Error('Fixture signature changed');
+            fixture=fixture.replace(before,after);
+          }
+          await writeFile('tests/contracts/hhpi-reading-fixture.ts',fixture);
+          await writeFile(path,"import assert from 'node:assert/strict'\nimport test from 'node:test'\nimport { createRequire } from 'node:module'\nimport { resolve } from 'node:path'\nimport { fixture } from './hhpi-reading-fixture.ts'\nconst require = createRequire(import.meta.url)\n\n"+text.slice(at));
+          const ci='.github/workflows/hhpi-integration.yml', workflow=await readFile(ci,'utf8');
+          const command='node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts';
+          if(workflow.split(command).length!==2)throw new Error('Test command changed');
+          await writeFile(ci,workflow.replace(command,command+' tests/contracts/hhpi-reading-dom.test.ts'));
+          await unlink('.github/workflows/hhpi-reading-fixture-extract.yml');
+          NODE
+      - name: Commit the extracted fixture and actual renderer contract
+        run: |
+          git diff --check
+          git add tests/contracts/hhpi-reading-fixture.ts tests/contracts/hhpi-reading-occurrences.test.ts .github/workflows/hhpi-integration.yml .github/workflows/hhpi-reading-fixture-extract.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test(hhpi): share the actual official reading graph with mounted DOM contracts'
+          git push origin HEAD:refs/heads/feat/hhpi-remote-access-20261029
