@@ -9,6 +9,12 @@ import { installDomGeometry } from './dom-geometry.ts'
 const require = createRequire(import.meta.url)
 interface Position { anchorKey: string; anchorOwnerKey?: string; anchorTop: number; scrollTop: number }
 const official = require('../../.tmp/hhpi-official-contract.cjs') as {
+  ChatReading: new (viewport: unknown, store: { read(): Position | null; save(position: Position | null): void },
+    state: { initialized: boolean; followingTail: boolean; activeTurn: number | null }, onChange: (state: unknown) => void,
+    follow: { setFollowing(value: boolean): void; nearBottom(metrics: unknown): boolean }) => {
+      onResize(restore?: boolean): void; dispose(): void
+      onScroll(scroll: { movedByReader: boolean; metrics: { top: number; floor: number; height: number }; landing: null }): void
+    }
   ChatViewport: new () => {
     attach(list: HTMLElement, column: HTMLElement): void; detach(): void; capturePosition(): Position | null
     registerVirtualRows(rows: { contains(key: string): boolean; pinReading(key: string | null): void; reveal(key: string): boolean; releaseDestination(): void; retain(key: string, value: boolean): void; observeProgrammaticScroll(top: number): void }): () => void
@@ -25,7 +31,7 @@ const official = require('../../.tmp/hhpi-official-contract.cjs') as {
 test('official viewport preserves a tool subcall anchor and measures its owning node separately', t => {
   const dom = new JSDOM('<div data-conversation-scroll><div id="list"><div id="column"><div data-chat-virtual-row data-chat-virtual-key="row:root"><div data-chat-node-key="tool:root" data-chat-anchor-key="tool:root" data-chat-flow-key="tool:root"><div data-chat-anchor-key="call:child"><span id="hit">Nested tool result</span></div></div></div></div></div></div>', { pretendToBeVisual: true })
   const previous = new Map<string, PropertyDescriptor | undefined>()
-  for (const [name, value] of Object.entries({ document: dom.window.document, HTMLElement: dom.window.HTMLElement,
+  for (const [name, value] of Object.entries({ window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement,
     getComputedStyle: dom.window.getComputedStyle.bind(dom.window) })) {
     previous.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
     Object.defineProperty(globalThis, name, { configurable: true, value })
@@ -96,4 +102,21 @@ test('official viewport preserves a tool subcall anchor and measures its owning 
   Object.defineProperty(owner, 'getBoundingClientRect', { configurable: true, value: () => { layoutReads++; return readRect() } })
   viewport.restoreVirtualLayout(false)
   assert.equal(layoutReads, 0, 'recycling rows of unchanged measured size must not force a post-mutation layout')
+  let saved: Position | null = position
+  const reading = new official.ChatReading(viewport, { read: () => saved, save: value => { saved = value } },
+    { initialized: true, followingTail: false, activeTurn: null }, () => {},
+    { setFollowing: value => assert.equal(value, false, 'reflow must not change reading into tail following'), nearBottom: () => false })
+  t.after(() => { reading.dispose() })
+  scroller.scrollTop = 100
+  const beforeReflow = landings.length
+  reading.onResize()
+  assert.equal(landings.length, beforeReflow + 1, 'a settled reader must restore its saved text after reflow')
+  assert.equal(landings.at(-1), 237)
+  assert.equal(saved?.anchorTop, -17)
+  reading.onResize(false)
+  assert.equal(landings.length, beforeReflow + 1, 'an explicit navigation destination must keep ownership during reflow')
+  reading.onScroll({ movedByReader: true, metrics: { top: 100, floor: 1400, height: 600 }, landing: null })
+  reading.onResize()
+  assert.equal(landings.length, beforeReflow + 1, 'reflow must not restore over unsampled user scrolling')
+  reading.dispose()
 })

@@ -330,6 +330,14 @@ class VirtualLayoutCommit extends Component<VirtualLayoutProps> {
         insert(edits, node.end, '\n  const layoutRevision = useRef(0)\n  const pendingLayout = useRef<{ changed: boolean; revision: number } | null>(null)\n'); ++state;
       }
       if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'measureElement' && ts.isArrowFunction(node.initializer)) {
+        insert(edits, node.initializer.body.getStart(ast) + 1, `
+      // Refs run while React is still committing sibling rows. The parent
+      // layout effect measures the complete DOM before finalizing its anchor.
+      if (entry === undefined) {
+        const index = instance.indexFromElement(element)
+        return instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? instance.options.estimateSize(index)
+      }
+`);
         const statement = node.initializer.body.statements?.find(statement => ts.isReturnStatement(statement)
           && statement.expression?.getText(ast) === 'borderBox + margin');
         if (!statement) throw new Error('Pinned virtual row measurement changed.');
@@ -363,9 +371,31 @@ class VirtualLayoutCommit extends Component<VirtualLayoutProps> {
     visit(ast);
     if (state !== 1 || measured !== 1 || resized !== 1 || wired !== 1 || completed !== 1) throw new Error('Pinned virtual layout change signals changed.');
   });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-reading.ts', (ast, edits) => {
+    const resize = method(named(ast, 'ChatReading'), ast, 'onResize');
+    edits.push({ start: resize.parameters.pos, end: resize.parameters.end, text: 'restore = true' });
+    const follow = resize.body.statements.find(node => ts.isIfStatement(node)
+      && node.expression.getText(ast) === 'this.state.followingTail');
+    if (!follow?.elseStatement || follow.elseStatement.getText(ast) !== 'this.refreshActiveTurn()') throw new Error('Pinned settled reader resize policy changed.');
+    edits.push({ start: follow.elseStatement.getStart(ast), end: follow.elseStatement.end, text: `{
+      const saved = restore ? this.store.read() : null
+      if (saved !== null) {
+        const landing = this.viewport.restore(saved)
+        if (landing !== null) this.preservePosition(landing)
+      }
+      this.refreshActiveTurn()
+    }` });
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-navigation.ts', (ast, edits) => {
+    const owner = named(ast, 'ChatNavigation');
+    insert(edits, owner.end - 1, '\n  /** An explicit jump owns its destination until it lands or is cancelled. */\n  get navigating(): boolean { return this.jump !== null }\n');
+  });
   await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts', (ast, edits) => {
-    let retained = 0, restored = 0, saved = 0;
+    let retained = 0, restored = 0, saved = 0, resizes = 0;
     const visit = node => {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'reading.onResize' && node.arguments.length === 0) {
+        insert(edits, node.arguments.pos, '!navigation.navigating'); ++resizes;
+      }
       if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'capturePosition'
         && node.initializer.getText(ast) === '() => viewport.capturePosition()') {
         edits.push({ start: node.initializer.getStart(ast), end: node.initializer.end, text: `() => {
@@ -385,6 +415,6 @@ class VirtualLayoutCommit extends Component<VirtualLayoutProps> {
       ts.forEachChild(node, visit);
     };
     visit(ast);
-    if (retained !== 1 || restored !== 1 || saved !== 1) throw new Error('Pinned Chat commit-time reading ownership changed.');
+    if (retained !== 1 || restored !== 1 || saved !== 1 || resizes !== 3) throw new Error('Pinned Chat commit-time reading ownership changed.');
   });
 }

@@ -18,6 +18,8 @@ Retain the physical virtual row owning a nested tool anchor. Carry the semantic 
 
 Separate range recycling from actual physical layout changes. Finalize the virtual layout checkpoint after the parent's row-measurement effect, using row-model, margin and measured-size revisions to decide whether a correction is needed. Ref/ResizeObserver and fallback measurements both advance that revision. Pending exact-anchor restoration still runs on a pure range update. Keep the before-mutation capture so a late fallback measurement cannot discard the previous text offset.
 
+Avoid measuring each ref during sibling DOM placement: use its cached size or estimate until the existing parent measurement effect sees the completed DOM. Preserve subsequent ResizeObserver measurements. On settled resize, restore the saved semantic reader position and keep its follow policy; do not restore over pending reader input.
+
 ## Review and tests
 
 Review the source transformation and generated diff against the pinned upstream revision. Contract tests should cover actual official Conversation nodes and the reader/coordinator publication order. DOM tests do not certify browser scrolling. Release evidence and outstanding combinations are recorded independently in the HHPI implementation checkpoint.

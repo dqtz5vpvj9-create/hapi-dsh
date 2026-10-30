@@ -6,7 +6,7 @@ import { ROOT } from './prepare.mjs';
 const source = process.argv[2];
 if (!source) throw new Error('A prepared DSH source directory is required.');
 await mkdir(join(ROOT, '.tmp'), { recursive: true });
-const paths = { BoundHistoryView: 'packages/client/ui-conversation/src/client/conversation/history-view.ts', ConversationNodeAssembler: 'packages/client/ui-conversation/src/client/conversation/assembler.ts', ChatViewport: 'packages/client/ui-chat/src/client/chat/use-chat-viewport.ts', createWindowCommitReader: 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts' };
+const paths = { BoundHistoryView: 'packages/client/ui-conversation/src/client/conversation/history-view.ts', ConversationNodeAssembler: 'packages/client/ui-conversation/src/client/conversation/assembler.ts', ChatViewport: 'packages/client/ui-chat/src/client/chat/use-chat-viewport.ts', ChatReading: 'packages/client/ui-chat/src/client/chat/use-chat-reading.ts', createWindowCommitReader: 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts' };
 const contents = Object.entries(paths).map(([name, path]) => `export { ${name} } from ${JSON.stringify(join(source, path))};`).join('\n')
   + `\nexport * as windowCommit from ${JSON.stringify(join(source, 'packages/api/session-controller/src/client/sessions/window-commit.ts'))};`;
 await build({ stdin: { contents, resolveDir: ROOT, loader: 'ts' }, outfile: join(ROOT, '.tmp/hhpi-official-contract.cjs'), bundle: true,

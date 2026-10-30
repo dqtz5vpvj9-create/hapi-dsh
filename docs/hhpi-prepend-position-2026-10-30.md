@@ -19,4 +19,8 @@ The first production release (`9c995ec70f2d3622`, source extension `0f6965a0169f
 
 A bounded CPU diagnostic identified `VirtualLayoutCommit.componentDidUpdate → restoreVirtualLayout → getBoundingClientRect` as the dominant mobile geometry cost (3.29 seconds accumulated). Every virtual-range render was restoring an anchor even when no physical size changed. The follow-up source change finalizes correction after the parent's measurements, and skips it for unchanged model/size/margin revisions. Pending remounts remain independent. The regression asserts zero post-mutation anchor reads for unchanged-size recycling, while still completing an exact pending remount on that path.
 
-Follow-up deployed identity and live-browser results are recorded after execution. Physical-phone behavior and software-keyboard viewport changes require separate device evidence.
+An intermediate development build (`4ae26e2fb18a`) retained all twelve prepend anchors but failed the new real-width reflow check: desktop moved 22 pixels and mobile moved −176 pixels. It was not deployed. `ChatReading.onResize` refreshed the active turn without using the saved position after a reader gesture had released paging ownership. The follow-up restores that saved semantic position only for settled readers, retaining both the pending-input guard and follow policy. Its viewport contract reproduces the missing restore and verifies that pending user scrolling suppresses it.
+
+The second geometry hotspot was ref-time measurement while React was still placing sibling rows. Ref attachment now returns the existing cache/estimate; the parent effect measures the complete DOM before deciding correction, while ResizeObserver continues to handle later changes.
+
+Final deployed identity and live-browser results are recorded after execution. Physical-phone behavior and software-keyboard viewport changes require separate device evidence.
