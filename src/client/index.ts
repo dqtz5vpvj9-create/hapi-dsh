@@ -1,4 +1,6 @@
 import type { SourceViewportSession } from './source-sessions.ts'
+import { remoteReadingOwner } from './remote-reading-owner.ts'
+import { isSourceSessionId } from '../remote/protocol.ts'
 /** HAPI's workspace composition, loaded by DSH's unchanged official plugin runtime. */
 import { taggedRemote } from '../client-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -180,33 +182,44 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     // Load earlier control so upstream paging/anchoring stays authoritative.
     // The optional data seams below are only the public source facade's forward
     // page and explicit live-tail restore; they never write scroll state.
-    const sourceControl = (sessionId: string | null): (Partial<SourceViewportSession> & { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> }) | undefined =>
-        sessionId ? ctx.sessions.binding(sessionId as SessionId)?.session as unknown as Partial<SourceViewportSession> & { loadAfter?: () => Promise<boolean>; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean> } : undefined
+    type PagingControl = {
+        cancelOlderPage?: (reason?: unknown) => void
+        prefetchOlderPage?: () => unknown
+        loadAfter?: () => Promise<boolean>
+        returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>
+        sourceWindow?: { getSnapshot(): import('../shared/source-frames.ts').SourceWindowProgress; subscribe(listener: () => void): () => void }
+    }
+    const sourceControl = (sessionId: string | null, pane?: HTMLElement): PagingControl | undefined => {
+        const reader = pane ? remoteReadingOwner(pane) : undefined
+        if (reader) return reader.sessionId === sessionId ? reader : undefined
+        if (!sessionId || isSourceSessionId(sessionId)) return undefined
+        return ctx.sessions.binding(sessionId as SessionId)?.session as unknown as PagingControl | undefined
+    }
     disposers.push(installSeamlessHistory(document, {
         loadEarlierLabel: () => ctx.locale.bind('chat')('chat.loadOlder'),
         loadOlderProgrammatically: async (pane, sessionId, signal) => {
             if (signal.aborted) return false
-            const cancel = (): void => sourceControl(sessionId)?.cancelOlderPage?.(signal.reason)
+            const cancel = (): void => sourceControl(sessionId, pane)?.cancelOlderPage?.(signal.reason)
             signal.addEventListener('abort', cancel, { once: true })
             try { return await requestOlderThroughMountedChat(resolveMountedChatForPane(pane), signal) }
             finally { signal.removeEventListener('abort', cancel) }
         },
-        prefetchOlderPage: sessionId => { void sourceControl(sessionId)?.prefetchOlderPage?.() },
-        cancelSourcePage: (sessionId, reason) => { sourceControl(sessionId)?.cancelOlderPage?.(reason) },
-        sourceWindowProgress: sessionId => {
-            const value = sourceControl(sessionId)?.sourceWindow?.getSnapshot()
+        prefetchOlderPage: (sessionId, pane) => { void sourceControl(sessionId, pane)?.prefetchOlderPage?.() },
+        cancelSourcePage: (sessionId, reason, pane) => { sourceControl(sessionId, pane)?.cancelOlderPage?.(reason) },
+        sourceWindowProgress: (sessionId, pane) => {
+            const value = sourceControl(sessionId, pane)?.sourceWindow?.getSnapshot()
             return value?.before === undefined ? undefined : { before: value.before,
-                historyId: value.historyId, historyVersion: value.historyVersion }
+                historyId: value.historyId, historyVersion: value.historyVersion, olderRevision: value.olderRevision }
         },
-        subscribeSourceWindow: (sessionId, listener) => sourceControl(sessionId)?.sourceWindow?.subscribe(listener),
-        loadAfter: async (_pane, sessionId) => {
-            const control = sourceControl(sessionId)
+        subscribeSourceWindow: (sessionId, listener, pane) => sourceControl(sessionId, pane)?.sourceWindow?.subscribe(listener),
+        loadAfter: async (pane, sessionId) => {
+            const control = sourceControl(sessionId, pane)
             return control?.loadAfter ? await control.loadAfter() : false
         },
         returnToLive: async (pane, sessionId, signal) => {
             const control = resolveMountedChatLatestForPane(pane)
             if (control && await toLatestThroughMountedChat(control, signal)) return true
-            return sourceControl(sessionId)?.returnToLive?.(signal) ?? false
+            return sourceControl(sessionId, pane)?.returnToLive?.(signal) ?? false
         },
     }))
     disposers.push(installHapiTabs(ctx, api))

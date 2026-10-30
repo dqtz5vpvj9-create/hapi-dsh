@@ -100,13 +100,13 @@ export interface SeamlessHistoryOptions {
      */
     readonly loadOlderProgrammatically?: (pane: HTMLElement, sessionId: string | null, signal: AbortSignal) => Promise<boolean>
     /** Warm the next source page on upward reader intent without publishing it. */
-    readonly prefetchOlderPage?: (sessionId: string | null) => void
+    readonly prefetchOlderPage?: (sessionId: string | null, pane?: HTMLElement) => void
     /** Cancel a source-owned page even when this controller only observed the official load. */
-    readonly cancelSourcePage?: (sessionId: string | null, reason: unknown) => void
+    readonly cancelSourcePage?: (sessionId: string | null, reason: unknown, pane?: HTMLElement) => void
     /** Recheck adjacent-page preloading when the source window commits a page. */
-    readonly subscribeSourceWindow?: (sessionId: string | null, listener: () => void) => (() => void) | undefined
+    readonly subscribeSourceWindow?: (sessionId: string | null, listener: () => void, pane?: HTMLElement) => (() => void) | undefined
     /** Folded steps can receive older data without adding an outer DOM row. */
-    readonly sourceWindowProgress?: (sessionId: string | null) => SourceWindowProgress | undefined
+    readonly sourceWindowProgress?: (sessionId: string | null, pane?: HTMLElement) => SourceWindowProgress | undefined
     /** Data-only forward page at the bottom of a detached source window. */
     readonly loadAfter?: (pane: HTMLElement, sessionId: string | null) => boolean | Promise<boolean>
     /** False synchronously keeps the normal official action. A Promise resolves
@@ -220,6 +220,9 @@ function sourceChanged(before: ProgressProbe, after: ProgressProbe): boolean {
 }
 
 function olderSourceCursor(before: ProgressProbe, after: ProgressProbe): boolean {
+    if (before.source?.olderRevision !== undefined && after.source?.olderRevision !== undefined) {
+        return !sourceChanged(before, after) && after.source.olderRevision > before.source.olderRevision
+    }
     const old = before.source?.before, next = after.source?.before
     return !!old && !!next && !sourceChanged(before, after)
         && (next.at < old.at || next.at === old.at && next.seq < old.seq)
@@ -456,7 +459,7 @@ class ConversationHistoryController {
     /** Read the transcript probe used to prove a prepend; only while watching. */
     private probeOf(measured: Measured, retainedHead?: string | null): ProgressProbe {
         const probe = probeHistoryWindow(measured.column, retainedHead)
-        const source = this.options.sourceWindowProgress?.(this.sessionId)
+        const source = this.options.sourceWindowProgress?.(this.sessionId, this.content)
         return source ? { ...probe, source } : probe
     }
 
@@ -541,7 +544,7 @@ class ConversationHistoryController {
         this.sourceWindowUnsubscribe?.()
         this.sourceWindowUnsubscribe = undefined
         this.sourceWindowSubscriptionSession = sessionId
-        const unsubscribe = this.options.subscribeSourceWindow?.(sessionId, () => this.prefetchOlderIfReady())
+        const unsubscribe = this.options.subscribeSourceWindow?.(sessionId, () => this.prefetchOlderIfReady(), this.content)
         if (unsubscribe) this.sourceWindowUnsubscribe = unsubscribe
     }
 
@@ -552,7 +555,7 @@ class ConversationHistoryController {
             || this.lastUserIntent !== 'up' || this.now() - this.lastUserInputAt > PREFETCH_INPUT_WINDOW_MS) return
         const scroller = this.content.querySelector<HTMLElement>(SCROLLER_SELECTOR)
         if (scroller === null || scroller.clientHeight <= 0) return
-        const progress = this.options.sourceWindowProgress?.(sessionId)
+        const progress = this.options.sourceWindowProgress?.(sessionId, this.content)
         if (progress === undefined) return
         const key = JSON.stringify([sessionId, progress.before, progress.historyId, progress.historyVersion])
         if (key === this.lastPrefetchKey) return
@@ -560,7 +563,7 @@ class ConversationHistoryController {
             Math.min(scroller.scrollHeight * 0.75, this.lastUserVelocity * 800))
         if (scroller.scrollTop > lead) return
         this.lastPrefetchKey = key
-        this.options.prefetchOlderPage(sessionId)
+        this.options.prefetchOlderPage(sessionId, this.content)
     }
 
     /** Mark the pane element with the current automation state for diagnostics. */
@@ -606,7 +609,7 @@ class ConversationHistoryController {
         // HAPI's virtual list. Watching every descendant mutation here makes
         // a large React commit trigger repeated DOM-wide progress probes.
         // The pending timer still checks progress, but only once per interval.
-        if (column !== null && this.options.sourceWindowProgress?.(this.sessionId) !== undefined) column = null
+        if (column !== null && this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined) column = null
         if (column === this.observedColumn) return
         this.observer?.disconnect()
         this.observedColumn = column
@@ -662,7 +665,7 @@ class ConversationHistoryController {
             this.touchWantsEarlier = !this.touchCancelled && intent === 'up' && scroller !== null
                 && scroller.scrollTop <= (this.options.nearTop ?? nearTopPixels)(scroller.clientHeight)
             this.touchWantsLater = !this.touchCancelled && intent === 'down' && atBottom
-            if (this.touchWantsEarlier && this.options.sourceWindowProgress?.(this.sessionId) !== undefined) {
+            if (this.touchWantsEarlier && this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined) {
                 this.requestEarlier(now)
             }
             return
@@ -898,7 +901,7 @@ class ConversationHistoryController {
 
     /** Source pages are corrected exclusively by the mounted official viewport. */
     private capturePageAnchor(scroller: HTMLElement): InterruptedPrependAnchor | null {
-        return this.options.sourceWindowProgress?.(this.sessionId) === undefined
+        return this.options.sourceWindowProgress?.(this.sessionId, this.content) === undefined
             ? captureInterruptedPrepend(scroller) : null
     }
 
@@ -1018,7 +1021,7 @@ class ConversationHistoryController {
     /** Evaluate policy and, when approved, click the official control once. */
     private requestEarlier(now: number): void {
         if (this.pending !== null) return
-        const boundedSource = this.options.sourceWindowProgress?.(this.sessionId)
+        const boundedSource = this.options.sourceWindowProgress?.(this.sessionId, this.content)
         if (boundedSource === undefined && now < this.quietUntil) return
         // Never commit a page while a wheel/key gesture is actively moving the
         // transcript: one synchronous merge of a large retained window can cost
@@ -1130,7 +1133,7 @@ class ConversationHistoryController {
 
     /** Watch an upstream page only when a reader gesture interrupts its anchor. */
     private observeEarlierPage(): void {
-        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) return
+        if (this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined) return
         const measured = this.measure()
         if (measured === null || !measured.control?.disabled || measured.followingTail) return
         const identity = this.identityOf(measured.content)
@@ -1144,7 +1147,7 @@ class ConversationHistoryController {
     /** Install the pending-page poll and the hard timeout. */
     private setPendingTimers(): void {
         this.clearPendingTimers()
-        const sourceBacked = this.options.sourceWindowProgress?.(this.sessionId) !== undefined
+        const sourceBacked = this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined
         if (!sourceBacked) this.poll = setInterval(() => this.checkPending(), PENDING_POLL_MS)
         this.deadline = setTimeout(() => this.expirePending(), this.policy.budget.limits.requestTimeoutMs)
     }
@@ -1182,7 +1185,7 @@ class ConversationHistoryController {
         const pending = this.pending
         if (pending === null || this.disposed) return
         const now = this.now()
-        const source = this.options.sourceWindowProgress?.(this.sessionId)
+        const source = this.options.sourceWindowProgress?.(this.sessionId, this.content)
         if (source === undefined) { this.checkPending(); return }
         const afterSource = { ...pending.probe, source }
         if (sourceChanged(pending.probe, afterSource)) { this.settle('reset', now, 'source-window-reset'); return }
@@ -1221,7 +1224,7 @@ class ConversationHistoryController {
         // on a mobile gesture that keeps moving while the page is in flight;
         // release that provisional owner instead of competing with the
         // source reader's commit-time correction.
-        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) this.releaseInterruptedAnchor()
+        if (this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined) this.releaseInterruptedAnchor()
         else this.interruptedAnchor?.commit()
         this.pending = null
         this.clearPendingTimers()
@@ -1254,8 +1257,8 @@ class ConversationHistoryController {
         this.pendingProgrammatic = undefined
         const reason = new Error(`Earlier history load ${detail}`)
         operation?.abort(reason)
-        if (this.options.sourceWindowProgress?.(this.sessionId) !== undefined) {
-            this.options.cancelSourcePage?.(this.sessionId, reason)
+        if (this.options.sourceWindowProgress?.(this.sessionId, this.content) !== undefined) {
+            this.options.cancelSourcePage?.(this.sessionId, reason, this.content)
         }
         this.releaseInterruptedAnchor()
         const pending = this.pending

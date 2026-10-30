@@ -1,10 +1,12 @@
 /** Pane navigation uses its exact official Conversation and mounted Chat reader. */
 import type { Context } from '@deepseek-ai/cordis'
+import { bindRemoteReadingOwner } from './remote-reading-owner.ts'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import { resolveMountedChatForPane } from './mounted-chat-control.ts'
 
 export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference: SessionReference, navigation: WorkspacePaneNavigation): () => void {
+  const releaseOwner = bindRemoteReadingOwner(root, reference)
   let disposed = false, applied = -1
   let pending: AbortController | undefined
   let error: HTMLElement | undefined
@@ -60,5 +62,5 @@ export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference
   observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-hapi-mounted-chat'] })
   const stops = [navigation.state.subscribe(update), navigation.reading.subscribe(update)]
   void reference.ready.then(update, () => {})
-  return () => { disposed = true; pending?.abort(); observer.disconnect(); for (const stop of stops) stop(); clear(); delete root.dataset.hapiReading }
+  return () => { releaseOwner(); disposed = true; pending?.abort(); observer.disconnect(); for (const stop of stops) stop(); clear(); delete root.dataset.hapiReading }
 }

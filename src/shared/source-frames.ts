@@ -84,6 +84,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 
 /** Source cursor used to distinguish real paging from folded DOM changes. */
 export interface SourceWindowProgress {
+  /** Successful older commits owned by this exact official reading occurrence. */
+  olderRevision?: number | undefined
   before: { at: number; seq: number } | null
   /** The last interactive prefix read failed; the committed source window is unchanged. */
   pagingError?: true | undefined

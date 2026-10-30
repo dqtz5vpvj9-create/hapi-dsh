@@ -80,6 +80,7 @@ async function fixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
   assert.equal(sessions.windowCommit, remote.windowCommit, 'outer facade must retain the actual commit coordinator')
   ctx.reflect.provide('sessions', sessions)
   ctx.reflect.provide('remote', { $on: () => () => {} } as unknown as Context['remote'])
+  ctx.reflect.provide('remote.session', {} as never)
   ctx.reflect.provide('remoteAccess', { source: () => store(true) } as unknown as Context['remoteAccess'])
   const localeState = store({ revision: 0, active: 'en' })
   const locale = { ...localeState, register: () => () => {}, bind: () => (key: string) => key }
