@@ -39,6 +39,11 @@ test('real mounted official Chat controls page only their own canonical-session 
   property(f.dom.window.HTMLElement.prototype, 'getBoundingClientRect', { value: function(this: HTMLElement) {
     return new f.dom.window.DOMRect(0, 0, 800, this.hasAttribute('data-chat-virtual-row') ? 96 : 600)
   } })
+  property(f.dom.window.Range.prototype, 'getBoundingClientRect', { value: () => new f.dom.window.DOMRect(0, 0, 1, 20) })
+  property(f.dom.window.Range.prototype, 'getClientRects', { value: () => {
+    const rect = new f.dom.window.DOMRect(0, 0, 1, 20)
+    return Object.assign([rect], { item: (index: number) => index === 0 ? rect : null })
+  } })
   property(f.dom.window.HTMLElement.prototype, 'scrollTo', { value: function(this: HTMLElement, options: ScrollToOptions | number, top?: number) {
     this.scrollTop = typeof options === 'number' ? top ?? 0 : options.top ?? this.scrollTop
   } })
@@ -86,22 +91,32 @@ test('real mounted official Chat controls page only their own canonical-session 
     await act(async () => { unmount = f.ctx.uiRenderer.mount(f.dom.window.document.getElementById('root')!) })
     assert.equal(controls.size, 2, `both actual official views must deliver distinct controls: ${f.dom.window.document.body.innerHTML.slice(0, 6000)}`)
     assert.notEqual(controls.get('a'), controls.get('b'))
+    const editors = new Map<string, HTMLElement>()
     for (const id of ['a', 'b']) {
       const pane = f.dom.window.document.querySelector(`[data-test-pane="${id}"]`)!
       assert.ok(pane.querySelector('[data-chat-flow]'), 'the actual Chat flow must be mounted')
       assert.ok(pane.textContent?.includes('body-'), 'real user-message content must render')
-      assert.ok(pane.querySelector('[contenteditable="true"]'), 'the actual occurrence input must be mounted')
+      const editor = pane.querySelector<HTMLElement>('[contenteditable="true"]')
+      assert.ok(editor, 'the actual occurrence input must be mounted')
+      editors.set(id, editor)
     }
-    const initialA = a.reading.snapshot.getSnapshot().before
+    await act(async () => { a.input.setDraft('Rendered draft A'); b.input.setDraft('Rendered draft B') })
+    assert.equal(editors.get('a')!.textContent, 'Rendered draft A')
+    assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
     const initialB = b.reading.snapshot.getSnapshot().before
-    let pending!: Promise<void>
-    await act(async () => { pending = controls.get('a')!.loadOlder(); await new Promise(resolve => setTimeout(resolve, 100)) })
-    await pending
-    assert.notEqual(a.reading.snapshot.getSnapshot().before, initialA)
-    assert.equal(b.reading.snapshot.getSnapshot().before, initialB)
-    assert.equal(f.body(a).length, 320)
-    assert.equal(f.body(b).length, 160)
-    assert.equal(controls.get('a')!.read().busy, false)
+    for (let page = 1; page <= 6; ++page) {
+      const before = a.reading.snapshot.getSnapshot().before
+      let pending!: Promise<void>
+      await act(async () => { pending = controls.get('a')!.loadOlder(); await new Promise(resolve => setTimeout(resolve, 100)) })
+      await pending
+      assert.notEqual(a.reading.snapshot.getSnapshot().before, before)
+      assert.equal(b.reading.snapshot.getSnapshot().before, initialB)
+      assert.equal(f.body(a).length, (page + 1) * 160)
+      assert.equal(f.body(b).length, 160)
+      assert.equal(controls.get('a')!.read().busy, false)
+      assert.equal(editors.get('a')!.textContent, 'Rendered draft A')
+      assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
+    }
     const disposed = controls.get('a')!
     await act(async () => { unmount?.(); unmount = undefined })
     assert.equal(controls.size, 0)
