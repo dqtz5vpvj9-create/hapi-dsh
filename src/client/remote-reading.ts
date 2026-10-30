@@ -1,9 +1,10 @@
-/** Explicit Pane navigation for source history, using only the mounted official reader. */
+/** Pane navigation uses its exact official Conversation and mounted Chat reader. */
+import type { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import { resolveMountedChatForPane } from './mounted-chat-control.ts'
 
-export function bindRemotePaneReading(root: HTMLElement, reference: SessionReference, navigation: WorkspacePaneNavigation): () => void {
+export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference: SessionReference, navigation: WorkspacePaneNavigation): () => void {
   let disposed = false, applied = -1
   let pending: AbortController | undefined
   let error: HTMLElement | undefined
@@ -22,11 +23,24 @@ export function bindRemotePaneReading(root: HTMLElement, reference: SessionRefer
     const read = async (): Promise<void> => {
       if (intent.target.kind === 'latest') await control.toLatest(signal)
       else if (intent.target.kind === 'message') {
-        // HHPI links use an exact source event sequence; a native message id is
-        // not guessed into a browser coordinate.
         const seq = Number(intent.target.messageId)
-        if (!Number.isSafeInteger(seq) || seq < 0) throw new Error('The source link does not contain a supported history target.')
-        await control.reveal({ key: intent.target.messageId, seq }, signal)
+        if (!Number.isSafeInteger(seq) || seq < 0 || String(seq) !== intent.target.messageId) throw new Error('The source link does not contain an exact history sequence.')
+        const conversation = ctx.uiConversation.binding(reference.binding)
+        const reading = conversation.readingView
+        if (!reading) throw new Error('This Pane has no official source reading window.')
+        const find = () => {
+          const snapshot = conversation.target('chat').getSnapshot()
+          return snapshot?.order.map(key => snapshot.nodes.get(key)).find(node => node !== undefined && Math.floor(node.anchorSeq) === seq)
+        }
+        let node = find()
+        if (!node) {
+          await reading.read({ kind: 'around', target: { key: intent.target.messageId, seq: seq as never } }, signal)
+          signal.throwIfAborted()
+          node = find()
+        }
+        if (!node) throw new Error('The source history target has no readable Chat node.')
+        // The source cursor locates data; the official assembler owns the rendered node key.
+        await control.reveal({ key: node.key, seq }, signal)
       } else {
         const id = intent.target.kind === 'approval' ? intent.target.requestId : intent.target.localId
         const target = root.querySelector<HTMLElement>(`[data-hhpi-request="${CSS.escape(id)}"]`)
