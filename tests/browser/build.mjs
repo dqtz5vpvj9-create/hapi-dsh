@@ -34,7 +34,9 @@ export async function buildLab() {
     for (const file of await readdir(directory)) if (file.endsWith('.js')) await copyFile(join(directory, file), join(target, file))
   }
   const searchPaths = [root, join(source, 'packages/client/web'), join(source, 'packages/client/ui-primitives'), source]
-  const modules = platform.map(name => require.resolve(name, { paths: searchPaths }))
+  const modules = platform.map(name => name === '@deepseek-ai/dsh-client-ui-dockkit'
+    ? join(source, 'packages/client/ui-dockkit/src/index.ts')
+    : require.resolve(name, { paths: searchPaths }))
   const theme = ['base', 'corner-shape', 'design-platform', 'focus', 'onboarding', 'scrollbar', 'gradient-shadow-text', 'shiki']
   const platformSource = modules.map((path, i) => `import * as m${i} from ${JSON.stringify(path)};`).join('\n')
     + `\nexport const modules = {${platform.map((name, i) => `${JSON.stringify(name)}: m${i}`).join(',')}};\n`
