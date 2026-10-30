@@ -8,6 +8,7 @@ import type { MountedChatV1 } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRuntime, PropsRenderFactories, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { fixture } from './hhpi-reading-fixture.ts'
 import { installDomGeometry } from './dom-geometry.ts'
+import { ACTIVE_CONVERSATION_INPUT } from './conversation-content-input.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap { 'hhpi.test.pane': { kind: 'single'; scope: 'session' } }
@@ -35,7 +36,7 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
         ...[a, b].map((pane, index) => createElement('section', { key: index, 'data-test-pane': index === 0 ? 'a' : 'b' },
           createElement(props.SessionProvider, { session: pane.reference }, props.renderSlot('hhpi.test.pane', {}))))))
       ctx.slots.register({ name: 'hhpi.test.pane' }, (props: PropsRenderFactories) =>
-        props.renderFactorySlot('conversation.content', { phase: 'ready', hero: false, variant: 'embedded' }))
+        props.renderFactorySlot('conversation.content', ACTIVE_CONVERSATION_INPUT))
     } })
     let unmount: (() => void) | undefined
     try {
@@ -45,6 +46,7 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
       const editors = new Map<string, HTMLElement>()
       for (const id of ['a', 'b']) {
         const pane = f.dom.window.document.querySelector(`[data-test-pane="${id}"]`)!
+        assert.equal(pane.querySelector('[data-conversation-content]')?.getAttribute('data-content-phase'), 'active', 'source ready state must not replace the official active presentation phase')
         assert.ok(pane.querySelector('[data-chat-flow]'), 'the actual Chat flow must be mounted')
         assert.ok(pane.textContent?.includes('body-'), 'real user-message content must render')
         const editor = pane.querySelector<HTMLElement>('[contenteditable="true"]')

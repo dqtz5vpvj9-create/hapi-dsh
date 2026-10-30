@@ -1,10 +1,11 @@
 /** Real installed official UI and production HHPI readers; only shell and IO are fixtures. */
 import { createElement, useState } from 'react'
 import { Context } from '@deepseek-ai/cordis'
-import type { ISessions, SessionBinding, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { MountedChatV1 } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRuntime, PropsRenderFactories, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { createWindowCommitFactory } from 'hhpi-window-commit'
+import { ACTIVE_CONVERSATION_INPUT } from '../contracts/conversation-content-input.ts'
 import { RemoteSessions } from '../../src/client/remote-sessions.ts'
 import { SourceSessions } from '../../src/client/source-sessions.ts'
 import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
@@ -132,7 +133,7 @@ await ctx.plugin({ name: 'hhpi-browser-lab-shell', inject: ['slots'], apply(cont
           'data-hapi-pane-visible': String(innerWidth > 600 || active === key),
         }, createElement(props.SessionProvider, { session: panes[key].reference }, props.renderSlot('hhpi.lab.pane', {}))))))
     })
-  context.slots.register({ name: 'hhpi.lab.pane' }, (props: PropsRenderFactories) => props.renderFactorySlot('conversation.content', { phase: 'ready', hero: false, variant: 'embedded' }))
+  context.slots.register({ name: 'hhpi.lab.pane' }, (props: PropsRenderFactories) => props.renderFactorySlot('conversation.content', ACTIVE_CONVERSATION_INPUT))
 } })
 const unmount = ctx.uiRenderer.mount(document.getElementById('root')!)
 const frames: number[] = []; let last = 0, raf = 0, collecting = true
