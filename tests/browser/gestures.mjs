@@ -10,20 +10,37 @@ export async function createGestures(page, context, mobile, result) {
     for (const type of ['wheel', 'touchstart', 'touchmove', 'touchend']) document.addEventListener(type, event => {
       window.__labInputs[type]++; if (!event.isTrusted) window.__labInputs.untrusted++
     }, { capture: true, passive: true })
+    const scrollport = document.querySelector('[data-lab-pane="a"] [data-conversation-scroll]')
+    if (!scrollport) throw new Error('official source scrollport is missing')
+    const tracker = { scrolls: 0, ended: 0, supportsScrollEnd: 'onscrollend' in scrollport }
+    scrollport.addEventListener('scroll', () => { tracker.scrolls++ }, { passive: true })
+    if (tracker.supportsScrollEnd) scrollport.addEventListener('scrollend', () => { tracker.ended = tracker.scrolls }, { passive: true })
+    window.__labScrollTracker = tracker
   })
   async function frames(count) {
     await page.evaluate(async count => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame) }, count)
   }
   async function settle() {
     await page.evaluate(async () => {
-      let stable = 0, prior = ''
-      for (let frame = 0; frame < 45; frame++) {
+      const scrollport = document.querySelector('[data-lab-pane="a"] [data-conversation-scroll]')
+      const tracker = window.__labScrollTracker
+      // Stable RAF samples can precede touch momentum or post-commit anchoring.
+      // Wait for the browser's scrollend signal and a quiet interval without changing input.
+      const startedAt = performance.now()
+      let lastActivityAt = startedAt, priorTop = scrollport.scrollTop, priorScrolls = tracker.scrolls, stableFrames = 0
+      while (performance.now() - startedAt < 3000) {
         await new Promise(requestAnimationFrame)
-        const next = [...document.querySelectorAll('[data-conversation-scroll]')].map(port => port.scrollTop).join(',')
-        if (next === prior && !window.__hhpi.snapshot().a.busy) stable++; else stable = 0
-        prior = next; if (stable >= 3) return
+        const now = performance.now(), top = scrollport.scrollTop, busy = window.__hhpi.snapshot().a.busy
+        if (top !== priorTop || tracker.scrolls !== priorScrolls || busy) {
+          lastActivityAt = now
+          stableFrames = 0
+        } else stableFrames++
+        const nativeScrollPending = tracker.supportsScrollEnd && tracker.ended < tracker.scrolls
+        if (!busy && !nativeScrollPending && stableFrames >= 6 && now - lastActivityAt >= 250) return
+        priorTop = top
+        priorScrolls = tracker.scrolls
       }
-      throw new Error('Real scroll/layout did not settle within 45 animation frames')
+      throw new Error(`Real scroll/layout did not settle within 3000ms (scrolls=${tracker.scrolls}, ended=${tracker.ended}, top=${scrollport.scrollTop})`)
     })
   }
   async function scroll(delta, boundaryCrossing = false) {

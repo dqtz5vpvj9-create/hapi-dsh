@@ -78,7 +78,11 @@ export class RemotePaneSession implements SessionFace {
     // monotonic count proves that this occurrence committed an older request.
     this.progress = { before: null, hasMoreAfter: reading?.hasAfter ?? false,
       olderRevision: this.olderRevision,
-      historyId: JSON.stringify([this.sessionId, this.window?.viewId, this.owner.history.sourceEpoch]),
+      // The canonical source epoch is published only after the official reader
+      // accepts its opening window. attach() runs synchronously before that
+      // baseline exists, so asking for the epoch during initial publication
+      // would fail the entire pane mount.
+      ...(reading?.version != null ? { historyId: JSON.stringify([this.sessionId, this.window!.viewId, this.owner.history.sourceEpoch]) } : {}),
       ...(reading?.phase === 'error' ? { pagingError: true as const } : {}) }
     for (const listener of this.listeners) listener()
   }

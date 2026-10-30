@@ -15,7 +15,8 @@ import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-
 import type { SourcePreparationReference, SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import type { RemotePaneViews } from '../src/client/remote-reading-session.ts'
-import { sourceSessionId } from '../src/remote/protocol.ts'
+import type { ConversationHistoryViewV1, HistoryViewSnapshotV1 } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import { sourceSessionId, type SourceChanges, type SourceChangesRequest, type SourceOperation, type SourcePage, type SourceSession } from '../src/remote/protocol.ts'
 import { installSessionViewHost } from '../src/client/surface/session-view.tsx'
 
 const require = createRequire(import.meta.url)
@@ -23,18 +24,23 @@ const projectRoot = resolvePath(import.meta.dirname, '..')
 const { createWindow } = require('@mixmark-io/domino') as { createWindow(html: string, url: string): Window & typeof globalThis }
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
-let paneViewsClass: Promise<typeof import('../src/client/remote-reading-session.ts').RemotePaneViews> | undefined
-function loadRemotePaneViews(): Promise<typeof import('../src/client/remote-reading-session.ts').RemotePaneViews> {
-    paneViewsClass ??= build({
-        stdin: { contents: "export { RemotePaneViews } from './src/client/remote-reading-session.ts'", resolveDir: projectRoot, loader: 'ts' },
+type SourceClasses = {
+    RemotePaneViews: typeof import('../src/client/remote-reading-session.ts').RemotePaneViews
+    RemoteSourceHistory: typeof import('../src/client/remote-history.ts').RemoteSourceHistory
+    RemoteSourceSession: typeof import('../src/client/remote-sessions.ts').RemoteSourceSession
+}
+let sourceClasses: Promise<SourceClasses> | undefined
+function loadSourceClasses(): Promise<SourceClasses> {
+    sourceClasses ??= build({
+        stdin: { contents: "export { RemotePaneViews } from './src/client/remote-reading-session.ts'; export { RemoteSourceHistory } from './src/client/remote-history.ts'; export { RemoteSourceSession } from './src/client/remote-sessions.ts'", resolveDir: projectRoot, loader: 'ts' },
         alias: { '@deepseek-ai/dsh-api-session-controller/client': resolvePath(projectRoot, 'tests/fixtures/client-session-contract.ts') },
         external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent',
     }).then(output => {
-        const module = { exports: {} as { RemotePaneViews: typeof import('../src/client/remote-reading-session.ts').RemotePaneViews } }
+        const module = { exports: {} as SourceClasses }
         new Function('require', 'module', 'exports', output.outputFiles[0]!.text)(require, module, module.exports)
-        return module.exports.RemotePaneViews
+        return module.exports
     })
-    return paneViewsClass
+    return sourceClasses
 }
 
 function deferred<T>() {
@@ -142,7 +148,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     } as unknown as SessionBinding['session']
     const binding: SessionBinding = { sessionId: id, session, eventSource: events as unknown as SessionBinding['eventSource'], ctx: root as SessionBinding['ctx'] }
     const bindings = new Map<string, SessionBinding>([[id, binding]])
-    const RemotePaneViewsClass = options.hhpiPane ? await loadRemotePaneViews() : undefined
+    const RemotePaneViewsClass = options.hhpiPane ? (await loadSourceClasses()).RemotePaneViews : undefined
     const paneViews = RemotePaneViewsClass ? new RemotePaneViewsClass() : undefined
     let paneReference: SessionReference | undefined, paneReady = false
     const paneOwner = { ...session, historyRead: { version: 1, openView: async () => ({}) },
@@ -279,6 +285,51 @@ test('HHPI reference mounts through the real Host before its official reading wi
     await reference.ready
     assert.equal(f.paneReady(), true)
     assert.deepEqual(f.errors, [])
+})
+
+test('RemotePaneSession attaches before a delayed RemoteSourceHistory baseline without reading its missing epoch', async t => {
+    const { RemotePaneViews, RemoteSourceHistory, RemoteSourceSession } = await loadSourceClasses()
+    const identity = { machineId: 'delayed-machine', sourceId: 'native', engine: 'codex', nativeId: 'delayed-thread' }
+    const id = sourceSessionId(identity) as SessionBinding['sessionId']
+    const metadata: SourceSession = { ...identity, id, title: 'Delayed baseline', cwd: '/synthetic', updatedAt: 1,
+        status: 'idle', activeTurnId: null, capabilities: { send: true, steer: false, cancel: false, approve: false, files: false }, pendingRequests: [] }
+    const baseline = deferred<SourcePage>()
+    const history = new RemoteSourceHistory(id, {
+        read: () => baseline.promise,
+        changes: async function* (_request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
+            await new Promise<void>(resolve => {
+                if (signal?.aborted) { resolve(); return }
+                signal?.addEventListener('abort', () => resolve(), { once: true })
+            })
+        },
+    })
+    const owner = new RemoteSourceSession(id, metadata, history, { operate: async (operation: SourceOperation) => ({
+        sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'accepted',
+    }) } as never)
+    const root = new Context()
+    const binding = { sessionId: id, session: owner, eventSource: owner.eventSource, ctx: root } as unknown as SessionBinding
+    const held: SessionReference = { sessionId: id, binding, ready: owner.ready.then(() => binding), release() {}, [Symbol.dispose]() {} }
+    const panes = new RemotePaneViews()
+    const reference = panes.open(held, 'delayed-pane')
+    const pane = reference.binding.session as import('../src/client/remote-reading-session.ts').RemotePaneSession
+    const opening = observable<HistoryViewSnapshotV1>({ revision: 0, phase: 'opening', failure: null, busy: false, hasBefore: false,
+        hasAfter: false, headChanged: false, version: null, entries: [], correction: 'applied', correctionError: null })
+    const reading = { version: 1, viewId: 'delayed-pane', snapshot: opening, reads: {} as never,
+        read: async () => opening.getSnapshot(), refresh: async () => opening.getSnapshot(), release() {} } as ConversationHistoryViewV1
+    t.after(async () => { panes.dispose(); owner.dispose(); history.dispose(); await root.fiber.dispose() })
+
+    assert.throws(() => history.sourceEpoch, /Source baseline is not open/)
+    assert.doesNotThrow(() => pane.attach(reading), 'Host attaches its official reader synchronously before source readiness')
+    assert.equal(pane.sourceWindow.getSnapshot().historyId, undefined, 'no history identity exists before an accepted reader window')
+
+    baseline.resolve({ session: metadata, epoch: 'delayed-epoch', version: 1, entries: [], before: null, after: null,
+        hasBefore: false, hasAfter: false, context: [] })
+    await reference.preparationReady
+    assert.equal(pane.sourceWindow.getSnapshot().historyId, undefined, 'a source baseline alone is not an accepted pane window')
+    const feed = await history.openView('delayed-pane', { events: 100, bytes: 1024 * 1024, nodes: 100 })
+    opening.set({ ...opening.getSnapshot(), phase: 'ready', version: feed.initial.version })
+    await reference.ready
+    assert.equal(pane.sourceWindow.getSnapshot().historyId, JSON.stringify([id, 'delayed-pane', 'delayed-epoch']))
 })
 
 test('source preparation mounts the real scoped slot hidden before outline readiness and reveals the same DOM once', async t => {
