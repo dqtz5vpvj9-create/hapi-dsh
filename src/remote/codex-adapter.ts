@@ -111,9 +111,17 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.catalogAt = 0; this.loaded.clear(); this.approvals.clear();
         for (const owner of this.threads.values()) this.markOffline(owner);
     }
+    private catalogSessions(): SourceSession[] {
+        // Native ephemeral threads reject both paginated history and thread/read(includeTurns).
+        // Retain their metadata for explicit old-link rejection, but never advertise them as readable.
+        return [...this.threads.values()].filter(owner => owner.native.ephemeral !== true).map(owner => owner.session);
+    }
+    private assertReadable(thread: NativeThread): void {
+        if (thread.ephemeral === true) throw new SourceError('UNSUPPORTED', 'The native app-server does not expose history for ephemeral threads.');
+    }
     async list(signal?: AbortSignal): Promise<SourceSession[]> {
         this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted();
-        if (this.rpc.online && Date.now() - this.catalogAt < 1500) return [...this.threads.values()].map(owner => owner.session);
+        if (this.rpc.online && Date.now() - this.catalogAt < 1500) return this.catalogSessions();
         if (!this.catalogRead) {
             const work = this.readCatalog().finally(() => { if (this.catalogRead === work) this.catalogRead = undefined; });
             this.catalogRead = work;
@@ -155,13 +163,14 @@ export class DirectCodexAdapter implements SourceAdapter {
         }
         for (const [id, owner] of this.threads) if (!accepted.has(id)) this.markOffline(owner);
         this.catalogAt = Date.now();
-        return [...this.threads.values()].map(owner => owner.session);
+        return this.catalogSessions();
     }
     private async owner(sessionId: string, signal?: AbortSignal): Promise<ThreadOwner> {
         const nativeId = this.assertScope(sessionId);
         let owner = this.threads.get(nativeId);
         if (!owner) { await this.list(signal); owner = this.threads.get(nativeId); }
         if (!owner) throw new SourceError('TARGET_UNAVAILABLE', 'The native source did not advertise this session.');
+        this.assertReadable(owner.native);
         return owner;
     }
     private async prepare(owner: ThreadOwner): Promise<void> {
@@ -225,6 +234,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const rawCheckpoint = full ? history.index.cached<unknown>(NATIVE_HISTORY_CHECKPOINT) : undefined;
         const checkpoint = this.nativeHistoryCheckpoint(rawCheckpoint);
         this.remember(response.thread);
+        this.assertReadable(response.thread);
 
         // A completed native revision is already the source-owned read model.
         // This also applies to an active thread when the native revision and

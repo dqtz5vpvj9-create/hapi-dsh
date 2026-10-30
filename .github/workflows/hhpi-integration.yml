@@ -1,7 +1,7 @@
 name: HHPI installed extension integration
 on:
   push:
-    branches: [feat/hhpi-remote-access-20261029]
+    branches: [main, feat/hhpi-remote-access-20261029]
     paths: ['src/**', 'tests/**', 'scripts/**', 'source-snapshots/**', 'package*.json', 'tsconfig*.json', '.github/workflows/hhpi-integration.yml']
   workflow_dispatch:
 permissions:

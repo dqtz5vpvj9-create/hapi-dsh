@@ -17,6 +17,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const parseSocketMessage = value => { try { return JSON.parse(value); } catch { return undefined; } };
 const sourceId = id => /^hapi-(?:codex|observed)-[0-9a-f]{32}(?:-r[1-9][0-9]*)?$/.test(id ?? '');
 const readMethods = new Set([
+  'hhpi/catalog', 'hhpi/read', 'hhpi/resource',
   'hapi/catalog', 'hapi/workspaceGet', 'hapi/workspaceLegacy', 'hapi/sourceReadStates',
   'hapi/nativeLibrary', 'hapi/sourceSessionTools', 'hapi/sourceQueuedEdits', 'hapi/sourceQueuedEditRead',
   'hapi/sourceHistoryHead', 'hapi/sourceHistoryOutline', 'hapi/sourceHistoryOutlinePage',
@@ -37,7 +38,7 @@ const readMethods = new Set([
   'credentials/describe', 'dynamicCordisRunner/inventory', 'cotTranslation/limits',
   'hapi/sourceAdministration', 'hapi/sourceSummarySettings',
 ]);
-const readStreams = new Set(['$events', 'session/follow', 'hapi/sourceWindowFollow', 'hapi/sourceHistoryWindowPageStream',
+export const readStreams = new Set(['$events', 'session/follow', 'hhpi/changes', 'hapi/sourceWindowFollow', 'hapi/sourceHistoryWindowPageStream',
   'remoteAccess/follow', 'account/watch', 'account/watchExpiry', 'session/control', 'workspace/follow']);
 const manifestInput = runnerRemote.methods['dynamicCordisRunner/syncInspectManifest'].input({ strict: true }).create();
 
@@ -965,5 +966,6 @@ async function main() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   if (process.argv.includes('--help')) process.stdout.write('Usage: node scripts/test-history-smoke.mjs [--session-title TITLE] [--session-occurrence N] [--scenario both|desktop|mobile] [--url-file FILE] [--timeout-ms 1..60000] [--report FILE] [--cpu-profile]\nCPU profiling is opt-in because the profiler perturbs frame-time measurements. Default target: HAPI_DSH_SMOKE_SESSION_TITLE or ~/.config/hapi-dsh/smoke-session-title. Occurrence disambiguates duplicate titles in catalog order. Requires the external webshot Playwright runtime.\n');
+  else if (process.argv.includes('--session-id')) await (await import('./test-hhpi-smoke.mjs')).main();
   else await main();
 }

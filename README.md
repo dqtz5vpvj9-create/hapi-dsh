@@ -4,7 +4,7 @@ HHPI 的目标是为 **DSH Web** 提供跨机器的 Agent 远程接入，让 DSH
 
 所有聊天仍出现在同一个侧边栏。窗格可以并排打开本机 DSH、远端 DSH、HAPI 原生 Codex 和其他 HAPI 引擎会话；完整聊天界面使用官方 Conversation，包含会话头部、视图切换、消息、输入框及各处插件扩展点。工作区负责窗口、分屏、会话路由和布局保存，执行与审批继续由会话原来的引擎负责。
 
-本仓库当前包名仍为 `hapi-dsh`，实现包含既有 HAPI 桥和远端 DSH Runner，使用项目维护的 DSH 扩展；目标架构尚未全部实现。主机安装 `hapi-dsh`，远端 DSH 主机安装包内独立的 `hapi-dsh-runner` Host 插件。下文 HAPI Hub 的安装步骤描述当前实现，不表示 HHPI 长期必须依赖 HAPI 部署。
+本仓库当前包名仍为 `hapi-dsh`，支持 HHPI 原生 Codex 源、官方 DSH Runner，以及可选的既有 HAPI 桥，使用项目维护的 DSH 扩展。通过私有配置的 `sources` 接入原生 Agent，并省略 `hapi` 即可使用 HHPI-only 模式，详见[连接既有原生源](docs/hhpi-native-attachment.md)。主机安装 `hapi-dsh`，远端 DSH Host 安装包内独立的 `hapi-dsh-runner` 插件。下文 HAPI Hub 步骤适用于保留兼容接入的配置。
 
 完整替代的对照基准是原 HAPI 的实际功能和使用体验。已实现能力、尚有差距的行为及对应证据逐项记录在[功能与 UX 对照表](docs/feature-parity.md)；当前源码不能据此宣称已完成全部替代。
 

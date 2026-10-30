@@ -7,6 +7,7 @@ export const nativeTurnSchema = z.object({ id, status: z.enum(['completed', 'int
     items: z.array(nativeItemSchema).optional(), startedAt: z.number().finite().nullable().optional(), completedAt: z.number().finite().nullable().optional(), error: z.unknown().optional() }).passthrough();
 export type NativeTurn = z.infer<typeof nativeTurnSchema>;
 export const nativeThreadSchema = z.object({ id, cwd: z.string(), preview: z.string().optional(), name: z.string().nullable().optional(),
+    ephemeral: z.boolean().optional(),
     createdAt: z.number().finite(), updatedAt: z.number().finite(), status: z.object({ type: z.string() }).passthrough(),
     model: z.string().nullable().optional(), modelProvider: z.string().optional(), turns: z.array(nativeTurnSchema).optional() }).passthrough();
 export type NativeThread = z.infer<typeof nativeThreadSchema>;

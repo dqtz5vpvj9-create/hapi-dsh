@@ -9,6 +9,7 @@ import { build } from 'esbuild'
 import { Context, type Plugin } from '@deepseek-ai/cordis'
 import { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import { SOURCE_SESSIONS_REALM } from '../src/client/source-sessions-composition.ts'
+import type {} from '../src/client/remote-sessions.ts'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -48,7 +49,7 @@ const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 test('early hook isolates new consumers before a delayed original service becomes available', async () => {
   const { ctx, started, stopped, create } = await fixture()
-  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} }, refresh: async () => {} }
   try {
     const installed = ctx.plugin(provider)
     await flush()
@@ -59,6 +60,9 @@ test('early hook isolates new consumers before a delayed original service become
     await installed
     await ctx.loader.await()
     const facade = ctx.hapiSourceSessions
+    const hhpiSessions = ctx.hhpiSessions
+    await hhpiSessions.refresh()
+    assert.deepEqual(hhpiSessions.capabilities.getSnapshot(), { catalogReady: true, legacyHapi: false })
     assert.notEqual(facade, original)
     assert.deepEqual(started, names.map(name => ({ name, owner: facade })))
     assert.deepEqual(stopped, [])
@@ -82,6 +86,7 @@ test('disposing while the original service is absent removes the hook and restor
     await installed.dispose()
     assert.ok(entries.every(entry => entry.options.isolate?.sessions === undefined))
     assert.equal(ctx.get('hapiSourceSessions'), undefined)
+    assert.equal(ctx.get('hhpiSessions'), undefined)
     const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} } }
     ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
     await ctx.loader.await()

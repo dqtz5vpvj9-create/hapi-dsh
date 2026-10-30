@@ -1,0 +1,30 @@
+name: Install pinned HHPI reading extensions
+description: Build or restore the complete source extension set before checking or packaging HHPI.
+runs:
+  using: composite
+  steps:
+    - name: Restore exact source build
+      id: source
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: .tmp/hhpi-ci
+        key: hhpi-reading-linux-x64-node24-v1-${{ hashFiles('scripts/dsh-ext/**', 'source-snapshots/dsh-ext/**') }}
+    - name: Build pinned extension packages
+      if: steps.source.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p .tmp/hhpi-ci
+        node scripts/dsh-ext/prepare.mjs "${PWD}/.tmp/hhpi-ci/source" > .tmp/hhpi-ci/source.json
+        SOURCE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".tmp/hhpi-ci/source.json")).directory)')
+        node scripts/dsh-ext/build-extension.mjs "$SOURCE" "${PWD}/.tmp/hhpi-ci/packages"
+    - name: Save exact source build
+      if: steps.source.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: .tmp/hhpi-ci
+        key: ${{ steps.source.outputs.cache-primary-key }}
+    - name: Install the complete extension set
+      shell: bash
+      run: |
+        node -e 'const fs=require("fs");const x=JSON.parse(fs.readFileSync(".tmp/hhpi-ci/source.json"));fs.appendFileSync(process.env.GITHUB_ENV,`HHPI_DSH_SOURCE=${x.directory}\n`)'
+        node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-ci/packages

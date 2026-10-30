@@ -12,7 +12,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,6 +25,7 @@ jobs:
         run: npm install --global pnpm@11.28.5
       - name: Install exact dependencies
         run: npm ci
+      - uses: ./.github/actions/install-hhpi-extension
       - name: Types, behavior contracts, component tests, regression fault checks, and build
         run: npm run check
       - name: Unmodified official DSH federation integration
@@ -33,7 +34,7 @@ jobs:
         run: node --import tsx --test --test-isolation=none tests/federation-official.test.ts
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -43,6 +44,7 @@ jobs:
           node-version: 24.19.0
           package-manager-cache: false
       - run: npm ci
+      - uses: ./.github/actions/install-hhpi-extension
       - run: npm run build
       - name: Check and pack distribution
         run: node scripts/distribution-pack.mjs

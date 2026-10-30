@@ -22,6 +22,8 @@
 
 `test:micro` 指向快速套件。`test:release` 保留完整 `check`；`check` 包含故障检出验证。`deploy` 执行全量测试、故障检出、既有发布保护及真实历史阅读检查，不使用选测替代发布检查。
 
+HHPI-only 站点用 `npm run test:smoke:history -- --session-id 'hhpi:<machine>:<source>:<engine>:<native>'`。它通过真实 `hhpi/catalog/read/changes` 检查六次更早正文实际进入可见区域、返回最新后的缓存阅读和页面错误。窗格几何与写入在探针上下文隔离，原生发送、取消、审批及创建全部禁止。旧 HAPI 站点继续使用原来的标题选择入口。模块图契约 `tests/client-artifact-module-graph.contract.test.ts` 直接检查已安装扩展的客户端产物及官方模块声明，拦截缺失依赖导致的首屏初始化失败。
+
 为 `test:fast`、`test:changed` 或 `npm test` 追加 `-- --report /mnt/cache/data-cache/hapi-dsh-tests.json` 可保存选择原因、文件清单、阶段耗时与退出状态。默认每阶段上限：快速/选测 120 秒，全量 300 秒；超时退出 124、停止该子进程组、不自动重试。`--timeout 30` 可主动收紧预算。列清单、无改动和仅文档改动都明确标为未执行，不能当作测试通过。
 
 ## 覆盖用户实际行为
