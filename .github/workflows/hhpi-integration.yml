@@ -5,10 +5,8 @@ on:
     branches: [feat/hhpi-remote-access-20261029]
     paths: ['src/**', 'tests/**', 'scripts/**', 'source-snapshots/**', 'package*.json', 'tsconfig*.json', '.github/workflows/hhpi-integration.yml']
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   installed:
     runs-on: ubuntu-24.04
@@ -36,6 +34,10 @@ jobs:
         id: install
         timeout-minutes: 4
         run: node scripts/dsh-ext/install-extension.mjs "${RUNNER_TEMP}/hhpi-packages"
+      - name: Exact official reading and input occurrences
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 2
+        run: node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts
       - name: Full Host Client and component typecheck
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 2
