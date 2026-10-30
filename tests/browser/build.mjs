@@ -21,7 +21,6 @@ export async function buildLab() {
   for (const name of EXTENSION_NAMES) {
     const metadata = require(`${name}/package.json`)
     if (metadata.version !== identity.upstreamVersion || metadata.hhpiSourceExtension?.upstreamCommit !== identity.upstreamCommit || metadata.hhpiSourceExtension?.patchSetSha256 !== identity.patchSetSha256) throw new Error(`Unverified installed extension: ${name}`)
-    // Slots is a static browser library. Only declared client exports are factories.
     const entry = metadata.exports?.['./client'] ? `${name}/client` : name
     const path = require.resolve(entry)
     artifacts.push({ name, entry, sha256: createHash('sha256').update(await readFile(path)).digest('hex') })
@@ -51,7 +50,9 @@ export async function buildLab() {
     loader: { '.css': 'css', '.module.css': 'local-css', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
     plugins: [{ name: 'official-lab-boundaries', setup(builder) {
       builder.onResolve({ filter: /^hhpi-platform$/ }, () => ({ path: 'platform', namespace: 'lab' }))
-      builder.onResolve({ filter: /^hhpi-window-commit$/ }, () => ({ path: join(source, 'packages/api/session-controller/src/client/sessions/window-commit.ts') }))
+      // The coordinator is public in the source-built controller. Use those
+      // exact installed bytes, including its official build-time capability flags.
+      builder.onResolve({ filter: /^hhpi-window-commit$/ }, () => ({ path: '@deepseek-ai/dsh-api-session-controller/client', namespace: 'installed-client' }))
       builder.onResolve({ filter: /^@deepseek-ai\/dsh-.*\/client$/ }, args => ({ path: args.path, namespace: 'installed-client' }))
       builder.onLoad({ filter: /.*/, namespace: 'installed-client' }, args => ({ contents: `module.exports = globalThis.__HHPI_REQUIRE__(${JSON.stringify(args.path)});`, loader: 'js' }))
       builder.onLoad({ filter: /.*/, namespace: 'lab' }, () => ({ contents: platformSource, loader: 'ts', resolveDir: root }))
