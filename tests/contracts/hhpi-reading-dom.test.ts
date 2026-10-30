@@ -1,4 +1,4 @@
-/** Actual official renderer + SessionProvider + ConversationSession + Chat components.
+/** Actual official Renderer, SessionProvider, Conversation content, input and Chat.
  * Geometry is deterministic jsdom input, not browser layout acceptance evidence. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -17,6 +17,10 @@ test('real mounted official Chat controls page only their own canonical-session 
     const before = Object.getOwnPropertyDescriptor(target, key)
     Object.defineProperty(target, key, { configurable: true, ...descriptor })
     restored.push(() => { if (before) Object.defineProperty(target, key, before); else Reflect.deleteProperty(target, key) })
+  }
+  for (const name of ['Document', 'DocumentFragment', 'Text', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLDivElement', 'HTMLButtonElement', 'HTMLAnchorElement', 'HTMLIFrameElement', 'HTMLImageElement', 'KeyboardEvent', 'InputEvent', 'Event', 'CustomEvent', 'DOMParser', 'DOMRectReadOnly', 'Selection']) {
+    const value = Reflect.get(f.dom.window, name)
+    if (value !== undefined) property(globalThis, name, { value })
   }
   property(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { value: true })
   property(globalThis, 'requestAnimationFrame', { value: f.dom.window.requestAnimationFrame.bind(f.dom.window) })
@@ -57,15 +61,18 @@ test('real mounted official Chat controls page only their own canonical-session 
   } })
   const a = await f.open('dom-a'), b = await f.open('dom-b')
   await f.ctx.plugin({ name: 'reading-contract-root', inject: ['slots'], apply(ctx: Context) {
-    // The real Conversation registrations are activated by the application's
-    // public main slot. Declaring a leaf alone does not install that subtree.
-    ctx.slots.register({ name: 'root', children: {
-      main: { kind: 'keyed', scope: 'root' },
-      'conversation.session': { kind: 'single', scope: 'session' },
-    } }, (props: PropsRuntime<'root'>) => createElement('main', null,
-      ...[a, b].map((pane, index) => createElement('section', { key: index, 'data-test-pane': index === 0 ? 'a' : 'b', 'data-conversation-scroll': '' },
-        createElement(props.SessionProvider, { session: pane.reference },
-          props.renderSlot('conversation.session', { view: 'chat' }))))))
+    const workspaces = { items: [], phase: 'ready' }, panelInfo = { activePanelId: null }
+    ctx.slots.provideRoot({ hooks: {
+      workspaces: { getSnapshot: () => workspaces, subscribe: () => () => {} },
+      panelInfo: { getSnapshot: () => panelInfo, subscribe: () => () => {} },
+    } })
+    // The main declaration activates the official subtree. Its factory owns
+    // conversation.session and every composer child; do not redeclare them.
+    ctx.slots.register({ name: 'root', children: { main: { kind: 'keyed', scope: 'root' } } },
+      (props: PropsRuntime<'root'>) => createElement('main', null,
+        ...[a, b].map((pane, index) => createElement('section', { key: index, 'data-test-pane': index === 0 ? 'a' : 'b' },
+          createElement(props.SessionProvider, { session: pane.reference },
+            props.renderFactorySlot('conversation.content', { phase: 'ready', hero: false, variant: 'embedded' }))))))
   } })
   let unmount: (() => void) | undefined
   try {
@@ -76,6 +83,7 @@ test('real mounted official Chat controls page only their own canonical-session 
       const pane = f.dom.window.document.querySelector(`[data-test-pane="${id}"]`)!
       assert.ok(pane.querySelector('[data-chat-flow]'), 'the actual Chat flow must be mounted')
       assert.ok(pane.textContent?.includes('body-'), 'real user-message content must render')
+      assert.ok(pane.querySelector('[contenteditable="true"]'), 'the actual occurrence input must be mounted')
     }
     const initialA = a.reading.snapshot.getSnapshot().before
     const initialB = b.reading.snapshot.getSnapshot().before
