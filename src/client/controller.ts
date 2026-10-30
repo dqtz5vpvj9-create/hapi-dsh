@@ -1,4 +1,5 @@
 import { NoticeGate } from './error-policy.ts'
+import { migrateCutoverDraft } from './draft-cutover.ts'
 import { sameSourceGeneration } from './surface/generation-handoff.ts'
 import { randomId } from './random-id.ts'
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
@@ -215,7 +216,8 @@ export interface SessionLocation {
 
 /** Unknown upstream/custom projections must never be treated as trusted UI records. */
 export function sessionLocation(summary: Pick<SessionSummary, 'projectionValues'> | undefined): SessionLocation {
-    const projection: unknown = summary?.projectionValues && (Reflect.get(summary.projectionValues, 'hapi') ?? Reflect.get(summary.projectionValues, 'hapiObserved'))
+    const projection: unknown = summary?.projectionValues && (Reflect.get(summary.projectionValues, 'hhpiSource')
+        ?? Reflect.get(summary.projectionValues, 'hapi') ?? Reflect.get(summary.projectionValues, 'hapiObserved'))
     const hostId: unknown = summary && Reflect.get(summary, 'hostId')
     const hostLabel: unknown = summary && Reflect.get(summary, 'hostLabel')
     const fallback: SessionLocation = {
@@ -1121,6 +1123,9 @@ export class WorkspaceController {
                     if (!catalog.byId[sessionId as SessionId]) {
                         this.markPaneUnavailable(paneId, hostId, sessionId, resource)
                         continue
+                    }
+                    if (resource.kind === 'chat' && resource.draftOrigin && this.options.storage) {
+                        migrateCutoverDraft(this.options.storage, resource.draftOrigin, sessionId, paneId, hostId)
                     }
                     const reference = host.sessions.retain(sessionId as SessionId, { source: 'hapiWorkspace' })
                     const lease: PaneLease = { hostId, sessionId, reference, resource, status: 'opening' }

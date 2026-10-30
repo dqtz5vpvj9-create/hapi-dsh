@@ -4,7 +4,7 @@ import { isSourceSessionId } from '../remote/protocol.ts'
 /** HAPI's workspace composition, loaded by DSH's unchanged official plugin runtime. */
 import { taggedRemote } from '../client-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
-import { createElement } from 'react'
+import { createElement, useSyncExternalStore } from 'react'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
@@ -56,6 +56,8 @@ import { installSourceUsage } from './source-usage.tsx'
 import { installComposerPicker } from './composer-picker/index.tsx'
 import { installTurnSharing } from './turn-share.tsx'
 import { installSourceNotifications } from './source-notifications/index.tsx'
+import { installWithLegacyHapiCapability } from './source-notifications/capability.ts'
+import type {} from './remote-sessions.ts'
 import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { createWorkspaceNotifications } from '../workspace/notifications.ts'
 import { installShareInbox } from './share-inbox.tsx'
@@ -82,7 +84,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'hapi-dsh-client'
-export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
+export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
 
 /** Mount the namespace first, then consume it in an explicit Cordis inject scope. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
@@ -99,7 +101,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         const unmount = await ctx.remote.$mount(HAPI_REMOTE)
         let child: ReturnType<Context['inject']> | undefined
         try {
-            child = ctx.inject(['remote.hapi', 'sessions'], installPaneNative)
+            child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installPaneNative)
             await child
             return async () => { await child?.dispose(); await unmount?.() }
         } catch (error) {
@@ -111,7 +113,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     let child: ReturnType<Context['inject']> | undefined
     try {
         unmount = await ctx.remote.$mount(HAPI_REMOTE)
-        child = ctx.inject(['remote.hapi', 'sessions'], installWorkspace)
+        child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installWorkspace)
         await child
         return async () => { await child?.dispose(); await unmount?.() }
     } catch (error) {
@@ -143,6 +145,8 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     let stage = 'consume native API'
     try {
     const api = taggedRemote(ctx.remote.hapi)
+    const sourceCapability = ctx.hhpiSessions.capabilities
+    let administration: ReturnType<typeof installSourceAdmin> | undefined
     attachSourceSessions(ctx, api)
     const ledger = new NativeActionLedger()
     const controls = new NativeControlLedger(api)
@@ -222,10 +226,18 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
             return sourceControl(sessionId, pane)?.returnToLive?.(signal) ?? false
         },
     }))
-    disposers.push(installHapiTabs(ctx, api))
-    const administration = installSourceAdmin(ctx, api)
-    disposers.push(administration)
-    disposers.push(installSourceCompanion(ctx, api))
+    disposers.push(installWithLegacyHapiCapability(sourceCapability, () => {
+        const installed: Array<() => void> = []
+        installed.push(installHapiTabs(ctx, api))
+        administration = installSourceAdmin(ctx, api)
+        installed.push(administration)
+        installed.push(installSourceCompanion(ctx, api))
+        installed.push(installNativeRewindAction(ctx, api, () => { void controller.refresh() }))
+        return () => {
+            for (const dispose of installed.reverse()) dispose()
+            administration = undefined
+        }
+    }))
     disposers.push(installSourceAppearance(ctx))
     disposers.push(installWorkspaceLinkSettings(ctx))
     disposers.push(installSourcePathActions(ctx, api))
@@ -257,7 +269,12 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
         if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error(tr('Wait for the incoming share to finish preparing.', '请等待正在接收的分享完成准备。'))
         await ui.updates.checkpoint()
     }
-    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation' | 'runnerSkew'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture, runnerSkew: createElement(administration.RunnerSkew) })
+    const RunnerSkew = () => {
+        const capability = useSyncExternalStore(sourceCapability.subscribe, sourceCapability.getSnapshot)
+        return capability.catalogReady && capability.legacyHapi && administration
+            ? createElement(administration.RunnerSkew) : null
+    }
+    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation' | 'runnerSkew'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture, runnerSkew: createElement(RunnerSkew) })
     const Sidebar = (props: Omit<SessionSidebarProps, 'controller' | 'controls' | 'api'>) => createElement(SessionSidebar, { ...props, controller, controls, api })
     stage = 'register workspace slots'
     // Shadow one existing main cell while preserving official shell, plugin
@@ -305,16 +322,18 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installDraftHandoff(ctx, controller))
     const notifications = createWorkspaceNotifications(controller)
     disposers.push(() => { notifications.dispose() })
-    disposers.push(installSourceReadSync(controller, api, notifications.readStatus))
-    disposers.push(installSourceNotifications(ctx, api, { ...notifications, prepareUpdate: async () => {
-        const ui = ctx.get('hapiWorkspaceUi')
-        if (!ui) throw new Error('The workspace editors are not ready.')
-        if (ui.voice.getSnapshot()) throw new Error('Finish the active voice call before updating the workspace.')
-        if (controller.getSnapshot().creation) throw new Error('Finish or close the new-session form before updating the workspace.')
-        if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error('Wait for the incoming share to finish preparing.')
-        await ui.updates.checkpoint()
-    } }))
-    disposers.push(installNativeRewindAction(ctx, api, () => { void controller.refresh() }))
+    disposers.push(installWithLegacyHapiCapability(sourceCapability, () => {
+        const installed: Array<() => void> = [installSourceReadSync(controller, api, notifications.readStatus)]
+        installed.push(installSourceNotifications(ctx, api, { ...notifications, prepareUpdate: async () => {
+            const ui = ctx.get('hapiWorkspaceUi')
+            if (!ui) throw new Error('The workspace editors are not ready.')
+            if (ui.voice.getSnapshot()) throw new Error('Finish the active voice call before updating the workspace.')
+            if (controller.getSnapshot().creation) throw new Error('Finish or close the new-session form before updating the workspace.')
+            if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error('Wait for the incoming share to finish preparing.')
+            await ui.updates.checkpoint()
+        } }))
+        return () => { for (const dispose of installed.reverse()) dispose() }
+    }))
     let disposed = false
     return async () => {
         if (disposed) return

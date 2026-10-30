@@ -1,6 +1,7 @@
 /** Native Codex app-server JSON-RPC. Transport reconnect never retries a write. */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { lstat } from 'node:fs/promises';
 import WebSocket from 'ws';
 import { SourceError, waitFor } from './errors.ts';
 import type { DirectCodexConfig } from './protocol.ts';
@@ -75,7 +76,15 @@ export class CodexRpc {
     private async open(): Promise<Connection> {
         const generation = ++this.generation;
         if (this.config.endpoint) {
-            const socket = new WebSocket(this.config.endpoint, { maxPayload: MAX_FRAME, followRedirects: false, handshakeTimeout: this.timeoutMs });
+            const unix = this.config.endpoint.startsWith('unix://');
+            if (unix) {
+                const path = this.config.endpoint.slice(7), stat = await lstat(path);
+                if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+                    throw new SourceError('TARGET_UNAVAILABLE', 'The native Unix endpoint must be a private socket owned by this account.');
+                }
+            }
+            const url = unix ? `ws+unix://${this.config.endpoint.slice(7)}:/` : this.config.endpoint;
+            const socket = new WebSocket(url, { ...(unix ? { headers: { Host: 'localhost' } } : {}), maxPayload: MAX_FRAME, followRedirects: false, handshakeTimeout: this.timeoutMs });
             const connection: Connection = { generation, socket, closed: false, stopped: new Promise<void>(resolve => { socket.once('close', () => { resolve(); }); }),
                 send: line => new Promise((resolve, reject) => {
                     if (connection.closed || socket.readyState !== WebSocket.OPEN) { reject(new SourceError('TARGET_UNAVAILABLE', 'The native socket is closed.')); return; }

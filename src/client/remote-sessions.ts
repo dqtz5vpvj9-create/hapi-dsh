@@ -7,16 +7,23 @@ import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/t
 import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
+import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
+declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession } }
 class Value<T> {
   private readonly listeners = new Set<() => void>()
   constructor(private value: T) {}
   readonly getSnapshot = (): T => this.value
   readonly subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   set(value: T): void { this.value = value; for (const listener of this.listeners) listener() }
+}
+export interface HhpiCatalogCapability { catalogReady: boolean; legacyHapi: boolean }
+export interface HhpiCatalogCapabilityStore {
+  getSnapshot(): HhpiCatalogCapability
+  subscribe(listener: () => void): () => void
 }
 function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error; return value.value }
 function sourceError(message: string, indeterminate = false): RemoteError<'hhpi/source'> {
@@ -172,14 +179,24 @@ export class RemoteSessions implements ISessions {
   private readonly lifetime = new AbortController()
   private refreshRead: Promise<void> | undefined
   private timer: ReturnType<typeof setInterval> | undefined
+  private catalogChecked = false
+  private catalogReceived = false
+  readonly capabilities: HhpiCatalogCapabilityStore
+  private readonly capabilityState: Value<HhpiCatalogCapability>
   legacyHapi = false
 
   constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi) {
     if (original.historySource) this.historySource = original.historySource
     if (original.windowCommit) this.windowCommit = original.windowCommit
-    this.list = new Value(original.list.getSnapshot())
+    this.capabilityState = new Value({ catalogReady: false, legacyHapi: false })
+    this.capabilities = this.capabilityState
+    this.list = new Value(this.listSnapshot(original.list.getSnapshot()))
     this.stopOriginal = original.list.subscribe(() => { this.publish() })
-    void this.refreshSources().catch(() => {})
+    void this.refreshSources().catch(() => {
+      // A failed HHPI request must not keep ordinary DSH sessions in `pending`.
+      // The next interval retry will publish advertised source rows on success.
+      if (!this.catalogChecked) { this.catalogChecked = true; this.publish() }
+    })
     this.timer = setInterval(() => { void this.refreshSources().catch(() => {}) }, 5000)
   }
   get searchResultLimit(): number { return this.original.searchResultLimit }
@@ -203,7 +220,9 @@ export class RemoteSessions implements ISessions {
     const work = (async () => {
       const catalog = result(await this.api.catalog(this.lifetime.signal))
       this.lifetime.signal.throwIfAborted()
+      this.catalogReceived = true
       this.legacyHapi = catalog.legacyHapi
+      this.catalogChecked = true
       const active = new Set(catalog.sessions.map(session => session.id))
       for (const [id, old] of this.metadata) if (!active.has(id)) {
         const offline: SourceSession = { ...old, status: 'offline' }
@@ -211,6 +230,7 @@ export class RemoteSessions implements ISessions {
       }
       for (const session of catalog.sessions) { this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session) }
       this.publish()
+      this.capabilityState.set({ catalogReady: true, legacyHapi: catalog.legacyHapi })
     })().finally(() => { if (this.refreshRead === work) this.refreshRead = undefined })
     this.refreshRead = work
     return work
@@ -222,9 +242,19 @@ export class RemoteSessions implements ISessions {
       const id = session.id as SessionId
       ids.push(id)
       byId[id] = { id, title: session.title, displayTitle: session.title, cwd: session.cwd, running: session.status === 'running' || session.status === 'waiting',
-        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt }
+        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt, projectionValues: { hhpiSource: session } }
     }
-    this.list.set({ ...base, ids, byId })
+    this.list.set(this.listSnapshot({ ...base, ids, byId }))
+  }
+  private listSnapshot(base: SessionListState): SessionListState {
+    const pending = !this.catalogChecked && base.phase === 'ready'
+    if (!this.catalogChecked || !this.catalogReceived || this.legacyHapi) return pending ? { ...base, phase: 'pending' } : base
+    const hidden = new Set([...base.ids, ...Object.keys(base.byId)].filter(isSourceDisplayId) as SessionId[])
+    if (hidden.size === 0) return base
+    const byId = { ...base.byId }
+    const projectionsBySession = { ...base.projectionsBySession }
+    for (const id of hidden) { delete byId[id]; delete projectionsBySession[id] }
+    return { ...base, ids: base.ids.filter(id => !hidden.has(id)), byId, projectionsBySession }
   }
   retain(target: SessionTarget, options: SessionRetainOptions): SessionReference {
     if (typeof target !== 'string' || !isSourceSessionId(target)) return this.original.retain(target, options)

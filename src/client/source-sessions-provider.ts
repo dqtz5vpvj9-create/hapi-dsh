@@ -97,6 +97,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       const remote = new RemoteSessions(owner, owner.sessions, owner.remote.hhpi)
       const facade = new SourceSessions(remote)
       let provider: Fiber | undefined
+      let unprovideRemote: (() => void) | undefined
       try {
         const scope = await sourceSessionsContext(owner)
         provider = scope.plugin({ name: 'hapi-source-sessions-provider', apply(providerContext: Context) {
@@ -108,8 +109,10 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         } })
         await provider
         owner.reflect.provide('hapiSourceSessions', facade)
+        unprovideRemote = owner.reflect.provide('hhpiSessions', remote)
         diagnosticMark('hapi-dsh:provider:ready')
       } catch (error) {
+        unprovideRemote?.()
         await provider?.dispose()
         facade.dispose()
         remote.dispose()
@@ -117,6 +120,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         throw error
       }
       return async () => {
+        unprovideRemote?.()
         await provider?.dispose()
         facade.dispose()
         remote.dispose()

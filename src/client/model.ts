@@ -13,8 +13,10 @@ export type { DocumentRef } from '../workspace/documents.ts'
 export type SplitAxis = 'horizontal' | 'vertical'
 /** Preserve the original HAPI identity across display generations and migration. */
 export type SourceReference = { sourceSessionId?: string; sourceHubId?: string }
+/** Previous display identity is used only to recover browser drafts after a cutover. */
+export interface DraftOrigin { sessionId: string; sourceSessionId?: string; sourceHubId?: string }
 export type PaneResource = { kind: 'empty' }
-    | ({ kind: 'chat'; sessionId: string } & SourceReference)
+    | ({ kind: 'chat'; sessionId: string; draftOrigin?: DraftOrigin } & SourceReference)
     | ({ kind: 'terminal'; sessionId: string; terminalId: string; target?: DshPaneTarget; title?: string } & SourceReference)
     | ({ kind: 'document'; sessionId: string; document: DocumentRef; target?: DshPaneTarget; title?: string } & SourceReference)
     | ({ kind: 'view'; sessionId: string; viewId: string; target: DshPaneTarget; title?: string } & SourceReference)
@@ -158,7 +160,19 @@ export function parsePaneResource(value: unknown): PaneResource {
         }
     }
     const base = { sessionId: value.sessionId, ...source }
-    if (value.kind === 'chat') return { kind: 'chat', ...base }
+    if (value.kind === 'chat') {
+        let draftOrigin: DraftOrigin | undefined
+        if (value.draftOrigin !== undefined) {
+            const origin = value.draftOrigin
+            if (!record(origin) || !validId(origin.sessionId)
+                || origin.sourceSessionId !== undefined && !validId(origin.sourceSessionId)
+                || origin.sourceHubId !== undefined && !validId(origin.sourceHubId)) throw new Error('Invalid draft origin')
+            draftOrigin = { sessionId: origin.sessionId,
+                ...(origin.sourceSessionId === undefined ? {} : { sourceSessionId: origin.sourceSessionId }),
+                ...(origin.sourceHubId === undefined ? {} : { sourceHubId: origin.sourceHubId }) }
+        }
+        return { kind: 'chat', ...base, ...(draftOrigin ? { draftOrigin } : {}) }
+    }
     if (value.kind === 'terminal' && validId(value.terminalId)) {
         if (value.title !== undefined && (typeof value.title !== 'string' || value.title.length > 2048)) throw new Error('Invalid terminal view title')
         return { kind: 'terminal', ...base, terminalId: value.terminalId,

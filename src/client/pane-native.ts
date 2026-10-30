@@ -18,6 +18,8 @@ import { installRemoteSourceControls } from './remote-controls.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
 import { installPaneMountedChatConsumer, type MountedChatPane } from './mounted-chat-control.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { installWithLegacyHapiCapability } from './source-notifications/capability.ts'
+import type {} from './remote-sessions.ts'
 
 /** Marker attribute `installWorkspaceStyles` writes on its style element. */
 const STYLE_MARKER = 'style[data-hapi-workspace-styles]'
@@ -83,9 +85,11 @@ function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): 
         disposers.push(() => integration.dispose())
         const unprovide = ctx.reflect.provide('hapiPaneNative', integration)
         disposers.push(() => unprovide())
-        disposers.push(installHapiTabs(ctx, api))
+        disposers.push(installWithLegacyHapiCapability(ctx.hhpiSessions.capabilities, () => {
+            const installed = [installHapiTabs(ctx, api), installSourceAdmin(ctx, api)]
+            return () => { for (const dispose of installed.reverse()) dispose() }
+        }))
         disposers.push(installRemoteSourceControls(ctx))
-        disposers.push(installSourceAdmin(ctx, api))
     } catch (error) {
         void disposeAll(disposers).catch(() => { /* Preserve the installation error. */ })
         throw error

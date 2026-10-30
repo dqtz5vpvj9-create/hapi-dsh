@@ -21,7 +21,9 @@ export function parseSources(value: unknown): DirectCodexConfig[] {
             const url = new URL(source.endpoint);
             // Loopback native app-server only. Remote machine access is the
             // authenticated federation path, not an unauthenticated public WS.
-            if (url.protocol !== 'ws:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname) || url.username || url.password || url.search || url.hash) throw new Error('Codex endpoint must be a credential-free loopback WebSocket URL');
+            const localSocket = url.protocol === 'unix:' && !url.hostname && isAbsolute(source.endpoint.slice(7));
+            const loopback = url.protocol === 'ws:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
+            if ((!localSocket && !loopback) || url.username || url.password || url.search || url.hash) throw new Error('Codex endpoint must be a private Unix socket or credential-free loopback WebSocket URL');
             if (source.command || source.args || source.codexHome) throw new Error('A source uses either an existing endpoint or a local app-server command');
         }
     }
