@@ -75,7 +75,7 @@ export async function applyReadingOccurrences(root) {
   readonly readingOccurrences?: 1
 `));
   await edit(root, 'packages/api/session-controller/src/client/sessions/window-commit.ts', text => replace(text,
-    'completeWindowHistory: 1 as const,', 'completeWindowHistory: 1 as const,\n    readingOccurrences: 1 as const,'));
+    'completeWindowHistory: 1 as const,', "completeWindowHistory: 1 as const,\n    ...Reflect.get(globalThis, '__DSH_CLIENT_READING_OCCURRENCES') === 'off' ? {} : { readingOccurrences: 1 as const },"));
 
   await edit(root, 'packages/client/ui-slots/src/renderer.ts', text => member(text, 'StandardSourceBinding', `
   /** Optional domain identity supplied to inject callbacks; defaults to the store scope key. */

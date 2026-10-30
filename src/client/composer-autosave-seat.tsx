@@ -15,10 +15,10 @@ export function installComposerAutosave(ctx: Context): () => void {
         const phase = props.useInput(value => value.phase)
         // Wait for native identity; never store a temporary display as another source.
         const key = !source && /^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId) ? null
-            : composerDraftKey(pane?.hostId ?? 'local', props.sessionId, observed?.sidechain ? undefined : source ?? undefined)
+            : composerDraftKey(pane?.hostId ?? 'local', props.sessionBinding?.viewId === undefined ? props.sessionId : JSON.stringify([props.sessionId, pane?.paneId ?? props.sessionBinding.viewId]), observed?.sidechain ? undefined : source ?? undefined)
         useLayoutEffect(() => {
             if (!key) return
-            const binding = ctx.sessions.binding(props.sessionId)
+            const binding = props.sessionBinding ?? ctx.sessions.binding(props.sessionId)
             if (!binding) return
             const composer = ctx.conversation.input.for(binding.ctx)
             const report = (error: unknown) => composer.notify('error', ctx.locale.getSnapshot().active.startsWith('zh')
@@ -30,13 +30,13 @@ export function installComposerAutosave(ctx: Context): () => void {
                 setRecoveries(readComposerRecoveries(window.localStorage, key))
                 return stop
             } catch (error) { report(error) }
-        }, [key, props.sessionId, props.inputActions])
+        }, [key, props.sessionId, props.sessionBinding, props.inputActions])
         if (!recoveries.length || !key) return null
         const zh = ctx.locale.getSnapshot().active.startsWith('zh')
         return <details className="hapi-draft-recovery"><summary>{zh ? '恢复另一份未发送草稿' : 'Recover another unsent draft'}</summary>
             {recoveries.map((draft, index) => <div key={index}><pre style={{ whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto' }}>{draft.text}</pre>
                 <button type="button" disabled={phase === 'submitting' || phase === 'adjudicating'} onClick={() => {
-                    const binding = ctx.sessions.binding(props.sessionId)
+                    const binding = props.sessionBinding ?? ctx.sessions.binding(props.sessionId)
                     if (!binding) return
                     const composer = ctx.conversation.input.for(binding.ctx)
                     try {

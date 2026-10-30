@@ -25,6 +25,7 @@ import { installSourceWindowNavigation } from './source-window-navigation.tsx'
 import { bindPaneReading } from '../reading-view.ts'
 import { bindRemotePaneReading } from '../remote-reading.ts'
 import { isSourceSessionId } from '../../remote/protocol.ts'
+import type { RemotePaneSession } from '../remote-pane.ts'
 import type { SourcePreparationReference, SourceViewportSession, SourceWindowViewport } from '../source-sessions.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -466,11 +467,16 @@ export async function prepareInitialViewport(
             if (snapshot.loadingOlder) continue
             if (!snapshot.hasMore || chatContentFillsViewport(port)) return true
             if (pages++ >= 12) return false
-            const before = reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
-            const session = reference.binding.session as SessionReference['binding']['session'] & Partial<SourceViewportSession>
-            if (!await wait(session.loadViewportPage ? session.loadViewportPage(pagePlan.next(port)) : session.loadOlder())) return false
+            const session = reference.binding.session as SessionReference['binding']['session'] & Partial<SourceViewportSession & RemotePaneSession>
+            const direct = isSourceSessionId(reference.sessionId)
+            const before = direct ? session.readingView?.snapshot.getSnapshot().before : reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
+            if (direct) {
+                const control = resolveMountedChatForPane(target)
+                if (!control) return false
+                if (!await wait(control.loadOlder(stopped))) return false
+            } else if (!await wait(session.loadViewportPage ? session.loadViewportPage(pagePlan.next(port)) : session.loadOlder())) return false
             if (!await nextActiveFrame()) return false
-            const after = reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
+            const after = direct ? session.readingView?.snapshot.getSnapshot().before : reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
             // A page can contain only folded steps and add no visible height.
             // Continue while its leading event advances, within the same bounded
             // page/visible-time budget. A live append is not older-history progress.
@@ -641,6 +647,7 @@ export function installSessionViewHost(ctx: Context): {
     dispose(): void
 } {
     const entries = new Map<string, Entry>()
+    const readingReferences = new Map<string, SessionReference>()
     const initialHistory = new Map<string, () => void>()
     const preparers = new Map<string, () => void>()
     const preparations = new Map<number, WindowPreparationCoordinator>()
@@ -727,13 +734,24 @@ export function installSessionViewHost(ctx: Context): {
             if (disposed) throw new Error('The Host session-view surface is disposed')
             const identity = options.instanceId ?? options.paneId
             if (entries.has(identity)) throw new Error(`Pane ${options.paneId} already has a session view on this Host`)
+            if (isSourceSessionId(options.reference.sessionId)) {
+                const reference = ctx.sessions.openReadingView?.(options.reference, identity)
+                if (!reference) throw new Error('This Host has no independent official source reader.')
+                try {
+                    const reading = ctx.uiConversation.binding(reference.binding).readingView
+                    if (!reading) throw new Error('The official Conversation did not install the Pane reading window.')
+                    ;(reference.binding.session as RemotePaneSession).attach(reading)
+                } catch (error) { reference.release(); throw error }
+                readingReferences.set(identity, reference)
+                options = { ...options, reference }
+            }
             let entry: Entry = { ...options, key: ++sequence, lifetime: { mounted: false }, phase: 'loading',
                 onRenderError: error => fail(error) }
             const preparation = new WindowPreparationCoordinator(options.navigation.state)
             preparations.set(entry.key, preparation)
             entries.set(identity, entry); publish()
             const stopReading = isSourceSessionId(options.reference.sessionId)
-                ? bindRemotePaneReading(options.target, options.reference, options.navigation)
+                ? bindRemotePaneReading(ctx, options.target, options.reference, options.navigation)
                 : bindPaneReading(ctx, options.target, options.reference, options.navigation)
             let readingStopped = false
             const uninitialHistory = (): void => { if (!readingStopped) { readingStopped = true; stopReading() } }
@@ -825,7 +843,10 @@ export function installSessionViewHost(ctx: Context): {
                     uninitialHistory()
                     initialHistory.delete(identity)
                     const unmounted = entry.lifetime.mounted ? new Promise<void>(resolve => { entry.lifetime.removed = resolve }) : Promise.resolve()
-                    removed = Promise.all([unmounted, preparation.dispose()]).then(() => {})
+                    removed = Promise.all([unmounted, preparation.dispose()]).then(() => {
+                        readingReferences.get(identity)?.release()
+                        readingReferences.delete(identity)
+                    })
                     preparations.delete(entry.key)
                     if (entries.get(identity)?.key === entry.key) { entries.delete(identity); publish() }
                     return removed
@@ -843,6 +864,8 @@ export function installSessionViewHost(ctx: Context): {
             preparers.clear()
             for (const dispose of initialHistory.values()) dispose()
             initialHistory.clear(); entries.clear(); publish()
+            for (const reference of readingReferences.values()) reference.release()
+            readingReferences.clear()
             for (const dispose of disposers.reverse()) dispose()
             listeners.clear()
         },

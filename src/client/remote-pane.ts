@@ -100,16 +100,16 @@ export class RemotePaneSession implements SessionFace {
     this.assertLive(); return this.owner.cancel(...args)
   }
   async readAttachment(...args: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
-    this.assertLive(); return this.owner.readAttachment(...args)
+    this.assertLive(); return (this.owner as SessionFace).readAttachment(...args)
   }
   async updateQueue(...args: Parameters<SessionFace['updateQueue']>): ReturnType<SessionFace['updateQueue']> {
-    this.assertLive(); return this.owner.updateQueue(...args)
+    this.assertLive(); return (this.owner as SessionFace).updateQueue(...args)
   }
   async rename(...args: Parameters<SessionFace['rename']>): ReturnType<SessionFace['rename']> {
-    this.assertLive(); return this.owner.rename(...args)
+    this.assertLive(); return (this.owner as SessionFace).rename(...args)
   }
   async command(...args: Parameters<SessionFace['command']>): ReturnType<SessionFace['command']> {
-    this.assertLive(); return this.owner.command(...args)
+    this.assertLive(); return (this.owner as SessionFace).command(...args)
   }
   operate(...args: Parameters<RemoteSourceSession['operate']>): ReturnType<RemoteSourceSession['operate']> {
     this.assertLive(); return this.owner.operate(...args)
@@ -164,6 +164,7 @@ export class RemotePaneViews {
       get binding() { if (released) throw new Error('The reading occurrence was released.'); return binding },
       release, [Symbol.dispose]: release }
   }
+  isPaneContext(ctx: Context): boolean { return (ctx as Context & { [paneScope]?: PaneTag })[paneScope] !== undefined }
   owns(binding: SessionBinding): boolean { return this.records.has(binding) }
   bindingOf(ctx: Context): SessionBinding | undefined {
     const binding = (ctx as Context & { [paneScope]?: PaneTag })[paneScope]?.binding

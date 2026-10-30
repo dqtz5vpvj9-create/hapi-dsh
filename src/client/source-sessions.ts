@@ -1663,6 +1663,9 @@ export class SourceSessions implements ISessions {
 
   get list(): ISessions['list'] { return this.original.list }
   get searchResultLimit(): number { return this.original.searchResultLimit }
+  ownsBinding(binding: SessionBinding): boolean { return this.binding(binding.sessionId) === binding || this.original.ownsBinding?.(binding) === true }
+  bindingOf(ctx: Context): SessionBinding | undefined { return this.original.bindingOf?.(ctx) }
+  openReadingView(reference: SessionReference, viewId: string): SessionReference | undefined { return this.original.openReadingView?.(reference, viewId) }
 
   attach(api: SourceSessionsApi): void {
     this.api = api

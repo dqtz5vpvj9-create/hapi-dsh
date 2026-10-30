@@ -31,7 +31,7 @@ async function fixture(t, alter = () => {}) {
   return { directory, manifest };
 }
 
-test('verifies all three source-built package identities and archive checksums', async t => {
+test('verifies the complete six-package source-built package identities and archive checksums', async t => {
   const { directory } = await fixture(t);
   const result = await verifyExtensionSet(directory);
   assert.deepEqual(result.packages.map(item => item.name), EXTENSION_NAMES);

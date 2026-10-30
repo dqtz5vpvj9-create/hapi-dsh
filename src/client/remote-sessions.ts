@@ -8,6 +8,7 @@ import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
+import { RemotePaneViews } from './remote-pane.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 class Value<T> {
@@ -164,6 +165,7 @@ export class RemoteSessions implements ISessions {
   readonly windowCommit?: NonNullable<ISessions['windowCommit']>
   private readonly metadata = new Map<string, SourceSession>()
   private readonly records = new Map<SessionId, RecordOwner>()
+  private readonly readingViews = new RemotePaneViews()
   private readonly histories = new Map<SessionId, RemoteSourceHistory>()
   private readonly retainObservers = new Map<SessionId, Value<SessionRetainInfo>>()
   private readonly stopOriginal: () => void
@@ -181,6 +183,21 @@ export class RemoteSessions implements ISessions {
     this.timer = setInterval(() => { void this.refreshSources().catch(() => {}) }, 5000)
   }
   get searchResultLimit(): number { return this.original.searchResultLimit }
+  ownsBinding(binding: SessionBinding): boolean {
+    return this.readingViews.owns(binding) || this.binding(binding.sessionId) === binding || this.original.ownsBinding?.(binding) === true
+  }
+  bindingOf(ctx: Context): SessionBinding | undefined {
+    if (this.readingViews.isPaneContext(ctx)) return this.readingViews.bindingOf(ctx)
+    const id = this.scopeOf(ctx)
+    return this.original.bindingOf?.(ctx) ?? (id === undefined ? undefined : this.records.get(id)?.binding)
+  }
+  openReadingView(reference: SessionReference, viewId: string): SessionReference | undefined {
+    this.lifetime.signal.throwIfAborted()
+    if (!isSourceSessionId(reference.sessionId)) return this.original.openReadingView?.(reference, viewId)
+    if (this.binding(reference.sessionId) !== reference.binding) throw new Error('The canonical source Session is no longer retained.')
+    if (this.windowCommit?.readingOccurrences !== 1) throw new Error('Independent source reading requires the complete reading-occurrence extension set.')
+    return this.readingViews.open(this.retain(reference.sessionId, { source: 'hapiWorkspace' }), viewId)
+  }
   private async refreshSources(): Promise<void> {
     if (this.refreshRead) return this.refreshRead
     const work = (async () => {
@@ -273,9 +290,13 @@ export class RemoteSessions implements ISessions {
   }
   scope(id: SessionId): ReturnType<ISessions['scope']> { return this.records.get(id)?.scope.ctx ?? this.original.scope(id) }
   scopeOf(ctx: Context): SessionId | undefined { return scopeOf(ctx) ?? this.original.scopeOf(ctx) }
-  sessionOf(ctx: Context): SessionFace | undefined { const id = this.scopeOf(ctx); return id ? this.records.get(id)?.session ?? this.original.sessionOf(ctx) : undefined }
+  sessionOf(ctx: Context): SessionFace | undefined {
+    if (this.readingViews.isPaneContext(ctx)) return this.readingViews.bindingOf(ctx)?.session
+    const id = this.scopeOf(ctx); return id ? this.records.get(id)?.session ?? this.original.sessionOf(ctx) : undefined
+  }
   binding(id: SessionId): SessionBinding | undefined { return this.records.get(id)?.binding ?? this.original.binding(id) }
   dispose(): void {
+    this.readingViews.dispose()
     this.lifetime.abort(); if (this.timer) clearInterval(this.timer); this.stopOriginal()
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()

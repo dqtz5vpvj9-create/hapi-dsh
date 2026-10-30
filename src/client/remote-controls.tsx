@@ -52,7 +52,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     const input = props.useInput(value => value)
     const state = props.useSession(value => value)
     if (!isSourceSessionId(props.sessionId)) return null
-    const session = ctx.sessions.binding(props.sessionId)?.session as RemoteSourceSession | undefined
+    const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
     const metadata = session?.metadata.getSnapshot()
     const zh = ctx.locale.getSnapshot().active.startsWith('zh')
     if (!metadata) return null
@@ -62,7 +62,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
       {metadata.capabilities.steer && state.running && <button type="button" className="hhpi-source-steer" aria-label="Steer"
         disabled={input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim() || !metadata.activeTurnId}
         onClick={() => {
-          const scope = ctx.sessions.scope(props.sessionId)
+          const scope = props.sessionBinding?.ctx ?? ctx.sessions.scope(props.sessionId)
           if (scope) ctx.conversation.input.for(scope).submit('steer', 'click')
         }}>{zh ? '立即插话' : 'Steer'}</button>}
     </>
@@ -79,7 +79,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
   }
   const Dock = (props: PropsRuntime<'conversation.input.dock'>) => {
     if (!isSourceSessionId(props.sessionId)) return null
-    const session = ctx.sessions.binding(props.sessionId)?.session as RemoteSourceSession | undefined
+    const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
     return session ? <DockBody session={session}/> : null
   }
   const right = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hhpi.source-steer', order: 85 }, SourceRight))

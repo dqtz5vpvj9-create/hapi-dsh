@@ -7,6 +7,9 @@ import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION } from './prepare.mjs';
 
 export const EXTENSION_NAMES = Object.freeze([
   '@deepseek-ai/dsh-api-session-controller',
+  '@deepseek-ai/dsh-client-ui-slots',
+  '@deepseek-ai/dsh-client-ui-renderer',
+  '@deepseek-ai/dsh-client-ui-session',
   '@deepseek-ai/dsh-client-ui-conversation',
   '@deepseek-ai/dsh-client-ui-chat',
 ]);

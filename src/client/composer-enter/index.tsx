@@ -30,7 +30,7 @@ export function installComposerEnter(ctx: Context, composer: ComposerEnterAttach
         const card = seat.current?.closest<HTMLElement>('[data-composer-card]')
         if (!card) return
         const behavior = new ComposerEnterBehavior({ preference, current() {
-          const latest = current.current.props, binding = owner.sessions.binding(latest.sessionId)
+          const latest = current.current.props, binding = latest.sessionBinding ?? owner.sessions.binding(latest.sessionId)
           if (!binding) return undefined
           const input = owner.conversation.input.for(binding.ctx)
           return {
