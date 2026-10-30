@@ -13,7 +13,8 @@ const directory = await mkdtemp(join(existsSync('/mnt/cache/data-cache') ? '/mnt
 const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: directory }
 delete env.HAPI_DSH_TEST_FAULT
 const vitest = 'node_modules/vitest/vitest.mjs'
-const run = (args: string[], fault?: string) => spawnSync(process.execPath, [vitest, 'run', ...args], {
+// Fault mutations must transform fresh modules; Vitest's persistent cache can reuse the baseline transform.
+const run = (args: string[], fault?: string) => spawnSync(process.execPath, [vitest, 'run', ...args, '--no-fsModuleCache'], {
   env: { ...env, ...(fault ? { HAPI_DSH_TEST_FAULT: fault } : {}) }, encoding: 'utf8', timeout: 60_000, maxBuffer: 4 * 1024 * 1024,
 })
 try {
