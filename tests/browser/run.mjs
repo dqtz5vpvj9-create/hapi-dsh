@@ -27,10 +27,11 @@ try {
   if (args.has('--serve')) {
     console.log(`Synthetic official-component lab: ${server.origin}`)
     await new Promise(resolve => { process.once('SIGINT', resolve); process.once('SIGTERM', resolve) })
+    report.status = 'interactive-only'
   } else {
     const modulePath = process.env.HHPI_PLAYWRIGHT_MODULE ?? resolve(root, '.tmp/hhpi-browser-tools/node_modules/playwright/index.mjs')
     const { chromium } = await import(pathToFileURL(modulePath).href)
-    browser = await chromium.launch({ headless: !args.has('--headed') })
+    browser = await chromium.launch({ headless: !args.has('--headed'), ...(process.env.HHPI_CHROMIUM_EXECUTABLE ? { executablePath: process.env.HHPI_CHROMIUM_EXECUTABLE } : {}) })
     report.browser = { engine: 'chromium', version: browser.version() }
     for (const mode of ['desktop', 'mobile']) {
       const mobile = mode === 'mobile'
@@ -39,7 +40,7 @@ try {
       const result = { mode, status: 'running', budgetMs: 60_000, steps: [], errors: [], unexpectedRequests: [] }
       report.scenarios.push(result)
       const started = performance.now()
-      let deadline
+      let deadline, page
       try {
         await context.route('**/*', route => {
           const url = new URL(route.request().url())
@@ -47,13 +48,14 @@ try {
           result.unexpectedRequests.push(url.origin + url.pathname); return route.abort()
         })
         await context.tracing.start({ screenshots: true, snapshots: true, sources: true })
-        const page = await context.newPage()
-        page.setDefaultTimeout(8_000)
+        page = await context.newPage(); page.setDefaultTimeout(8_000)
         page.on('pageerror', error => result.errors.push(error.message))
         page.on('console', message => { if (message.type() === 'error') result.errors.push(message.text()) })
         const cdp = mobile ? await context.newCDPSession(page) : undefined
         async function step(name, action) {
+          result.activeStep = name
           const start = performance.now(); await action(); result.steps.push({ name, ms: Math.round(performance.now() - start) })
+          delete result.activeStep
         }
         const state = () => page.evaluate(() => window.__hhpi.snapshot())
         const stats = () => fetch(server.origin + '/api/stats').then(response => response.json())
@@ -97,6 +99,7 @@ try {
               port: { x: view.x, y: view.y, width: view.width, height: view.height }, editorHit: !!hit && (input === hit || input.contains(hit)),
               failures: element.querySelectorAll('[data-slot-error],[data-factory-error]').length }
           })
+          result.lastLayout = layout
           assert.equal(layout.failures, 0, 'official slot/factory errors are not a usable first view')
           assert.ok(layout.pageWidth <= layout.viewport.width + 1, 'page must not overflow horizontally')
           assert.ok(layout.contentWidth <= layout.portWidth + 1, 'long source lines must not overflow the official scrollport')
@@ -108,8 +111,7 @@ try {
           await step('first usable official view', async () => {
             await page.goto(server.origin, { waitUntil: 'domcontentloaded' })
             await page.waitForFunction(() => window.__hhpiFailure || (window.__hhpi?.ready && window.__hhpi.snapshot().a.control && window.__hhpi.snapshot().b.control))
-            const failure = await page.evaluate(() => window.__hhpiFailure)
-            assert.equal(failure, undefined)
+            assert.equal(await page.evaluate(() => window.__hhpiFailure), undefined)
             await settle(); result.initialLayout = await assertLayout()
             assert.ok((await visible()).min !== null, 'first target frame must contain visible source bodies')
           })
@@ -173,15 +175,18 @@ try {
         }
         await Promise.race([journey(), new Promise((_, reject) => { deadline = setTimeout(() => { reject(new Error('Scenario exceeded its 60 second budget')); void context.close() }, 60_000) })])
         result.status = 'passed'
-      } catch (error) { result.status = 'failed'; result.failure = error instanceof Error ? error.stack : String(error) }
-      finally {
+      } catch (error) {
+        result.status = 'failed'; result.failure = error instanceof Error ? error.stack : String(error)
+        if (page && !page.isClosed()) result.diagnostics = await page.evaluate(() => ({ state: window.__hhpi?.snapshot(),
+          ports: [...document.querySelectorAll('[data-conversation-scroll]')].map(element => ({ top: element.scrollTop, height: element.clientHeight, total: element.scrollHeight, rect: element.getBoundingClientRect().toJSON() })),
+          failures: [...document.querySelectorAll('[data-slot-error],[data-factory-error]')].map(element => element.outerHTML),
+          visibleText: document.body.innerText.slice(0, 1200) })).catch(error => ({ unavailable: String(error) }))
+      } finally {
         clearTimeout(deadline); result.durationMs = Math.round(performance.now() - started)
         await context.tracing.stop({ path: resolve(out, `${mode}-trace.zip`) }).catch(error => { result.traceError = String(error) })
         await context.close()
-        await writeFile(resolve(out, 'report.json'), JSON.stringify(report, null, 2))
-        console.log(JSON.stringify(result))
+        await writeFile(resolve(out, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(result))
       }
-      if (result.status !== 'passed') break
     }
     report.status = report.scenarios.length === 2 && report.scenarios.every(item => item.status === 'passed') ? 'passed' : 'failed'
     if (report.status !== 'passed') process.exitCode = 1

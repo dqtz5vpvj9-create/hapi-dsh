@@ -12,7 +12,7 @@ export const output = resolve(root, '.tmp/hhpi-browser/site')
 const plugins = ['api-session-controller', 'client-ui-renderer', 'client-ui-session', 'client-ui-conversation', 'client-ui-chat'].map(name => `@deepseek-ai/dsh-${name}`)
 const platform = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', 'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit']
 
-/** Respect conditional browser exports; Node resolution chooses the wrong dual-client face. */
+/** Node resolution must not select the Node half of a dual-client package. */
 function browserEntry(name) {
   const metadataPath = require.resolve(`${name}/package.json`), metadata = require(metadataPath)
   const face = metadata.exports?.['./client']
@@ -21,9 +21,9 @@ function browserEntry(name) {
   return { metadata, entry: resolve(dirname(metadataPath), entry) }
 }
 
-/** Traverse official literal client imports without evaluating or rewriting their code. */
+/** Build the actual module-table closure and static-library roster from literal require seats. */
 async function copyPluginClosure(version) {
-  const pending = new Set(plugins), modules = []
+  const pending = new Set(plugins), staticModules = new Set(platform), modules = []
   for (const name of pending) {
     const { metadata, entry } = browserEntry(name)
     if (metadata.version !== version) throw new Error(`Mixed official dependency: ${name}@${metadata.version}`)
@@ -32,15 +32,22 @@ async function copyPluginClosure(version) {
     for (const file of await readdir(directory)) {
       if (!file.endsWith('.js') || file.endsWith('.node.js') || (file !== basename(entry) && !file.startsWith('client.'))) continue
       const source = join(directory, file), text = await readFile(source, 'utf8')
-      for (const match of text.matchAll(/["'](@deepseek-ai\/dsh-[^"'\s]+\/client)["']/g)) pending.add(match[1].slice(0, -7))
+      for (const match of text.matchAll(/\brequire(?:\.async)?\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+        const id = match[1]
+        if (id.startsWith('.')) continue
+        if (id.startsWith('node:')) throw new Error(`Node-only dependency leaked into ${name}: ${id}`)
+        if (/^@deepseek-ai\/dsh-.*\/client$/.test(id)) pending.add(id.slice(0, -7))
+        else staticModules.add(id)
+      }
       await copyFile(source, join(target, file))
     }
-    // A URL alias only: the copied browser entry retains its original bytes.
+    // URL alias only; the selected official browser bytes are unchanged.
     await copyFile(entry, join(target, 'client.js'))
     modules.push({ name, browserEntry: basename(entry), sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
-    if (pending.size > 80) throw new Error('Official dependency closure exceeded the component-lab budget')
+    if (pending.size > 80 || staticModules.size > 80) throw new Error('Official dependency closure exceeded the component-lab budget')
   }
-  await writeFile(join(output, 'modules.json'), JSON.stringify(modules)); return modules
+  await writeFile(join(output, 'modules.json'), JSON.stringify(modules))
+  return { modules, staticModules: [...staticModules] }
 }
 
 export async function buildLab() {
@@ -55,13 +62,11 @@ export async function buildLab() {
     artifacts.push({ name, entry: basename(entry), sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
   }
   await rm(output, { recursive: true, force: true }); await mkdir(output, { recursive: true })
-  const officialModules = await copyPluginClosure(identity.upstreamVersion)
-  const searchPaths = [root, join(source, 'packages/client/web'), join(source, 'packages/client/ui-primitives'), source]
-  const modules = platform.map(name => name === '@deepseek-ai/dsh-client-ui-dockkit'
-    ? join(source, 'packages/client/ui-dockkit/src/index.ts') : require.resolve(name, { paths: searchPaths }))
+  const { modules: officialModules, staticModules } = await copyPluginClosure(identity.upstreamVersion)
+  const imports = staticModules.map(name => name === '@deepseek-ai/dsh-client-ui-dockkit' ? join(source, 'packages/client/ui-dockkit/src/index.ts') : name)
   const theme = ['base', 'corner-shape', 'design-platform', 'focus', 'onboarding', 'scrollbar', 'gradient-shadow-text', 'shiki']
-  const platformSource = modules.map((path, i) => `import * as m${i} from ${JSON.stringify(path)};`).join('\n')
-    + `\nexport const modules = {${platform.map((name, i) => `${JSON.stringify(name)}: m${i}`).join(',')}};\n`
+  const platformSource = imports.map((path, i) => `import * as m${i} from ${JSON.stringify(path)};`).join('\n')
+    + `\nexport const modules = {${staticModules.map((name, i) => `${JSON.stringify(name)}: m${i}`).join(',')}};\n`
     + theme.map(name => `import ${JSON.stringify(join(source, 'packages/client/ui-theme/src/styles', `${name}.css`))};`).join('\n')
     + `\nimport ${JSON.stringify(join(source, 'packages/client/web/src/base.css'))};\n`
   const result = await build({
@@ -82,6 +87,6 @@ export async function buildLab() {
   const sheets = Object.keys(result.metafile.outputs).filter(path => path.endsWith('.css')).map(path => '/' + path.slice(path.lastIndexOf('/') + 1))
   await writeFile(join(output, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><title>HHPI official component lab</title>${sheets.map(path => `<link rel="stylesheet" href="${path}">`).join('')}<link rel="stylesheet" href="/shell.css"></head><body><div id="root"></div><script type="module" src="/lab.js"></script></body></html>`)
   await copyFile(join(root, 'tests/browser/shell.css'), join(output, 'shell.css'))
-  const report = { ...identity, artifacts, officialModules, buildMs: Math.round(performance.now() - start), geometryMocks: false, shell: 'two-pane component fixture', sourceTransport: 'synthetic loopback SourceEventIndex' }
+  const report = { ...identity, artifacts, officialModules, staticModules, buildMs: Math.round(performance.now() - start), geometryMocks: false, shell: 'two-pane component fixture', sourceTransport: 'synthetic loopback SourceEventIndex' }
   await writeFile(join(output, 'identity.json'), JSON.stringify(report, null, 2)); return report
 }

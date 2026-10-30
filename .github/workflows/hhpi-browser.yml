@@ -48,11 +48,24 @@ jobs:
       - name: Install isolated pinned browser tooling
         timeout-minutes: 3
         run: |
+          mkdir -p .tmp/hhpi-browser/results
           npm install --prefix .tmp/hhpi-browser-tools --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.56.1
-          node .tmp/hhpi-browser-tools/node_modules/playwright/cli.js install --with-deps chromium
+          node .tmp/hhpi-browser-tools/node_modules/playwright/cli.js install --with-deps chromium > .tmp/hhpi-browser/results/browser-install.log 2>&1 || { tail -80 .tmp/hhpi-browser/results/browser-install.log; exit 1; }
       - name: Two real browser journeys without geometry mocks
         timeout-minutes: 3
         run: node --import tsx tests/browser/run.mjs --browser
+      - name: Publish bounded result diagnostics
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const path='.tmp/hhpi-browser/results/report.json';
+          if(fs.existsSync(path)) {
+            const report=JSON.parse(fs.readFileSync(path,'utf8'));
+            const escape=text=>text.replace(/%/g,'%25').replace(/\r/g,'%0D').replace(/\n/g,'%0A');
+            console.log('::notice title=HHPI browser result::'+escape(JSON.stringify({status:report.status,browser:report.browser,buildMs:report.identity?.buildMs,failure:report.failure,scenarios:report.scenarios})));
+          }
+          NODE
       - name: Tracked dependency inputs stay unchanged
         if: always()
         run: git diff --exit-code -- package.json package-lock.json
