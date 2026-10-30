@@ -22,13 +22,20 @@ function remoteError(error: unknown): never {
 }
 const addressedSession = (request: { sessionId: string }): readonly SessionId[] => [request.sessionId as SessionId];
 const addressedSource = (request: { sourceId: string }): readonly string[] => [request.sourceId];
+export const HHPI_HOST_CONTRACT = {
+    invocations: HHPI_REMOTE.descriptors,
+    services: [{ key: 'hhpi', exportName: 'HhpiSourceService', tags: [], members: [], types: [], summary: 'Scoped native source access.' }],
+};
+/** Runner-only composition; display Hosts publish the combined workspace face. */
+export function registerSourceContract(ctx: Context): void {
+    ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [], invocations: HHPI_HOST_CONTRACT.invocations,
+        model: { services: HHPI_HOST_CONTRACT.services, events: [], objects: [] } }), 'hhpi: source Remote contract');
+}
 
 export class HhpiSourceService extends TypertRemoteService {
     constructor(ctx: Context, private readonly gateway: SourceGateway) {
         super(ctx, 'hhpi');
         ctx.typert.resources.register('hhpiSource', { field: 'sourceId' });
-        ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [], invocations: HHPI_REMOTE.descriptors,
-            model: { services: [{ key: 'hhpi', exportName: 'HhpiSourceService', tags: [], members: [], types: [], summary: 'Scoped native source access.' }], events: [], objects: [] } }), 'hhpi: source Remote contract');
     }
     private get access(): SourceAccess {
         // Capture this invocation-derived Context, never an owner Context retained at startup.

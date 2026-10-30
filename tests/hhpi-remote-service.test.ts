@@ -7,7 +7,14 @@ import RemoteAccessService, { type RemoteAccessBinding } from '@deepseek-ai/dsh-
 import TypertGatewayService from '@deepseek-ai/dsh-api-gateway';
 import { RemoteError, type PeerId, type PeerScope, type Principal } from '@deepseek-ai/dsh-typert-protocol';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { HhpiSourceService } from '../src/remote/service.ts';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { HapiController } from '../src/index.ts';
+import { FederationHub } from '../src/hub/federation.ts';
+import { WorkspaceRepository } from '../src/hub/workspaces.ts';
+import { WorkspaceShell } from '../src/hub/workspace-shell.ts';
+import { HhpiSourceService, installSources, registerSourceContract } from '../src/remote/service.ts';
 import { SourceGateway } from '../src/remote/gateway.ts';
 import { sourceSessionId, type SourceAdapter, type SourceCatalog, type SourcePage, type SourceSession } from '../src/remote/protocol.ts';
 
@@ -30,6 +37,7 @@ async function mount() {
     };
     const source = new SourceGateway([adapter], false);
     new HhpiSourceService(ctx, source);
+    registerSourceContract(ctx);
     const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}));
     const grants: RemoteAccessBinding[] = [];
     ctx.remoteAccess.registerPolicy('hhpi-service-fixture', { bindings: () => grants });
@@ -43,6 +51,38 @@ async function mount() {
     };
 }
 const denied = (error: unknown): boolean => error instanceof RemoteError && ['remote-access/denied', 'hhpi/source'].includes(error.code);
+
+for (const legacyHapi of [true, false]) test(`real Host registers HHPI and workspace RPCs together (${legacyHapi ? 'HAPI compatibility' : 'HAPI-free'})`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'hhpi-host-contract-'));
+    const ctx = new Context();
+    try {
+        await ctx.plugin(TypertRegistry);
+        new RemoteAccessService(ctx);
+        installSources(ctx, [], join(directory, 'sources'), legacyHapi);
+        const workspace = new WorkspaceRepository(join(directory, 'workspace.json'));
+        if (legacyHapi) {
+            // Native transport is the boundary fixture; both production Remote
+            // controllers and the registry/gateway execute unchanged.
+            new HapiController(ctx, {
+                client: { subscribeCatalog: () => () => {} }, codex: {}, observed: {},
+                historyWindows: { clear() {} }, workspace,
+            } as unknown as ConstructorParameters<typeof HapiController>[1]);
+        } else {
+            new WorkspaceShell(ctx, new FederationHub({ credentialsFile: join(directory, 'pairings.json') }), workspace, directory);
+        }
+        const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}));
+        const peer: PeerScope = { id: 'host-contract' as PeerId, ctx, principal: { kind: 'owner' },
+            interactions: 'answer', signal: new AbortController().signal, dispose: async () => {} };
+        const catalog = await gateway.invoke({ peer, namespace: 'hhpi', method: 'catalog', args: {} }) as SourceCatalog;
+        assert.equal(catalog.legacyHapi, legacyHapi);
+        assert.deepEqual(catalog.sources, []);
+        assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
+        assert.equal(ctx.typert.listPackages({ package: 'hapi-dsh', face: 'host' }).length, 1);
+    } finally {
+        await ctx.fiber.dispose();
+        await rm(directory, { recursive: true, force: true });
+    }
+});
 
 test('the real DSH gateway exposes HHPI without HAPI and rejects an ungranted caller', async () => {
     const app = await mount();

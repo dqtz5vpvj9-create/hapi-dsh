@@ -7,6 +7,7 @@ import { HAPI_REMOTE, type HapiCatalog, type WorkspaceDocument, type WorkspaceWr
 import type { LegacyWorkspaceSnapshot } from '../legacy-workspace-types.ts';
 import type { FederationHub } from './federation.ts';
 import type { WorkspaceRepository } from './workspaces.ts';
+import { HHPI_HOST_CONTRACT } from '../remote/service.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiWorkspaceShell: WorkspaceShell } }
 /** Existing workspace wire names are retained; no HAPI client or credential is constructed. */
@@ -17,8 +18,8 @@ export class WorkspaceShell extends TypertRemoteService {
         this.identity = `hhpi-${createHash('sha256').update(profileIdentity).digest('hex').slice(0, 24)}`;
         const methods = new Set(['catalog', 'workspaceGet', 'workspacePut', 'workspaceLegacy']);
         ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [],
-            invocations: HAPI_REMOTE.descriptors.filter(descriptor => methods.has(descriptor.method)).map(descriptor => ({ ...descriptor, service: 'hhpiWorkspaceShell' })),
-            model: { services: [{ key: 'hhpiWorkspaceShell', exportName: 'WorkspaceShell', tags: [], members: [], types: [], summary: 'HHPI workspace and machine directory.' }], events: [], objects: [] },
+            invocations: [...HAPI_REMOTE.descriptors.filter(descriptor => methods.has(descriptor.method)).map(descriptor => ({ ...descriptor, service: 'hhpiWorkspaceShell' })), ...HHPI_HOST_CONTRACT.invocations],
+            model: { services: [{ key: 'hhpiWorkspaceShell', exportName: 'WorkspaceShell', tags: [], members: [], types: [], summary: 'HHPI workspace and machine directory.' }, ...HHPI_HOST_CONTRACT.services], events: [], objects: [] },
         }), 'hhpi: HAPI-independent workspace contract');
     }
     @Remote('catalog')

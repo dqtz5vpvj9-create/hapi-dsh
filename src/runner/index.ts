@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { installSources } from '../remote/service.ts';
+import { installSources, registerSourceContract } from '../remote/service.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readRunnerConfig } from './config.ts';
@@ -26,6 +26,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     if (!path) throw new Error('HAPI_DSH_RUNNER_CONFIG_FILE is required for the Runner profile');
     const runtime = await readRunnerConfig(path);
     installSources(ctx, runtime.sources ?? [], join(runtime.dsh.home, 'profiles', runtime.dsh.profile, 'data', 'hapi-dsh', 'sources'), false);
+    registerSourceContract(ctx);
     const services = Object.fromEntries(inject.map((service) => [service, ctx.get(service)])) as unknown as RunnerServices;
     let client: RunnerClient | undefined;
     const disposeRoute = mountBootstrapRoute(services, () => {

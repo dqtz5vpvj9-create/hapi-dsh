@@ -1,6 +1,6 @@
 import { logicalDisplayId, observedSessionId } from './hapi-agent/identity.ts'
 import { join } from 'node:path';
-import { installSources } from './remote/service.ts';
+import { HHPI_HOST_CONTRACT, installSources } from './remote/service.ts';
 import { WorkspaceShell } from './hub/workspace-shell.ts';
 import { DSH_VERSION } from './cli/config.ts';
 import { runtimeIdentity } from './runner/identity.ts';
@@ -240,9 +240,9 @@ export class HapiController extends TypertRemoteService {
         ctx.effect(() => options.client.subscribeCatalog(() => { this.machineCacheAt = 0; this.summaryCacheAt = 0; }), 'hapi-dsh: source catalog invalidation');
         ctx.effect(() => ctx.typert.register({
             package: 'hapi-dsh', face: 'host', schemas: [],
-            invocations: HAPI_REMOTE.descriptors,
+            invocations: [...HAPI_REMOTE.descriptors, ...HHPI_HOST_CONTRACT.invocations],
             model: {
-                services: [{ key: 'hapi', exportName: 'HapiController', tags: [], members: [], types: [], summary: 'Native Codex and distributed workspaces.' }],
+                services: [{ key: 'hapi', exportName: 'HapiController', tags: [], members: [], types: [], summary: 'Native Codex and distributed workspaces.' }, ...HHPI_HOST_CONTRACT.services],
                 events: [], objects: [],
             },
         }), 'hapi-dsh: native Remote methods');
@@ -948,6 +948,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     ctx.effect(() => mountPluginEvents({ webServer: ctx.webServer, connection: ctx.connection,
         hasHost: id => federation.listMachines().some(host => host.id === id && host.online),
     }), 'hapi-dsh: multiplexed official plugin events');
+    // The Host controller publishes one package face containing both namespaces.
     installSources(ctx, config.sources ?? [], join(dataDirectory, 'sources'), config.hapi !== undefined);
     if (!config.hapi) {
         new WorkspaceShell(ctx, federation, new WorkspaceRepository(join(dataDirectory, 'workspace.json')), JSON.stringify([config.dsh.home, config.dsh.profile]));
