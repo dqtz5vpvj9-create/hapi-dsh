@@ -283,6 +283,7 @@ function sourceResolutionTypedState(failure: SourceResolutionFailure): { reason:
         case 'removed': return { reason: 'source-not-found', nextStep: 'The original session was removed; close this pane or open another conversation from the sidebar.' }
         case 'not-found': return { reason: 'source-not-found', nextStep: 'Check the original Hub, then retry to continue opening the same conversation.' }
         case 'transport': return { reason: 'source-offline', nextStep: 'Restore the Hub/Runner connection, then retry.' }
+        case 'not-connected': return { reason: 'source-offline', nextStep: 'Connect the original source to this HHPI Host, then reopen this saved conversation.' }
         case 'not-ready': return { reason: 'source-not-found', nextStep: 'Retry to continue opening the same original conversation.' }
         case 'ambiguous': return { reason: 'source-hub-changed', nextStep: 'Choose the conversation from the unified sidebar.' }
         case 'identity': return { reason: 'source-hub-changed', nextStep: 'Open the conversation again from the unified sidebar to rebind this pane.' }

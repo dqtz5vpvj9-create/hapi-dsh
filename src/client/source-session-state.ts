@@ -1,4 +1,4 @@
-export type SourceResolutionFailure = 'not-found' | 'removed' | 'denied' | 'transport' | 'not-ready' | 'ambiguous' | 'identity' | 'unknown'
+export type SourceResolutionFailure = 'not-found' | 'removed' | 'denied' | 'transport' | 'not-connected' | 'not-ready' | 'ambiguous' | 'identity' | 'unknown'
 export type SourceResolutionStatus = 'loading' | SourceResolutionFailure
 
 export class SourceResolutionError extends Error {
@@ -17,6 +17,7 @@ export function sourceResolutionFailure(error: unknown): SourceResolutionFailure
     if (status === 404 || code === 'source_not_found') return 'not-found'
     if (code === 'source_hub_mismatch' || code === 'source_identity_mismatch') return 'identity'
     if (code === 'source_not_ready') return 'not-ready'
+    if (code === 'source_not_connected') return 'not-connected'
     if (outcome === 'indeterminate' || typeof status === 'number' && (status >= 500 || status === 408 || status === 429)
         || typeof code === 'string' && /^(?:transport|connection|network)(?:[/:_-]|$)/.test(code)) return 'transport'
     return 'unknown'

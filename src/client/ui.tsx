@@ -48,7 +48,7 @@ import { nextSidebarPreview, previousSidebarPreview, sidebarActiveRoots, sidebar
 const activityLabel: Record<ActivityKind, WorkspaceKey> = { error: 'activityError', permission: 'waitingPermission', input: 'waitingInput', running: 'running', background: 'background', completed: 'completedResult', idle: 'idle', offline: 'offline' }
 const sourceResolutionLabel: Record<SourceResolutionStatus, WorkspaceKey> = {
     loading: 'sourceLoading', 'not-found': 'sourceNotFound', removed: 'sourceRemoved', denied: 'sourceDenied',
-    transport: 'sourceTransport', 'not-ready': 'sourceNotReady', ambiguous: 'sourceAmbiguous', identity: 'sourceIdentityMismatch', unknown: 'sourceResolveFailed',
+    transport: 'sourceTransport', 'not-connected': 'sourceNotConnected', 'not-ready': 'sourceNotReady', ambiguous: 'sourceAmbiguous', identity: 'sourceIdentityMismatch', unknown: 'sourceResolveFailed',
 }
 
 /** One readable label for a conversation; identifiers never stand in for titles. */

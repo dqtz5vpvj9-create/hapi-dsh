@@ -105,6 +105,7 @@ function normalizeText(value) { return String(value ?? '').normalize('NFKC').rep
 function compactText(value) { return normalizeText(value).replace(/\s/gu, ''); }
 function bodyText(entry) {
   const event = entry?.event, data = event?.data;
+  if (event?.type === 'tool/call' && typeof data?.name === 'string') return data.name;
   if (event?.type === 'user/message' && Array.isArray(data?.content)) {
     return data.content.flatMap(block => typeof block?.text === 'string' ? [block.text] : []).join('\n');
   }
@@ -124,7 +125,9 @@ function pageBodies(record) {
   const context = new Set(record.page?.context ?? []);
   return (record.page?.entries ?? []).flatMap(entry => {
     const seq = entry?.event?.seq, text = bodyText(entry);
-    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, text: normalizeText(text), marks: textMarks(text) }] : [];
+    const callId = entry?.event?.type === 'tool/call' && entry.event.data?.callId;
+    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, text: normalizeText(text), marks: textMarks(text),
+      ...(typeof callId === 'string' ? { anchor: `call:${callId}` } : {}) }] : [];
   });
 }
 function sourceRowText(row) { return normalizeText(row?.bodyText ?? row?.text ?? ''); }
@@ -136,6 +139,9 @@ function rowContainsBody(row, marks) {
   const text = compactText(sourceRowText(row));
   return marks.length > 0 && marks.every(mark => text.includes(mark));
 }
+function rowMatchesSource(row, body, complete = false) {
+  return (!body.anchor || row.anchor === body.anchor) && (complete ? rowContainsBody(row, body.marks) : rowContains(row, body.marks));
+}
 
 /** Capture a visible source-message identity and its body at the network response boundary. */
 export function captureVisibleSourceAnchor(rows, records, fallbackAnchor = null) {
@@ -144,7 +150,7 @@ export function captureVisibleSourceAnchor(rows, records, fallbackAnchor = null)
     const body = sourceRowText(row);
     if (!body) continue;
     for (const record of records) for (const sourceBody of pageBodies(record)) {
-      if (!rowContainsBody(row, sourceBody.marks)) continue;
+      if (!rowMatchesSource(row, sourceBody, true)) continue;
       return { key: row.key, anchor: row.anchor, seq: sourceBody.seq, sourceText: body };
     }
     if (fallbackAnchor?.key === row.key && fallbackAnchor.anchor === row.anchor) {
@@ -184,7 +190,7 @@ export function matchVisibleSourcePage(record, rows, previousKeys, previousSeqs,
     || !(page.before === null || Number.isSafeInteger(page.before) && page.before < request.before)) return null;
   const bodies = pageBodies(record).filter(body => body.seq < request.before && body.seq < priorHeadSeq && !previousSeqs.has(body.seq));
   for (const body of bodies) for (const row of rows) {
-    if (!row.visible || !row.key || !row.anchor || previousKeys.has(row.key) || !rowContains(row, body.marks)) continue;
+    if (!row.visible || !row.key || !row.anchor || previousKeys.has(row.key) || !rowMatchesSource(row, body)) continue;
     return { seq: body.seq, key: row.key, anchor: row.anchor, textMark: body.marks.find(mark => compactText(row.text).includes(mark)) };
   }
   return null;
@@ -239,18 +245,24 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     const scroll = pane?.querySelector('[data-conversation-scroll]');
     if (!scroll) return { exists: false, rows: [], top: 0, max: 0 };
     const box = scroll.getBoundingClientRect();
-    const rows = [...scroll.querySelectorAll('[data-chat-node-key][data-chat-anchor-key]')]
-      .filter(row => ['user', 'assistant-step'].includes(row.getAttribute('data-chat-flow-kind')))
+    const ownerOf = row => row.closest('[data-chat-node-key]');
+    const rows = [...scroll.querySelectorAll('[data-chat-anchor-key]')]
+      .filter(row => {
+        const owner = ownerOf(row), kind = owner?.getAttribute('data-chat-flow-kind');
+        return kind === 'tool-call' ? row.getAttribute('data-chat-anchor-key')?.startsWith('call:')
+          : row === owner && ['user', 'assistant-step'].includes(kind);
+      })
       .map(row => {
+        const owner = ownerOf(row), kind = owner.getAttribute('data-chat-flow-kind');
         const rect = row.getBoundingClientRect(), text = row.innerText ?? '';
         const bodyRoot = row.querySelector(':scope > [data-slot="conversation.chat.node"]') ?? row;
         const excluded = 'script,iframe,object,embed,audio,video,source,input,textarea,select,button,[role="button"],[data-hapi-share-exclude],[data-hapi-share-dialog],[data-chat-group-part="reasoning"],[data-variant="think"],[data-clock],[data-chat-flow-kind="turn-process"],.hapi-native-user-actions,[data-slot="conversation.chat.assistant-actions"]';
         const walker = document.createTreeWalker(bodyRoot, NodeFilter.SHOW_TEXT);
         const parts = [];
         while (walker.nextNode()) if (!walker.currentNode.parentElement?.closest(excluded)) parts.push(walker.currentNode.textContent);
-        const bodyText = parts.join(' ');
-        return { key: row.getAttribute('data-chat-node-key'), anchor: row.getAttribute('data-chat-anchor-key'),
-          kind: row.getAttribute('data-chat-flow-kind'), text, bodyText, normalizedText: compact(text),
+        const bodyText = kind === 'tool-call' ? text : parts.join(' ');
+        return { key: owner.getAttribute('data-chat-node-key'), anchor: row.getAttribute('data-chat-anchor-key'),
+          kind, text, bodyText, normalizedText: compact(text),
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
             && row.getClientRects().length > 0 && row.closest('[hidden]') === null };
       });
@@ -284,13 +296,19 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     const row = anchor?.closest('[data-chat-virtual-row]');
     if (!anchor || !row) throw new Error('No physical reading anchor at publication.');
     const key = anchor.dataset.chatAnchorKey, oldIndex = row.dataset.index;
+    const loadButton = port.querySelector('[data-chat-flow] > div > button:disabled');
     const top = anchor.getBoundingClientRect().top - bounds.top;
     const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : 'node' };
     const token = state.layoutCommits.push(record) - 1;
     const observer = new MutationObserver(() => {
       const current = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
       const currentRow = current?.closest('[data-chat-virtual-row]');
-      if (!currentRow || currentRow.dataset.index === oldIndex) return;
+      // A prepend inside one large process group can retain its physical row
+      // index. The official paging button leaves busy only after the same
+      // reader's commit/correction, so it is also a publication checkpoint.
+      const rangeMoved = currentRow && currentRow.dataset.index !== oldIndex;
+      const readCompleted = loadButton && (!loadButton.isConnected || !loadButton.disabled);
+      if (!rangeMoved && !readCompleted) return;
       observer.disconnect();
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const settled = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
@@ -299,7 +317,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
         record.done = true;
       }));
     });
-    observer.observe(port, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-index'] });
+    observer.observe(port, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-index', 'disabled'] });
     return token;
   };
   window.addEventListener('touchstart', () => { state.touchActive = true; }, { capture: true, passive: true });
@@ -307,7 +325,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
 }
 
 async function parseOptions(argv) {
-  const config = { urlFile: join(configDir, 'launch-url'), sessionId: undefined, scenario: 'both', timeoutMs: 60_000, report: undefined };
+  const config = { urlFile: join(configDir, 'launch-url'), sessionId: undefined, scenario: 'both', timeoutMs: 60_000, pages: 6, report: undefined };
   for (let index = 0; index < argv.length; index++) {
     const key = argv[index];
     if (key === '--help') { config.help = true; continue; }
@@ -316,12 +334,14 @@ async function parseOptions(argv) {
     else if (key === '--url-file') config.urlFile = value;
     else if (key === '--scenario' && ['both', 'desktop', 'mobile'].includes(value)) config.scenario = value;
     else if (key === '--timeout-ms') config.timeoutMs = Number(value);
+    else if (key === '--pages') config.pages = Number(value);
     else if (key === '--report') config.report = value;
     else fail('invalid-arguments');
   }
   if (config.help) return config;
   if (!canonicalHhpiSessionId(config.sessionId)) fail('canonical-hhpi-session-id-required');
   if (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 60_000) fail('invalid-time-budget');
+  if (!Number.isSafeInteger(config.pages) || config.pages < 6) fail('invalid-page-count');
   const url = new URL((await readFile(config.urlFile, 'utf8')).trim());
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) fail('invalid-launch-url');
   config.url = url.href;
@@ -364,6 +384,24 @@ async function runScenario(browser, config, name) {
     const catalog = await awaiting('resolve-canonical-session', bootstrap('hhpi/catalog'));
     if (!Array.isArray(catalog?.sessions) || !catalog.sessions.some(session => session.id === config.sessionId
       && canonicalHhpiSessionId(session.id))) fail('canonical-session-not-in-hhpi-catalog');
+    const workspace = syntheticWorkspace(config.sessionId);
+    let legacyResource;
+    if (catalog.legacyHapi === false) {
+      const saved = await awaiting('read-saved-reference-for-terminal-state-check', bootstrap('hapi/workspaceGet'));
+      const findLegacy = value => {
+        if (!value || typeof value !== 'object') return undefined;
+        if (value.type === 'pane' && value.resource?.sourceSessionId) return value.resource;
+        for (const child of Object.values(value)) {
+          if (child && typeof child === 'object') { const found = findLegacy(child); if (found) return found; }
+        }
+      };
+      legacyResource = findLegacy(saved.state);
+      if (legacyResource) {
+        workspace.windows.push({ id: 'saved-source-window', name: 'Saved source', autoName: false,
+          root: { type: 'pane', id: 'saved-source-pane', resource: legacyResource } });
+        workspace.focused['saved-source-window'] = 'saved-source-pane';
+      }
+    }
     appUrl.searchParams.delete('hapiSession'); appUrl.searchParams.delete('hapiHub');
     appUrl.searchParams.delete('hapiMessage'); appUrl.searchParams.delete('hapiRequest');
     await awaiting('install-synthetic-workspace-bootstrap', context.addInitScript(({ origin, sessionId }) => {
@@ -379,7 +417,7 @@ async function runScenario(browser, config, name) {
       const policy = validApi ? hhpiRequestPolicy(method, body, config.sessionId) : 'block';
       if (policy === 'read' && method === 'hapi/workspaceGet') {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId,
-          result: { ok: true, value: { revision: 0, state: syntheticWorkspace(config.sessionId) } } }) });
+          result: { ok: true, value: { revision: 0, state: workspace } } }) });
       }
       if (policy === 'read' && method === 'hhpi/read') {
         const task = (async () => {
@@ -404,12 +442,15 @@ async function runScenario(browser, config, name) {
           const older = Number.isFinite(body.payload?.args?.request?.before);
           const token = older ? await page.evaluate(() => window.__hhpiSmoke.armLayoutCommit()) : null;
           await route.fulfill({ response: upstream });
-          if (token !== null) await page.waitForFunction(index => window.__hhpiSmoke.layoutCommits[index]?.done,
+          if (token !== null) await page.waitForFunction(index => window.__hhpiSmoke.layoutCommits[index]?.done || document.querySelector('[data-history-page-error]'),
             token, { timeout: 5000 });
           return;
         })();
         layoutCommits.push(task);
-        return task;
+        // Attach a handler immediately; the gesture awaits the same task below
+        // so a rejected layout wait is retained in the scenario report.
+        void task.catch(() => {});
+        return task.catch(() => {});
       }
       if (policy === 'read') return route.continue();
       const input = body?.payload?.args?.request;
@@ -519,7 +560,7 @@ async function runScenario(browser, config, name) {
     const allSourceMatches = rows => {
       const matches = [];
       for (const row of rows) for (const record of sourcePages) for (const body of pageBodies(record)) {
-        if (rowContains(row, body.marks)) matches.push({ seq: body.seq, key: row.key, row });
+        if (rowMatchesSource(row, body)) matches.push({ seq: body.seq, key: row.key, row });
       }
       return matches;
     };
@@ -557,7 +598,7 @@ async function runScenario(browser, config, name) {
       }
       return null;
     };
-    for (let iteration = 0; iteration < 6; iteration++) {
+    for (let iteration = 0; iteration < config.pages; iteration++) {
       result.step = `read-earlier-page-${iteration + 1}-baseline`;
       const before = await readRows(`read-earlier-page-${iteration + 1}-baseline-dom`);
       const previousKeys = new Set(before.rows.map(row => row.key));
@@ -570,6 +611,9 @@ async function runScenario(browser, config, name) {
       let committed;
       for (let gesture = 0; gesture < 24 && performance.now() - start < timeoutMs - 3_000; gesture++) {
         await moveEarlier(`earlier-page-${iteration + 1}-gesture-${gesture + 1}`);
+        const historyError = page.locator('[data-history-page-error]');
+        const historyFailure = await historyError.count() ? await historyError.first().textContent() : null;
+        if (historyFailure) fail(historyFailure.includes('CAPACITY_EXCEEDED') ? 'capacity-exceeded-visible' : 'history-page-error-visible');
         if (sourcePages.some(record => record.error)) fail('source-page-read-failed');
         const after = await readRows(`read-earlier-page-${iteration + 1}-dom-after-gesture`);
         committed = matchesForPage(after.rows, previousKeys, previousSeqs, priorHead);
@@ -595,7 +639,7 @@ async function runScenario(browser, config, name) {
     await awaiting('wait-for-final-source-reads', Promise.all([...pending]));
     const corrections = await page.evaluate(() => window.__hhpiSmoke.layoutCommits);
     result.layoutCommits = corrections;
-    if (corrections.length < 6 || corrections.some(item => !item.done || !item.retained || item.delta === null || Math.abs(item.delta) > 2)) fail('reading-anchor-publication-jump');
+    if (corrections.length < config.pages || corrections.some(item => !item.done || !item.retained || item.delta === null || Math.abs(item.delta) > 2)) fail('reading-anchor-publication-jump');
     const maxFrameGap = await awaiting('read-frame-gap-verdict', page.evaluate(() => Math.max(0, ...window.__hhpiSmoke.frameGaps)));
     result.maxFrameGapMs = Math.round(maxFrameGap);
     const frameHitch = maxFrameGap > 80;
@@ -620,6 +664,14 @@ async function runScenario(browser, config, name) {
     result.cachedTailMovedPx = Math.round(latestRows.top - residentRows.top);
     if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
     if (result.cachedTailMovedPx < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
+    if (legacyResource) {
+      await awaiting('select-preserved-legacy-reference', page.locator('.hapi-window-tabs').getByRole('tab').nth(1).click());
+      const unavailable = page.locator('.hapi-window-active .hapi-lease-error');
+      await awaiting('wait-for-terminal-legacy-source-state', unavailable.waitFor({ state: 'visible', timeout: 5000 }));
+      const message = await awaiting('read-terminal-legacy-source-state', unavailable.innerText());
+      if (!/source that is not connected to this HHPI Host|来源尚未接入当前 HHPI Host/u.test(message)) fail('legacy-source-state-not-explicit');
+      result.savedLegacyReference = 'source-not-connected';
+    }
     if (frameHitch) fail('history-scroll-frame-hitch');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
     if (result.pageErrors || result.consoleErrors) fail('browser-page-error');
@@ -644,8 +696,9 @@ export async function main() {
     coverage: 'Canonical HHPI source catalog/read/changes, six visible earlier body pages, anchor continuity, latest return and cached-tail reads.' };
   try {
     config = await parseOptions(process.argv.slice(2));
+    report.coverage = `Canonical HHPI source catalog/read/changes, ${config.pages} visible earlier source-content pages, anchor continuity, latest return, cached-tail reads, and any preserved legacy reference's terminal source state.`;
     if (config.help) {
-      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--url-file FILE] [--scenario both|desktop|mobile] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Workspace persistence is synthetic; no screenshot is captured.\n');
+      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--url-file FILE] [--scenario both|desktop|mobile] [--pages 6..N] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Workspace persistence is synthetic; no screenshot is captured.\n');
       return;
     }
     const { applyEnv } = await import(pathToFileURL(process.env.HAPI_DSH_WEBSHOT_TOOLCHAIN ?? '/home/chris/.agents/tools/webshot/lib/toolchain.mjs').href);

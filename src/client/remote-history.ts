@@ -331,7 +331,12 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     signal.throwIfAborted()
     if (navigation !== this.navigation || epoch !== this.owner.sourceEpoch) throw new RemoteHistoryError('STALE_VERSION', 'A newer navigation superseded this page.')
     const extending = request.kind === 'before' || request.kind === 'after'
-    let entries = entriesBySeq(extending ? [...this.owner.currentEntries(this.seqs), ...page.entries] : page.entries)
+    // The budget admits one source page. Previously accepted history belongs to
+    // this reader until release; charging it again turns paging into a hard stop.
+    if (page.entries.length > budget.events || windowBytes(page.entries) > budget.bytes) {
+      throw new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source page and its dependencies exceed the reading admission budget.')
+    }
+    const entries = entriesBySeq(extending ? [...this.owner.currentEntries(this.seqs), ...page.entries] : page.entries)
     const nextContext = new Set(extending ? [...this.context, ...page.context] : page.context)
     for (const entry of page.entries) if (!page.context.includes(entry.event.seq)) nextContext.delete(entry.event.seq)
     let hasBefore = request.kind === 'after' ? this.state.hasBefore : page.hasBefore
@@ -346,15 +351,6 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
       const prior = parseCursor(this.state.after, epoch)
       if (after === null || prior >= after) { after = prior; hasAfter = this.state.hasAfter }
     }
-    let countBytes = windowBytes(entries)
-    while (entries.length > budget.events || countBytes > budget.bytes) {
-      const candidate = request.kind === 'before' ? entries.at(-1) : entries[0]
-      if (!candidate || entries.length <= page.context.length + 1 || nextContext.has(candidate.event.seq)) throw new RemoteHistoryError('CAPACITY_EXCEEDED', 'The source item and its dependencies exceed this reading budget.')
-      entries = request.kind === 'before' ? entries.slice(0, -1) : entries.slice(1); countBytes -= size(candidate)
-      const body = entries.filter(entry => !nextContext.has(entry.event.seq))
-      if (request.kind === 'before') { after = body.at(-1)?.event.seq ?? null; hasAfter = true }
-      else { before = body[0]?.event.seq ?? null; hasBefore = true }
-    }
     this.budget = budget; this.stateEpoch = epoch; this.context = nextContext; this.seqs = entries.map(entry => entry.event.seq); this.error = undefined
     this.state = this.snapshot(entries, before, after, hasBefore, hasAfter); this.stage(); this.owner.trimCache()
     return this.state
@@ -362,15 +358,13 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   accept(change: Pick<SourceChanges, 'upserts' | 'removed'>): void {
     if (this.abort.signal.aborted || this.stateEpoch !== this.owner.sourceEpoch) return
     const previous = this.state, present = new Set(this.seqs), tail = previous.after ? parseCursor(previous.after, this.stateEpoch) : -1
-    let updates = change.upserts.filter(entry => present.has(entry.event.seq) || !previous.hasAfter && entry.event.seq > tail)
+    const updates = change.upserts.filter(entry => present.has(entry.event.seq) || !previous.hasAfter && entry.event.seq > tail)
     const removed = new Set(change.removed)
-    let entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
-    const atCapacity = entries.length > this.budget.events || windowBytes(entries) > this.budget.bytes, hasAfter = previous.hasAfter || atCapacity
-    if (atCapacity) {
-      updates = updates.filter(entry => present.has(entry.event.seq))
-      entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
-      if (windowBytes(entries) > this.budget.bytes) { this.fail(new RemoteHistoryError('CAPACITY_EXCEEDED', 'A visible source revision exceeds the reading budget.')); return }
+    if (updates.length > this.budget.events || windowBytes(updates) > this.budget.bytes) {
+      this.fail(new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source revision exceeds the reading admission budget.')); return
     }
+    const entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
+    const hasAfter = previous.hasAfter
     this.seqs = entries.map(entry => entry.event.seq)
     const appended = updates.some(entry => entry.event.seq > tail), changed = updates.length > 0 || change.removed.some(seq => present.has(seq))
     const before = previous.before ? parseCursor(previous.before, this.stateEpoch) : null

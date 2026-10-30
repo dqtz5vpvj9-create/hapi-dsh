@@ -27,6 +27,7 @@ test('source loading failures preserve authoritative missing, removed, denied an
         assert.equal(sourceResolutionFailure({ message: 'Synthetic source response', details: { status } }), expected);
     }
     assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_not_ready' } }), 'not-ready');
+    assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_not_connected' } }), 'not-connected');
     assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_hub_mismatch' } }), 'identity');
     assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_identity_mismatch' } }), 'identity');
     assert.equal(sourceResolutionFailure({ details: { outcome: 'indeterminate' } }), 'transport');

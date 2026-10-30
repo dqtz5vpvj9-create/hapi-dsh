@@ -107,6 +107,40 @@ test('six older body-bearing segments retain accepted identities and reuse every
   assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b))
 })
 
+test('page admission does not charge retained history again or stop live revisions', { timeout: 3000 }, async t => {
+  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
+  t.after(() => owner.dispose())
+  const admission = { ...budget, events: 200, bytes: 128 * 1024 }
+  wire.entries = wire.entries.map(value => entry(value.event.seq, `body-${value.event.seq} ${'x'.repeat(512)}`))
+  const feed = await owner.openView('long-pane', admission), other = await owner.openView('other-pane', admission)
+  let snapshot = feed.initial
+  for (let page = 1; page < 9; page++) {
+    snapshot = await feed.read({ kind: 'before', cursor: snapshot.before! }, admission, new AbortController().signal)
+    assert.equal(snapshot.entries.length, 160 * (page + 1), 'accepted body is never clipped to the one-page admission budget')
+    feed.publication!.accept(snapshot.version)
+  }
+  assert.equal(other.initial.entries.length, 160)
+  await observe(feed, snapshot.version, () => wire.emit([entry(1440, 'revised resident tail'), entry(1441, 'new tail')]))
+  const current = await feed.refresh!(admission, new AbortController().signal)
+  assert.equal(current.entries.length, 1441)
+  assert.equal(body(current, 1440), 'revised resident tail')
+  assert.equal(body(current, 1441), 'new tail')
+  assert.equal(current.hasAfter, false, 'crossing an aggregate budget cannot manufacture a tail gap')
+  const reads = wire.calls.length
+  const latest = await feed.read({ kind: 'latest' }, admission, new AbortController().signal)
+  assert.equal(latest.entries.length, 1441)
+  assert.equal(wire.calls.length, reads)
+})
+
+test('a genuinely oversized page still fails admission without altering accepted history', async t => {
+  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
+  t.after(() => owner.dispose())
+  const feed = await owner.openView('pane', budget)
+  feed.publication!.accept(feed.initial.version)
+  await assert.rejects(feed.read({ kind: 'before', cursor: feed.initial.before! }, { ...budget, events: 1 }, new AbortController().signal), { code: 'CAPACITY_EXCEEDED' })
+  assert.equal(feed.publication!.published?.snapshot, feed.initial)
+})
+
 test('cancelling one coalesced navigation does not cancel the other caller', { timeout: 3000 }, async t => {
   const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
   t.after(() => owner.dispose())

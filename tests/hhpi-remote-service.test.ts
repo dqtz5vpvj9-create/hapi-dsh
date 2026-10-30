@@ -77,6 +77,10 @@ for (const legacyHapi of [true, false]) test(`real Host registers HHPI and works
         assert.equal(catalog.legacyHapi, legacyHapi);
         assert.deepEqual(catalog.sources, []);
         assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
+        if (!legacyHapi) await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
+            args: { request: { hubId: 'saved-legacy-hub', sourceSessionId: 'saved-session' } } }),
+        error => error instanceof RemoteError && error.details?.sourceCode === 'source_not_connected',
+        'a saved legacy pane must receive a terminal source state instead of waiting for an unregistered service');
         assert.equal(ctx.typert.listPackages({ package: 'hapi-dsh', face: 'host' }).length, 1);
     } finally {
         await ctx.fiber.dispose();

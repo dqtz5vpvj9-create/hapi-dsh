@@ -108,6 +108,18 @@ test('page two and three follow the same source-sequence and visible-text eviden
   }
 });
 
+test('tool-only source intervals require the exact call identity and its visible source name', () => {
+  const record = { request: { sessionId: target, before: 90 }, page: { session: { id: target }, before: 50, entries: [
+    { type: 'event', event: { seq: 60, type: 'tool/call', data: { callId: 'unique-earlier-call', name: 'codex.commandExecution' } } },
+  ] } };
+  const row = { key: 'tool:unique-earlier-call', anchor: 'call:unique-earlier-call', visible: true, text: 'Tool call · codex.commandExecution · read source' };
+  assert.equal(matchVisibleSourcePage(record, [row], new Set(), new Set([90]), 90)?.seq, 60);
+  assert.equal(matchVisibleSourcePage(record, [{ ...row, anchor: 'call:another-call' }], new Set(), new Set([90]), 90), null,
+    'a different call with the same display name cannot count as this source event');
+  assert.equal(matchVisibleSourcePage(record, [{ ...row, text: 'loading' }], new Set(), new Set([90]), 90), null);
+  assert.equal(captureVisibleSourceAnchor([row], [record])?.seq, 60);
+});
+
 test('source anchor verdict separates identity, body change, virtualization, and stable retention', () => {
   const sourceText = 'A stable source message body that stays in the conversation.';
   const anchor = { key: 'user:100', anchor: 'flow:user:100', seq: 100, sourceText };

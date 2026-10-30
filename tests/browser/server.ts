@@ -69,7 +69,7 @@ export async function startLab() {
     }
     index.edit(metadata, () => {
       let nextUserId = 1
-      // The first three source windows remain user-only. The seven newest
+      // The first three source windows remain user-only. The fourteen newest
       // 160-event windows each begin with a complete real tool/PTC lifecycle,
       // followed by 151 user messages, so every prepend exercises both paths.
       for (let block = 0; block < 3; block++) {
@@ -82,7 +82,7 @@ export async function startLab() {
           } as EventInput, { eventId: `message-${id}`, type: 'user/message', userMessageId: `message-${id}` })
         }
       }
-      for (let block = 0; block < 7; block++) {
+      for (let block = 0; block < 14; block++) {
         putToolLifecycle(block, nextUserId)
         for (let i = 0; i < 151; i++, nextUserId++) {
           const id = nextUserId
@@ -92,7 +92,7 @@ export async function startLab() {
           } as EventInput, { eventId: `message-${id}`, type: 'user/message', userMessageId: `message-${id}` })
         }
       }
-      if (nextUserId !== 1441) throw new Error(`Synthetic history seeded ${nextUserId - 1} user messages instead of 1440.`)
+      if (nextUserId !== 2498) throw new Error(`Synthetic history seeded ${nextUserId - 1} user messages instead of 2497.`)
     })
   }
   reset()

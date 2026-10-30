@@ -12,13 +12,14 @@ import type { HistoryReadV1, HistorySnapshotV1, WindowCommitCoordinatorV1, Windo
 
 const require = createRequire(import.meta.url)
 interface Store<T> { getSnapshot(): T; subscribe(callback: () => void): () => void }
-interface ViewState { phase: string; busy: boolean; failure: string | null; before: string | null; after: string | null; revision: number }
-interface Assembler extends OfficialChatAssembler { derivedNodeCount(): number; containsReadingKey(key: string): boolean }
+interface ViewState { phase: string; busy: boolean; failure: string | null; before: string | null; after: string | null; hasBefore: boolean; revision: number }
+interface Assembler extends OfficialChatAssembler { derivedNodeCount(): number; derivedNodeKeys(): readonly string[]; containsReadingKey(key: string): boolean }
 interface Candidate { entries: HistorySnapshotV1['entries']; hasBefore: boolean; hasAfter: boolean; version: string; assembled: Assembler }
 interface View {
   snapshot: Store<ViewState>; reads: Assembler
   read(request: HistoryReadV1, signal?: AbortSignal): Promise<ViewState>; refresh(signal?: AbortSignal): Promise<ViewState>; release(): void
   publishCandidate(candidate: Candidate): void; validateCandidate(candidate: Candidate, measurements: readonly WindowReaderMeasurementV1[]): void
+  capacityScope(): 'window' | 'growth'
 }
 interface Registry { entries(): readonly unknown[]; register(value: unknown): () => void }
 const production = require('../../.tmp/hhpi-official-contract.cjs') as {
@@ -58,9 +59,9 @@ interface Reader {
   latestCandidate: Candidate | undefined
   measurements: WindowReaderMeasurementV1[]; corrections: WindowReaderMeasurementV1[]; publications: number
 }
-function fixture() {
+function fixture(total = 1440, growth = true) {
   const definitionsOwner = definitions(), index = new SourceEventIndex(':memory:', session), calls: SourceReadRequest[] = []
-  index.edit(session, () => { for (let i = 1; i <= 1440; ++i) index.put(`item-${i}`, user(i)) })
+  index.edit(session, () => { for (let i = 1; i <= total; ++i) index.put(`item-${i}`, user(i)) })
   let gate: { waiting: Promise<void>; started(): void } | undefined
   const owner = new RemoteSourceHistory(session.id, {
     async read(request, signal) { calls.push(request); const page = index.read(request); const waiting = gate; gate = undefined; waiting?.started(); if (waiting) await waiting.waiting; signal?.throwIfAborted(); return page },
@@ -78,11 +79,12 @@ function fixture() {
       const reader: Reader = { anchor: null, anchorOwnerKey: undefined, top: 0, revision: 0, fail: false, available: false,
         latestCandidate: undefined, measurements: [], corrections: [], publications: 0 }
       const coordinator = production.windowCommit.createWindowCommitFactory().create<Candidate>({ windowId: id, revision: 0,
+        ...growth ? { capacityScope: () => view?.capacityScope() ?? 'window' } : {},
         buildCandidate(snapshot) {
           const assembled = definitionsOwner.assembler(); assembled.replaceWindow(snapshot.entries, snapshot.hasBefore); assembled.flush()
           const candidate = { ...snapshot, assembled }
           reader.latestCandidate = candidate
-          return { candidate, nodes: assembled.derivedNodeCount() }
+          return { candidate, nodes: assembled.derivedNodeCount(), nodeKeys: assembled.derivedNodeKeys() }
         },
         validate(candidate, measurements) { view.validateCandidate(candidate, measurements) },
         publish(candidate) { view.publishCandidate(candidate); ++reader.publications },
@@ -227,6 +229,40 @@ test('official Conversation obtains six earlier body-bearing segments while reta
   for (const cursor of cursors.reverse()) await view.read({ kind: 'before', cursor })
   assert.equal(f.calls.length, count)
   assert.equal(new Set(readable(view.reads.snapshot('chat'))).size, text.length)
+})
+
+test('continuous official reading crosses the old total-node and total-event ceilings without discarding history', { timeout: 20000 }, async t => {
+  const f = fixture(6400); t.after(() => f.close())
+  const { view, reader } = await f.open('long-pane'), { view: other } = await f.open('other-pane')
+  const tailKey = view.reads.snapshot('chat').order.at(-1)!, tailNode = view.reads.snapshot('chat').nodes.get(tailKey)
+  for (let page = 1; page < 40; page++) {
+    reader.anchor = view.reads.snapshot('chat').order[0]!; reader.available = true; reader.top = 37
+    const before = view.snapshot.getSnapshot().before; assert.ok(before)
+    await view.read({ kind: 'before', cursor: before })
+    assert.equal(readable(view.reads.snapshot('chat')).length, (page + 1) * 160, `page ${page + 1} keeps every accepted body`)
+    if (page < 39) assert.equal(view.reads.snapshot('chat').nodes.get(tailKey), tailNode, `page ${page + 1} retains the tail node`)
+    else assert.deepEqual(view.reads.snapshot('chat').nodes.get(tailKey), tailNode, 'reaching the true start changes hasBefore and rebuilds dependency locations without losing the tail identity or body')
+    assert.equal(readable(other.reads.snapshot('chat')).length, 160)
+  }
+  assert.equal(view.snapshot.getSnapshot().hasBefore, false)
+  assert.equal(view.snapshot.getSnapshot().failure, null)
+  const count = f.calls.length
+  await view.read({ kind: 'latest' })
+  assert.equal(f.calls.length, count, 'the complete resident tail needs no new source read')
+  assert.deepEqual(readable(view.reads.snapshot('chat')), Array.from({ length: 6400 }, (_, i) => `body-${i + 1}`))
+  f.index.edit(session, () => { f.index.put('item-6400', user(6400, 'revised resident tail')); f.index.put('item-6401', user(6401, 'appended live tail')) })
+  await waitState(view, () => readable(view.reads.snapshot('chat')).at(-1) === 'appended live tail')
+  assert.deepEqual(readable(view.reads.snapshot('chat')).slice(-2), ['revised resident tail', 'appended live tail'])
+  assert.equal(view.snapshot.getSnapshot().failure, null, 'resident history beyond an admission budget still accepts live revisions')
+})
+
+test('the default coordinator keeps its bounded-window capacity contract', { timeout: 10000 }, async t => {
+  const f = fixture(2240, false); t.after(() => f.close())
+  const { view } = await f.open('bounded-window')
+  for (let page = 1; page < 12; page++) await view.read({ kind: 'before', cursor: view.snapshot.getSnapshot().before! })
+  const accepted = view.reads.snapshot('chat')
+  await assert.rejects(view.read({ kind: 'before', cursor: view.snapshot.getSnapshot().before! }), { code: 'CAPACITY_EXCEEDED' })
+  assert.deepEqual(readable(view.reads.snapshot('chat')), readable(accepted), 'rejected admission cannot replace the published body')
 })
 
 test('coalesced official navigation and independent Panes do not duplicate body or source reads', { timeout: 10000 }, async t => {

@@ -36,16 +36,66 @@ export async function applyReaderPublication(root) {
     if (!shape) throw new Error('Pinned reader anchor shape changed.');
     insert(edits, shape.getStart(ast) + 1, '\n    /** Semantic node/group owning a more precise DOM anchor; correction still uses key. */\n    readonly ownerKey?: string;\n');
     const host = named(ast, 'WindowCommitHostV1');
+    const candidate = named(ast, 'WindowCandidateV1');
+    insert(edits, candidate.end - 1, '\n  /** Stable derived Context identities, used for growth admission when supplied. */\n  readonly nodeKeys?: readonly string[]\n');
     insert(edits, host.end - 1, `\n  /** Validate all commit-time readers before publishing; absent for legacy hosts. */\n  validate?(candidate: Candidate, measurements: readonly WindowReaderMeasurementV1[]): void\n`);
+    insert(edits, host.end - 1, `
+  /** Opt-in: apply admission budgets to growth retaining all accepted source identities. */
+  capacityScope?(): 'window' | 'growth'
+`);
     const factory = named(ast, 'WindowCommitFactoryV1');
     insert(edits, factory.end - 1, `\n  /** Installed together with optional complete-window publication and reader validation. */\n  readonly completeWindowHistory?: 1\n`);
   });
   await edit(root, 'packages/api/session-controller/src/client/sessions/window-commit.ts', (ast, edits) => {
     const owner = named(ast, 'WindowCommitCoordinator'), commit = method(owner, ast, 'commitWindow');
+    const record = named(ast, 'PreparedRecord');
+    insert(edits, record.end - 1, '\n  readonly snapshot: HistorySnapshotV1\n  readonly nodeKeys?: readonly string[]\n');
+    insert(edits, owner.end - 1, `
+  private retainedSnapshot: HistorySnapshotV1 | undefined
+  private retainedNodeKeys = new Set<string>()
+  /** Only accepted entries with the same source identity can reuse admission. */
+  private retainedEntries(): Map<number, HistorySnapshotV1['entries'][number]> {
+    const previous = this.retainedSnapshot
+    if (this.host.capacityScope?.() !== 'growth' || previous === undefined) return new Map()
+    return new Map(previous.entries.map(entry => [entry.event.seq, entry]))
+  }
+`);
+    const prepare = method(owner, ast, 'prepare');
+    let capacity = 0, pending = 0, nodeCheck = 0;
+    const admission = node => {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'this.assertCapacity') {
+        const statement = node.parent;
+        insert(edits, statement.getStart(ast), `const resident = this.retainedEntries()
+    `);
+        edits.push({ start: node.arguments[0].getStart(ast), end: node.arguments[0].end,
+          text: '{ ...snapshot, entries: snapshot.entries.filter(entry => resident.get(entry.event.seq) !== entry) }' }); ++capacity;
+      }
+      if (ts.isIfStatement(node) && node.expression.getText(ast) === 'built.nodes > this.budget.nodes') {
+        insert(edits, node.getStart(ast), `if (built.nodeKeys !== undefined && (built.nodeKeys.length !== built.nodes || new Set(built.nodeKeys).size !== built.nodes)) {
+      this.releaseCandidate(built.candidate)
+      throw new WindowCommitError('INVALID_WINDOW', 'Candidate derived Context identities do not match its node count.')
+    }
+    const capacityNodes = this.host.capacityScope?.() === 'growth' && built.nodeKeys !== undefined
+      ? built.nodeKeys.filter(key => !this.retainedNodeKeys.has(key)).length : built.nodes
+    `);
+        edits.push({ start: node.expression.getStart(ast), end: node.expression.end, text: 'capacityNodes > this.budget.nodes' }); ++nodeCheck;
+      }
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'this.pending.set') {
+        const record = node.arguments[1];
+        if (!record || !ts.isObjectLiteralExpression(record)) throw new Error('Pinned prepared record changed.');
+        insert(edits, record.getStart(ast) + 1, ' snapshot, ...built.nodeKeys === undefined ? {} : { nodeKeys: built.nodeKeys },'); ++pending;
+      }
+      ts.forEachChild(node, admission);
+    };
+    admission(prepare);
+    if (capacity !== 1 || pending !== 1 || nodeCheck !== 1) throw new Error('Pinned coordinator admission checkpoints changed.');
     let matches = 0;
     const visit = node => {
       if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText(ast) === 'this.host.publish') {
         insert(edits, node.getStart(ast), 'this.host.validate?.(record.candidate, [...measurements.values()])\n          '); ++matches;
+      }
+      if (ts.isExpressionStatement(node) && node.expression.getText(ast) === 'this.revisionValue = revision') {
+        insert(edits, node.end, '\n        this.retainedSnapshot = record.snapshot\n        this.retainedNodeKeys = new Set(record.nodeKeys)');
       }
       ts.forEachChild(node, visit);
     };
@@ -97,6 +147,8 @@ export async function applyReaderPublication(root) {
   await edit(root, 'packages/client/ui-conversation/src/client/conversation/assembler.ts', (ast, edits) => {
     const owner = named(ast, 'ConversationNodeAssembler');
     insert(edits, owner.end - 1, `
+  /** Stable business Context keys, including hidden and detached derived state. */
+  derivedNodeKeys(): readonly string[] { return [...this.contexts.keys()] }
   /** Whether a materialized node or group still owns this reader anchor. */
   containsReadingKey(key: string): boolean {
     for (const context of this.contexts.values()) {
@@ -141,6 +193,8 @@ export async function applyReaderPublication(root) {
     insert(edits, tries[0].finallyBlock.getStart(ast) + 1, '\n      this.completePreserveAnchor = true\n');
     insert(edits, owner.end - 1, `
   private completePreserveAnchor = true
+  /** Complete-window providers retain accepted history behind the virtualized reader. */
+  capacityScope(): 'window' | 'growth' { return this.feed?.mode === 'complete-window' ? 'growth' : 'window' }
   /** Called with every mounted reader's fresh measurement before the publication. */
   validateCandidate(candidate: HistoryWindowCandidateV1, measurements: readonly import('@deepseek-ai/dsh-api-session-controller/client').WindowReaderMeasurementV1[]): void {
     if (this.feed?.mode !== 'complete-window' || !this.completePreserveAnchor) return
@@ -176,11 +230,15 @@ export async function applyReaderPublication(root) {
     const visit = node => {
       if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'host' && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
         insert(edits, node.initializer.getStart(ast) + 1, `
+      capacityScope: () => live()?.capacityScope() ?? 'window',
       validate: (candidate, measurements) => {
         const view = live()
         if (view === undefined) throw new Error('The reading window was released before publication.')
         view.validateCandidate(candidate, measurements)
       },`); added = true;
+      }
+      if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'nodes' && node.initializer.getText(ast) === 'assembled.derivedNodeCount()') {
+        insert(edits, node.end, ',\n          nodeKeys: assembled.derivedNodeKeys()');
       }
       ts.forEachChild(node, visit);
     };

@@ -1,7 +1,7 @@
 /** Persistent workspace and machine directory when no legacy HAPI source is configured. */
 import { createHash } from 'node:crypto';
 import type { Context } from '@deepseek-ai/cordis';
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
+import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import type {} from '@deepseek-ai/dsh-typert-registry';
 import { HAPI_REMOTE, type HapiCatalog, type WorkspaceDocument, type WorkspaceWrite, type WorkspaceWriteResult } from '../client-api.ts';
 import type { LegacyWorkspaceSnapshot } from '../legacy-workspace-types.ts';
@@ -16,7 +16,7 @@ export class WorkspaceShell extends TypertRemoteService {
     constructor(ctx: Context, private readonly federation: FederationHub, private readonly workspace: WorkspaceRepository, profileIdentity: string) {
         super(ctx, 'hhpiWorkspaceShell', { namespace: 'hapi' });
         this.identity = `hhpi-${createHash('sha256').update(profileIdentity).digest('hex').slice(0, 24)}`;
-        const methods = new Set(['catalog', 'workspaceGet', 'workspacePut', 'workspaceLegacy']);
+        const methods = new Set(['catalog', 'workspaceGet', 'workspacePut', 'workspaceLegacy', 'sourceSessionResolve']);
         ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [],
             invocations: [...HAPI_REMOTE.descriptors.filter(descriptor => methods.has(descriptor.method)).map(descriptor => ({ ...descriptor, service: 'hhpiWorkspaceShell' })), ...HHPI_HOST_CONTRACT.invocations],
             model: { services: [{ key: 'hhpiWorkspaceShell', exportName: 'WorkspaceShell', tags: [], members: [], types: [], summary: 'HHPI workspace and machine directory.' }, ...HHPI_HOST_CONTRACT.services], events: [], objects: [] },
@@ -33,4 +33,10 @@ export class WorkspaceShell extends TypertRemoteService {
     workspacePut(request: WorkspaceWrite): Promise<WorkspaceWriteResult> { return this.workspace.put(request); }
     @Remote('workspaceLegacy')
     async workspaceLegacy(): Promise<LegacyWorkspaceSnapshot> { return { schemaVersion: 2, revision: 0, workspaces: [] }; }
+    /** Saved legacy references are preserved, but this Host cannot acquire their absent source. */
+    @Remote('sourceSessionResolve')
+    async sourceSessionResolve(_request: { hubId: string; sourceSessionId: string }): Promise<never> {
+        throw new RemoteError('hapi/request', 'This saved conversation belongs to a legacy source that is not connected to this HHPI Host. Its saved reference is preserved.',
+            { sourceCode: 'source_not_connected', outcome: 'rejected' });
+    }
 }
