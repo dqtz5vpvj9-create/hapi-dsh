@@ -125,6 +125,8 @@
     "test:smoke:capture": "node scripts/test-smoke-capture.mjs"
   },
   "dependencies": {
+    "@deepseek-ai/dsh-session-persistence": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.1-rc.3",
     "@deepseek-ai/dsh": "0.2.1-rc.3",
     "@deepseek-ai/dsh-agent": "0.2.1-rc.3",
     "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.3",

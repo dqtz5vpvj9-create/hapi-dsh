@@ -7,7 +7,7 @@ import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
 import { parseSources } from '../remote/config.ts';
-import type { DirectCodexConfig } from '../remote/protocol.ts';
+import type { DirectSourceConfig } from '../remote/protocol.ts';
 
 export const DSH_VERSION = '0.2.1-rc.3';
 export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
@@ -37,7 +37,7 @@ export interface RuntimeConfig {
         tls?: { certFile: string; keyFile: string };
     };
     federation?: { credentialsFile: string };
-    sources?: DirectCodexConfig[];
+    sources?: DirectSourceConfig[];
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {

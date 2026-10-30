@@ -9,8 +9,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session';
 import { HHPI_REMOTE } from '../hhpi-api.ts';
 import { SourceGateway, type SourceAccess } from './gateway.ts';
 import { DirectCodexAdapter } from './codex-adapter.ts';
+import { DirectDshAdapter } from './dsh-adapter.ts';
 import { SourceError } from './errors.ts';
-import type { DirectCodexConfig, SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt,
+import type { DirectSourceConfig, SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt,
     SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest } from './protocol.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpi: HhpiSourceService } }
@@ -58,8 +59,11 @@ export class HhpiSourceService extends TypertRemoteService {
     @Remote({ name: 'resource', resources: { session: addressedSession } })
     async resource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> { try { return await this.gateway.resource(request, this.access, signal); } catch (error) { remoteError(error); } }
 }
-export function installSources(ctx: Context, sources: readonly DirectCodexConfig[], directory: string, legacyHapi: boolean): SourceGateway {
-    const adapters = sources.map(source => new DirectCodexAdapter(source, join(directory, createHash('sha256').update(JSON.stringify([source.machineId, source.id, source.engine])).digest('hex'))));
+export function installSources(ctx: Context, sources: readonly DirectSourceConfig[], directory: string, legacyHapi: boolean): SourceGateway {
+    const adapters = sources.map(source => {
+        const cache = join(directory, createHash('sha256').update(JSON.stringify([source.machineId, source.id, source.engine])).digest('hex'));
+        return source.engine === 'dsh' ? new DirectDshAdapter(source, cache) : new DirectCodexAdapter(source, cache);
+    });
     const gateway = new SourceGateway(adapters, legacyHapi);
     new HhpiSourceService(ctx, gateway);
     ctx.effect(() => () => gateway.dispose(), 'hhpi: native source ownership');

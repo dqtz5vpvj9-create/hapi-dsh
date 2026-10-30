@@ -27,6 +27,8 @@ export interface SourceSession extends SourceIdentity {
     id: string; title: string; cwd: string; updatedAt: number;
     status: 'idle' | 'running' | 'waiting' | 'offline'; activeTurnId: string | null;
     capabilities: SourceCapabilities; pendingRequests: SourceApproval[];
+    /** Exact pre-cutover resource, advertised only by its verified native owner. */
+    legacyOrigin?: { hubId: string; sessionId: string } | undefined;
 }
 export interface SourceReadRequest { sessionId: string; before?: number; after?: number; around?: number; limit?: number; epoch?: string }
 export interface SourcePage {
@@ -74,3 +76,9 @@ export interface DirectCodexConfig {
      * an explicit send may resume an idle persisted thread using its native ID. */
     ownership?: 'shared' | 'exclusive';
 }
+/** Native DSH body stays in its official persistence; the existing owner retains all writes. */
+export interface DirectDshConfig {
+    id: string; machineId: string; engine: 'dsh'; root: string;
+    owner: { hubId: string; url: string; tokenEnv: string };
+}
+export type DirectSourceConfig = DirectCodexConfig | DirectDshConfig;

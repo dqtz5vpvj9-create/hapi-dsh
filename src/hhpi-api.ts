@@ -26,7 +26,8 @@ const seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const approval = z.strictObject({ id, method: z.string(), turnId: id.nullable(), itemId: id.nullable(), params: z.record(z.string(), z.unknown()) });
 const session: z.ZodType<SourceSession> = z.strictObject({ id, sourceId: id, machineId: id, engine: z.string(), nativeId: id,
     title: z.string(), cwd: z.string(), updatedAt: z.number().finite(), status: z.enum(['idle', 'running', 'waiting', 'offline']), activeTurnId: id.nullable(),
-    capabilities: z.strictObject({ send: z.boolean(), steer: z.boolean(), cancel: z.boolean(), approve: z.boolean(), files: z.boolean() }), pendingRequests: z.array(approval) });
+    capabilities: z.strictObject({ send: z.boolean(), steer: z.boolean(), cancel: z.boolean(), approve: z.boolean(), files: z.boolean() }), pendingRequests: z.array(approval),
+    legacyOrigin: z.strictObject({ hubId: id, sessionId: id }).optional() });
 // The source normalizer uses the pinned DSH event validator. The wire additionally
 // bounds structural identity; browser code cannot submit event payloads to Host.
 const entry = z.strictObject({ type: z.literal('event'), event: z.object({ seq, type: z.string().min(1), time: z.number().finite(), data: z.unknown() }).passthrough() }) as unknown as z.ZodType<SourceEntry>;

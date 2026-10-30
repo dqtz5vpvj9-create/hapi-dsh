@@ -403,7 +403,7 @@ async function runScenario(browser, config, name) {
     if (!Array.isArray(catalog?.sessions) || !catalog.sessions.some(session => session.id === config.sessionId
       && canonicalHhpiSessionId(session.id))) fail('canonical-session-not-in-hhpi-catalog');
     const workspace = syntheticWorkspace(config.sessionId);
-    let legacyResource;
+    let legacyResource, migratedSource;
     if (catalog.legacyHapi === false) {
       const saved = await awaiting('read-saved-reference-for-terminal-state-check', bootstrap('hapi/workspaceGet'));
       const findLegacy = value => {
@@ -415,6 +415,9 @@ async function runScenario(browser, config, name) {
       };
       legacyResource = findLegacy(saved.state);
       if (legacyResource) {
+        const matches = catalog.sessions.filter(session => session.legacyOrigin?.hubId === legacyResource.sourceHubId
+          && session.legacyOrigin?.sessionId === legacyResource.sourceSessionId && canonicalHhpiSessionId(session.id));
+        if (matches.length === 1) migratedSource = matches[0];
         workspace.windows.push({ id: 'saved-source-window', name: 'Saved source', autoName: false,
           root: { type: 'pane', id: 'saved-source-pane', resource: legacyResource } });
         workspace.focused['saved-source-window'] = 'saved-source-pane';
@@ -698,11 +701,19 @@ async function runScenario(browser, config, name) {
     if (result.cachedTailMovedPx < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
     if (legacyResource) {
       await awaiting('select-preserved-legacy-reference', page.locator('.hapi-window-tabs').getByRole('tab').nth(1).click());
-      const unavailable = page.locator('.hapi-window-active .hapi-lease-error');
-      await awaiting('wait-for-terminal-legacy-source-state', unavailable.waitFor({ state: 'visible', timeout: 5000 }));
-      const message = await awaiting('read-terminal-legacy-source-state', unavailable.innerText());
-      if (!/source that is not connected to this HHPI Host|来源尚未接入当前 HHPI Host/u.test(message)) fail('legacy-source-state-not-explicit');
-      result.savedLegacyReference = 'source-not-connected';
+      if (migratedSource) {
+        const pane = page.locator('.hapi-window-active .hapi-pane').filter({ has: page.locator('[data-composer-input]') });
+        await awaiting('wait-for-migrated-native-source-body', pane.locator('[data-conversation-scroll] [data-chat-anchor-key]').first().waitFor({ state: 'visible', timeout: 5000 }));
+        await awaiting('wait-for-migrated-native-source-editor', pane.locator('[data-composer-input]').waitFor({ state: 'visible', timeout: 5000 }));
+        if (await pane.locator('.hapi-lease-error').count()) fail('migrated-native-source-still-unavailable');
+        result.savedLegacyReference = 'native-body-and-editor-restored';
+      } else {
+        const unavailable = page.locator('.hapi-window-active .hapi-lease-error');
+        await awaiting('wait-for-terminal-legacy-source-state', unavailable.waitFor({ state: 'visible', timeout: 5000 }));
+        const message = await awaiting('read-terminal-legacy-source-state', unavailable.innerText());
+        if (!/source that is not connected to this HHPI Host|来源尚未接入当前 HHPI Host/u.test(message)) fail('legacy-source-state-not-explicit');
+        result.savedLegacyReference = 'source-not-connected';
+      }
     }
     if (frameHitch) fail('history-scroll-frame-hitch');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');

@@ -4,6 +4,7 @@ import { panes, parsePaneResource, parseWorkspaceState, type PaneResource, type 
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
 import { displaySessionBaseId, displaySessionRevision, isSourceDisplaySessionId } from '../client/catalog-readiness.ts'
 import { rebindSessionFileTarget } from './dsh-view.ts'
+import { sourceSessionId, type SourceSession } from '../remote/protocol.ts'
 
 /** A child transcript is not the mutable/read-state identity of its root thread. */
 export function isSourceChild(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): boolean {
@@ -102,6 +103,22 @@ export function bindSourceResources(state: WorkspaceState, rows: Readonly<Record
         if (value.resource.kind === 'empty') return value
         const original = value.resource
         let resource = original
+        if (resource.kind === 'chat' && resource.sourceSessionId && resource.sourceHubId) {
+            const targets = Object.values(rows).filter(row => {
+                const native = row.projectionValues?.hhpiSource as SourceSession | undefined
+                if (!native?.legacyOrigin) return false
+                return native.legacyOrigin.hubId === resource.sourceHubId
+                    && native.legacyOrigin.sessionId === resource.sourceSessionId && native.id === row.sourceSessionId
+                    && native.id === sourceSessionId(native)
+                    && row.id !== resource.sessionId
+            })
+            if (targets.length === 1) {
+                changed = true
+                return { ...value, resource: { kind: 'chat', sessionId: targets[0]!.id,
+                    draftOrigin: resource.draftOrigin ?? { sessionId: resource.sessionId,
+                        sourceSessionId: resource.sourceSessionId, sourceHubId: resource.sourceHubId } } }
+            }
+        }
         // Imported legacy identities may lack a Hub; only the confirmed
         // configured Hub may supply it. No row is consulted before this.
         if (resource.sourceSessionId && resource.sourceHubId === undefined && scope.primaryHubId !== undefined) {
