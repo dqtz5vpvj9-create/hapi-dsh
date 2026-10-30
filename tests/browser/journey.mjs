@@ -130,6 +130,52 @@ export async function runJourney(page, context, origin, mode, result) {
       segment.preciseCommitAnchor = result.preciseCommitAnchors[index]
     })
   })
+  await step('real viewport width change preserves the reading anchor', async () => {
+    const started = performance.now()
+    const originalWidth = mobile ? 390 : 1440, height = mobile ? 844 : 900
+    const changedWidth = mobile ? 450 : 1320
+    const anchor = await pane('a').evaluate(element => {
+      const port = element.querySelector('[data-conversation-scroll]'), box = port.getBoundingClientRect()
+      const node = [...port.querySelectorAll('[data-chat-node-key][data-chat-flow-kind="user"][data-chat-anchor-key]')].find(value => {
+        const rect = value.getBoundingClientRect()
+        return rect.height > 0 && rect.bottom > box.top + 2 && rect.top < box.bottom - 100
+      })
+      if (!node) return null
+      const body = node.textContent.match(/body-(\d+)/)
+      return { key: node.getAttribute('data-chat-anchor-key'), nodeKey: node.getAttribute('data-chat-node-key'),
+        bodyId: body ? Number(body[1]) : null, offset: node.getBoundingClientRect().top - box.top }
+    })
+    assert.ok(anchor?.key && anchor.nodeKey && anchor.bodyId !== null, 'resize contract must begin from a visible actual user node')
+    const before = await state(), reads = (await stats()).reads, samples = []
+    for (const width of [changedWidth, originalWidth]) {
+      await page.setViewportSize({ width, height })
+      await gestures.settle()
+      const sample = await pane('a').evaluate((element, identity) => {
+        const port = element.querySelector('[data-conversation-scroll]')
+        const node = [...port.querySelectorAll('[data-chat-node-key][data-chat-flow-kind="user"][data-chat-anchor-key]')].find(value =>
+          value.getAttribute('data-chat-anchor-key') === identity.key && value.getAttribute('data-chat-node-key') === identity.nodeKey)
+        if (!node) return null
+        const portBox = port.getBoundingClientRect(), nodeBox = node.getBoundingClientRect()
+        return { key: node.getAttribute('data-chat-anchor-key'), nodeKey: node.getAttribute('data-chat-node-key'),
+          bodyId: Number(node.textContent.match(/body-(\d+)/)?.[1]), nodeHeight: nodeBox.height,
+          offset: nodeBox.top - portBox.top, viewport: { width: innerWidth, height: innerHeight } }
+      }, anchor)
+      assert.ok(sample && sample.nodeHeight > 0, `the same user node ${anchor.bodyId} must remain mounted after resizing to ${width}px`)
+      assert.equal(sample.key, anchor.key); assert.equal(sample.nodeKey, anchor.nodeKey); assert.equal(sample.bodyId, anchor.bodyId)
+      assert.deepEqual(sample.viewport, { width, height }, 'resize must exercise the requested real viewport dimensions')
+      const delta = sample.offset - anchor.offset
+      assert.ok(Math.abs(delta) <= 2, `viewport ${width}px moved user anchor ${anchor.bodyId} by ${delta}px`)
+      const resized = await state()
+      assert.equal(resized.a.rows, before.a.rows, 'viewport reflow must preserve the current pane body count')
+      assert.equal(resized.b.rows, before.b.rows, 'viewport reflow must preserve the other pane body count')
+      assert.equal(resized.a.draft, before.a.draft); assert.equal(resized.b.draft, before.b.draft, 'viewport reflow must preserve both drafts')
+      assert.equal((await stats()).reads, reads, 'viewport reflow must not request another source page')
+      samples.push({ width, delta, offset: sample.offset })
+    }
+    result.viewportResizeAnchor = { key: anchor.key, nodeKey: anchor.nodeKey, bodyId: anchor.bodyId,
+      originalWidth, height, samples, elapsedMs: Math.round(performance.now() - started) }
+    assert.ok(performance.now() - started < 5000, 'both real viewport reflows must finish within five seconds')
+  })
   await step('cached round trip and latest navigation', async () => {
     const before = await stats(), reading = await visible()
     await gestures.scroll(500); await gestures.scroll(-500)
