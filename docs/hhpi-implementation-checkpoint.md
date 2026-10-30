@@ -1,79 +1,96 @@
 # HHPI implementation checkpoint
 
-Branch: `feat/hhpi-remote-access-20261029`.
+Date: 2026-10-30. Branch: `feat/hhpi-remote-access-20261029`.
 
-Validated code revision: `24541313db51c9b9ca499ff4bb0deaf64cf8e798`. This is a development checkpoint, not final HANDOFF acceptance. Main and the production site are unchanged.
+Validated code revision: `464fc74186c19908fffc61e1b30b44996b6c16f3`.
 
-## Implemented code
+The complete front-end reading integration is implemented and verified against the installed official DSH components. This checkpoint records development and component integration acceptance. Real desktop/mobile layout and final end-user deployment acceptance remain separate. Main and the production site were not changed by this work.
 
-- HAPI-optional Host/CLI configuration, Runner source configuration, a persistent HAPI-independent workspace directory, and authenticated source API registration.
-- Canonical machine/source/engine/native-thread identity and a source adapter interface.
-- Direct Codex app-server transport using stdio or an operator-configured loopback WebSocket, with cancellation, bounded frames, disconnect handling and no automatic write retry.
-- Source-owned SQLite display index with stable identities/order, incremental native-item normalization, bounded page/replay reads, cross-page dependencies and explicit epoch invalidation after native history rewrites.
-- Native send, steer, cancel, approval routing and native thread creation. Durable source-scoped receipts prevent duplicate or uncertain mutations from being resent.
-- Exact-scope gateway and resource-denial behavior. Unsupported direct-source file/terminal operations cannot fall through to the central Host.
-- Shared accepted history, per-view source feeds, candidate publication acknowledgement, and source-built optional complete-window/official-reader extensions. Their data and contract tests do not establish complete browser wiring.
+## Front-end reading integration
 
-Compatibility rationale: [source event compatibility](adr/hhpi-source-event-compatibility.md). Publication extension: [complete-window publication](adr/hhpi-complete-window-publication.md).
+Each Pane now retains an independent official reading occurrence over its canonical native Session. It owns its Client scope, official Conversation history window, renderer stores, Chat scroll memory and InputHub shell. The native Session ID remains unchanged for authorization and source operations.
 
-## Changes since the prior saved source checkpoint
+The following paths have been connected:
 
-The following implementation changes were committed on the feature branch after `787ab2b1`:
+- Official Chat body, keyed nodes, process groups, navigation and request inspection use the selected occurrence assembler. Trajectory, historical todo details and plan-card context use the same binding.
+- Initial viewport filling, visible older-page loading, gesture-driven paging, forward paging, message-target navigation and return-to-latest reach the selected official reader. Source cursors remain opaque. Message sequences are resolved to actual official node keys before mounted navigation.
+- The actual window-commit capability is forwarded through the outer Session facade. Each selected reader participates in the existing measure/publish/layout-correction checkpoint. The mounted Chat retains scroll-correction ownership.
+- Gesture callbacks identify their exact mounted reading owner. Direct HHPI sources cannot silently fall back to a canonical root reader. An occurrence-local older-commit counter reports progress without inventing HAPI coordinates from native cursors.
+- Official input shells and rendered editors are independent for two Panes showing the same native Session. Autosave, keyboard submission and Steer use their exact retained binding. Native sends, cancellation and approvals continue through the canonical Session and its operation ledger.
+- Closing a Pane invalidates its binding and scoped input owner, aborts its local reads, disposes its official scope and releases its canonical reference. It never issues a native execution cancellation. Other Panes remain retained.
+- Reader errors and detached-head state have explicit controls. Recovery uses the same reading region; returning to latest remains a separate navigation.
 
-- Source-built extension archives carry the pinned upstream revision and patch-set fingerprint in their package metadata. The installer validates the complete three-package set, archive checksums and actual installed markers, and preserves tracked package/lock inputs. Installation instructions are in [source extension installation](hhpi-extension-install.md).
-- Unsupported, offline, pre-cancelled and missing-native-turn submissions retire their pending echo through the failed-submission callback. They do not leave the composer waiting for an operation that was never dispatched.
-- A source receipt must name the exact session and operation before it acknowledges a submission. Equal operation IDs deduplicate only equal arguments; conflicting payloads are rejected. Dispatch owns an immutable payload copy. Uncertain promises remain recorded without an automatic retry.
-- Released Session faces reject new operations and late history cannot reopen them. Closing the view does not issue a native cancellation. A catalog removal marks already-held Session faces offline.
-- Approval controls isolate state by complete source identity and request identity. Replacing a Session face invalidates callbacks before new input, clears stale busy state, and ignores the released owner's late receipt. Steer is disabled when there is no native turn.
-- Regression fixtures use system temporary directories, validate the optional-HAPI controller contract, and give doctor an explicit artifact-presence fixture with a negative missing-artifact assertion. No production behavior assertion was removed to obtain a passing baseline.
+Source-extension rationale: [reading occurrences](adr/hhpi-reading-occurrences.md). Upstream proposal draft: [optional reading occurrences](upstream-pr-reading-occurrences.md). No upstream pull request was submitted.
+
+## Source-extension delivery
+
+DSH is pinned to `0.2.1-rc.3`, upstream source `1f81c047fc48fa190a683e469daa699857e9afe8`. Source transformations run before the pinned official compiler. No alternate Chat renderer or runtime rewriting of compiled bundles implements this feature.
+
+The verified extension set contains nine packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, and `dsh-client-ui-plan`.
+
+The installer verifies all archive checksums, exact package identities, pinned upstream revision, matching source markers and actual installed markers. Incomplete or mixed sets are rejected. Tracked `package.json` and `package-lock.json` remain unchanged. Instructions: [source extension installation](hhpi-extension-install.md).
+
+The tested set has patch fingerprint:
+
+```text
+eb66f4f35e382d9052f373f53c50e16d79b5f905e88a27d5581b8fc5dc6165fb
+```
+
+The optional `readingOccurrences:1` capability gates direct-source occurrence admission. Default native DSH bindings without a view ID retain their existing event-feed and per-Session input paths. Disabling the capability before graph construction causes direct-source occurrence admission to fail explicitly.
 
 ## Actual verification
 
-The current verification environment is GitHub Actions on Ubuntu 24.04, Node 24.19.0. DSH is pinned to `0.2.1-rc.3`, with delivered source patches based on upstream `1f81c047fc48fa190a683e469daa699857e9afe8`. These are CI executions, not claims about a currently running production installation.
+Environment: GitHub Actions, Ubuntu 24.04.5, Node 24.19.0. These are CI executions; no production installation or credentials were used.
 
-### Installed extension integration
+Installed-extension workflow run **40990314953**, job **123850844897**, at code revision **464fc74186c19908fffc61e1b30b44996b6c16f3** completed successfully.
 
-Run `40916917282`, job `123599505299`, at code revision `24541313db51c9b9ca499ff4bb0deaf64cf8e798`: **success**.
+| Verification | Observed result |
+| --- | --- |
+| Extension installation boundary | 6 passed |
+| Complete source-extension set installation | All 9 packages verified and installed |
+| Official reading/input/mounted Chat integration | 3 passed; 0 failed, cancelled or skipped |
+| Host, Client and component TypeScript checks | Passed |
+| Full Node suite | 1,824 passed; 0 failed; 2 explicit skips |
+| Full component experience suite | 35 passed across 9 files |
+| History reading journey | 5 passed |
+| Injected component/history regressions | All 6 specified defects detected |
+| Distributable plugin build | Passed |
+| Tracked dependency inputs | Unchanged |
 
-The job completed all of the following without skipping a failed stage:
+The final workflow restored an exact-input source-build cache, so source preparation and compilation were correctly reported as skipped in that run. The same nine-package source set had already compiled successfully in the preceding source-build executions. Every final archive and installed marker was verified again before tests. The cache is keyed by the source transformation and snapshot inputs, not merely by the rc version string. The installed identity manifest is retained as workflow artifact `12949565050`.
 
-1. Bootstrap dependency installation and six extension-package boundary tests.
-2. Pinned source preparation, official compiler build of all three extension packages, and verified installation of that package set.
-3. Host, Client and component TypeScript checks.
-4. The full Node and DOM behavior suite.
-5. History regression and component/history fault-detection contracts.
-6. The distributable plugin build and confirmation that tracked package/lock inputs were unchanged.
+### Independent reading and input contracts
 
-The immediately preceding run `40915416727` recorded 1,824 passing Node tests, two explicit skips, 35 passing DOM tests, five passing history tests and all six specified fault detections. Its overall result was failure because the new DOM test used the wrong TypeScript import form for `userEvent`. Revision `24541313` changes that import to the declared named export; the subsequent complete installed-integration run above passed. A skipped native test is never counted as native integration evidence.
+The installed official Session, Conversation, InputHub and Chat implementations execute in these tests. The external source RPC boundary, settings and unused external services are controlled fixtures.
 
-### Source operation red/green evidence
+The contracts establish that two Panes can retain one canonical source Session while holding different reading bindings, scope identities, renderer store keys and input shells. Pane A reads six older content segments, growing from 160 to 1,120 unique body rows; Pane B remains at 160 rows. Pane B can then reuse an accepted cached page without another source read. Six measure/correct pairs verify that the actual commit coordinator participates. Native submission addresses the original Session ID. Manufactured bindings are rejected, and released bindings cannot resolve a newer or canonical input owner.
 
-Run `40914825645`, at `16e9601d30dd4ee760b19117c1914d51bedaff8a`, executed nine source Session operation tests. Eight failed with the intended behavior assertions and one passed. There were no loading failures, cancellations or skipped tests in that lane.
+### Actual mounted official components
 
-The production fixes in `3e06f701d9268ce06968fafb0014e5a5eaa90bce` passed all nine tests in run `40915051728`. The latest source operation run `40916917238` also passed, including the four real approval component tests. Only remote IO and the existing public-contract import boundary are fixtures; the Session state/operation implementation and approval component are production code.
+`tests/contracts/hhpi-reading-dom.test.ts` mounts the actual official Renderer, SessionProvider, public Conversation content factory, Chat, mounted Chat controls and editable input components.
 
-### Native backend
+Both Panes display real source message bodies and deliver different mounted controls. Six successive older-page operations through Pane A's mounted control advance only its cursor and content. Both actual rendered input elements preserve their different drafts throughout all six operations. The control finishes with no busy state, unmounting invalidates the handle, and the entire reading journey produces no native write.
 
-Backend run `40916916933` at the validated code revision completed successfully. The native Codex integration uses the actual pinned Codex 0.165.0 app-server. The model HTTP endpoint is synthetic, and no production credentials are used. It exercises native thread creation, repeated sends, six source history segments, stable identities, duplicate suppression, steer and cancellation. Source history segments in this test are not browser scrolling evidence.
+DOM geometry, selection rectangles and unavailable font-loading APIs are explicit jsdom fixtures. These tests establish component composition and behavior, not real-browser layout, scroll smoothness, physical keyboard behavior or device acceptance. No official reading, input or Chat implementation is replaced to satisfy an assertion.
 
-For the independently selectable native test:
+### Earlier backend evidence
+
+The earlier checkpoint `24541313db51c9b9ca499ff4bb0deaf64cf8e798` passed installed integration run `40916917282` and native backend run `40916916933`. That backend run used the actual pinned Codex 0.165.0 app-server with a synthetic model HTTP endpoint and no production credentials. It exercised thread creation, repeated sends, six source history segments, stable identities, duplicate suppression, Steer and cancellation. This is earlier backend evidence, distinct from the front-end verification above.
+
+The source operation red/green sequence is retained: run `40914825645` initially failed eight of nine behavior assertions at `16e9601d`; production fixes at `3e06f701` passed all nine in run `40915051728`. Source operation and approval tests remain covered by the current regression suite.
+
+The independently selectable native test remains:
 
 ```sh
 HHPI_CODEX_TEST_COMMAND=/absolute/path/to/codex node --import tsx --test tests/hhpi-codex-native.test.ts
 ```
 
-`HHPI_CODEX_TEST_SCRIPT` can instead name the pinned npm CLI entrypoint. With neither selector present, the test explicitly reports skipped.
+`HHPI_CODEX_TEST_SCRIPT` may instead name the pinned npm CLI entrypoint. Without either selector, the native test explicitly reports skipped; a skip is never counted as native integration evidence.
 
-## Remaining product work
+## Remaining release acceptance
 
-The full official Chat input boundary is still incomplete. The source Session supplies a history provider while its legacy event feed is empty; all normal Chat/Conversation readers must consume the same per-Pane official window, including node/group readers, tool details, navigation and input ownership. Replacing only one selector would leave these readers inconsistent.
+The prior missing front-end reading composition has been implemented. Real desktop/mobile six-segment browser journeys, viewport-layout verification and physical-device keyboard/scroll behavior have not been executed in this checkpoint.
 
-Specific inspected call sites still requiring the full boundary migration:
+HAPI-free real Host/Runner Web discovery, authenticated opening and pairing revocation still need complete end-to-end acceptance. A clean end-user distribution rollout and production deployment are also outside this verified development-checkout result. Existing legacy HAPI support remains in place.
 
-- `src/client/surface/session-view.tsx` initial viewport preparation reaches `session.loadOlder()`. A direct HHPI Session intentionally rejects this unscoped operation; the mounted Pane reader must own it.
-- The pinned official Chat injection still contains root Session/Conversation lookups and the fixed `chat` reader identity. These must not make two Panes displaying one native source share a navigation window or draft.
-- Source-window head navigation must reach the same official reader; the existing legacy source callback alone does not implement the direct HHPI path.
-
-The source-window and publication contracts are implemented and tested, but the above live composition has not been accepted. The old HAPI正文 bridge remains for its existing source; removal waits for actual call-site migration. Native DSH federation still needs complete Web discovery/open/history/revocation acceptance evidence.
-
-No desktop/mobile six-segment browser journey, physical-device result, production deployment, or final end-user installation acceptance is claimed. The successful plugin build is not evidence that every view is wired or that scrolling is correct. Main remains unchanged; this checkpoint must not be described as completed HHPI.
+No main merge, production deployment or complete HHPI product release is claimed. This document supersedes the earlier statement that normal official Chat/Conversation readers were still connected only to the canonical root feed.
