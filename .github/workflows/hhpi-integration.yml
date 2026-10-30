@@ -49,6 +49,7 @@ jobs:
         run: |
           node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(".tmp/hhpi-ci/source.json")); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);'
           node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-ci/packages
+      - uses: ./.github/actions/prepare-data-cache
       - name: Exact official reading, input and mounted Chat occurrences
         timeout-minutes: 2
         run: node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts tests/contracts/hhpi-reading-dom.test.ts

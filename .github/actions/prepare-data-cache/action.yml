@@ -1,0 +1,11 @@
+name: Prepare the shared data-cache temp root
+description: Create the writable temporary root expected by native integration tests.
+runs:
+  using: composite
+  steps:
+    - name: Create writable data-cache root
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo install -d -m 0775 -o "$(id -u)" -g "$(id -g)" /mnt/cache/data-cache
+        test -w /mnt/cache/data-cache

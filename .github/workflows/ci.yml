@@ -26,6 +26,7 @@ jobs:
       - name: Install exact dependencies
         run: npm ci
       - uses: ./.github/actions/install-hhpi-extension
+      - uses: ./.github/actions/prepare-data-cache
       - name: Types, behavior contracts, component tests, regression fault checks, and build
         run: npm run check
       - name: Unmodified official DSH federation integration
