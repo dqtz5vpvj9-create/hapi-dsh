@@ -28,8 +28,18 @@ function official(name: string): { apply(ctx: Context): void; inject: string[]; 
   const metadata = require(`${name}/package.json`)
   assert.equal(metadata.version, '0.2.1-rc.3')
   assert.ok(metadata.hhpiSourceExtension, `${name} must be an installed source build`)
-  let registration: { factory(resolve: typeof require): ReturnType<typeof official> } | undefined
-  new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })
+  let registration: { factory(resolve: (id: string) => unknown): ReturnType<typeof official> } | undefined
+  // Client factories retain their lexical Window. Give them the actual DOM
+  // Window, with only the loader registration boundary supplied by this test.
+  const target = globalThis.window
+  const previous = Object.getOwnPropertyDescriptor(target, '__ModuleLoader__')
+  Object.defineProperty(target, '__ModuleLoader__', { configurable: true,
+    value: { load(value: typeof registration) { registration = value } } })
+  try { new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))(target) }
+  finally {
+    if (previous) Object.defineProperty(target, '__ModuleLoader__', previous)
+    else Reflect.deleteProperty(target, '__ModuleLoader__')
+  }
   assert.ok(registration)
   return registration.factory(resolveOfficialBrowserDependency)
 }
@@ -49,6 +59,10 @@ const message = (id: number): EventInput => ({ type: 'user/message', time: id, s
 export async function fixture(t: TestContext) {
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://synthetic.invalid/', pretendToBeVisual: true })
+  // jsdom has no font loader. Composer layout observes this external boundary;
+  // DOM geometry is supplied separately by the mounted-component contract.
+  Object.defineProperty(dom.window.document, 'fonts', { configurable: true,
+    value: Object.assign(new dom.window.EventTarget(), { ready: Promise.resolve(), status: 'loaded', check: () => true }) })
   const restored: (() => void)[] = []
   for (const key of ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'MutationObserver', 'localStorage', 'sessionStorage', 'getComputedStyle', 'DOMRect', 'Range']) {
     const descriptor = Object.getOwnPropertyDescriptor(globalThis, key)
