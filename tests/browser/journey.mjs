@@ -26,7 +26,7 @@ export async function runJourney(page, context, origin, mode, result) {
   async function visible() {
     return pane('a').evaluate(element => {
       const port = element.querySelector('[data-conversation-scroll]'), box = port.getBoundingClientRect()
-      const rows = [...port.querySelectorAll('[data-chat-anchor-key]')].filter(node => { const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top + 2 && rect.top < box.bottom - 100 })
+      const rows = [...port.querySelectorAll('[data-chat-node-key][data-chat-flow-kind="user"][data-chat-anchor-key]')].filter(node => { const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > box.top + 2 && rect.top < box.bottom - 100 })
       const numbers = rows.flatMap(node => [...node.textContent.matchAll(/body-(\d+)/g)].map(value => Number(value[1])))
       return { min: numbers.length ? Math.min(...numbers) : null, keys: rows.map(node => node.getAttribute('data-chat-anchor-key')), top: port.scrollTop, height: port.clientHeight, total: port.scrollHeight }
     })
@@ -72,10 +72,17 @@ export async function runJourney(page, context, origin, mode, result) {
       const firstUserId = lastUserId - 150
       await gestures.boundary()
       await page.waitForFunction(rows => { const value = window.__hhpi.snapshot(); return value.a.rows > rows && !value.a.busy }, before.a.rows)
-      await gestures.settle(); await gestures.scroll(-350)
-      const current = await state(), body = await visible(), afterStats = await stats()
+      await gestures.settle()
+      let body = await visible(), bodyGestures = 0
+      // A real tool group can be taller than one gesture. Read past it with
+      // bounded browser input; a fixed travel distance is not a body verdict.
+      while ((body.min === null || body.min > lastUserId) && bodyGestures < 4) {
+        await gestures.scroll(-350); body = await visible(); bodyGestures++
+      }
+      const current = await state(), afterStats = await stats()
       assert.ok(body.min !== null && body.min < previousVisible, 'each upward segment must expose earlier real body text')
-      assert.ok(body.min >= firstUserId && body.min <= lastUserId, 'visible body remains inside the newly committed continuous user range')
+      assert.ok(body.min >= firstUserId && body.min <= lastUserId,
+        `visible body ${body.min} must belong to the newly committed range ${firstUserId}..${lastUserId} after ${bodyGestures} gestures`)
       assert.equal(afterStats.reads, beforeStats.reads + 1, 'one boundary crossing must issue exactly one source read')
       assert.equal(afterStats.readPages.length, beforeStats.readPages.length + 1, 'one boundary crossing must commit exactly one audited source page')
       const read = afterStats.readPages.at(-1), previousRead = beforeStats.readPages.at(-1)
@@ -95,8 +102,8 @@ export async function runJourney(page, context, origin, mode, result) {
         'tool/ptc-dispatch-start': 1, 'tool/ptc-dispatch': 1, 'tool/result': 1,
         'step/end': 1, 'turn/end': 1, 'user/message': 151,
       }, 'the real source page must include the full call, PTC, result and user-message lifecycle')
-      const expectedRows = read.typeCounts['user/message'] + read.typeCounts['turn/start'] + read.typeCounts['tool/call']
-      assert.equal(expectedRows, 153, 'official assembly should add 151 user rows, one turn row and one tool-call row')
+      const expectedRows = read.typeCounts['user/message'] + read.typeCounts['turn/start'] + read.typeCounts['assistant/message'] + read.typeCounts['tool/call']
+      assert.equal(expectedRows, 154, 'official assembly adds 151 user rows, one turn row, one assistant step and one tool-call row')
       assert.equal(current.a.rows, before.a.rows + expectedRows, 'official Chat row growth must match the committed source events')
       assert.equal(read.page.after - read.page.before + 1, 160, 'selected source IDs must be contiguous across the full page')
       assert.equal(current.b.rows, baseline.b.rows, 'other occurrence must retain its window')
@@ -104,7 +111,7 @@ export async function runJourney(page, context, origin, mode, result) {
       assert.equal(current.a.draft, baseline.a.draft); assert.equal(current.b.draft, baseline.b.draft)
       assert.deepEqual(current.errors, [], 'failed/suspended automatic paging is not acceptance')
       previousVisible = body.min
-      result.segments.push({ segment, rows: current.a.rows, firstVisible: body.min,
+      result.segments.push({ segment, rows: current.a.rows, firstVisible: body.min, bodyGestures,
         sourceEventCount: read.eventCount, userMessageCount: read.userMessageIds.length,
         toolLifecycleCount: read.toolLifecycleCount, toolLifecycleIds: read.toolLifecycleIds,
         sourceRange: { first: read.page.before, last: read.page.after }, userMessageRange: { first: firstUserId, last: lastUserId },

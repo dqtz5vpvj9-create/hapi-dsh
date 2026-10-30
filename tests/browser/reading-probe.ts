@@ -17,6 +17,7 @@ export function readingPort(element: HTMLElement): HTMLElement {
 export function readingAnchor(element: HTMLElement): ReadingAnchor | null {
   const port = readingPort(element), box = port.getBoundingClientRect()
   const node = [...port.querySelectorAll<HTMLElement>('[data-chat-anchor-key]')].find(node => {
+    if (node.dataset.chatFlowKind === 'turn-process' || node.querySelector('[data-chat-anchor-key]')) return false
     const rect = node.getBoundingClientRect()
     return rect.height > 0 && rect.bottom > box.top + 2 && rect.top < box.bottom - 100
   })

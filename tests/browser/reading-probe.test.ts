@@ -13,6 +13,17 @@ function fixture() {
   return { dom, port, row, setTop: (value: number) => { top = value } }
 }
 
+test('a group spanning many messages cannot stand in for the actual visible text anchor', () => {
+  const { dom, port, row } = fixture()
+  try {
+    const group = dom.window.document.createElement('div')
+    group.dataset.chatAnchorKey = 'enclosing-group'
+    group.getBoundingClientRect = () => new dom.window.DOMRect(0, 20, 390, 2000)
+    port.append(group); group.append(row)
+    assert.deepEqual(readingAnchor(port), { key: 'original', top: 80 })
+  } finally { dom.window.close() }
+})
+
 test('waits for the original anchor layout to settle before returning its displacement', async () => {
   const { dom, port, setTop } = fixture()
   try {
