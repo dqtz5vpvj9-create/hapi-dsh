@@ -1,8 +1,8 @@
-/** Bounded component lab: serve unmodified installed official client bundles. */
+/** Bounded component lab: serve unmodified installed official browser bundles. */
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
 import { readFile, writeFile, mkdir, readdir, copyFile, rm } from 'node:fs/promises'
-import { resolve, dirname, join } from 'node:path'
+import { resolve, dirname, join, basename } from 'node:path'
 import { createHash } from 'node:crypto'
 import { EXTENSION_NAMES } from '../../scripts/dsh-ext/install-extension.mjs'
 
@@ -12,26 +12,35 @@ export const output = resolve(root, '.tmp/hhpi-browser/site')
 const plugins = ['api-session-controller', 'client-ui-renderer', 'client-ui-session', 'client-ui-conversation', 'client-ui-chat'].map(name => `@deepseek-ai/dsh-${name}`)
 const platform = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', 'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit']
 
-/** Traverse literal official client imports, without loading or rewriting any factory. */
+/** Respect conditional browser exports; Node resolution chooses the wrong dual-client face. */
+function browserEntry(name) {
+  const metadataPath = require.resolve(`${name}/package.json`), metadata = require(metadataPath)
+  const face = metadata.exports?.['./client']
+  const entry = typeof face === 'string' ? face : face?.browser ?? face?.default
+  if (typeof entry !== 'string' || !entry.startsWith('./')) throw new Error(`No declared browser client entry: ${name}`)
+  return { metadata, entry: resolve(dirname(metadataPath), entry) }
+}
+
+/** Traverse official literal client imports without evaluating or rewriting their code. */
 async function copyPluginClosure(version) {
   const pending = new Set(plugins), modules = []
   for (const name of pending) {
-    const metadata = require(`${name}/package.json`)
+    const { metadata, entry } = browserEntry(name)
     if (metadata.version !== version) throw new Error(`Mixed official dependency: ${name}@${metadata.version}`)
-    const entry = require.resolve(`${name}/client`), directory = dirname(entry)
-    const target = join(output, 'official', name.split('/')[1])
+    const directory = dirname(entry), target = join(output, 'official', name.split('/')[1])
     await mkdir(target, { recursive: true })
     for (const file of await readdir(directory)) {
-      if (!file.endsWith('.js')) continue
+      if (!file.endsWith('.js') || file.endsWith('.node.js') || (file !== basename(entry) && !file.startsWith('client.'))) continue
       const source = join(directory, file), text = await readFile(source, 'utf8')
       for (const match of text.matchAll(/["'](@deepseek-ai\/dsh-[^"'\s]+\/client)["']/g)) pending.add(match[1].slice(0, -7))
       await copyFile(source, join(target, file))
     }
-    modules.push({ name, sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
+    // A URL alias only: the copied browser entry retains its original bytes.
+    await copyFile(entry, join(target, 'client.js'))
+    modules.push({ name, browserEntry: basename(entry), sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
     if (pending.size > 80) throw new Error('Official dependency closure exceeded the component-lab budget')
   }
-  await writeFile(join(output, 'modules.json'), JSON.stringify(modules))
-  return modules
+  await writeFile(join(output, 'modules.json'), JSON.stringify(modules)); return modules
 }
 
 export async function buildLab() {
@@ -42,8 +51,8 @@ export async function buildLab() {
   for (const name of EXTENSION_NAMES) {
     const metadata = require(`${name}/package.json`)
     if (metadata.version !== identity.upstreamVersion || metadata.hhpiSourceExtension?.upstreamCommit !== identity.upstreamCommit || metadata.hhpiSourceExtension?.patchSetSha256 !== identity.patchSetSha256) throw new Error(`Unverified installed extension: ${name}`)
-    const entry = metadata.exports?.['./client'] ? `${name}/client` : name
-    artifacts.push({ name, entry, sha256: createHash('sha256').update(await readFile(require.resolve(entry))).digest('hex') })
+    const entry = metadata.exports?.['./client'] ? browserEntry(name).entry : require.resolve(name)
+    artifacts.push({ name, entry: basename(entry), sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
   }
   await rm(output, { recursive: true, force: true }); await mkdir(output, { recursive: true })
   const officialModules = await copyPluginClosure(identity.upstreamVersion)
