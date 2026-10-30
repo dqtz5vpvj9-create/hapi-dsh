@@ -50,23 +50,18 @@ jobs:
           node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(".tmp/hhpi-ci/source.json")); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);'
           node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-ci/packages
       - name: Exact official reading, input and mounted Chat occurrences
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 2
         run: node --import tsx --test tests/contracts/hhpi-reading-occurrences.test.ts tests/contracts/hhpi-reading-dom.test.ts
       - name: Full Host Client and component typecheck
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 2
         run: npm run typecheck
       - name: Full behavior suite against installed extensions
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 6
         run: npm test
       - name: History and fault contracts
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 3
         run: npm run test:history && npm run test:faults
       - name: Build distributable plugin
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 3
         run: npm run build
       - name: Confirm tracked dependency inputs were not changed
