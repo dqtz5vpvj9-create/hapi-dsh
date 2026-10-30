@@ -25,7 +25,7 @@ import { installSourceWindowNavigation } from './source-window-navigation.tsx'
 import { bindPaneReading } from '../reading-view.ts'
 import { bindRemotePaneReading } from '../remote-reading.ts'
 import { isSourceSessionId } from '../../remote/protocol.ts'
-import type { RemotePaneSession } from '../remote-pane.ts'
+import type { RemotePaneSession } from '../remote-reading-session.ts'
 import type { SourcePreparationReference, SourceViewportSession, SourceWindowViewport } from '../source-sessions.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -468,7 +468,7 @@ export async function prepareInitialViewport(
             if (!snapshot.hasMore || chatContentFillsViewport(port)) return true
             if (pages++ >= 12) return false
             const session = reference.binding.session as SessionReference['binding']['session'] & Partial<SourceViewportSession & RemotePaneSession>
-            const direct = isSourceSessionId(reference.sessionId)
+            const direct = session.readingView !== undefined
             const before = direct ? session.readingView?.snapshot.getSnapshot().before : reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
             if (direct) {
                 const control = resolveMountedChatForPane(target)

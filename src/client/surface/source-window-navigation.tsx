@@ -4,7 +4,7 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { SessionFace } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SourceViewportSession } from '../source-sessions.ts'
-import type { RemotePaneSession } from '../remote-pane.ts'
+import type { RemotePaneSession } from '../remote-reading-session.ts'
 import { useWorkspacePane } from './pane-context.tsx'
 
 const emptySourceWindow = Object.freeze({ hasMoreAfter: false, before: null })

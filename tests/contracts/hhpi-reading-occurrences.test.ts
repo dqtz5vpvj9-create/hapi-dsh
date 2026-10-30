@@ -13,7 +13,7 @@ import { sourceSessionId, type SourceOperation, type SourceSession } from '../..
 import type { SessionBinding, SessionReference, ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { RemoteSessions } from '../../src/client/remote-sessions.ts'
 import type { SourceSessions } from '../../src/client/source-sessions.ts'
-import type { RemotePaneSession } from '../../src/client/remote-pane.ts'
+import type { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 
 const require = createRequire(import.meta.url), root = resolve(import.meta.dirname, '../..')
@@ -108,8 +108,9 @@ async function fixture(t: Parameters<Parameters<typeof test>[1]>[0]) {
     assert.ok(chat)
     return chat.order.flatMap(key => {
       const node = chat.nodes.get(key)
-      if (!node || node.kind !== 'user') return []
-      return (node.data as { content?: readonly { text?: string }[] }).content?.flatMap(block => block.text === undefined ? [] : [block.text]) ?? []
+      if (!node) return []
+      const data = node.data as { content?: readonly { text?: string }[]; blocks?: readonly { text?: string }[] }
+      return [...(data.content ?? []), ...(data.blocks ?? [])].flatMap(block => typeof block.text === 'string' ? [block.text] : [])
     })
   }
   return { ctx, sessions, remote, canonical, calls, writes, open, body, index, dom }

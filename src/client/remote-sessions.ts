@@ -8,7 +8,7 @@ import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
-import { RemotePaneViews } from './remote-pane.ts'
+import { RemotePaneViews } from './remote-reading-session.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 class Value<T> {
