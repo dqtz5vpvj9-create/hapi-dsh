@@ -1,6 +1,7 @@
 /** One bounded journey of real official layout, reading and editor input. */
 import assert from 'node:assert/strict'
 import { createGestures } from './gestures.mjs'
+import { exerciseDraftInput } from './keyboard.mjs'
 
 export async function runJourney(page, context, origin, mode, result) {
   const mobile = mode === 'mobile'
@@ -47,16 +48,7 @@ export async function runJourney(page, context, origin, mode, result) {
     await gestures.settle(); result.initialLayout = await assertLayout()
     assert.ok((await visible()).min !== null, 'first target frame must contain visible source bodies')
   })
-  await step('browser keyboard and independent drafts', async () => {
-    await editor('a').click(); await page.keyboard.type('Draft A'); await page.keyboard.press('Shift+Enter'); await page.keyboard.insertText('第二行')
-    await page.waitForFunction(() => window.__hhpi.snapshot().a.draft.includes('第二行'))
-    assert.match((await state()).a.draft, /Draft A\n第二行/)
-    if (mobile) await page.locator('[data-select-pane="b"]').tap()
-    await editor('b').click(); await page.keyboard.type('Draft B')
-    await page.waitForFunction(() => window.__hhpi.snapshot().b.draft === 'Draft B')
-    if (mobile) await page.locator('[data-select-pane="a"]').tap()
-    assert.equal((await stats()).writes.length, 0, 'typing and newline must never send')
-  })
+  await step('browser keyboard, composition and independent drafts', () => exerciseDraftInput(page, context, mobile, result))
   const baseline = await state(); let previousVisible = (await visible()).min
   await step('six real-input older boundary crossings', async () => {
     result.segments = []

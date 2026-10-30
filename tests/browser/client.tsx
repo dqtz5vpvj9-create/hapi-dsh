@@ -12,7 +12,7 @@ import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/client/seamless/controller.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceChanges } from '../../src/remote/protocol.ts'
-import { readingAnchor, anchorDrift } from './reading-probe.ts'
+import { readingAnchor, anchorDrift, observeReadingCommit } from './reading-probe.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap { 'hhpi.lab.pane': { kind: 'single'; scope: 'session' } } }
 const runtime = window as unknown as { __HHPI_REQUIRE__(id: string): any; __hhpi: any; __hhpiFailure?: string }
@@ -88,7 +88,7 @@ async function open(viewId: string) {
 }
 const panes = { a: await open('browser-a'), b: await open('browser-b') }
 function owner(element?: HTMLElement) { const key = element?.closest<HTMLElement>('[data-lab-pane]')?.dataset.labPane; return key === 'a' || key === 'b' ? { id: key, ...panes[key] } : undefined }
-const events: SeamlessHistoryEvent[] = [], corrections: Array<{ key: string; delta: number | null }> = []
+const events: SeamlessHistoryEvent[] = [], corrections: Array<{ key: string; delta: number | null; requestDelta: number | null }> = []
 const readingFailures: string[] = []
 const stopPaging = installSeamlessHistory(document, {
   loadEarlierLabel: () => translate('chat')('chat.loadOlder'),
@@ -98,17 +98,22 @@ const stopPaging = installSeamlessHistory(document, {
   loadOlderProgrammatically: async (element, _id, signal) => {
     const pane = owner(element), control = pane && controls.get(pane.id)
     if (!control) return false
-    const before = readingAnchor(element)
+    const participation = pane.conversation.windowCommit
+    if (!participation) throw new Error('The official commit checkpoint is unavailable.')
+    const requested = readingAnchor(element)
+    const probe = observeReadingCommit(element, participant => participation.register(pane.reference.binding.viewId!, participant))
     const cancel = (): void => pane.session.cancelOlderPage(signal.reason)
     signal.addEventListener('abort', cancel, { once: true })
     try {
       await control.loadOlder(signal)
-      if (before) corrections.push({ key: before.key, delta: anchorDrift(element, before) })
+      const before = probe.anchor()
+      if (!before || probe.count() !== 1) throw new Error('The older read did not produce exactly one measured official commit.')
+      corrections.push({ key: before.key, delta: anchorDrift(element, before), requestDelta: requested ? anchorDrift(element, requested) : null })
       return true
     } catch (error) {
       readingFailures.push(error instanceof Error ? error.stack ?? error.message : String(error))
       throw error
-    } finally { signal.removeEventListener('abort', cancel) }
+    } finally { probe.release(); signal.removeEventListener('abort', cancel) }
   },
   loadAfter: async element => owner(element)?.session.loadAfter() ?? false,
   returnToLive: async (element, _id, signal) => { const pane = owner(element); if (!pane) return false; await controls.get(pane.id)!.toLatest(signal); return true },
