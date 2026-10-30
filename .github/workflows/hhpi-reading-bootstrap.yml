@@ -1,0 +1,30 @@
+name: Apply HHPI reading source wiring
+on:
+  push:
+    branches: [feat/hhpi-remote-access-20261029]
+    paths: ['scripts/hhpi-reading-bootstrap.mjs', '.github/workflows/hhpi-reading-bootstrap.yml']
+permissions:
+  contents: write
+jobs:
+  wire:
+    if: github.repository == 'dqtz5vpvj9-create/hapi-dsh' && github.ref == 'refs/heads/feat/hhpi-remote-access-20261029'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.19.0
+          package-manager-cache: false
+      - name: Apply exact source edits
+        run: node scripts/hhpi-reading-bootstrap.mjs
+      - name: Check and commit enumerated source wiring
+        run: |
+          git diff --check
+          git add scripts/dsh-ext/prepare.mjs scripts/dsh-ext/install-extension.mjs scripts/dsh-ext/reading-occurrences.mjs tests/hhpi-extension-install.test.mjs src/client/remote-pane.ts src/client/remote-sessions.ts src/client/source-sessions.ts src/client/surface/session-view.tsx src/client/composer-autosave-seat.tsx src/client/composer-enter/index.tsx src/client/remote-controls.tsx scripts/hhpi-reading-bootstrap.mjs .github/workflows/hhpi-reading-bootstrap.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(hhpi): connect exact Pane readers and independent official inputs'
+          git push origin HEAD:refs/heads/feat/hhpi-remote-access-20261029
