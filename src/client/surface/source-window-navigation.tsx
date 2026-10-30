@@ -3,16 +3,18 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { SessionFace } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ConversationHistoryViewV1, HistoryViewSnapshotV1 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SourceViewportSession } from '../source-sessions.ts'
-import type { RemotePaneSession } from '../remote-reading-session.ts'
+import type { SourceWindowProgress } from '../../shared/source-frames.ts'
 import { useWorkspacePane } from './pane-context.tsx'
 
-const emptySourceWindow = Object.freeze({ hasMoreAfter: false, before: null })
+type WindowProgress = { readonly hasMoreAfter: boolean } & Partial<SourceWindowProgress>
+const emptySourceWindow: WindowProgress = Object.freeze({ hasMoreAfter: false, before: null })
 const noSourceWindow = {
-    getSnapshot: () => emptySourceWindow,
+    getSnapshot: (): WindowProgress => emptySourceWindow,
     subscribe: (_listener: () => void) => () => {},
 }
-const noReading = { getSnapshot: () => undefined, subscribe: (_listener: () => void) => () => {} }
+const noReading = { getSnapshot: (): HistoryViewSnapshotV1 | undefined => undefined, subscribe: (_listener: () => void) => () => {} }
 
 /** Every direct-source action remains on the selected official reading occurrence. */
 export function installSourceWindowNavigation(ctx: Context): () => void {
@@ -20,12 +22,12 @@ export function installSourceWindowNavigation(ctx: Context): () => void {
         const { sessionId, useSession, t } = props
         const pane = useWorkspacePane(ctx)
         const session = (props.sessionBinding ?? ctx.sessions.binding(sessionId))?.session as
-            (SessionFace & Partial<SourceViewportSession & RemotePaneSession>) | undefined
+            (SessionFace & Partial<SourceViewportSession> & { readonly readingView?: ConversationHistoryViewV1 }) | undefined
         const window = session?.sourceWindow
-        const sourceWindow = useSyncExternalStore(window?.subscribe ?? noSourceWindow.subscribe,
+        const sourceWindow = useSyncExternalStore<WindowProgress>(window?.subscribe ?? noSourceWindow.subscribe,
             window?.getSnapshot ?? noSourceWindow.getSnapshot, window?.getSnapshot ?? noSourceWindow.getSnapshot)
         const reader = session?.readingView
-        const reading = useSyncExternalStore(reader?.snapshot.subscribe ?? noReading.subscribe,
+        const reading = useSyncExternalStore<HistoryViewSnapshotV1 | undefined>(reader?.snapshot.subscribe ?? noReading.subscribe,
             reader?.snapshot.getSnapshot ?? noReading.getSnapshot, reader?.snapshot.getSnapshot ?? noReading.getSnapshot)
         const legacyBusy = useSession(value => value.loadingOlder)
         const [retryError, setRetryError] = useState<string | undefined>()

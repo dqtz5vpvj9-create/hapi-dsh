@@ -15,13 +15,14 @@ export async function prepareOfficialBrowserLibrary(): Promise<void> {
     external: ['react', 'react-dom', '@deepseek-ai/cordis'],
     bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false,
     outfile: resolve(source, '.hhpi-contract-library.js'),
-    loader: { '.css': 'css', '.module.css': 'local-css' }, logLevel: 'silent',
+    loader: { '.css': 'css', '.module.css': 'local-css', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' },
+    logLevel: 'silent',
   })
   const output = result.outputFiles.find(file => file.path.endsWith('.js'))
   if (!output) throw new Error('The official browser library produced no JavaScript output.')
   const module = { exports: {} as Record<string, unknown> }
   new Function('require', 'module', 'exports', output.text)(require, module, module.exports)
-  // CSS is compiled to real class names but not used as layout evidence in jsdom.
+  // Real CSS/font inputs are compiled in memory. jsdom is not layout evidence.
   primitives = module.exports
 }
 

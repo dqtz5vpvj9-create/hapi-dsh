@@ -1,5 +1,4 @@
 name: HHPI installed extension integration
-
 on:
   push:
     branches: [feat/hhpi-remote-access-20261029]
@@ -19,21 +18,37 @@ jobs:
         with:
           node-version: 24.19.0
           package-manager-cache: false
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
         timeout-minutes: 5
       - name: Verify extension installation boundary
         run: node --test tests/hhpi-extension-install.test.mjs
-      - name: Prepare pinned source
-        run: |
-          node scripts/dsh-ext/prepare.mjs "${RUNNER_TEMP}/hhpi-source" > "${RUNNER_TEMP}/hhpi-source.json"
-          node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(process.argv[1])); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);' "${RUNNER_TEMP}/hhpi-source.json"
-      - name: Build source extension packages
+      - name: Restore exact source-build cache
+        id: cached
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .tmp/hhpi-ci
+          key: hhpi-reading-linux-x64-node24-v1-${{ hashFiles('scripts/dsh-ext/**', 'source-snapshots/dsh-ext/**') }}
+      - name: Prepare and build exact source set
+        if: steps.cached.outputs.cache-hit != 'true'
         timeout-minutes: 10
-        run: node scripts/dsh-ext/build-extension.mjs "${HHPI_DSH_SOURCE}" "${RUNNER_TEMP}/hhpi-packages"
+        run: |
+          mkdir -p .tmp/hhpi-ci .tmp/hhpi-logs
+          node scripts/dsh-ext/prepare.mjs "${PWD}/.tmp/hhpi-ci/source" > .tmp/hhpi-ci/source.json
+          SOURCE=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".tmp/hhpi-ci/source.json")).directory)')
+          node scripts/dsh-ext/build-extension.mjs "${SOURCE}" "${PWD}/.tmp/hhpi-ci/packages" > .tmp/hhpi-logs/source-build.log 2>&1 || { tail -120 .tmp/hhpi-logs/source-build.log; exit 1; }
+          tail -1 .tmp/hhpi-logs/source-build.log
+      - name: Save exact source-build cache
+        if: steps.cached.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .tmp/hhpi-ci
+          key: ${{ steps.cached.outputs.cache-primary-key }}
       - name: Install the complete verified extension set
         id: install
         timeout-minutes: 4
-        run: node scripts/dsh-ext/install-extension.mjs "${RUNNER_TEMP}/hhpi-packages"
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const x=JSON.parse(fs.readFileSync(".tmp/hhpi-ci/source.json")); fs.appendFileSync(process.env.GITHUB_ENV, `HHPI_DSH_SOURCE=${x.directory}\n`);'
+          node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-ci/packages
       - name: Exact official reading and input occurrences
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 2
@@ -61,7 +76,9 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         with:
           name: hhpi-installed-extension-identity
-          path: .tmp/hhpi-ext/installed.json
+          path: |
+            .tmp/hhpi-ext/installed.json
+            .tmp/hhpi-logs
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
