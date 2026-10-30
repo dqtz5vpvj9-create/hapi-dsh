@@ -1,7 +1,7 @@
 /** Bounded component lab: serve unmodified installed official client bundles. */
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { readFile, writeFile, mkdir, readdir, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, copyFile, rm } from 'node:fs/promises'
 import { resolve, dirname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { EXTENSION_NAMES } from '../../scripts/dsh-ext/install-extension.mjs'
@@ -21,9 +21,12 @@ export async function buildLab() {
   for (const name of EXTENSION_NAMES) {
     const metadata = require(`${name}/package.json`)
     if (metadata.version !== identity.upstreamVersion || metadata.hhpiSourceExtension?.upstreamCommit !== identity.upstreamCommit || metadata.hhpiSourceExtension?.patchSetSha256 !== identity.patchSetSha256) throw new Error(`Unverified installed extension: ${name}`)
-    const path = require.resolve(`${name}/client`)
-    artifacts.push({ name, sha256: createHash('sha256').update(await readFile(path)).digest('hex') })
+    // Slots is a static browser library. Only declared client exports are factories.
+    const entry = metadata.exports?.['./client'] ? `${name}/client` : name
+    const path = require.resolve(entry)
+    artifacts.push({ name, entry, sha256: createHash('sha256').update(await readFile(path)).digest('hex') })
   }
+  await rm(output, { recursive: true, force: true })
   await mkdir(output, { recursive: true })
   for (const name of plugins) {
     const directory = dirname(require.resolve(`${name}/client`)), target = join(output, 'official', name.split('/')[1])
@@ -53,7 +56,7 @@ export async function buildLab() {
     } }], logLevel: 'warning',
   })
   const sheets = Object.keys(result.metafile.outputs).filter(path => path.endsWith('.css')).map(path => '/' + path.slice(path.lastIndexOf('/') + 1))
-  await writeFile(join(output, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>HHPI official component lab</title>${sheets.map(path => `<link rel="stylesheet" href="${path}">`).join('')}<link rel="stylesheet" href="/shell.css"></head><body><div id="root"></div><script type="module" src="/lab.js"></script></body></html>`)
+  await writeFile(join(output, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><title>HHPI official component lab</title>${sheets.map(path => `<link rel="stylesheet" href="${path}">`).join('')}<link rel="stylesheet" href="/shell.css"></head><body><div id="root"></div><script type="module" src="/lab.js"></script></body></html>`)
   await copyFile(join(root, 'tests/browser/shell.css'), join(output, 'shell.css'))
   const report = { ...identity, artifacts, buildMs: Math.round(performance.now() - start), geometryMocks: false, shell: 'two-pane component fixture', sourceTransport: 'synthetic loopback SourceEventIndex' }
   await writeFile(join(output, 'identity.json'), JSON.stringify(report, null, 2))
