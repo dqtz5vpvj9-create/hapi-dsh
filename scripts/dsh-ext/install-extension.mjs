@@ -3,16 +3,9 @@ import { createHash } from 'node:crypto';
 import { readFile, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION } from './prepare.mjs';
+import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION, EXTENSION_PACKAGES } from './prepare.mjs';
 
-export const EXTENSION_NAMES = Object.freeze([
-  '@deepseek-ai/dsh-api-session-controller',
-  '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-ui-renderer',
-  '@deepseek-ai/dsh-client-ui-session',
-  '@deepseek-ai/dsh-client-ui-conversation',
-  '@deepseek-ai/dsh-client-ui-chat',
-]);
+export const EXTENSION_NAMES = Object.freeze(EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${path.slice('packages/'.length).replaceAll('/', '-')}`));
 const digest = value => createHash('sha256').update(value).digest('hex');
 const archiveName = name => `${name.slice(1).replace('/', '-')}-${UPSTREAM_VERSION}.tgz`;
 

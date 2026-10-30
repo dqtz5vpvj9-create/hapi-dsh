@@ -8,9 +8,10 @@ import { applyCompleteWindows } from './complete-windows.mjs';
 import { applyReaderPublication } from './reader-publication.mjs';
 import { applyInputContracts } from './input-contracts.mjs';
 import { applyReadingOccurrences } from './reading-occurrences.mjs';
+import { applyReadingTargets } from './reading-targets.mjs';
 export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
 export const UPSTREAM_VERSION = '0.2.1-rc.3';
-export const EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat'];
+export const EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan'];
 export const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 export function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180_000, maxBuffer: 16 * 1024 * 1024, ...options });
@@ -52,7 +53,8 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   await applyReaderPublication(directory);
   await applyInputContracts(directory);
   await applyReadingOccurrences(directory);
-  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
+  await applyReadingTargets(directory);
+  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
   const provenance = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs, patchSetSha256: sha256(JSON.stringify(inputs)) };
   await writeFile(join(directory, 'hhpi-source-inputs.json'), `${JSON.stringify(provenance, null, 2)}\n`);
   return { directory, provenance };
