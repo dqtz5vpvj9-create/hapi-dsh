@@ -4,7 +4,9 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { resolve as resolvePath } from 'node:path'
 import { test, type TestContext } from 'node:test'
+import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import { act, createElement, useLayoutEffect } from 'react'
 import type { SessionBinding, SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -12,11 +14,28 @@ import type { ConversationContentProps } from '@deepseek-ai/dsh-client-ui-conver
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SourcePreparationReference, SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
+import type { RemotePaneViews } from '../src/client/remote-reading-session.ts'
+import { sourceSessionId } from '../src/remote/protocol.ts'
 import { installSessionViewHost } from '../src/client/surface/session-view.tsx'
 
 const require = createRequire(import.meta.url)
+const projectRoot = resolvePath(import.meta.dirname, '..')
 const { createWindow } = require('@mixmark-io/domino') as { createWindow(html: string, url: string): Window & typeof globalThis }
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+let paneViewsClass: Promise<typeof import('../src/client/remote-reading-session.ts').RemotePaneViews> | undefined
+function loadRemotePaneViews(): Promise<typeof import('../src/client/remote-reading-session.ts').RemotePaneViews> {
+    paneViewsClass ??= build({
+        stdin: { contents: "export { RemotePaneViews } from './src/client/remote-reading-session.ts'", resolveDir: projectRoot, loader: 'ts' },
+        alias: { '@deepseek-ai/dsh-api-session-controller/client': resolvePath(projectRoot, 'tests/fixtures/client-session-contract.ts') },
+        external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent',
+    }).then(output => {
+        const module = { exports: {} as { RemotePaneViews: typeof import('../src/client/remote-reading-session.ts').RemotePaneViews } }
+        new Function('require', 'module', 'exports', output.outputFiles[0]!.text)(require, module, module.exports)
+        return module.exports.RemotePaneViews
+    })
+    return paneViewsClass
+}
 
 function deferred<T>() {
     let resolve!: (value: T) => void, reject!: (error: unknown) => void
@@ -44,7 +63,7 @@ function official(name: string): { apply(ctx: Context): void; inject: string[] }
     return registration.factory(require)
 }
 
-async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
+async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?: boolean } = {}) {
     const window = createWindow('<!doctype html><html><body><main id="app"></main><section id="pane"></section></body></html>', 'https://fixture.invalid/')
     const document = window.document
     const restorers: Array<() => void> = []
@@ -101,7 +120,12 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
     })
     const querySelector = elementPrototype.querySelector
     install(elementPrototype, 'querySelector', function(this: HTMLElement, selector: string) { return querySelector.call(this, selector) ?? null })
-    const id = 'preparation-fixture' as SessionBinding['sessionId']
+    const id = (options.hhpiPane ? sourceSessionId({ machineId: 'preparation-machine', sourceId: 'native', engine: 'codex', nativeId: 'preparation-thread' })
+        : 'preparation-fixture') as SessionBinding['sessionId']
+    const preparation = deferred<SessionBinding>(), ready = deferred<SessionBinding>(), chatMounted = deferred<void>()
+    const readingSnapshot = observable({ phase: 'loading' as 'loading' | 'ready', viewId: 'preparation-pane', version: undefined as number | undefined,
+        before: null as string | null, after: null as string | null, hasBefore: false, hasAfter: false, busy: false, entries: [] as never[] })
+    const readingView = { viewId: 'preparation-pane', snapshot: readingSnapshot, read: async () => readingSnapshot.getSnapshot() }
     const state = observable<SessionSnapshot>({ sessionId: id, pendingSubmissions: [], running: false, subagent: null,
         removed: false, openState: 'open', openError: null, hasMore: options.fillPage === true, loadingOlder: false,
         promptError: null, blank: false, lastAgentError: null, promptAttempted: false, awaitingFirstTurn: false })
@@ -118,11 +142,27 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
     } as unknown as SessionBinding['session']
     const binding: SessionBinding = { sessionId: id, session, eventSource: events as unknown as SessionBinding['eventSource'], ctx: root as SessionBinding['ctx'] }
     const bindings = new Map<string, SessionBinding>([[id, binding]])
+    const RemotePaneViewsClass = options.hhpiPane ? await loadRemotePaneViews() : undefined
+    const paneViews = RemotePaneViewsClass ? new RemotePaneViewsClass() : undefined
+    let paneReference: SessionReference | undefined, paneReady = false
+    const paneOwner = { ...session, historyRead: { version: 1, openView: async () => ({}) },
+        metadata: observable({}), history: { sourceEpoch: 'preparation-epoch' } }
+    const held = { sessionId: id, binding: { ...binding, session: paneOwner } as unknown as SessionBinding, ready: preparation.promise,
+        release() {}, [Symbol.dispose]() {} } as SessionReference
     const sessions = { list: observable({ byId: {}, ids: [], phase: 'ready' }), binding: (key: string) => bindings.get(key),
+        ownsBinding: (candidate: SessionBinding) => paneViews?.owns(candidate) === true || bindings.get(candidate.sessionId) === candidate,
+        openReadingView: (_reference: SessionReference, viewId: string) => {
+            if (!paneViews) return undefined
+            const opened = paneViews.open(held, viewId)
+            paneReference = opened
+            void opened.ready.then(() => { paneReady = true }, () => { paneReady = true })
+            return opened
+        },
         retain() { counts.retains++; throw new Error('A borrowed SessionProvider must not retain another reference') },
         retainInfo: () => observable({ retainedBy: {} }),
     }
     root.reflect.provide('sessions', sessions as unknown as Context['sessions'])
+    root.reflect.provide('uiConversation', { binding: () => ({ readingView }) } as unknown as Context['uiConversation'])
     root.reflect.provide('remote', { $on: () => () => {} } as unknown as Context['remote'])
     root.reflect.provide('remoteAccess', { source: () => observable(undefined) } as unknown as Context['remoteAccess'])
     await root.plugin(official('@deepseek-ai/dsh-client-ui-renderer'))
@@ -160,13 +200,12 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
         })
         ctx.slots.register({ name: 'conversation.session' }, ({ sessionId, useSession }: PropsRuntime<'conversation.session'>) => {
             assert.equal(useSession(snapshot => snapshot.sessionId), sessionId)
-            useLayoutEffect(() => { counts.mounts++; return () => { counts.unmounts++ } }, [])
+            useLayoutEffect(() => { counts.mounts++; chatMounted.resolve(); return () => { counts.unmounts++ } }, [])
             return createElement('div', { 'data-chat-flow': '', 'data-preparation-slot': sessionId }, 'Source body')
         })
     } })
-    await root.plugin({ name: 'preparation-host', inject: ['slots', 'sessions'], apply(ctx: Context) { host = installSessionViewHost(ctx); return () => host!.dispose() } })
+    await root.plugin({ name: 'preparation-host', inject: ['slots', 'sessions', 'uiConversation'], apply(ctx: Context) { host = installSessionViewHost(ctx); return () => host!.dispose() } })
     await act(() => { unmount = root.uiRenderer.mount(document.getElementById('app')!) })
-    const preparation = deferred<SessionBinding>(), ready = deferred<SessionBinding>()
     const reference: SourcePreparationReference = { sessionId: id, binding, preparationReady: preparation.promise, ready: ready.promise,
         release() { counts.releases++ }, [Symbol.dispose]() { counts.releases++ } }
     const navigation = { hostId: 'local', paneId: 'pane', state: observable({ visible: true, focused: true }),
@@ -194,7 +233,8 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
             [Symbol.dispose]() { throw new Error('Candidate references remain owned by the source') } }
         return { reference: candidateReference, started: started.promise, finish: () => page.resolve() }
     }
-    return { target, document, host: installedHost, handle, binding, preparation, ready, counts, errors, preparers, readers, candidate,
+    return { target, document, host: installedHost, handle, binding, reference, preparation, ready, chatMounted, readingSnapshot, paneReference: () => paneReference,
+        paneReady: () => paneReady, paneViews, counts, errors, preparers, readers, candidate,
         failProvider(error: Error) {
             // The official SlotRenderer contains plugin-slot errors itself.
             // Lose the borrowed binding at the public SessionProvider boundary
@@ -223,6 +263,23 @@ async function fixture(t: TestContext, options: { fillPage?: boolean } = {}) {
         async settle(work: () => void) { await act(async () => { work(); await tick() }) },
     }
 }
+
+test('HHPI reference mounts through the real Host before its official reading window can become ready', async t => {
+    const f = await fixture(t, { hhpiPane: true })
+    const reference = f.paneReference()
+    assert.ok(reference, 'the source Session must open its pane-scoped RemotePaneViews reference')
+    assert.ok('preparationReady' in reference, 'RemotePaneViews must expose source-body readiness separately')
+    assert.equal(f.counts.mounts, 0, 'the Host must keep the Chat unmounted while source body readiness is pending')
+    await f.settle(() => f.preparation.resolve(f.binding))
+    await f.chatMounted
+    assert.ok(f.target.querySelector('[data-preparation-slot]'), 'source-body readiness must render the actual Host-owned Chat slot')
+    assert.equal(f.paneReady(), false, 'the full pane reference still waits for the official reader to commit')
+    assert.equal(f.readingSnapshot.getSnapshot().phase, 'loading')
+    await f.settle(() => f.readingSnapshot.set({ ...f.readingSnapshot.getSnapshot(), phase: 'ready', version: 1 }))
+    await reference.ready
+    assert.equal(f.paneReady(), true)
+    assert.deepEqual(f.errors, [])
+})
 
 test('source preparation mounts the real scoped slot hidden before outline readiness and reveals the same DOM once', async t => {
     const f = await fixture(t, { fillPage: true })

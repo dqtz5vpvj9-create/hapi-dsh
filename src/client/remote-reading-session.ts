@@ -165,12 +165,16 @@ interface PaneRecord {
   release(): void
 }
 
+export interface RemotePaneReference extends SessionReference {
+  readonly preparationReady: Promise<SessionBinding>
+}
+
 /** Registry validation prevents manufactured or stale bindings from entering an official SessionProvider. */
 export class RemotePaneViews {
   private readonly records = new Map<SessionBinding, PaneRecord>()
   private readonly keys = new Set<string>()
 
-  open(held: SessionReference, viewId: string): SessionReference {
+  open(held: SessionReference, viewId: string): RemotePaneReference {
     const owner = held.binding.session as RemoteSourceSession
     const key = JSON.stringify([held.sessionId, viewId])
     if (this.keys.has(key)) { held.release(); throw new Error('This Pane reading occurrence is already retained.') }
@@ -190,9 +194,17 @@ export class RemotePaneViews {
     }
     this.keys.add(key)
     this.records.set(binding, { binding, session, release })
+    // The source baseline is enough to render Chat. Full readiness intentionally
+    // waits for the official reading occurrence to commit, which itself needs
+    // Chat mounted to assemble that window.
+    const preparationReady = held.ready.then(() => {
+      if (released) throw new Error('The reading occurrence was released.')
+      return binding
+    })
+    void preparationReady.catch(() => {})
     const ready = session.ready.then(() => { if (released) throw new Error('The reading occurrence was released.'); return binding })
     void ready.catch(() => {})
-    return { sessionId: held.sessionId, ready,
+    return { sessionId: held.sessionId, preparationReady, ready,
       get binding() { if (released) throw new Error('The reading occurrence was released.'); return binding },
       release, [Symbol.dispose]: release }
   }
