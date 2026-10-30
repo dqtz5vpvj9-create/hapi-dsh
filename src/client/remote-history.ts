@@ -400,7 +400,9 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   fail(error: unknown): void { this.error = error; for (const listener of this.listeners) listener() }
   private record(delta: HistoryDeltaV1): void {
     this.journal.push(delta); this.journalBytes += delta.snapshot ? windowBytes(delta.snapshot.entries) : 0
-    while (this.journal.length > REPLAY_DELTAS || this.journalBytes > CACHE_BYTES) {
+    // The newest checkpoint references the already resident window. Expiring
+    // that single frame would make its current reader stale immediately.
+    while (this.journal.length > 1 && (this.journal.length > REPLAY_DELTAS || this.journalBytes > CACHE_BYTES)) {
       const expired = this.journal.shift()!; this.journalBytes -= expired.snapshot ? windowBytes(expired.snapshot.entries) : 0
     }
     for (const listener of this.listeners) listener()

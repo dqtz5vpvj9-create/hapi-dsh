@@ -141,6 +141,19 @@ test('a genuinely oversized page still fails admission without altering accepted
   assert.equal(feed.publication!.published?.snapshot, feed.initial)
 })
 
+test('a resident history larger than the replay target still publishes its latest revision', { timeout: 5000 }, async t => {
+  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
+  t.after(() => owner.dispose())
+  wire.entries = wire.entries.map(value => entry(value.event.seq, 'x'.repeat(24 * 1024)))
+  const feed = await owner.openView('large-history', budget)
+  let snapshot = feed.initial
+  for (let page = 1; page < 9; page++) { snapshot = await older(feed, snapshot); feed.publication!.accept(snapshot.version) }
+  await observe(feed, snapshot.version, () => wire.emit([entry(1440, 'accepted latest revision')]))
+  const current = await feed.refresh!(budget, new AbortController().signal)
+  assert.equal(current.entries.length, 1440)
+  assert.equal(body(current, 1440), 'accepted latest revision')
+})
+
 test('cancelling one coalesced navigation does not cancel the other caller', { timeout: 3000 }, async t => {
   const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
   t.after(() => owner.dispose())
