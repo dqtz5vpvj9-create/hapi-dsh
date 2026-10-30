@@ -6,9 +6,13 @@ import { createRequire } from 'node:module'
 import { act, createElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { MountedChatV1 } from '@deepseek-ai/dsh-client-ui-chat/client'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { PropsRuntime, PropsRenderFactories, PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import { fixture } from './hhpi-reading-fixture.ts'
 const require = createRequire(import.meta.url)
+
+declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap { 'hhpi.test.pane': { kind: 'single'; scope: 'session' } }
+}
 
 test('real mounted official Chat controls page only their own canonical-session occurrence', { timeout: 15000 }, async t => {
   const f = await fixture(t)
@@ -66,13 +70,16 @@ test('real mounted official Chat controls page only their own canonical-session 
       workspaces: { getSnapshot: () => workspaces, subscribe: () => () => {} },
       panelInfo: { getSnapshot: () => panelInfo, subscribe: () => () => {} },
     } })
-    // The main declaration activates the official subtree. Its factory owns
-    // conversation.session and every composer child; do not redeclare them.
-    ctx.slots.register({ name: 'root', children: { main: { kind: 'keyed', scope: 'root' } } },
-      (props: PropsRuntime<'root'>) => createElement('main', null,
-        ...[a, b].map((pane, index) => createElement('section', { key: index, 'data-test-pane': index === 0 ? 'a' : 'b' },
-          createElement(props.SessionProvider, { session: pane.reference },
-            props.renderFactorySlot('conversation.content', { phase: 'ready', hero: false, variant: 'embedded' }))))))
+    // A shell owns only its own scoped seat. The official content factory
+    // remains the sole owner of Conversation, Chat and composer children.
+    ctx.slots.register({ name: 'root', children: {
+      main: { kind: 'keyed', scope: 'root' },
+      'hhpi.test.pane': { kind: 'single', scope: 'session' },
+    } }, (props: PropsRuntime<'root'> & PropsRenderSlots<'hhpi.test.pane'>) => createElement('main', null,
+      ...[a, b].map((pane, index) => createElement('section', { key: index, 'data-test-pane': index === 0 ? 'a' : 'b' },
+        createElement(props.SessionProvider, { session: pane.reference }, props.renderSlot('hhpi.test.pane', {}))))))
+    ctx.slots.register({ name: 'hhpi.test.pane' }, (props: PropsRenderFactories) =>
+      props.renderFactorySlot('conversation.content', { phase: 'ready', hero: false, variant: 'embedded' }))
   } })
   let unmount: (() => void) | undefined
   try {
