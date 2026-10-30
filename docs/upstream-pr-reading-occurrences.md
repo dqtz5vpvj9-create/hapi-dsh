@@ -2,6 +2,8 @@
 
 No upstream pull request has been submitted.
 
+The optional window-commit reader measurement also carries `anchor.ownerKey` for nested DOM anchors. ChatViewport captures the owning Conversation node/group separately from the exact reading key. Candidate retention validates that owner; viewport correction still restores the original inner anchor and offset. This fixes false `CAPACITY_EXCEEDED` failures on tool-call subrows without changing capacity budgets or accepting an evicted owner. The transformation is in `scripts/dsh-ext/reader-publication.mjs`, with actual official viewport and candidate-publication regressions in `tests/contracts/hhpi-reader-anchors.test.ts` and `tests/contracts/hhpi-official-history.test.ts`.
+
 Provide independently retained presentation bindings over a canonical Session. Add optional `viewId`, `ownsBinding`, `bindingOf`, and `openReadingView` contracts. A generic renderer binding may supply an opaque domain owner and an injection identity distinct from its store persistence key. Append the scope binding to existing scoped inject callback arguments.
 
 UiSession validates the exact binding with its owning Session service. UiConversation selects its official history assembler when an occurrence viewId is present. Chat nodes, groups, navigation, details and scroll memory read that same occurrence. InputHub resolves its shell through the exact retained binding and persists by the same occurrence store key. Native operations keep their canonical Session and authorization identity.

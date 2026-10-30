@@ -40,4 +40,4 @@ jobs:
         run: node scripts/dsh-ext/build-contracts.mjs "${HHPI_DSH_SOURCE}"
       - name: Official Conversation continuous reading
         timeout-minutes: 2
-        run: node --import tsx --test tests/contracts/hhpi-official-history.test.ts
+        run: node --import tsx --test tests/contracts/hhpi-official-history.test.ts tests/contracts/hhpi-reader-anchors.test.ts

@@ -18,6 +18,8 @@ Complete-window publication notifies selected readers inside the existing measur
 
 The mounted Chat owns scroll correction. Gesture callbacks resolve the exact retained occurrence through a lifecycle-bound DOM owner; they cannot fall back from a direct source to a canonical root reader. An occurrence-local older-commit counter reports paging progress without synthesizing HAPI coordinates from an opaque cursor. Cancellation aborts the current Pane's read, and the source's accepted-page cache is shared across panes.
 
+Reader measurements distinguish the exact DOM anchor from its semantic owner. A nested tool call can use `call:<id>` while its retained Conversation node has a different key. ChatViewport captures both identities; the optional `anchor.ownerKey` is used only to validate candidate retention, while correction continues to restore the original `anchor.key` and offset. Group and segmented-member aliases are recognized only when the corresponding group or member exists. A missing semantic owner still rejects publication; this change does not increase history budgets or suppress genuine eviction failures.
+
 ## Inputs and release
 
 InputHub owns separate shells per binding. The renderer persistence key is the tuple of canonical Session and view ID, matching the shell's initial draft lookup. HHPI autosave uses the stable workspace Pane identity, while keyboard and Steer seats use the exact current binding. Native send, cancel and approval delegate to the canonical Session and its deduplication ledger.

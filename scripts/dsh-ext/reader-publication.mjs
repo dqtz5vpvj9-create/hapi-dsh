@@ -31,6 +31,10 @@ async function edit(root, file, change) {
 const insert = (edits, at, text) => edits.push({ start: at, end: at, text });
 export async function applyReaderPublication(root) {
   await edit(root, 'packages/api/session-controller/src/client/contract/window-commit.ts', (ast, edits) => {
+    const measurement = named(ast, 'WindowReaderMeasurementV1'), anchor = method(measurement, ast, 'anchor');
+    const shape = anchor.type?.types?.find(ts.isTypeLiteralNode);
+    if (!shape) throw new Error('Pinned reader anchor shape changed.');
+    insert(edits, shape.getStart(ast) + 1, '\n    /** Semantic node/group owning a more precise DOM anchor; correction still uses key. */\n    readonly ownerKey?: string;\n');
     const host = named(ast, 'WindowCommitHostV1');
     insert(edits, host.end - 1, `\n  /** Validate all commit-time readers before publishing; absent for legacy hosts. */\n  validate?(candidate: Candidate, measurements: readonly WindowReaderMeasurementV1[]): void\n`);
     const factory = named(ast, 'WindowCommitFactoryV1');
@@ -56,6 +60,40 @@ export async function applyReaderPublication(root) {
     mark(factory);
     if (!marked) throw new Error('Pinned coordinator capability factory changed.');
   });
+  await edit(root, 'packages/client/ui-chat/src/client/contract/slots.ts', (ast, edits) => {
+    const position = named(ast, 'ChatScrollPosition');
+    insert(edits, position.end - 1, '\n  /** Semantic node/group owning the exact DOM reading anchor. */\n  readonly anchorOwnerKey?: string\n');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-viewport.ts', (ast, edits) => {
+    const owner = named(ast, 'ChatViewport'), capture = method(owner, ast, 'capturePosition');
+    let matched = 0;
+    const visit = node => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'position'
+        && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+        const declaration = node.parent.parent;
+        insert(edits, declaration.getStart(ast), `const anchorOwnerKey = anchor.closest<HTMLElement>('[data-chat-node-key]')?.dataset.chatNodeKey
+      ?? anchor.closest<HTMLElement>('[data-chat-group-key]')?.dataset.chatGroupKey
+    `);
+        insert(edits, node.initializer.getStart(ast) + 1, '\n      ...anchorOwnerKey === undefined ? {} : { anchorOwnerKey },'); ++matched;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(capture);
+    if (matched !== 1) throw new Error('Pinned viewport reading-position capture changed.');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts', (ast, edits) => {
+    const create = named(ast, 'createWindowCommitReader');
+    let matched = 0;
+    const visit = node => {
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(ast) === 'key' && property.initializer.getText(ast) === 'position.anchorKey')) {
+        insert(edits, node.getStart(ast) + 1, ' ...position.anchorOwnerKey === undefined ? {} : { ownerKey: position.anchorOwnerKey },'); ++matched;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(create);
+    if (matched !== 1) throw new Error('Pinned Chat reader measurement changed.');
+  });
   await edit(root, 'packages/client/ui-conversation/src/client/conversation/assembler.ts', (ast, edits) => {
     const owner = named(ast, 'ConversationNodeAssembler');
     insert(edits, owner.end - 1, `
@@ -67,7 +105,13 @@ export async function applyReaderPublication(root) {
     for (const group of this.groups.values()) {
       for (const entry of group.store.entries) {
         if (entry.key === key) return true
-        if (entry.kind === 'group' && group.store.groupSource(entry.key).getSnapshot()?.members.some(member => member.key === key)) return true
+        if (entry.kind === 'node' && entry.groupPart !== undefined
+          && JSON.stringify([entry.key, entry.groupPart]) === key) return true
+        if (entry.kind === 'group') {
+          if (key === \`group:\${entry.key}\`) return true
+          if (group.store.groupSource(entry.key).getSnapshot()?.members.some(member => member.key === key
+            || member.groupPart !== undefined && JSON.stringify([member.key, member.groupPart]) === key)) return true
+        }
       }
     }
     return false
@@ -102,7 +146,7 @@ export async function applyReaderPublication(root) {
     if (this.feed?.mode !== 'complete-window' || !this.completePreserveAnchor) return
     for (const measurement of measurements) {
       if (measurement.available && !measurement.following && measurement.anchor !== null
-        && !candidate.assembled.containsReadingKey(measurement.anchor.key)) {
+        && !candidate.assembled.containsReadingKey(measurement.anchor.ownerKey ?? measurement.anchor.key)) {
         throw Object.assign(new Error('The prepared window would evict a visible reader anchor.'), { code: 'CAPACITY_EXCEEDED' })
       }
     }

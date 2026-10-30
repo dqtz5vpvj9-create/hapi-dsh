@@ -54,7 +54,8 @@ async function waitState(view: View, predicate: () => boolean): Promise<void> {
   await new Promise<void>(resolve => { const stop = view.snapshot.subscribe(() => { if (predicate()) { stop(); resolve() } }); if (predicate()) { stop(); resolve() } })
 }
 interface Reader {
-  anchor: string | null; top: number; revision: number; fail: boolean; available: boolean
+  anchor: string | null; anchorOwnerKey: string | undefined; top: number; revision: number; fail: boolean; available: boolean
+  latestCandidate: Candidate | undefined
   measurements: WindowReaderMeasurementV1[]; corrections: WindowReaderMeasurementV1[]; publications: number
 }
 function fixture() {
@@ -67,15 +68,21 @@ function fixture() {
   })
   const views: View[] = [], coordinators: WindowCommitCoordinatorV1[] = []
   return { calls, index, owner,
+    assemble(entries: HistorySnapshotV1['entries'], hasBefore: boolean) {
+      const assembled = definitionsOwner.assembler(); assembled.replaceWindow(entries, hasBefore); assembled.flush(); return assembled
+    },
     defer() { const deferred = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>(); gate = { waiting: deferred.promise, started: () => entered.resolve() }; return { ...deferred, entered: entered.promise } },
     async open(id: string) {
       const assembler = definitionsOwner.assembler()
       let view: View
-      const reader: Reader = { anchor: null, top: 0, revision: 0, fail: false, available: false, measurements: [], corrections: [], publications: 0 }
+      const reader: Reader = { anchor: null, anchorOwnerKey: undefined, top: 0, revision: 0, fail: false, available: false,
+        latestCandidate: undefined, measurements: [], corrections: [], publications: 0 }
       const coordinator = production.windowCommit.createWindowCommitFactory().create<Candidate>({ windowId: id, revision: 0,
         buildCandidate(snapshot) {
           const assembled = definitionsOwner.assembler(); assembled.replaceWindow(snapshot.entries, snapshot.hasBefore); assembled.flush()
-          return { candidate: { ...snapshot, assembled }, nodes: assembled.derivedNodeCount() }
+          const candidate = { ...snapshot, assembled }
+          reader.latestCandidate = candidate
+          return { candidate, nodes: assembled.derivedNodeCount() }
         },
         validate(candidate, measurements) { view.validateCandidate(candidate, measurements) },
         publish(candidate) { view.publishCandidate(candidate); ++reader.publications },
@@ -84,12 +91,16 @@ function fixture() {
       coordinator.register({ id: `reader-${id}`,
         measure() {
           if (reader.fail) throw new Error('Injected unavailable reader measurement')
-          const measurement: WindowReaderMeasurementV1 = { revision: ++reader.revision, anchor: reader.anchor === null ? null : { key: reader.anchor, top: reader.top }, following: false,
+          const measurement: WindowReaderMeasurementV1 = { revision: ++reader.revision, anchor: reader.anchor === null ? null : {
+            key: reader.anchor, top: reader.top, ...(reader.anchorOwnerKey === undefined ? {} : { ownerKey: reader.anchorOwnerKey }),
+          }, following: false,
             scrollTop: reader.top, clientHeight: 600, scrollHeight: 10000, nodes: assembler.derivedNodeCount(), available: reader.available }
           reader.measurements.push(measurement); return measurement
         },
         correct(measurement) {
-          if (measurement.available && measurement.anchor) assert.ok(assembler.containsReadingKey(measurement.anchor.key), 'the current reader anchor survives publication')
+          if (measurement.available && measurement.anchor) {
+            assert.ok(assembler.containsReadingKey(measurement.anchor.ownerKey ?? measurement.anchor.key), 'the current reader anchor owner survives publication')
+          }
           reader.corrections.push(measurement)
         },
       })
@@ -102,6 +113,97 @@ function fixture() {
     async close() { for (const view of views) view.release(); for (const coordinator of coordinators) coordinator.dispose(); owner.dispose(); index.dispose(); await definitionsOwner.close() },
   }
 }
+
+function seedAnchorEvents(index: SourceEventIndex): { rootCallId: string; innerCallId: string } {
+  const rootCallId = 'reader-anchor-root', innerCallId = 'reader-anchor-inner'
+  index.edit(session, () => {
+    const put = (key: string, type: string, data: Record<string, unknown>, surfaceOp?: 'append'): void => {
+      index.put(key, { type, time: 2000, data, ...(surfaceOp ? { surfaceOp } : {}) } as EventInput)
+    }
+    put('anchor-turn-start', 'turn/start', { turn: 1 })
+    put('anchor-tool-step-start', 'step/start', { turn: 1, step: 1 })
+    put('anchor-tool-advertisement', 'assistant/message', {
+      turn: 1, step: 1, stream: [], message: { id: 'anchor-tool-advertisement', role: 'assistant',
+        source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+        content: [{ type: 'tool-call', id: rootCallId, name: 'run_code', arguments: '{}' }] },
+    }, 'append')
+    put('anchor-tool-call', 'tool/call', { turn: 1, step: 1, callId: rootCallId, name: 'run_code', arguments: '{}' })
+    put('anchor-tool-dispatch-start', 'tool/ptc-dispatch-start', {
+      rootCallId, parentCallId: rootCallId, subCallId: innerCallId, name: 'read', arguments: { path: 'anchor.txt' },
+    })
+    put('anchor-tool-dispatch-end', 'tool/ptc-dispatch', {
+      rootCallId, parentCallId: rootCallId, subCallId: innerCallId, name: 'read', arguments: { path: 'anchor.txt' },
+      isError: false, content: [{ type: 'text', text: 'read complete' }],
+    })
+    put('anchor-tool-result', 'tool/result', { turn: 1, step: 1, message: {
+      id: 'anchor-tool-result', role: 'tool', toolCallId: rootCallId,
+      source: { kind: 'tool', callId: rootCallId }, content: [{ type: 'text', text: 'run complete' }], isError: false,
+    } }, 'append')
+    put('anchor-tool-step-end', 'step/end', { turn: 1, step: 1 })
+    put('anchor-tool-turn-end', 'turn/end', { turn: 1, reason: { kind: 'completed' } })
+    put('anchor-reasoning-turn-start', 'turn/start', { turn: 2 })
+    put('anchor-reasoning-step-start', 'step/start', { turn: 2, step: 1 })
+    put('anchor-reasoning-assistant', 'assistant/message', {
+      turn: 2, step: 1, stream: [], message: { id: 'anchor-reasoning-assistant', role: 'assistant',
+        source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+        content: [{ type: 'reasoning', text: 'reasoning segment for reading anchor' }, { type: 'text', text: 'answer segment' }] },
+    }, 'append')
+    put('anchor-reasoning-step-end', 'step/end', { turn: 2, step: 1 })
+    put('anchor-reasoning-turn-end', 'turn/end', { turn: 2, reason: { kind: 'completed' } })
+  })
+  return { rootCallId, innerCallId }
+}
+
+test('official tool, group, and segmented anchors validate by their real semantic owner while retaining exact DOM anchors', { timeout: 10000 }, async t => {
+  const f = fixture(); t.after(() => f.close())
+  const { rootCallId, innerCallId } = seedAnchorEvents(f.index)
+  const { view, reader } = await f.open('anchor-pane'), initial = view.reads.snapshot('chat')
+  const toolNode = initial.order.map(key => initial.nodes.get(key)).find(node => node?.kind === 'tool-call')
+  assert.ok(toolNode, 'the official Chat assembler materializes the root tool call')
+  const root = (toolNode.data as unknown as { root: { callId: string; subCalls: readonly { callId: string }[] } }).root
+  assert.equal(root.callId, rootCallId)
+  assert.ok(root.subCalls.some(call => call.callId === innerCallId), 'the real PTC lifecycle produces the nested ToolCallTree row')
+  const grouped = view.reads.grouped('chat') as unknown as {
+    entries: readonly { kind: 'group' | 'node'; key: string; groupPart?: string }[]
+    groupSource(key: string): { getSnapshot(): { members: readonly { kind: 'node'; key: string; groupPart?: string }[] } | undefined }
+  }
+  const groupEntry = grouped.entries.find(entry => entry.kind === 'group'
+    && grouped.groupSource(entry.key).getSnapshot()?.members.some(member => member.groupPart === 'reasoning'))
+  assert.ok(groupEntry, 'the official process grouper emits a group containing the reasoning segment')
+  const segmented = grouped.groupSource(groupEntry.key).getSnapshot()?.members.find(member => member.groupPart === 'reasoning')
+  assert.ok(segmented, 'the official process grouper emits the reasoning segment')
+  const segmentedAlias = JSON.stringify([segmented.key, segmented.groupPart])
+  assert.equal(view.reads.containsReadingKey(`group:${groupEntry.key}`), true)
+  assert.equal(view.reads.containsReadingKey('group:missing-owner'), false)
+  assert.equal(view.reads.containsReadingKey(segmentedAlias), true)
+  assert.equal(view.reads.containsReadingKey(JSON.stringify([segmented.key, 'missing-part'])), false)
+
+  const exactToolAnchor = `call:${innerCallId}`
+  reader.available = true; reader.anchor = exactToolAnchor; reader.anchorOwnerKey = toolNode.key; reader.top = 41
+  const cursor = view.snapshot.getSnapshot().before
+  assert.ok(cursor)
+  const committed = await view.read({ kind: 'before', cursor })
+  assert.equal(committed.busy, false, 'the real nested call anchor owner permits the earlier page')
+  const correction = reader.corrections.at(-1)!
+  assert.deepEqual(correction.anchor, { key: exactToolAnchor, top: 41, ownerKey: toolNode.key }, 'scroll correction keeps the precise nested call anchor')
+
+  const candidate = reader.latestCandidate!
+  const groupMeasurement = { ...reader.measurements.at(-1)!, anchor: { key: `group:${groupEntry.key}`, top: 13, ownerKey: groupEntry.key } }
+  const segmentMeasurement = { ...reader.measurements.at(-1)!, anchor: { key: segmentedAlias, top: 17, ownerKey: segmented.key } }
+  assert.doesNotThrow(() => view.validateCandidate(candidate, [groupMeasurement]), 'a real group alias is accepted through its group owner')
+  assert.doesNotThrow(() => view.validateCandidate(candidate, [segmentMeasurement]), 'a real segmented alias is accepted through its node owner')
+
+  const withoutToolEvents = candidate.entries.filter(entry => !['tool/call', 'tool/result', 'tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(entry.event.type)
+    && !(entry.event.type === 'assistant/message' && entry.event.data.message.id === 'anchor-tool-advertisement'))
+  const withoutToolOwner = { ...candidate, entries: withoutToolEvents, assembled: f.assemble(withoutToolEvents, candidate.hasBefore) }
+  assert.equal(withoutToolOwner.assembled.containsReadingKey(toolNode.key), false)
+  const ownerStillMeasured = { ...reader.measurements.at(-1)!, anchor: { key: exactToolAnchor, top: 41, ownerKey: toolNode.key } }
+  assert.throws(() => view.validateCandidate(withoutToolOwner, [ownerStillMeasured]), { code: 'CAPACITY_EXCEEDED' },
+    'an explicitly measured owner must still be present in the prepared candidate')
+  const rawOnlyMeasurement = { ...reader.measurements.at(-1)!, anchor: { key: exactToolAnchor, top: 41 } }
+  assert.throws(() => view.validateCandidate(withoutToolOwner, [rawOnlyMeasurement]), { code: 'CAPACITY_EXCEEDED' },
+    'without an owner key, a candidate that drops the owning node must still be rejected')
+})
 
 test('official Conversation obtains six earlier body-bearing segments while retaining resident node identities', { timeout: 10000 }, async t => {
   const f = fixture(); t.after(() => f.close())
