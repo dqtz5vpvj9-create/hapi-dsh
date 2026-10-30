@@ -8,14 +8,18 @@ import { fileURLToPath } from 'node:url'
 import { build } from 'esbuild'
 import { Context, type Plugin } from '@deepseek-ai/cordis'
 import { Loader } from '@deepseek-ai/cordis-plugin-loader'
+import { apply as applyGateway, inject as gatewayInject } from '@deepseek-ai/dsh-api-gateway/client'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { SOURCE_SESSIONS_REALM } from '../src/client/source-sessions-composition.ts'
+import { HHPI_REMOTE } from '../src/hhpi-api.ts'
 import type {} from '../src/client/remote-sessions.ts'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const eventContract = join(dirname(require.resolve('@deepseek-ai/dsh-api-session-controller/package.json')),
   'lib/types/client/contract/events.js')
-const names = ['hapi-dsh', '@deepseek-ai/dsh-client-ui-session', '@deepseek-ai/dsh-client-ui-conversation']
+const names = ['hapi-dsh', '@deepseek-ai/dsh-client-ui-session', '@deepseek-ai/dsh-client-ui-conversation', '@deepseek-ai/dsh-client-ui-workspace']
 let provider: Plugin.Object
 
 before(async () => {
@@ -30,19 +34,34 @@ before(async () => {
 
 async function fixture() {
   const ctx = new Context(), started: Array<{ name: string; owner: unknown }> = [], stopped: string[] = []
+  let originalSessions: unknown
+  let originalRestoreCreates = 0
+  const catalog = { protocol: 1 as const, legacyHapi: false, sessions: [], sources: [] }
+  await ctx.plugin(TypertRegistry)
+  ctx.reflect.provide('connection', {
+    interactions: 'answer', isLoopback: false,
+    generation: { getSnapshot: () => undefined, subscribe: () => () => {} },
+    state: { getSnapshot: () => undefined, subscribe: () => () => {} },
+    rpc: { call: async (_channel: string, endpoint: string) => {
+      assert.equal(endpoint, 'hhpi/catalog')
+      return { ok: true, value: catalog }
+    }, open: () => { throw new Error('The provider contract must not open a stream.') } },
+    openWebSocket: () => { throw new Error('The provider contract must not open a socket.') },
+    reconnect: () => {}, registerGenerationSource: () => () => {}, start: () => ({ stop: () => {} }),
+  } as unknown as ConnectionHandle)
+  await ctx.plugin({ inject: gatewayInject, apply: applyGateway })
   await ctx.plugin(Loader)
-  // The full UI supplies an authenticated remote. Here only the RPC boundary
-  // is a fixture; the real Cordis Loader and Session facade still execute.
-  ctx.reflect.provide('remote', {
-    $mount: async () => () => {},
-    hhpi: { catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, sessions: [], sources: [] } }) },
-  } as unknown as Context['remote'])
   ctx.loader.internal = { version: 'client', import: (name: string) => ({ inject: ['sessions'], apply(owner: Context) {
     started.push({ name, owner: owner.sessions })
+    if (name === '@deepseek-ai/dsh-client-ui-workspace' && owner.sessions === originalSessions) {
+      originalRestoreCreates++
+      return (owner.sessions as { create(): Promise<unknown> }).create()
+    }
     return () => { stopped.push(name) }
   } }) } as unknown as NonNullable<Loader['internal']>
   const create = async () => Promise.all(names.map(async name => ctx.loader.resolve(await ctx.loader.create({ name }))))
-  return { ctx, started, stopped, create }
+  const setOriginalSessions = (sessions: unknown): void => { originalSessions = sessions }
+  return { ctx, started, stopped, create, setOriginalSessions, get originalRestoreCreates() { return originalRestoreCreates }, catalog }
 }
 
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
@@ -74,6 +93,44 @@ test('early hook isolates new consumers before a delayed original service become
     assert.deepEqual(started.at(-1), { name: laterName, owner: facade })
     assert.deepEqual(stopped, [])
   } finally { await ctx.fiber.dispose() }
+})
+
+test('registers the sessions boundary before yielding so workspace restore cannot create a DSH session', async () => {
+  const f = await fixture()
+  const original = { kind: 'original', list: { getSnapshot: () => ({ ids: [], byId: {} }), subscribe: () => () => {} },
+    create: async () => ({ id: 'unexpected' }) }
+  f.setOriginalSessions(original)
+  f.ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
+  try {
+    const installed = f.ctx.plugin(provider)
+    const entries = await f.create()
+    await installed
+    await f.ctx.loader.await()
+    assert.ok(entries.every(entry => entry.options.isolate?.sessions === SOURCE_SESSIONS_REALM))
+    assert.equal(f.originalRestoreCreates, 0)
+    assert.ok(f.ctx.get('hapiSourceSessions'))
+  } finally { await f.ctx.fiber.dispose() }
+})
+
+test('official ClientRemote mount publishes remote.hhpi as a Cordis-injected service', async () => {
+  const f = await fixture()
+  try {
+    assert.equal(f.ctx.get('remote.hhpi'), undefined)
+    const remoteOwner = f.ctx.inject(['remote'], async owner => {
+      const unmount = await owner.remote.$mount(HHPI_REMOTE)
+      try {
+        assert.equal(typeof f.ctx.get('remote.hhpi'), 'object')
+        let namespace: unknown
+        const dependency = owner.inject(['remote.hhpi'], scope => { namespace = scope.remote.hhpi })
+        await dependency
+        assert.equal(typeof (namespace as { catalog?: unknown }).catalog, 'function')
+        await (namespace as { catalog(): Promise<unknown> }).catalog()
+      } finally { await unmount() }
+    })
+    await remoteOwner
+    await remoteOwner.dispose()
+    assert.equal(f.ctx.get('remote.hhpi'), undefined)
+  } finally { await f.ctx.fiber.dispose() }
 })
 
 test('disposing while the original service is absent removes the hook and restores pending consumers', async () => {

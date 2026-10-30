@@ -52,10 +52,10 @@ function isolation(entry: Entry, label: string): Record<string, true | string> {
 
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
   diagnosticMark('hapi-dsh:provider:start')
-  const stopCommands = await installCommandDirectoryProvider(ctx)
   const label = SOURCE_SESSIONS_REALM
   const consumers = new Set<string>(SOURCE_SESSION_CONSUMERS)
   const prior = new Map<Entry, Record<string, true | string> | null>()
+  let stopCommands: () => Promise<void> = async () => {}
   const remember = (entry: Entry): void => {
     if (!prior.has(entry)) prior.set(entry, entry.options.isolate ? { ...entry.options.isolate } : null)
   }
@@ -79,6 +79,10 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     }
   }
   try {
+    // Install the sessions boundary synchronously before any await. On a fresh
+    // workspace ui-workspace can otherwise restore its default DSH session in
+    // the microtask gap while command-directory setup is still pending.
+    stopCommands = await installCommandDirectoryProvider(ctx)
     const entries = await waitForEntries(ctx.loader, 10_000)
     diagnosticMark('hapi-dsh:provider:entries')
     // Entry imports are concurrent in the primary shell. A row whose fiber
@@ -94,36 +98,47 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       // Install HHPI independently of HAPI. The official DSH Session owner
       // keeps native execution and leases; HHPI adds only source-owned views.
       const unmountHhpi = await owner.remote.$mount(HHPI_REMOTE)
-      const remote = new RemoteSessions(owner, owner.sessions, owner.remote.hhpi)
-      const facade = new SourceSessions(remote)
+      let remote: RemoteSessions | undefined
+      let facade: SourceSessions | undefined
       let provider: Fiber | undefined
+      let hhpiOwner: Fiber | undefined
       let unprovideRemote: (() => void) | undefined
       try {
-        const scope = await sourceSessionsContext(owner)
-        provider = scope.plugin({ name: 'hapi-source-sessions-provider', apply(providerContext: Context) {
-          providerContext.reflect.provide('sessions', facade)
-          // G4 compatibility probe: count real session-provider registrations
-          // when the sampler installed the counter. Absent in production.
-          const probe = Reflect.get(globalThis, '__hapiDshG4Probe') as { providers?: number } | undefined
-          if (probe !== undefined) probe.providers = (probe.providers ?? 0) + 1
-        } })
-        await provider
-        owner.reflect.provide('hapiSourceSessions', facade)
-        unprovideRemote = owner.reflect.provide('hhpiSessions', remote)
+        // $mount installs the official Cordis service `remote.hhpi`. Wait on
+        // that dotted service through Cordis injection instead of reading an
+        // undeclared nested service from the root Remote service.
+        hhpiOwner = owner.inject(['remote.hhpi'], async hhpiContext => {
+          remote = new RemoteSessions(owner, owner.sessions, hhpiContext.remote.hhpi)
+          facade = new SourceSessions(remote)
+          const scope = await sourceSessionsContext(owner)
+          provider = scope.plugin({ name: 'hapi-source-sessions-provider', apply(providerContext: Context) {
+            providerContext.reflect.provide('sessions', facade!)
+            // G4 compatibility probe: count real session-provider registrations
+            // when the sampler installed the counter. Absent in production.
+            const probe = Reflect.get(globalThis, '__hapiDshG4Probe') as { providers?: number } | undefined
+            if (probe !== undefined) probe.providers = (probe.providers ?? 0) + 1
+          } })
+          await provider
+          owner.reflect.provide('hapiSourceSessions', facade)
+          unprovideRemote = owner.reflect.provide('hhpiSessions', remote)
+        })
+        await hhpiOwner
         diagnosticMark('hapi-dsh:provider:ready')
       } catch (error) {
         unprovideRemote?.()
+        await hhpiOwner?.dispose()
         await provider?.dispose()
-        facade.dispose()
-        remote.dispose()
+        facade?.dispose()
+        remote?.dispose()
         await unmountHhpi?.()
         throw error
       }
       return async () => {
         unprovideRemote?.()
+        await hhpiOwner?.dispose()
         await provider?.dispose()
-        facade.dispose()
-        remote.dispose()
+        facade?.dispose()
+        remote?.dispose()
         await unmountHhpi?.()
       }
     })
