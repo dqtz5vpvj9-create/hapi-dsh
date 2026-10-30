@@ -7,6 +7,15 @@ export async function runJourney(page, context, origin, mode, result) {
   const mobile = mode === 'mobile'
   const state = () => page.evaluate(() => window.__hhpi.snapshot())
   const stats = () => fetch(origin + '/api/stats').then(response => response.json())
+  const preciseAnchorKind = key => {
+    if (key.startsWith('call:')) return 'call'
+    if (key.startsWith('group:')) return 'group'
+    try {
+      const value = JSON.parse(key)
+      if (Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'string') return 'segmented'
+    } catch {}
+    return 'node'
+  }
   const pane = key => page.locator(`[data-lab-pane="${key}"]`)
   const editor = key => pane(key).locator('[contenteditable="true"]')
   let gestures
@@ -49,26 +58,70 @@ export async function runJourney(page, context, origin, mode, result) {
     assert.ok((await visible()).min !== null, 'first target frame must contain visible source bodies')
   })
   await step('browser keyboard, composition and independent drafts', () => exerciseDraftInput(page, context, mobile, result))
+  const fixture = await stats()
+  assert.equal(fixture.userMessageCount, 1440, 'the synthetic source retains all 1440 user messages')
+  assert.deepEqual(fixture.userMessageRange, { first: 1, last: 1440 }, 'synthetic user bodies remain one continuous range')
+  assert.equal(fixture.sourceEventCount, 1503, 'seven complete tool-bearing windows are added without dropping user messages')
   const baseline = await state(); let previousVisible = (await visible()).min
   await step('six real-input older boundary crossings', async () => {
     result.segments = []
     for (let segment = 1; segment <= 6; segment++) {
       const before = await state()
+      const beforeStats = await stats()
+      const lastUserId = 1440 - segment * 151
+      const firstUserId = lastUserId - 150
       await gestures.boundary()
       await page.waitForFunction(rows => { const value = window.__hhpi.snapshot(); return value.a.rows > rows && !value.a.busy }, before.a.rows)
       await gestures.settle(); await gestures.scroll(-350)
-      const current = await state(), body = await visible()
+      const current = await state(), body = await visible(), afterStats = await stats()
       assert.ok(body.min !== null && body.min < previousVisible, 'each upward segment must expose earlier real body text')
-      assert.equal(current.a.rows, before.a.rows + 160, 'one source segment must be committed exactly once')
+      assert.ok(body.min >= firstUserId && body.min <= lastUserId, 'visible body remains inside the newly committed continuous user range')
+      assert.equal(afterStats.reads, beforeStats.reads + 1, 'one boundary crossing must issue exactly one source read')
+      assert.equal(afterStats.readPages.length, beforeStats.readPages.length + 1, 'one boundary crossing must commit exactly one audited source page')
+      const read = afterStats.readPages.at(-1), previousRead = beforeStats.readPages.at(-1)
+      assert.ok(read && previousRead, 'the accepted source page must have an auditable predecessor')
+      assert.equal(read.request.before, previousRead.page.before, 'prepend cursor must continue exactly from the accepted older boundary')
+      assert.equal(read.page.after, read.request.before - 1, 'older page must end immediately before its request cursor')
+      assert.equal(read.page.before, read.page.after - 159, 'the source page must cover one contiguous 160-event interval')
+      assert.equal(read.eventCount, 160, 'the source page must commit exactly 160 body events')
+      assert.deepEqual(read.contextEventSeqs, [], 'synthetic page events must not hide extra dependency reads')
+      assert.equal(read.userMessageIds.length, 151, 'each tool-bearing page must preserve its 151 user messages')
+      assert.deepEqual(read.userMessageIds, Array.from({ length: 151 }, (_, index) => `message-${firstUserId + index}`),
+        'each page must contain the next uninterrupted range of user messages')
+      assert.equal(read.toolLifecycleCount, 1, 'each older page must carry one complete tool lifecycle')
+      assert.deepEqual(read.toolLifecycleIds, [`browser-tool-root-${6 - segment}`])
+      assert.deepEqual(read.typeCounts, {
+        'turn/start': 1, 'step/start': 1, 'assistant/message': 1, 'tool/call': 1,
+        'tool/ptc-dispatch-start': 1, 'tool/ptc-dispatch': 1, 'tool/result': 1,
+        'step/end': 1, 'turn/end': 1, 'user/message': 151,
+      }, 'the real source page must include the full call, PTC, result and user-message lifecycle')
+      const expectedRows = read.typeCounts['user/message'] + read.typeCounts['turn/start'] + read.typeCounts['tool/call']
+      assert.equal(expectedRows, 153, 'official assembly should add 151 user rows, one turn row and one tool-call row')
+      assert.equal(current.a.rows, before.a.rows + expectedRows, 'official Chat row growth must match the committed source events')
+      assert.equal(read.page.after - read.page.before + 1, 160, 'selected source IDs must be contiguous across the full page')
       assert.equal(current.b.rows, baseline.b.rows, 'other occurrence must retain its window')
       assert.equal(JSON.stringify(current.b.before), JSON.stringify(baseline.b.before))
       assert.equal(current.a.draft, baseline.a.draft); assert.equal(current.b.draft, baseline.b.draft)
       assert.deepEqual(current.errors, [], 'failed/suspended automatic paging is not acceptance')
-      previousVisible = body.min; result.segments.push({ segment, rows: current.a.rows, firstVisible: body.min })
+      previousVisible = body.min
+      result.segments.push({ segment, rows: current.a.rows, firstVisible: body.min,
+        sourceEventCount: read.eventCount, userMessageCount: read.userMessageIds.length,
+        toolLifecycleCount: read.toolLifecycleCount, toolLifecycleIds: read.toolLifecycleIds,
+        sourceRange: { first: read.page.before, last: read.page.after }, userMessageRange: { first: firstUserId, last: lastUserId },
+        officialRowsAdded: expectedRows })
     }
+    await page.waitForFunction(() => window.__hhpi.snapshot().corrections.length === 6)
     const current = await state()
     assert.equal(current.corrections.length, 6, 'all six mounted commits must be measured')
     assert.ok(current.corrections.every(value => value.delta !== null && Math.abs(value.delta) <= 2), `reader anchor drift exceeds 2 CSS pixels: ${JSON.stringify(current.corrections)}`)
+    result.preciseCommitAnchors = current.corrections.map(value => ({ key: value.key, kind: preciseAnchorKind(value.key), delta: value.delta }))
+    result.preciseCommitAnchorKinds = result.preciseCommitAnchors.reduce((counts, anchor) => {
+      counts[anchor.kind] = (counts[anchor.kind] ?? 0) + 1
+      return counts
+    }, {})
+    result.segments.forEach((segment, index) => {
+      segment.preciseCommitAnchor = result.preciseCommitAnchors[index]
+    })
   })
   await step('cached round trip and latest navigation', async () => {
     const before = await stats(), reading = await visible()

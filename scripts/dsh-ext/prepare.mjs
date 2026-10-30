@@ -5,7 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promis
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { applyCompleteWindows } from './complete-windows.mjs';
-import { applyReaderPublication } from './reader-publication.mjs';
+import { applyReaderPublication, applyReaderLayout } from './reader-publication.mjs';
 import { applyInputContracts } from './input-contracts.mjs';
 import { applyReadingOccurrences } from './reading-occurrences.mjs';
 import { applyReadingTargets } from './reading-targets.mjs';
@@ -52,6 +52,7 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   try { await copySources(overrides); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   await applyCompleteWindows(directory);
   await applyReaderPublication(directory);
+  await applyReaderLayout(directory);
   await applyInputContracts(directory);
   await applyReadingOccurrences(directory);
   await applyReadingTargets(directory);

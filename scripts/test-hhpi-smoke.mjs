@@ -244,9 +244,11 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       .map(row => {
         const rect = row.getBoundingClientRect(), text = row.innerText ?? '';
         const bodyRoot = row.querySelector(':scope > [data-slot="conversation.chat.node"]') ?? row;
-        const body = bodyRoot.cloneNode(true);
-        for (const node of body.querySelectorAll('script,iframe,object,embed,audio,video,source,input,textarea,select,button,[role="button"],[data-hapi-share-exclude],[data-hapi-share-dialog],[data-chat-group-part="reasoning"],[data-variant="think"],[data-clock],[data-chat-flow-kind="turn-process"],.hapi-native-user-actions,[data-slot="conversation.chat.assistant-actions"]')) node.remove();
-        const bodyText = body.innerText ?? body.textContent ?? '';
+        const excluded = 'script,iframe,object,embed,audio,video,source,input,textarea,select,button,[role="button"],[data-hapi-share-exclude],[data-hapi-share-dialog],[data-chat-group-part="reasoning"],[data-variant="think"],[data-clock],[data-chat-flow-kind="turn-process"],.hapi-native-user-actions,[data-slot="conversation.chat.assistant-actions"]';
+        const walker = document.createTreeWalker(bodyRoot, NodeFilter.SHOW_TEXT);
+        const parts = [];
+        while (walker.nextNode()) if (!walker.currentNode.parentElement?.closest(excluded)) parts.push(walker.currentNode.textContent);
+        const bodyText = parts.join(' ');
         return { key: row.getAttribute('data-chat-node-key'), anchor: row.getAttribute('data-chat-anchor-key'),
           kind: row.getAttribute('data-chat-flow-kind'), text, bodyText, normalizedText: compact(text),
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
@@ -255,6 +257,53 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     return { exists: true, rows, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
       viewport: scroll.clientHeight };
   };
+  // Observe a real DOM publication while input is at rest. Continuing to scroll
+  // after publication can legitimately recycle the old row; that is a separate check.
+  state.layoutCommits = [];
+  state.armLayoutCommit = async () => {
+    const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
+      .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
+    const port = pane?.querySelector('[data-conversation-scroll]');
+    if (!port) throw new Error('No mounted reading port at publication.');
+    let last = port.scrollTop, stable = 0;
+    for (let frame = 0; frame < 120 && stable < 3; frame++) {
+      await new Promise(requestAnimationFrame);
+      const current = port.scrollTop;
+      stable = current === last && !state.touchActive ? stable + 1 : 0; last = current;
+    }
+    if (stable < 3) throw new Error('Input did not settle before publication.');
+    const bounds = port.getBoundingClientRect();
+    const hit = document.elementsFromPoint(bounds.left + bounds.width / 2, bounds.top + 1)
+      .map(node => node.closest('[data-chat-anchor-key]'))
+      .find(node => node && port.contains(node) && node.dataset.chatFlowKind !== 'turn-process');
+    const visible = hit ?? [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => {
+      const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+    });
+    const anchor = visible?.dataset.chatGroupKey === undefined ? visible
+      : visible.querySelector('[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)') ?? visible;
+    const row = anchor?.closest('[data-chat-virtual-row]');
+    if (!anchor || !row) throw new Error('No physical reading anchor at publication.');
+    const key = anchor.dataset.chatAnchorKey, oldIndex = row.dataset.index;
+    const top = anchor.getBoundingClientRect().top - bounds.top;
+    const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : 'node' };
+    const token = state.layoutCommits.push(record) - 1;
+    const observer = new MutationObserver(() => {
+      const current = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
+      const currentRow = current?.closest('[data-chat-virtual-row]');
+      if (!currentRow || currentRow.dataset.index === oldIndex) return;
+      observer.disconnect();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const settled = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
+        record.retained = !!settled;
+        record.delta = settled ? settled.getBoundingClientRect().top - port.getBoundingClientRect().top - top : null;
+        record.done = true;
+      }));
+    });
+    observer.observe(port, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-index'] });
+    return token;
+  };
+  window.addEventListener('touchstart', () => { state.touchActive = true; }, { capture: true, passive: true });
+  for (const type of ['touchend', 'touchcancel']) window.addEventListener(type, () => { state.touchActive = false; }, { capture: true, passive: true });
 }
 
 async function parseOptions(argv) {
@@ -287,7 +336,7 @@ async function runScenario(browser, config, name) {
     cachedTailReadDelta: null, changesStreams: 0, maxFrameGapMs: 0, blockedWrites: 0, blockedStreams: 0 };
   const start = performance.now(); let context, page, cdp, deadline, timedOut = false;
   let diagnosticCapture;
-  const sourcePages = [], pending = new Set(), socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
+  const sourcePages = [], pending = new Set(), layoutCommits = [], socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
   let activePageProbe = null;
   const awaiting = async (step, promise) => { result.step = step; return await promise; };
   const blocked = method => { result.blockedWrites++; result.blockedMethod ??= cleanMethod(method); };
@@ -333,25 +382,34 @@ async function runScenario(browser, config, name) {
           result: { ok: true, value: { revision: 0, state: syntheticWorkspace(config.sessionId) } } }) });
       }
       if (policy === 'read' && method === 'hhpi/read') {
-        let upstream;
-        try { upstream = await route.fetch(); } catch { return route.continue(); }
-        let snapshot = { anchor: null, baselineVerdict: 'pre-response-anchor-unavailable', mountedRows: 0, visibleRows: 0 };
-        try {
-          const state = await page?.evaluate(() => window.__hhpiSmoke?.rows?.() ?? null);
-          if (state?.exists) {
-            const baselineVerdict = activePageProbe
-              ? sourceAnchorVerdict(activePageProbe.anchor, state.rows) : null;
-            recordAnchorVerdict(result, 'baselineAtResponse', baselineVerdict);
-            snapshot = {
-              anchor: captureVisibleSourceAnchor(state.rows, sourcePages, activePageProbe?.anchor),
-              baselineVerdict: baselineVerdict ?? 'no-page-baseline',
-              mountedRows: state.rows.length,
-              visibleRows: state.rows.filter(row => row.visible).length,
-            };
-          }
-        } catch { /* Keep only the anonymous unavailable snapshot. */ }
-        if (typeof body.rpcId === 'string') anchorSnapshots.set(body.rpcId, snapshot);
-        return route.fulfill({ response: upstream });
+        const task = (async () => {
+          let upstream;
+          try { upstream = await route.fetch(); } catch { return route.continue(); }
+          let snapshot = { anchor: null, baselineVerdict: 'pre-response-anchor-unavailable', mountedRows: 0, visibleRows: 0 };
+          try {
+            const state = await page?.evaluate(() => window.__hhpiSmoke?.rows?.() ?? null);
+            if (state?.exists) {
+              const baselineVerdict = activePageProbe
+                ? sourceAnchorVerdict(activePageProbe.anchor, state.rows) : null;
+              recordAnchorVerdict(result, 'baselineAtResponse', baselineVerdict);
+              snapshot = {
+                anchor: captureVisibleSourceAnchor(state.rows, sourcePages, activePageProbe?.anchor),
+                baselineVerdict: baselineVerdict ?? 'no-page-baseline',
+                mountedRows: state.rows.length,
+                visibleRows: state.rows.filter(row => row.visible).length,
+              };
+            }
+          } catch { /* Keep only the anonymous unavailable snapshot. */ }
+          if (typeof body.rpcId === 'string') anchorSnapshots.set(body.rpcId, snapshot);
+          const older = Number.isFinite(body.payload?.args?.request?.before);
+          const token = older ? await page.evaluate(() => window.__hhpiSmoke.armLayoutCommit()) : null;
+          await route.fulfill({ response: upstream });
+          if (token !== null) await page.waitForFunction(index => window.__hhpiSmoke.layoutCommits[index]?.done,
+            token, { timeout: 5000 });
+          return;
+        })();
+        layoutCommits.push(task);
+        return task;
       }
       if (policy === 'read') return route.continue();
       const input = body?.payload?.args?.request;
@@ -489,6 +547,7 @@ async function runScenario(browser, config, name) {
       }
       await awaiting(`${step}-allow-scroll-and-fetch`, pause(90));
       await awaiting(`${step}-wait-for-source-read`, Promise.all([...pending]));
+      await awaiting(`${step}-wait-for-dom-publication`, Promise.all(layoutCommits));
     };
     const matchesForPage = (rows, previousKeys, previousSeqs, priorHead) => {
       for (const record of sourcePages) {
@@ -517,7 +576,8 @@ async function runScenario(browser, config, name) {
         if (committed) {
           const anchorVerdict = sourceAnchorVerdict(committed.record.anchorSnapshot?.anchor, after.rows);
           recordAnchorVerdict(result, 'committed', anchorVerdict);
-          if (anchorVerdict !== 'retained') fail('reading-anchor-continuity-failed');
+          // The exact pixel check runs at publication, before later gestures can
+          // legitimately move this source body outside the virtual range.
           visibleMatches = allSourceMatches(after.rows.filter(row => row.visible));
           knownMatches = allSourceMatches(after.rows);
           if (!visibleMatches.some(item => item.seq === committed.match.seq && item.key === committed.match.key)) fail('new-source-body-not-visible');
@@ -533,9 +593,12 @@ async function runScenario(browser, config, name) {
     }
 
     await awaiting('wait-for-final-source-reads', Promise.all([...pending]));
+    const corrections = await page.evaluate(() => window.__hhpiSmoke.layoutCommits);
+    result.layoutCommits = corrections;
+    if (corrections.length < 6 || corrections.some(item => !item.done || !item.retained || item.delta === null || Math.abs(item.delta) > 2)) fail('reading-anchor-publication-jump');
     const maxFrameGap = await awaiting('read-frame-gap-verdict', page.evaluate(() => Math.max(0, ...window.__hhpiSmoke.frameGaps)));
     result.maxFrameGapMs = Math.round(maxFrameGap);
-    if (maxFrameGap > 80) fail('history-scroll-frame-hitch');
+    const frameHitch = maxFrameGap > 80;
     if (result.legacyHistoryStreams) fail('legacy-source-history-path-used');
     if (result.changesErrors) fail('hhpi-change-stream-failed');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
@@ -557,6 +620,7 @@ async function runScenario(browser, config, name) {
     result.cachedTailMovedPx = Math.round(latestRows.top - residentRows.top);
     if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
     if (result.cachedTailMovedPx < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
+    if (frameHitch) fail('history-scroll-frame-hitch');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
     if (result.pageErrors || result.consoleErrors) fail('browser-page-error');
     result.status = 'passed'; result.step = 'complete';

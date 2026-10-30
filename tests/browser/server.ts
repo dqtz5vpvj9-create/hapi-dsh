@@ -10,18 +10,89 @@ export async function startLab() {
   const identity = { machineId: 'browser-fixture', sourceId: 'native-fixture', engine: 'codex', nativeId: 'synthetic-only' }
   const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Synthetic browser acceptance', cwd: '/synthetic', updatedAt: 1000, status: 'idle', activeTurnId: null,
     capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
+  type EventAudit = { eventId: string; type: string; userMessageId?: string; toolLifecycleId?: string }
+  type ReadAudit = {
+    ordinal: number
+    request: { before: number | null; after: number | null; around: number | null; limit: number }
+    page: { before: number | null; after: number | null; hasBefore: boolean; hasAfter: boolean }
+    eventCount: number
+    contextEventSeqs: number[]
+    events: Array<EventAudit & { seq: number }>
+    userMessageIds: string[]
+    toolLifecycleIds: string[]
+    toolLifecycleCount: number
+    typeCounts: Record<string, number>
+  }
   let index: SourceEventIndex
   let reads = 0, writes: SourceOperation[] = [], failNext = false
+  let readPages: ReadAudit[] = [], eventAudit = new Map<number, EventAudit>()
   const connections = new Set<AbortController>()
   function reset(): void {
     for (const abort of connections) abort.abort()
     connections.clear(); index?.dispose()
     index = new SourceEventIndex(':memory:', metadata); reads = 0; writes = []; failNext = false
+    readPages = []; eventAudit = new Map()
+    const put = (key: string, event: EventInput, audit: EventAudit): void => {
+      const seq = index.put(key, event)
+      eventAudit.set(Number(seq), audit)
+    }
+    const putToolLifecycle = (block: number, time: number): void => {
+      const rootCallId = `browser-tool-root-${block}`
+      const innerCallId = `browser-tool-inner-${block}`
+      const lifecycleId = rootCallId
+      const turn = block + 1
+      const add = (suffix: string, type: string, data: Record<string, unknown>, surfaceOp?: 'append'): void => {
+        put(`tool-${block}-${suffix}`, { type, time, data, ...(surfaceOp ? { surfaceOp } : {}) } as EventInput,
+          { eventId: `tool-${block}-${suffix}`, type, toolLifecycleId: lifecycleId })
+      }
+      add('turn-start', 'turn/start', { turn })
+      add('step-start', 'step/start', { turn, step: 1 })
+      add('advertisement', 'assistant/message', {
+        turn, step: 1, stream: [], message: { id: `tool-advertisement-${block}`, role: 'assistant',
+          source: { kind: 'model', provider: 'fixture', model: 'fixture' },
+          content: [{ type: 'tool-call', id: rootCallId, name: 'run_code', arguments: '{}' }] },
+      }, 'append')
+      add('call', 'tool/call', { turn, step: 1, callId: rootCallId, name: 'run_code', arguments: '{}' })
+      add('ptc-start', 'tool/ptc-dispatch-start', {
+        rootCallId, parentCallId: rootCallId, subCallId: innerCallId, name: 'read', arguments: { path: `fixture-${block}.txt` },
+      })
+      add('ptc-result', 'tool/ptc-dispatch', {
+        rootCallId, parentCallId: rootCallId, subCallId: innerCallId, name: 'read', arguments: { path: `fixture-${block}.txt` },
+        isError: false, content: [{ type: 'text', text: `read complete ${block}` }],
+      })
+      add('result', 'tool/result', { turn, step: 1, message: {
+        id: `tool-result-${block}`, role: 'tool', toolCallId: rootCallId,
+        source: { kind: 'tool', callId: rootCallId }, content: [{ type: 'text', text: `run complete ${block}` }], isError: false,
+      } }, 'append')
+      add('step-end', 'step/end', { turn, step: 1 })
+      add('turn-end', 'turn/end', { turn, reason: { kind: 'completed' } })
+    }
     index.edit(metadata, () => {
-      for (let id = 1; id <= 1440; id++) index.put(`item-${id}`, {
-        type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' },
-          content: [{ type: 'text', text: `body-${id}  官方组件合成阅读记录 ${id}\n${'Variable length content for real wrapping and scrolling. '.repeat(1 + id % 4)}${id % 13 === 0 ? '\n' + 'long_unbroken_line_'.repeat(28) : ''}` }] },
-      } as EventInput)
+      let nextUserId = 1
+      // The first three source windows remain user-only. The seven newest
+      // 160-event windows each begin with a complete real tool/PTC lifecycle,
+      // followed by 151 user messages, so every prepend exercises both paths.
+      for (let block = 0; block < 3; block++) {
+        const count = block < 2 ? 128 : 127
+        for (let i = 0; i < count; i++, nextUserId++) {
+          const id = nextUserId
+          put(`item-${id}`, {
+            type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' },
+              content: [{ type: 'text', text: `body-${id}  官方组件合成阅读记录 ${id}\n${'Variable length content for real wrapping and scrolling. '.repeat(1 + id % 4)}${id % 13 === 0 ? '\n' + 'long_unbroken_line_'.repeat(28) : ''}` }] },
+          } as EventInput, { eventId: `message-${id}`, type: 'user/message', userMessageId: `message-${id}` })
+        }
+      }
+      for (let block = 0; block < 7; block++) {
+        putToolLifecycle(block, nextUserId)
+        for (let i = 0; i < 151; i++, nextUserId++) {
+          const id = nextUserId
+          put(`item-${id}`, {
+            type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' },
+              content: [{ type: 'text', text: `body-${id}  官方组件合成阅读记录 ${id}\n${'Variable length content for real wrapping and scrolling. '.repeat(1 + id % 4)}${id % 13 === 0 ? '\n' + 'long_unbroken_line_'.repeat(28) : ''}` }] },
+          } as EventInput, { eventId: `message-${id}`, type: 'user/message', userMessageId: `message-${id}` })
+        }
+      }
+      if (nextUserId !== 1441) throw new Error(`Synthetic history seeded ${nextUserId - 1} user messages instead of 1440.`)
     })
   }
   reset()
@@ -54,7 +125,27 @@ export async function startLab() {
         // Bounded IO latency makes the real pending/commit boundary observable.
         await new Promise(resolve => setTimeout(resolve, 40))
         if (failNext) { failNext = false; return json(response, { error: 'Synthetic read failure' }, 503) }
-        return json(response, { ok: true, value: index.read(value) })
+        const page = index.read(value)
+        const context = new Set(page.context)
+        const events = page.entries.filter(entry => !context.has(Number(entry.event.seq))).map(entry => {
+          const seq = Number(entry.event.seq), audit = eventAudit.get(seq)
+          if (!audit) throw new Error(`Synthetic source event ${seq} has no audit identity.`)
+          return { ...audit, seq }
+        })
+        const typeCounts = events.reduce<Record<string, number>>((counts, event) => {
+          counts[event.type] = (counts[event.type] ?? 0) + 1
+          return counts
+        }, {})
+        const toolLifecycleIds = [...new Set(events.flatMap(event => event.toolLifecycleId ? [event.toolLifecycleId] : []))]
+        readPages.push({
+          ordinal: readPages.length + 1,
+          request: { before: value.before ?? null, after: value.after ?? null, around: value.around ?? null, limit: value.limit ?? 160 },
+          page: { before: page.before, after: page.after, hasBefore: page.hasBefore, hasAfter: page.hasAfter },
+          eventCount: events.length, contextEventSeqs: page.context,
+          events, userMessageIds: events.flatMap(event => event.userMessageId ? [event.userMessageId] : []),
+          toolLifecycleIds, toolLifecycleCount: toolLifecycleIds.length, typeCounts,
+        })
+        return json(response, { ok: true, value: page })
       }
       if (url.pathname === '/api/operate') {
         const value = body as SourceOperation
@@ -66,7 +157,13 @@ export async function startLab() {
     }
     if (request.method !== 'GET') return json(response, { error: 'Method refused' }, 405)
     if (url.pathname === '/api/catalog') return json(response, { ok: true, value: { protocol: 1, legacyHapi: false, sessions: [metadata], sources: [] } })
-    if (url.pathname === '/api/stats') return json(response, { reads, writes })
+    if (url.pathname === '/api/stats') {
+      const userMessageIds = [...eventAudit.values()].flatMap(event => event.userMessageId ? [Number(event.userMessageId.slice('message-'.length))] : [])
+      return json(response, {
+        reads, writes, readPages, userMessageCount: userMessageIds.length,
+        userMessageRange: { first: Math.min(...userMessageIds), last: Math.max(...userMessageIds) }, sourceEventCount: eventAudit.size,
+      })
+    }
     if (url.pathname === '/api/changes') {
       const value = JSON.parse(url.searchParams.get('request') ?? '{}') as SourceChangesRequest
       if (value.sessionId !== metadata.id) return json(response, { error: 'Unknown synthetic session' }, 403)

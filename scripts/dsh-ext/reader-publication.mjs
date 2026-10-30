@@ -188,3 +188,125 @@ export async function applyReaderPublication(root) {
     if (!added) throw new Error('Pinned Conversation coordinator host changed.');
   });
 }
+
+/** The UI publisher commits DOM before measured readers correct their own viewport. */
+export async function applyReaderLayout(root) {
+  await edit(root, 'packages/client/ui-conversation/src/client/conversation/assembly.ts', (ast, edits) => {
+    insert(edits, 0, "import { flushSync } from 'react-dom'\n");
+    const create = method(named(ast, 'BoundConversation'), ast, 'createWindowCoordinator');
+    let count = 0;
+    const visit = node => {
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'view.publishCandidate') {
+        edits.push({ start: node.getStart(ast), end: node.end, text: 'flushSync(() => view.publishCandidate(candidate))' }); ++count;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(create);
+    if (count !== 1) throw new Error('Pinned UI history layout publication changed.');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-viewport.ts', (ast, edits) => {
+    const owner = named(ast, 'ChatViewport');
+    const body = name => { const node = method(owner, ast, name); return node.body ?? node.initializer?.body; };
+    const pin = body('pinReading');
+    edits.push({ start: pin.getStart(ast), end: pin.end, text: `{
+    const rows = this.virtualRows
+    if (rows === null) return
+    if (anchorKey === null) { rows.pinReading(null); return }
+    const anchor = this.anchor(anchorKey)
+    const semanticKey = anchor?.closest<HTMLElement>('[data-chat-node-key]')?.dataset.chatNodeKey
+      ?? anchor?.closest<HTMLElement>('[data-chat-group-key]')?.dataset.chatGroupKey ?? anchorKey
+    const owner = this.anchorOwners.get(semanticKey)
+      ?? anchor?.closest<HTMLElement>('[data-chat-virtual-row]')?.dataset.chatVirtualKey
+    if (owner !== undefined && rows.contains(owner)) rows.pinReading(semanticKey)
+  }` });
+    const restore = body('restore');
+    insert(edits, restore.getStart(ast) + 1, '\n    if (this.pendingRestore !== null) this.releaseDestination()\n    this.pendingRestore = null\n');
+    let revealed = 0;
+    const reveal = node => {
+      if (ts.isIfStatement(node) && ts.isCallExpression(node.expression)
+        && node.expression.expression.getText(ast) === 'this.revealKey') {
+        edits.push({ start: node.getStart(ast), end: node.end, text: `if (this.revealKey(position.anchorOwnerKey ?? position.anchorKey)) {
+      this.pendingRestore = position
+      return null
+    }` }); ++revealed;
+      }
+      ts.forEachChild(node, reveal);
+    };
+    reveal(restore);
+    if (revealed !== 1) throw new Error('Pinned viewport virtual restore changed.');
+    insert(edits, body('restoreVirtualLayout').getStart(ast) + 1, `
+    const pending = this.pendingRestore
+    if (pending !== null) {
+      const row = this.anchor(pending.anchorKey)
+      if (row === null) {
+        if (this.anchor(pending.anchorOwnerKey ?? pending.anchorKey, 'node') !== null) {
+          this.pendingRestore = null
+          this.releaseDestination()
+        }
+        return
+      }
+      this.pendingRestore = null
+      this.virtualLayoutPosition = null
+      this.align(row, pending.anchorTop, null)
+      this.releaseDestination()
+      return
+    }
+`);
+    insert(edits, body('stopPreserving').getStart(ast) + 1, '\n    if (this.pendingRestore !== null) this.releaseDestination()\n    this.pendingRestore = null\n');
+    const align = body('align');
+    const returning = align.statements.find(node => ts.isReturnStatement(node) && node.expression
+      && ts.isCallExpression(node.expression) && node.expression.expression.getText(ast) === 'this.write');
+    if (!returning) throw new Error('Pinned viewport semantic landing changed.');
+    insert(edits, returning.getStart(ast), `const ownerKey = row.closest<HTMLElement>('[data-chat-node-key]')?.dataset.chatNodeKey
+      ?? row.closest<HTMLElement>('[data-chat-group-key]')?.dataset.chatGroupKey
+    `);
+    const anchor = returning.expression.arguments[3];
+    insert(edits, anchor.getStart(ast) + 1, ' ...ownerKey === undefined ? {} : { ownerKey },');
+    const write = method(owner, ast, 'write'), anchorType = write.parameters.find(node => node.name.getText(ast) === 'anchor')?.type;
+    if (!anchorType || !ts.isTypeLiteralNode(anchorType)) throw new Error('Pinned viewport landing anchor changed.');
+    insert(edits, anchorType.getStart(ast) + 1, ' ownerKey?: string;');
+    let saved = 0;
+    const save = node => {
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(ast) === 'anchorKey' && property.initializer.getText(ast) === 'anchor.key')) {
+        insert(edits, node.getStart(ast) + 1, ' ...anchor.ownerKey === undefined ? {} : { anchorOwnerKey: anchor.ownerKey },'); ++saved;
+      }
+      ts.forEachChild(node, save);
+    };
+    save(write);
+    if (saved !== 1) throw new Error('Pinned viewport landing memory changed.');
+    const preserve = node => {
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(ast) === 'key' && property.initializer.getText(ast) === 'position.anchorKey')) {
+        insert(edits, node.getStart(ast) + 1, ' ...position.anchorOwnerKey === undefined ? {} : { ownerKey: position.anchorOwnerKey },');
+      }
+      ts.forEachChild(node, preserve);
+    };
+    preserve(body('preserve'));
+    insert(edits, owner.end - 1, '\n  private pendingRestore: ChatScrollPosition | null = null\n');
+  });
+  await edit(root, 'packages/client/ui-chat/src/client/chat/use-chat-scroll.ts', (ast, edits) => {
+    let retained = 0, restored = 0, saved = 0;
+    const visit = node => {
+      if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'capturePosition'
+        && node.initializer.getText(ast) === '() => viewport.capturePosition()') {
+        edits.push({ start: node.initializer.getStart(ast), end: node.initializer.end, text: `() => {
+        const position = viewport.capturePosition()
+        if (position !== null && !reading.followingTail) viewport.beginPreserving(position)
+        return position
+      }` }); ++retained;
+      }
+      if (ts.isPropertyAssignment(node) && node.name.getText(ast) === 'savedAnchorKey'
+        && node.initializer.getText(ast) === 'saved?.anchorKey ?? null') {
+        edits.push({ start: node.initializer.getStart(ast), end: node.initializer.end, text: 'saved?.anchorOwnerKey ?? saved?.anchorKey ?? null' }); ++saved;
+      }
+      if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isPropertyAssignment(property)
+        && property.name.getText(ast) === 'anchorKey' && property.initializer.getText(ast) === 'anchor.key')) {
+        insert(edits, node.getStart(ast) + 1, ' ...anchor.ownerKey === undefined ? {} : { anchorOwnerKey: anchor.ownerKey },'); ++restored;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(ast);
+    if (retained !== 1 || restored !== 1 || saved !== 1) throw new Error('Pinned Chat commit-time reading ownership changed.');
+  });
+}

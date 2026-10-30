@@ -52,6 +52,50 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
         const editor = pane.querySelector<HTMLElement>('[contenteditable="true"]')
         assert.ok(editor, 'the actual occurrence input must be mounted'); editors.set(id, editor)
       }
+      const paneA = f.dom.window.document.querySelector<HTMLElement>('[data-test-pane="a"]')!
+      assert.ok(a.conversation.windowCommit)
+      assert.ok(a.binding.viewId)
+      let revision = 0
+      let measured: { readonly key: string; readonly index: number } | null = null
+      const corrections: Array<{ readonly key: string; readonly oldIndex: number; readonly orderIndex: number; readonly domIndex: number }> = []
+      const observerFailures: string[] = []
+      const stopDomObserver = a.conversation.windowCommit.register(a.binding.viewId, {
+        id: 'mounted-node-dom-order',
+        measure: () => {
+          const snapshot = a.conversation.target('chat').getSnapshot()
+          const order = (snapshot?.order ?? []) as readonly string[]
+          const node = [...paneA.querySelectorAll<HTMLElement>('[data-chat-node-key]')]
+            .find(candidate => candidate.dataset.chatNodeKey !== undefined
+              && order.includes(candidate.dataset.chatNodeKey)
+              && candidate.closest('[data-chat-virtual-row]') !== null)
+          if (node === undefined) observerFailures.push('measure found no mounted official Chat Node')
+          else {
+            const key = node.dataset.chatNodeKey!
+            const index = order.indexOf(key)
+            const rowIndex = Number(node.closest<HTMLElement>('[data-chat-virtual-row]')?.dataset.index)
+            if (rowIndex !== index) observerFailures.push(`pre-publish row index ${rowIndex} did not match order index ${index} for ${key}`)
+            measured = { key, index }
+          }
+          return { revision: ++revision, anchor: null, following: false, scrollTop: 0,
+            clientHeight: profile.height, scrollHeight: profile.height, nodes: order.length, available: false }
+        },
+        correct: () => {
+          const previous = measured
+          measured = null
+          const snapshot = a.conversation.target('chat').getSnapshot()
+          if (previous === null) {
+            observerFailures.push('correct ran without a preceding measurement')
+            return
+          }
+          const order = (snapshot?.order ?? []) as readonly string[]
+          const orderIndex = order.indexOf(previous.key)
+          const node = [...paneA.querySelectorAll<HTMLElement>('[data-chat-node-key]')]
+            .find(candidate => candidate.dataset.chatNodeKey === previous.key)
+          const rowIndex = Number(node?.closest<HTMLElement>('[data-chat-virtual-row]')?.dataset.index ?? NaN)
+          corrections.push({ key: previous.key, oldIndex: previous.index, orderIndex, domIndex: rowIndex })
+        },
+      })
+      t.after(stopDomObserver)
       await act(async () => { a.input.setDraft('Rendered draft A'); b.input.setDraft('Rendered draft B') })
       assert.equal(editors.get('a')!.textContent, 'Rendered draft A'); assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
       const initialB = b.reading.snapshot.getSnapshot().before
@@ -60,9 +104,16 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
         let pending!: Promise<void>
         await act(async () => { pending = controls.get('a')!.loadOlder() })
         await geometry.settled(pending)
+        assert.deepEqual(observerFailures, [], `the observer must remain passive during page ${page}`)
         assert.notEqual(a.reading.snapshot.getSnapshot().before, before)
         assert.equal(b.reading.snapshot.getSnapshot().before, initialB)
         assert.equal(f.body(a).length, (page + 1) * 160); assert.equal(f.body(b).length, 160)
+        assert.equal(corrections.length, page, `DOM-order correction must complete for page ${page}`)
+        assert.equal(measured, null, `page ${page} must not leave a measured but uncorrected Node`)
+        const correction = corrections[page - 1]!
+        assert.ok(correction.orderIndex >= 0, 'the measured Node must remain in the committed Chat window')
+        assert.equal(correction.domIndex, correction.orderIndex,
+          `correct must run after React commits the new order for ${correction.key} (was ${correction.oldIndex})`)
         assert.equal(controls.get('a')!.read().busy, false)
         assert.equal(editors.get('a')!.textContent, 'Rendered draft A'); assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
       }
