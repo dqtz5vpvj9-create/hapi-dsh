@@ -131,6 +131,40 @@ authenticated bootstrap route with stale-client and stale-Host rejection.
 Only the declared native IO and loopback service boundaries use synthetic
 data. The browser evidence above is a working-tree run before publication.
 
+### Published CI and fixture storage correction
+
+At commit `826b95ea6e47543c95b4708affa144e0151de0a0`, the
+[main CI](https://github.com/dqtz5vpvj9-create/hapi-dsh/actions/runs/41211353812)
+passed all five jobs, including installation on Ubuntu, macOS and Windows, and
+the [installed-extension integration](https://github.com/dqtz5vpvj9-create/hapi-dsh/actions/runs/41211353667)
+passed. The [browser CI](https://github.com/dqtz5vpvj9-create/hapi-dsh/actions/runs/41211353731)
+failed to decode the two image previews. Its desktop and mobile history,
+idle-recovery, command and diff assertions had passed before the image failure.
+The failed report and both traces were retained separately from the earlier
+local passing report; the local run did not establish this CI result.
+
+The browser fixture had supplied its temporary home directly as the official
+attachment-storage root. The official backend secures the root's grandparent,
+so this layout tried to `chmod /`. A bounded isolated reproduction with a
+non-root process confirmed `EPERM` at that exact operation; the same native PNG
+saved and read successfully with the intended private-home `attachments/v1`
+layout. Privileged local execution had masked the fixture error.
+
+The fixture now uses that private layout. Four adapter test fixtures also place
+their source directory inside a private temporary home, so the adapter's
+`source/images` root cannot tighten the shared temporary directory's permissions.
+Production source directories already have the required private nesting and
+are unchanged, preserving existing image locations.
+
+A real fixture regression was added to the existing DOM preflight. It checks
+nonblocking body delivery, two source revisions, authorized resource reads,
+decoded image dimensions, and unchanged ancestor permissions. Restoring the
+old layout within test-owned directories made the specific ancestor-permission
+assertion fail; the corrected layout passed. The expanded preflight passed all
+five checks in 4.359 seconds. No deadline was extended, image assertion removed,
+or extra local browser scenario run. New-commit browser CI is the final check
+for the corrected fixture under the ordinary CI account.
+
 The cloud checkout has no production launch configuration or production Host
 runtime context. Production publication and live history acceptance must use
 the existing guarded `npm run deploy -- --host` entry point on the configured

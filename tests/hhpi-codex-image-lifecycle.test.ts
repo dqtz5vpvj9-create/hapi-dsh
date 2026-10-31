@@ -19,7 +19,7 @@ const imageMessages = (entries: readonly SourceEntry[]): string[] => entries.fla
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t: TestContext, initialItems: NativeItem[], readImage: (path: string, signal: AbortSignal) => Promise<unknown>, active = true) {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-lifecycle-'));
+    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-lifecycle-')), directory = join(privateHome, 'source');
     const native = { id: 'thread', cwd: '/synthetic', createdAt: 1, updatedAt: 2, status: { type: active ? 'active' : 'idle' } };
     const items = [...initialItems], fileReads: string[] = [], calls: string[] = [];
     let notify: (frame: NativeNotification) => void = () => {};
@@ -39,7 +39,7 @@ async function fixture(t: TestContext, initialItems: NativeItem[], readImage: (p
         },
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'synthetic-machine', engine: 'codex' }, directory, { rpc, readImage: readFile });
-    t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
+    t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     return { adapter, session, fileReads, calls, directory,
         read: (limit = 100, signal?: AbortSignal) => adapter.read({ sessionId: session.id, limit }, signal),

@@ -22,7 +22,9 @@ export async function seedCodexRendering(index: SourceEventIndex, metadata: Sour
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC'
   let release!: () => void, fileReads = 0, pendingFileReads = 0, imagesReleased = false, imageRevisions = 0
   const imageGate = new Promise<void>(resolve => { release = resolve })
-  const attachments = new CodexAttachments(index, directory, async (path, signal) => {
+  // Official attachment-local owns a home/attachments/v1 layout and secures
+  // the root's grandparent. Keep every storage mutation in this private home.
+  const attachments = new CodexAttachments(index, join(directory, 'attachments', 'v1'), async (path, signal) => {
     if (path !== imagePath && path !== '/synthetic/preview.png') throw new Error('Unknown synthetic source image')
     fileReads++; pendingFileReads++
     try { await waitFor(imageGate, signal); return { dataBase64: png } }

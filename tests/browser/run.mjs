@@ -11,7 +11,7 @@ import { runCodexRenderingJourney } from './codex-rendering-journey.mjs'
 const args = new Set(process.argv.slice(2))
 if ([...args].some(value => !['--dom', '--browser', '--serve', '--headed', '--codex-rendering'].includes(value))) throw new Error('Usage: node --import tsx tests/browser/run.mjs [--dom|--browser|--serve] [--headed] [--codex-rendering]')
 if (args.has('--dom')) {
-  const run = spawnSync(process.execPath, ['--import', 'tsx', '--test', 'tests/contracts/hhpi-reading-occurrences.test.ts', 'tests/contracts/hhpi-reading-dom.test.ts'], { cwd: root, stdio: 'inherit', timeout: 30_000 })
+  const run = spawnSync(process.execPath, ['--import', 'tsx', '--test', 'tests/browser/codex-rendering-fixture.test.ts', 'tests/contracts/hhpi-reading-occurrences.test.ts', 'tests/contracts/hhpi-reading-dom.test.ts'], { cwd: root, stdio: 'inherit', timeout: 30_000 })
   if (run.error) throw run.error
   process.exit(run.status ?? 1)
 }

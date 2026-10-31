@@ -20,7 +20,8 @@ const images = (page: SourcePage): Image[] => page.entries.flatMap(({ event }) =
 });
 
 async function fixture(t: TestContext, items: NativeItem[], options: { turns?: number; readFile?: (path: string, signal: AbortSignal) => Promise<unknown>; beforeThreadRead?: () => Promise<void> } = {}) {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-')), calls: string[] = [], fileReads: string[] = [];
+    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-'));
+    const directory = join(privateHome, 'source'), calls: string[] = [], fileReads: string[] = [];
     const thread = { id: 'thread-images', cwd: '/native', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const other = { ...thread, id: 'other-thread' };
     let turnCount = options.turns ?? 1;
@@ -45,7 +46,7 @@ async function fixture(t: TestContext, items: NativeItem[], options: { turns?: n
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory, { rpc, pollMs: 60_000,
         readImage: async (path, signal) => { fileReads.push(path); return options.readFile ? options.readFile(path, signal) : { dataBase64: PNG }; } });
-    t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
+    t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const sessions = await adapter.list(), session = sessions.find(value => value.nativeId === thread.id)!, otherSession = sessions.find(value => value.nativeId === other.id)!;
     const read = (limit = 100): Promise<SourcePage> => adapter.read({ sessionId: session.id, limit });
     const rewrite = (sameTimestamp = false): void => { turnCount = 0; if (!sameTimestamp) thread.updatedAt++; notify({ method: 'thread/reverted', params: { threadId: thread.id } }); };

@@ -137,7 +137,7 @@ const pageImages = (page: SourcePage) => page.entries.flatMap(({ event }) => (ev
 
 /** Seed the actual v2 cache and official immutable storage before making the source file unavailable. */
 async function legacyImageFixture(t: TestContext, includeTool = false) {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-upgrade-'));
+    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-upgrade-')), directory = join(privateHome, 'source');
     const oldPath = join(directory, 'history', `${createHash('sha256').update(session.id).digest('hex')}.v2.sqlite`);
     const old = new SourceEventIndex(oldPath, session), lifetime = new AbortController();
     const ready = Promise.withResolvers<void>(); let published = 0;
@@ -174,7 +174,7 @@ async function legacyImageFixture(t: TestContext, includeTool = false) {
     const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex' }, directory, {
         rpc, readImage: async () => { sourceImageReads++; throw new Error('The original native image was deleted after it was saved.'); },
     });
-    t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
+    t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     return { adapter, oldPath, reference, oldEpoch, calls, sourceImageReads: () => sourceImageReads };
 }
 

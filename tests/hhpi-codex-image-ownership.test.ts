@@ -17,7 +17,8 @@ const item = (id: string, caption = id): NativeItem => ({ id, type: 'userMessage
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t: TestContext, initial: NativeItem[], readImage: (path: string, signal: AbortSignal) => Promise<unknown>) {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-ownership-'));
+    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-ownership-'));
+    const directory = join(privateHome, 'source');
     const native = { id: 'thread', cwd: '/synthetic', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const items = [...initial];
     let notification: (value: NativeNotification) => void = () => {};
@@ -35,7 +36,7 @@ async function fixture(t: TestContext, initial: NativeItem[], readImage: (path: 
         },
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'fixture', engine: 'codex' }, directory, { rpc, readImage, pollMs: 60_000 });
-    t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
+    t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     return { adapter, session,
         read: () => adapter.read({ sessionId: session.id, limit: 100 }),
