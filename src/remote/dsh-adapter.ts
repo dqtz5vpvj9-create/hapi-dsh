@@ -90,7 +90,7 @@ export class DirectDshAdapter implements SourceAdapter {
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         this.identity(request.sessionId);
         const combined = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]);
-        let version = request.version, epoch = request.epoch;
+        let version = request.version, epoch = request.epoch, opening = true;
         while (!combined.aborted) {
             const session = await this.session(request.sessionId, combined), state = await this.refresh(session, combined);
             if (epoch !== state.epoch) {
@@ -101,6 +101,12 @@ export class DirectDshAdapter implements SourceAdapter {
                 if (!frames.length || frames[0]!.base !== version) throw new SourceError('STALE_VERSION', 'The native DSH reader must recover a missed source revision.');
                 for (const frame of frames) { combined.throwIfAborted(); yield frame; version = frame.version; }
             } else if (version > state.version) throw new SourceError('STALE_VERSION', 'The native DSH source revision changed.');
+            else if (opening) {
+                // A quiet but successfully opened subscription accepts its
+                // cursor, so repeated idle reconnects do not look unopened.
+                yield { session, epoch, base: version, version, reset: false, upserts: [], removed: [] };
+            }
+            opening = false;
             await delay(1000, undefined, { signal: combined });
         }
     }

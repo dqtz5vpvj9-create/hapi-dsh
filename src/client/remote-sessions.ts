@@ -9,6 +9,7 @@ import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
+import { followSourceChanges } from './remote-follow.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
@@ -266,7 +267,10 @@ export class RemoteSessions implements ISessions {
       if (!metadata) throw new Error('This source session has not been advertised by its Host.')
       let history = this.histories.get(target)
       if (!history) {
-        history = new RemoteSourceHistory(target, { read: async (request, signal) => result(await this.api.read(request, signal)), changes: (request, signal) => this.api.changes(request, signal) })
+        history = new RemoteSourceHistory(target, {
+          read: async (request, signal) => result(await this.api.read(request, signal)),
+          changes: (request, signal) => followSourceChanges(this.ctx.remote, (cursor, generation) => this.api.changes(cursor, generation), request, signal),
+        })
         this.histories.set(target, history)
       }
       const scope = createScope(this.ctx, target)

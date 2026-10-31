@@ -84,6 +84,7 @@
     "client": {
       "inject": [
         "hapi-dsh-session-provider",
+        "@deepseek-ai/dsh-api-gateway",
         "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-api-workspace-files",
         "@deepseek-ai/dsh-api-terminal-controller",

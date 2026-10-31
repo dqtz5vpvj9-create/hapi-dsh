@@ -57,6 +57,27 @@ export async function runJourney(page, context, origin, mode, result) {
     await gestures.settle(); result.initialLayout = await assertLayout()
     assert.ok((await visible()).min !== null, 'first target frame must contain visible source bodies')
   })
+  await step('idle update stream closes without failing the mounted readers', async () => {
+    await page.waitForFunction(async () => (await (await fetch('/api/stats')).json()).followRequests.length === 1)
+    const before = await state(), beforeStats = await stats(), anchor = await visible()
+    for (const count of [2, 3]) {
+      await page.evaluate(async () => {
+        const response = await fetch('/api/interrupt-updates', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: '{}' })
+        if (!response.ok) throw new Error('Synthetic update interruption refused')
+      })
+      await page.waitForFunction(async count => (await (await fetch('/api/stats')).json()).followRequests.length === count, count)
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    }
+    const after = await state(), afterStats = await stats(), retained = await visible()
+    assert.equal(after.a.phase, 'ready'); assert.equal(after.b.phase, 'ready')
+    assert.equal(after.a.rows, before.a.rows); assert.equal(after.b.rows, before.b.rows)
+    assert.equal(afterStats.reads, beforeStats.reads, 'idle reconnect must not fetch or replace accepted body')
+    assert.deepEqual(afterStats.followRequests[1], afterStats.followRequests[0], 'idle reconnect resumes the accepted source cursor')
+    assert.deepEqual(afterStats.followRequests[2], afterStats.followRequests[0], 'another idle reconnect without updates resumes the same cursor')
+    assert.deepEqual(retained.keys, anchor.keys, 'idle reconnect retains visible official body keys')
+    assert.ok(Math.abs(retained.top - anchor.top) <= 2, 'idle reconnect must not move the reading position')
+    result.idleReconnect = { subscriptions: afterStats.followRequests.length, extraReads: afterStats.reads - beforeStats.reads, drift: retained.top - anchor.top, panesReady: 2 }
+  })
   await step('browser keyboard, composition and independent drafts', () => exerciseDraftInput(page, context, mobile, result))
   const fixture = await stats()
   assert.equal(fixture.userMessageCount, 2497, 'the synthetic source retains all 2497 user messages')

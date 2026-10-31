@@ -46,6 +46,12 @@ test('native reading uses the indexed catalog and body-free turn headers, then r
             assert.ok(page.before! < previous);
             assert.ok(page.entries.some(entry => ['user/message', 'assistant/message'].includes(entry.event.type)));
         }
+        const signal = new AbortController();
+        const follow = adapter.changes({ sessionId: session.id, epoch: page.epoch, version: page.version }, signal.signal)[Symbol.asyncIterator]();
+        const opened = await follow.next();
+        assert.deepEqual(opened.value, { session: page.session, epoch: page.epoch, base: page.version, version: page.version,
+            reset: false, upserts: [], removed: [] }, 'a quiet Codex source acknowledges the opened cursor without waiting for a message');
+        signal.abort(); await follow.return?.();
         assert.equal(methods.filter(method => method === 'thread/items/list').length, reads, 'accepted history pages do not reread native bodies');
         assert.ok(!methods.includes('thread/resume'));
     } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }

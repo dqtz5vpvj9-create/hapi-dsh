@@ -217,7 +217,13 @@ export class DirectCodexAdapter implements SourceAdapter {
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const owner = await this.owner(request.sessionId, signal);
         await waitFor(this.prepare(owner), signal);
-        yield* owner.history!.index.changes(request, signal);
+        signal?.throwIfAborted();
+        const index = owner.history!.index;
+        if (request.epoch === index.epoch && request.version === index.version) {
+            yield { session: index.session, epoch: index.epoch, base: index.version, version: index.version,
+                reset: false, upserts: [], removed: [] };
+        }
+        yield* index.changes(request, signal);
     }
     private refresh(owner: ThreadOwner, full: boolean): Promise<void> {
         if (owner.refreshing) { owner.dirty = true; owner.full ||= full; return owner.refreshing; }

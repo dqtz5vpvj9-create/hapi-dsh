@@ -25,13 +25,14 @@ export async function startLab() {
   }
   let index: SourceEventIndex
   let reads = 0, writes: SourceOperation[] = [], failNext = false
+  let followRequests: SourceChangesRequest[] = []
   let readPages: ReadAudit[] = [], eventAudit = new Map<number, EventAudit>()
   const connections = new Set<AbortController>()
   function reset(): void {
     for (const abort of connections) abort.abort()
     connections.clear(); index?.dispose()
     index = new SourceEventIndex(':memory:', metadata); reads = 0; writes = []; failNext = false
-    readPages = []; eventAudit = new Map()
+    readPages = []; eventAudit = new Map(); followRequests = []
     const put = (key: string, event: EventInput, audit: EventAudit): void => {
       const seq = index.put(key, event)
       eventAudit.set(Number(seq), audit)
@@ -117,6 +118,10 @@ export async function startLab() {
       if (request.headers['x-hhpi-fixture'] !== '1') return json(response, { error: 'Fixture boundary required' }, 403)
       const body = await jsonBody(request)
       if (url.pathname === '/api/reset') { reset(); return json(response, { ok: true }) }
+      if (url.pathname === '/api/interrupt-updates') {
+        for (const abort of connections) abort.abort()
+        return json(response, { ok: true })
+      }
       if (url.pathname === '/api/fault') { failNext = true; return json(response, { ok: true }) }
       if (url.pathname === '/api/read') {
         const value = body as SourceReadRequest
@@ -160,16 +165,21 @@ export async function startLab() {
     if (url.pathname === '/api/stats') {
       const userMessageIds = [...eventAudit.values()].flatMap(event => event.userMessageId ? [Number(event.userMessageId.slice('message-'.length))] : [])
       return json(response, {
-        reads, writes, readPages, userMessageCount: userMessageIds.length,
+        reads, writes, readPages, followRequests, userMessageCount: userMessageIds.length,
         userMessageRange: { first: Math.min(...userMessageIds), last: Math.max(...userMessageIds) }, sourceEventCount: eventAudit.size,
       })
     }
     if (url.pathname === '/api/changes') {
       const value = JSON.parse(url.searchParams.get('request') ?? '{}') as SourceChangesRequest
       if (value.sessionId !== metadata.id) return json(response, { error: 'Unknown synthetic session' }, 403)
+      followRequests.push(value)
       const abort = new AbortController(); connections.add(abort)
       response.on('close', () => { abort.abort(); connections.delete(abort) })
       response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' }); response.flushHeaders()
+      if (value.epoch === index.epoch && value.version === index.version) {
+        response.write(JSON.stringify({ session: index.session, epoch: index.epoch, base: index.version, version: index.version,
+          reset: false, upserts: [], removed: [] }) + '\n')
+      }
       try { for await (const change of index.changes(value, abort.signal)) response.write(JSON.stringify(change) + '\n') }
       catch (error) { if (!abort.signal.aborted) throw error }
       finally { response.end(); connections.delete(abort) }

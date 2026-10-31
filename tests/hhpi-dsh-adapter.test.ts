@@ -55,6 +55,9 @@ test('a migrated native DSH source keeps continuous pages, live append and exact
     }
     assert.equal(page.before, 0); assert.equal(page.hasBefore, false);
     const signal = new AbortController(), changes = gateway.changes({ sessionId: session.id, epoch: baseline.epoch, version: baseline.version }, access, signal.signal)[Symbol.asyncIterator]();
+    const opened = await changes.next();
+    assert.deepEqual(opened.value, { session, epoch: baseline.epoch, base: baseline.version, version: baseline.version,
+        reset: false, upserts: [], removed: [] }, 'an idle subscription confirms its accepted cursor without a body read');
     await writer.append([event(1120)]); await writer.flush();
     const update = await changes.next();
     assert.equal(update.value?.base, baseline.version); assert.deepEqual(update.value?.upserts.map(entry => entry.event.seq), [1120]);

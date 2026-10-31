@@ -46,7 +46,7 @@ function official(name: string): { apply(ctx: Context): void; inject: string[]; 
 async function facadeClasses() {
   const output = await build({ stdin: { contents: "export { RemoteSessions } from './src/client/remote-sessions.ts'; export { SourceSessions } from './src/client/source-sessions.ts';", resolveDir: root, loader: 'ts' },
     alias: { '@deepseek-ai/dsh-api-session-controller/client': resolve(root, 'tests/fixtures/client-session-contract.ts') },
-    external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent' })
+    external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-gateway/client'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent' })
   const module = { exports: {} as { RemoteSessions: typeof RemoteSessions; SourceSessions: typeof SourceSessions } }
   new Function('require', 'module', 'exports', output.outputFiles[0]!.text)(require, module, module.exports)
   return module.exports
@@ -93,7 +93,9 @@ export async function fixture(t: TestContext) {
   await remote.refresh()
   assert.equal(sessions.windowCommit, remote.windowCommit, 'outer facade must retain the actual commit coordinator')
   ctx.reflect.provide('sessions', sessions)
-  ctx.reflect.provide('remote', { $on: () => () => {} } as unknown as Context['remote'])
+  const { RemoteStream } = require('@deepseek-ai/dsh-api-gateway/client') as typeof import('@deepseek-ai/dsh-api-gateway/client')
+  const generation = store({} as never)
+  ctx.reflect.provide('remote', { $on: () => () => {}, $stream: options => new RemoteStream({ generation }, options) } as Context['remote'])
   ctx.reflect.provide('remote.session', {} as never)
   ctx.reflect.provide('remoteAccess', { source: () => store(true) } as unknown as Context['remoteAccess'])
   const localeState = store({ revision: 0, active: 'en' })

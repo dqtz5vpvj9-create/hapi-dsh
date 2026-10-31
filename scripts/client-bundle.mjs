@@ -31,6 +31,7 @@ export async function buildClientBundle(buildIdentity, { publish = true, minifyI
             'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store',
             '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit',
             '@deepseek-ai/dsh-api-terminal-controller/client',
+            '@deepseek-ai/dsh-api-gateway/client',
         ],
     };
     const chunks = [
@@ -70,7 +71,7 @@ export async function buildSourceProvider(buildIdentity) {
     const options = {
         bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
         write: false, legalComments: 'inline', minifyWhitespace: true, minifySyntax: true, minifyIdentifiers: true,
-        external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller/client'],
+        external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller/client', '@deepseek-ai/dsh-api-gateway/client'],
         define: { __HAPI_DSH_BUILD_ID__: buildIdentity },
     };
     const result = await build({ ...options, entryPoints: ['src/client/source-sessions-provider.ts'] });
@@ -83,7 +84,7 @@ export async function buildSourceProvider(buildIdentity) {
         name: 'hapi-dsh-session-provider', version: JSON.parse(await readFile('package.json', 'utf8')).version,
         type: 'module', main: './index.js', license: 'AGPL-3.0-only',
         exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' },
-        dsh: { client: { platform: 'web', external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller'] } },
+        dsh: { client: { platform: 'web', external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-session-controller', '@deepseek-ai/dsh-api-gateway'] } },
     }, null, 2) + '\n');
     return result;
 }
