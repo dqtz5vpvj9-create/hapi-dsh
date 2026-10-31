@@ -96,6 +96,9 @@ function dependencyIndex(events: readonly SessionEvent[]): NativeEventDependency
 /**
  * Select one native log page and include the lifecycle and tool-call records
  * needed to interpret its body. Context entries remain outside its boundaries.
+ * `sourceEventSeqs` cites model-surface provenance (including whole compacted
+ * ranges), not Chat rendering dependencies. Preserve those annotations on the
+ * original event, but let earlier pages load the cited transcript in log order.
  */
 function selectNativeEventPage(events: readonly SessionEvent[], dependencies: NativeEventDependencyIndex,
     request: Pick<SourceReadRequest, 'before' | 'after' | 'around' | 'limit'>): NativeDshPageSelection {
@@ -147,8 +150,6 @@ function selectNativeEventPage(events: readonly SessionEvent[], dependencies: Na
         }
         const headerSeq = numberField(event, 'headerSeq');
         if (headerSeq !== undefined) addContext(headerSeq);
-        const sourceSeqs = (event as SessionEvent & { sourceEventSeqs?: readonly number[] }).sourceEventSeqs;
-        for (const sourceSeq of sourceSeqs ?? []) addContext(sourceSeq);
     };
 
     for (const event of body) {
@@ -175,8 +176,6 @@ function selectNativeEventPage(events: readonly SessionEvent[], dependencies: Na
         }
         const headerSeq = numberField(event, 'headerSeq');
         if (headerSeq !== undefined) addContext(headerSeq);
-        const sourceSeqs = (event as SessionEvent & { sourceEventSeqs?: readonly number[] }).sourceEventSeqs;
-        for (const sourceSeq of sourceSeqs ?? []) addContext(sourceSeq);
     }
 
     const orderedSeqs = [...selected.keys(), ...context].sort((left, right) => left - right);

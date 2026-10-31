@@ -7,6 +7,7 @@ import { SESSION_FORMAT_VERSION, SessionId, SessionSeq, type SessionEvent, type 
 import { createAssistantMessage, createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm';
 import { apply as applyJsonlPersistence } from '@deepseek-ai/dsh-session-persistence-jsonl';
 import { DirectDshHistory, pageNativeEvents } from '../src/remote/dsh-history.ts';
+import { RemoteSourceHistory } from '../src/client/remote-history.ts';
 import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts';
 
 const nativeId = 'native-history-contract';
@@ -44,6 +45,68 @@ function nativeEvents(): SessionEvent[] {
     add('turn/end', { turn: 1, reason: { kind: 'completed' } });
     return events;
 }
+
+test('reading past six native pages crosses a compaction checkpoint without loading its shadowed provenance as context', { timeout: 10000 }, async t => {
+    const root = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-native-compaction-'));
+    const ownerContext = new Context();
+    await ownerContext.plugin(applyJsonlPersistence, { root, compression: 'zstd' });
+    const writer = await ownerContext.sessionPersistence.create({ version: SESSION_FORMAT_VERSION, id: SessionId(nativeId), createdAt: timeBase, cwd: '/synthetic', isSeeded: false });
+    const events: SessionEvent[] = [];
+    const addUser = (text: string, extra: Record<string, unknown> = {}): void => {
+        const seq = events.length;
+        events.push({ type: 'user/message', seq: SessionSeq(seq), time: timeBase + seq, surfaceOp: 'append',
+            data: { id: `message-${seq}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] }, ...extra } as SessionEvent);
+    };
+    // Each ordinary page fits the existing 12 MiB admission budget. The whole
+    // compacted surface deliberately exceeds it, as long native logs do.
+    for (let index = 0; index < 768; index++) addUser(`earlier-${index} ${'x'.repeat(20 * 1024)}`);
+    const sources = events.map(event => event.seq);
+    const addCompaction = (type: string, data: Record<string, unknown>): void => {
+        const seq = events.length;
+        events.push({ type, seq: SessionSeq(seq), time: timeBase + seq, data } as SessionEvent);
+    };
+    addCompaction('compaction/start', { compactionId: 'fixture-compaction', turn: null });
+    addCompaction('compaction/summary', { compactionId: 'fixture-compaction', summary: [{ type: 'text', text: 'compacted model context' }],
+        shadowedRange: { start: 0, end: sources.at(-1)! }, shadowedSeqs: sources, shadowedTokenCount: 100000,
+        provider: 'fixture', model: 'fixture-model', rawOutput: [{ type: 'text', text: 'compacted model context' }] });
+    const checkpointSeq = events.length;
+    addUser('compacted model context', { surfaceOp: { op: 'replace', startSeq: 0, endSeq: sources.at(-1)! }, sourceEventSeqs: sources,
+        data: { id: 'checkpoint', role: 'user', source: { kind: 'compact-checkpoint', compactionId: 'fixture-compaction' }, content: [{ type: 'text', text: 'compacted model context' }] } });
+    addCompaction('compaction/end', { compactionId: 'fixture-compaction', turn: null });
+    for (let index = 0; index < 960; index++) addUser(`later-${index}`);
+    await writer.append(events); await writer.flush();
+    const reader = new DirectDshHistory(root);
+    let reads = 0;
+    const history = new RemoteSourceHistory(source.id, {
+        read: request => { ++reads; return reader.read(source, request); },
+        async *changes(_request, signal) { await new Promise<void>(resolve => { if (signal?.aborted) resolve(); else signal?.addEventListener('abort', () => resolve(), { once: true }); }); },
+    });
+    t.after(async () => { history.dispose(); await reader.dispose(); await writer.close(); await ownerContext.fiber.dispose(); await rm(root, { recursive: true, force: true }); });
+    const budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }, signal = new AbortController().signal;
+    const feed = await history.openView('native-compaction-pane', budget);
+    let current = feed.initial;
+    const tail = current.entries.at(-1), cursors: string[] = [];
+    let pages = 1;
+    while (current.hasBefore) {
+        assert.ok(current.before); cursors.push(current.before);
+        const previous = current.entries[0]!.event.seq;
+        current = await feed.read({ kind: 'before', cursor: current.before }, budget, signal);
+        feed.publication!.accept(current.version);
+        assert.ok(current.entries[0]!.event.seq < previous, `page ${++pages} exposes earlier original body`);
+        assert.strictEqual(current.entries.at(-1), tail, 'paging keeps the accepted tail object');
+    }
+    assert.equal(pages, 11);
+    assert.deepEqual(current.entries.map(entry => entry.event.seq), events.map(event => event.seq), 'the complete log remains continuous with no duplicate provenance');
+    const snapshot = await reader.snapshot(source);
+    const checkpointPage = pageNativeEvents(source, snapshot, { sessionId: source.id, before: checkpointSeq + 1, limit: 1 });
+    assert.deepEqual(checkpointPage.context, [], 'a surface citation is not a Chat rendering dependency');
+    assert.strictEqual(checkpointPage.entries[0]!.event, snapshot.events[checkpointSeq], 'native surface metadata is forwarded unchanged');
+    assert.deepEqual(checkpointPage.entries[0]!.event.sourceEventSeqs, sources);
+    const count = reads;
+    await feed.read({ kind: 'latest' }, budget, signal);
+    for (const cursor of cursors.reverse()) await feed.read({ kind: 'before', cursor }, budget, signal);
+    assert.equal(reads, count, 'returning through accepted history uses the cache');
+});
 
 test('DirectDshHistory reads original native events, pages them without resequencing, and leaves write ownership with the native writer', async t => {
     const root = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-direct-dsh-history-'));
