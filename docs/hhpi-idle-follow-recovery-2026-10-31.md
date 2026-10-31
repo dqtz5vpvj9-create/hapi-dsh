@@ -61,6 +61,51 @@ place, and no extra history read occurs. The existing thirteen continuous
 older-boundary, cache, independent draft and input checks remain in those same
 two bounded scenarios. No production connection or native operation is faulted.
 
-Live production acceptance and actual browser results are recorded below when
-executed. Controlled DOM and source tests do not certify physical-phone sleep,
-OS background throttling or subjective scrolling smoothness.
+## Executed validation and deployment
+
+`npm run check` passes: 1,881 Node tests, 35 component tests, six fault
+injections, type checks and the full build. Two existing Node cases are skipped
+and are not counted as passed. The five history journeys, fifteen pinned
+official-history contracts, four mounted DOM contracts and compiled module graph
+contract pass separately. The Node and DOM evidence does not establish layout.
+
+The two real Chromium component journeys pass with synthetic source data:
+
+| Check | Desktop 1440×900 | Mobile viewport 390×844 |
+| --- | --- | --- |
+| Journey duration | 21.97 s | 50.76 s |
+| Idle closures followed by successful reopening | 2 | 2 |
+| Total subscriptions / extra history reads during reconnect | 3 / 0 | 3 / 0 |
+| Reader position displacement during reconnect | 0 px | 0 px |
+| Ready independent readers retained | 2 | 2 |
+| Subsequent continuous earlier boundaries | 13 | 13 |
+
+The component build took 583 ms; Chromium was `153.0.8010.12`. No scenario was
+retried. These checks use real layout and official UI/stream code, with an
+isolated loopback source and connection factory. Frame timing is observational,
+as specified by the lab, and this result does not certify subjective smoothness.
+
+Runtime commit `a93bd9a6fdab60c413591cb09896034cf0b49f0e` is pushed to `main`
+and activated through formal release
+`b4cdc1ea0c6dd5a87d46e3140b8efd069ab3504f59098046b653d2a81b3c184d`.
+The extension package set is unchanged. Only the display Host was restarted,
+after the authenticated ordinary running-session count was zero; original
+Codex, native DSH and HAPI processes retained their PIDs/start times.
+
+Authenticated HTTP, compressed WebSocket, three online HHPI sources and ten
+served modules matching their installed release were verified, including the
+official Gateway module used by the new helper. The Gateway module is external
+in both application and source-provider bundles, with explicit graph metadata,
+so its exported error class and `ctx.remote.$stream` share one module instance.
+
+An unmodified authenticated production subscription stayed open for 45 seconds
+after deployment, received its single zero-change opening confirmation and 22
+heartbeat pings, and had no error/end/unexpected close. Production faults and
+native writes were not injected. Desktop/mobile `webshot` captures were actually
+viewed and show the target conversation body and editor. Captures establish
+initial display, not a physical-device sleep/wake test.
+
+Physical-phone sleep, OS background throttling and the exact triggering fault
+on the reporting device remain unverified. The repaired failure/recovery path
+has controlled and real-browser evidence; genuine source-domain failures still
+use their terminal error path.
