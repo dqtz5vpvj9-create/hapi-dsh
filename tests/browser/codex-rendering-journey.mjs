@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 export async function runCodexRenderingJourney(page, _context, origin, _mode, result) {
   const pane = page.locator('[data-lab-pane="a"]')
+  const stats = () => fetch(origin + '/api/stats').then(response => response.json())
+  let initialImageState
   async function step(name, action) {
     result.activeStep = name
     const start = performance.now()
@@ -34,6 +36,15 @@ export async function runCodexRenderingJourney(page, _context, origin, _mode, re
     assert.equal(await page.evaluate(() => window.__hhpiFailure), undefined)
     await pane.getByText('Synthetic Codex rendering completed.', { exact: true }).waitFor({ state: 'visible' })
     result.initialLayout = await layout()
+    await page.waitForFunction(async () => (await (await fetch('/api/stats')).json()).followRequests.length === 1)
+    initialImageState = await stats()
+    assert.equal(initialImageState.codexImages.imagesReleased, false)
+    assert.equal(initialImageState.codexImages.pendingFileReads, 2, 'both native image reads remain pending while the first body and editor are usable')
+    assert.equal(initialImageState.codexImages.imageRevisions, 0)
+    assert.equal(await pane.locator('img').count(), 0, 'the initial body cannot use pre-enriched image fixtures')
+    const release = await fetch(origin + '/api/release-images', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: '{}' })
+    assert.ok(release.ok, 'the declared source-file IO boundary must release')
   })
   await step('official command row expands native output', async () => {
     const commands = pane.locator('[data-sample="bash"]')
@@ -83,15 +94,33 @@ export async function runCodexRenderingJourney(page, _context, origin, _mode, re
     await imageTool.locator('[data-disclosure-row]').click({ position: { x: 8, y: 10 } })
     await imageTool.locator('img').waitFor({ state: 'visible' })
     assert.ok(await imageTool.locator('img').evaluate(async image => { await image.decode(); return image.complete && image.naturalWidth === 1 }), 'the gallery must decode authorized image bytes')
+    const prepared = await stats()
+    assert.equal(prepared.codexImages.imageRevisions, 2, 'both accepted native items must publish an image revision')
+    assert.ok(prepared.sourceVersion > initialImageState.sourceVersion, 'image content must enter through a later source revision')
+    assert.equal(prepared.reads, initialImageState.reads, 'image publication must update the mounted body without another history read')
+    result.imagePublication = { pendingReadsAtFirstBody: initialImageState.codexImages.pendingFileReads,
+      revisions: prepared.codexImages.imageRevisions, extraBodyReads: prepared.reads - initialImageState.reads }
     result.imageLayout = await layout()
     await imageTool.locator('[data-disclosure-row]').click({ position: { x: 8, y: 10 } })
+  })
+  await step('native function output exposes readable text without transport fields', async () => {
+    const output = pane.locator('[data-tool="lookup"]')
+    assert.equal(await output.count(), 1)
+    await output.scrollIntoViewIfNeeded()
+    await output.locator('[data-disclosure-row]').click({ position: { x: 8, y: 10 } })
+    await output.getByText('Readable native function result.', { exact: false }).waitFor({ state: 'visible' })
+    const text = await output.innerText()
+    assert.match(text, /Audio output/); assert.match(text, /Encrypted output/)
+    assert.doesNotMatch(text, /input_text|input_audio|encrypted_content|SYNTHETIC_(?:AUDIO|ENCRYPTED)_TRANSPORT|data:audio/)
+    await output.locator('[data-disclosure-row]').click({ position: { x: 8, y: 10 } })
   })
   await step('subagent activity stays structured and source-only', async () => {
     const text = await pane.innerText()
     assert.doesNotMatch(text, /\[Native subAgentActivity item:|codex\.subAgentActivity|codex\.commandExecution|codex\.fileChange/)
     assert.match(text, /render-review/)
-    const stats = await fetch(origin + '/api/stats').then(response => response.json())
-    assert.equal(stats.writes.length, 0, 'viewing and expanding recorded calls must not execute native tools')
+    const recorded = await stats()
+    assert.equal(recorded.writes.length, 0, 'viewing and expanding recorded calls must not execute native tools')
+    result.syntheticWrites = recorded.writes.length
     result.finalLayout = await layout()
   })
   await page.evaluate(async () => { await window.__hhpi.dispose(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame) })

@@ -6,10 +6,11 @@ import { CodexRpc, CodexRpcError, type NativeNotification, type NativeRequest } 
 import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION } from './codex-history.ts';
 import { migrateLegacyCodexHistory } from './codex-history-migration.ts';
 import { CodexAttachments } from './codex-attachments.ts';
+import { CodexImageReader } from './codex-image-reader.ts';
 import { SourceEventIndex } from './event-index.ts';
 import { OperationLedger, CreationLedger } from './operation-ledger.ts';
 import { isRecord, itemListSchema, loadedListSchema, nativeItemSchema, nativeThreadSchema, nativeTurnSchema, threadListSchema, threadResponseSchema, turnListSchema, type NativeItemEntry, type NativeThread, type NativeTurn } from './codex-native.ts';
-import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest, type SourceCreateRequest, type SourceCreationReceipt, type SourceEntry, type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
+import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest, type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
 
 interface ThreadOwner {
     native: NativeThread; session: SourceSession; history?: CodexHistory; attachments?: CodexAttachments;
@@ -25,7 +26,7 @@ interface NativeHistoryCheckpoint {
     updatedAt: number;
     statusType: string;
 }
-interface AdapterOptions { rpc?: CodexRpc; pollMs?: number }
+interface AdapterOptions { rpc?: CodexRpc; pollMs?: number; readImage?: (path: string, signal: AbortSignal) => Promise<unknown> }
 const MAX_CATALOG = 10_000;
 const MAX_NATIVE_PAGES = 10_000;
 const ACK_TIMEOUT = 15_000;
@@ -41,6 +42,8 @@ const delay = (ms: number, signal: AbortSignal): Promise<void> => new Promise((r
 export class DirectCodexAdapter implements SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine = 'codex';
     private readonly rpc: CodexRpc;
+    private readonly imageReader: CodexImageReader;
+    private readonly readImage: (path: string, signal: AbortSignal) => Promise<unknown>;
     private readonly ledger: OperationLedger;
     private readonly creations: CreationLedger;
     private readonly threads = new Map<string, ThreadOwner>();
@@ -56,6 +59,8 @@ export class DirectCodexAdapter implements SourceAdapter {
     constructor(private readonly config: DirectCodexConfig, private readonly directory: string, options: AdapterOptions = {}) {
         this.id = config.id; this.machineId = config.machineId;
         this.rpc = options.rpc ?? new CodexRpc(config);
+        this.imageReader = new CodexImageReader(config);
+        this.readImage = options.readImage ?? ((path, signal) => this.imageReader.read(path, signal));
         this.ledger = new OperationLedger(join(directory, 'operations'));
         this.creations = new CreationLedger(join(directory, 'creations'), JSON.stringify([this.machineId, this.id, this.engine]));
         this.stops = [this.rpc.onNotification(value => { this.notification(value); }), this.rpc.onRequest(request => { this.approval(request); }), this.rpc.onDisconnect(() => { this.disconnected(); })];
@@ -184,8 +189,10 @@ export class DirectCodexAdapter implements SourceAdapter {
             let history = owner.history;
             if (!history) {
                 const index = new SourceEventIndex(join(this.directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`), owner.session);
-                const attachments = new CodexAttachments(index, join(this.directory, 'images'),
-                    (path, signal) => this.rpc.request('fs/readFile', { path }, { signal }), this.lifetime.signal);
+                const attachments = new CodexAttachments(index, join(this.directory, 'images'), this.readImage, this.lifetime.signal, ({ turnId, itemId }) => {
+                    const current = owner.history?.itemState(turnId, itemId);
+                    if (current) owner.history!.acceptItem(owner.session, current.turnId, current.item, current.completed);
+                });
                 owner.attachments = attachments;
                 history = new CodexHistory(index, { userContent: (turnId, item) => attachments.content(turnId, item),
                     toolContent: (turnId, item) => attachments.content(turnId, item) });
@@ -224,9 +231,10 @@ export class DirectCodexAdapter implements SourceAdapter {
         const owner = await this.owner(request.sessionId, signal);
         await waitFor(this.prepare(owner), signal); signal?.throwIfAborted();
         const page = owner.history!.index.read(request);
-        await this.enrich(owner, page.entries, signal);
-        signal?.throwIfAborted();
-        return owner.history!.index.read({ ...request, epoch: page.epoch });
+        owner.attachments?.schedule(page.entries);
+        // The selected entries and subscription version describe one snapshot.
+        // Image completion publishes a later revision independently of this reader.
+        return page;
     }
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const owner = await this.owner(request.sessionId, signal);
@@ -238,16 +246,8 @@ export class DirectCodexAdapter implements SourceAdapter {
                 reset: false, upserts: [], removed: [] };
         }
         for await (const change of index.changes(request, signal)) {
+            owner.attachments?.schedule(change.upserts);
             yield change;
-            await this.enrich(owner, change.upserts, signal);
-        }
-    }
-    private async enrich(owner: ThreadOwner, entries: readonly SourceEntry[], signal?: AbortSignal): Promise<void> {
-        if (!owner.attachments || !owner.history) return;
-        const prepared = await owner.attachments.enrich(entries, signal);
-        for (const state of prepared) {
-            const current = owner.history.itemState(state.turnId, state.item.id);
-            if (current) owner.history.acceptItem(owner.session, current.turnId, current.item, current.completed);
         }
     }
     async readResource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> {
@@ -273,8 +273,10 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.remember(response.thread);
         this.assertReadable(response.thread);
         if (full && !owner.attachments?.needsReconciliation && history.index.count === 0) {
-            const legacyPath = join(this.directory, 'history', `${createHash('sha256').update(owner.session.id).digest('hex')}.sqlite`);
-            migrateLegacyCodexHistory(legacyPath, history, owner.session, response.thread);
+            const hash = createHash('sha256').update(owner.session.id).digest('hex');
+            for (const suffix of ['.v2.sqlite', '.sqlite']) {
+                if (migrateLegacyCodexHistory(join(this.directory, 'history', `${hash}${suffix}`), history, owner.session, response.thread)) break;
+            }
         }
         const rawCheckpoint = full ? history.index.cached<unknown>(NATIVE_HISTORY_CHECKPOINT) : undefined;
         const checkpoint = this.nativeHistoryCheckpoint(rawCheckpoint);
@@ -545,7 +547,8 @@ export class DirectCodexAdapter implements SourceAdapter {
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true; clearInterval(this.timer); this.lifetime.abort();
-        for (const stop of this.stops) stop(); await this.rpc.dispose();
+        for (const stop of this.stops) stop();
+        await Promise.all([this.rpc.dispose(), this.imageReader.dispose(), ...[...this.threads.values()].map(owner => owner.attachments?.dispose())]);
         await Promise.allSettled([...this.threads.values()].flatMap(owner => [owner.preparing, owner.refreshing].filter((work): work is Promise<void> => Boolean(work))));
         for (const owner of this.threads.values()) owner.history?.index.dispose();
         this.threads.clear(); this.approvals.clear();

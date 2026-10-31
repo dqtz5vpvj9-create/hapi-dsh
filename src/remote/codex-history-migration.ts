@@ -1,6 +1,7 @@
-/** Reproject a verified v1 native cache without rereading remote item bodies. */
+/** Reproject a verified previous native cache without rereading remote item bodies. */
 import { DatabaseSync } from 'node:sqlite';
 import { CodexHistory } from './codex-history.ts';
+import { nativeImageContent, retainedNativeImageCache } from './codex-attachments.ts';
 import { isRecord, nativeItemSchema, nativeTurnSchema, type NativeItemEntry, type NativeThread, type NativeTurn } from './codex-native.ts';
 import { SourceEventIndex } from './event-index.ts';
 import type { SourceSession } from './protocol.ts';
@@ -10,7 +11,7 @@ const key = (...parts: string[]): string => JSON.stringify(parts);
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 interface Checkpoint { version: 1; state: 'complete'; updatedAt: number; statusType: string }
 interface CachedTurn { turn: NativeTurn; time: number; entries: Array<NativeItemEntry & { sequence: number }> }
-interface Candidate { turns: CachedTurn[]; checkpoint: Checkpoint }
+interface Candidate { turns: CachedTurn[]; checkpoint: Checkpoint; images: Map<string, unknown> }
 interface EventRow { seq: number; source_key: string; type: string; time: number }
 
 function candidate(path: string, session: SourceSession, thread: NativeThread): Candidate | undefined {
@@ -75,14 +76,19 @@ function candidate(path: string, session: SourceSession, thread: NativeThread): 
             const tail = cache.get(`tail:${turn.turn.id}`);
             if (tail !== undefined && (!isRecord(tail) || tail.last !== turn.entries.at(-1)?.item.id || tail.previous !== (turn.entries.at(-2)?.item.id ?? null))) return;
         }
-        return { turns: [...turns.values()], checkpoint: checkpoint as unknown as Checkpoint };
+        const accepted = [...turns.values()];
+        return { turns: accepted, checkpoint: checkpoint as unknown as Checkpoint,
+            images: retainedNativeImageCache(cache, accepted.flatMap(turn => turn.entries)) };
     } catch { return; }
     finally { db?.close(); }
 }
 
 function importCandidate(history: CodexHistory, session: SourceSession, value: Candidate): void {
     // Retain accepted fallback timestamps even if the original native turn lacked one.
-    history.index.edit(session, () => { for (const state of value.turns) history.index.cache(key('turn', state.turn.id), { turn: state.turn, time: state.time }); });
+    history.index.edit(session, () => {
+        for (const state of value.turns) history.index.cache(key('turn', state.turn.id), { turn: state.turn, time: state.time });
+        for (const [key, content] of value.images) history.index.cache(key, content);
+    });
     for (const state of value.turns) {
         history.beginTurn(session, state.turn);
         history.acceptItems(session, state.entries, false);
@@ -102,7 +108,10 @@ export function migrateLegacyCodexHistory(path: string, history: CodexHistory, s
     const value = candidate(path, session, thread);
     if (!value) return false;
     const validation = new SourceEventIndex(':memory:', session);
-    try { importCandidate(new CodexHistory(validation), session, value); }
+    try {
+        const content = (turnId: string, item: NativeItemEntry['item']) => nativeImageContent(validation, turnId, item);
+        importCandidate(new CodexHistory(validation, { userContent: content, toolContent: content }), session, value);
+    }
     catch { return false; }
     finally { validation.dispose(); }
     // A durable failure propagates and leaves no complete checkpoint. Never adopt partial work.

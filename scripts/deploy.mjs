@@ -4,6 +4,8 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import WebSocket from 'ws'
+import { buildIdentity } from './build-identity.mjs'
+import { DeploymentBuildMismatch, verifyDeploymentBuild } from './deploy-verification.mjs'
 
 const host = process.argv.includes('--host')
 if (process.argv.slice(2).some(arg => arg !== '--host')) throw new Error('Usage: npm run deploy [-- --host]')
@@ -28,39 +30,22 @@ const assertIdle = async () => {
     if (running.length) throw new Error(`${running.length} ordinary DSH sessions are running; the Host was not restarted`)
 }
 run('npm', ['run', host ? 'build' : 'build:client'])
+const localClient = await readFile('dist/client.js')
+const expectedHostBuildId = host ? JSON.parse(await buildIdentity()) : undefined
 if (host) { await assertIdle(); run('systemctl', ['--user', 'restart', 'hapi-dsh-host.service']) }
 let ready = false
-let clientMismatch
-const localClient = host ? undefined : await readFile('dist/client.js')
+let verification
 for (let attempt = 0; attempt < 45; attempt++) {
     try {
-        const page = await fetch(launch.origin, { headers, signal: AbortSignal.timeout(5_000) })
-        await page.arrayBuffer()
-        const bootstrap = await fetch(new URL('/hapi-dsh/bootstrap', launch), { headers, signal: AbortSignal.timeout(5_000) })
-        const graph = bootstrap.ok ? (await bootstrap.json()).graph : undefined
-        const entry = graph?.entries?.find(entry => entry.id === 'hapi-dsh')
-        const asset = entry?.url
-        if (page.ok && typeof asset === 'string') {
-            const bundle = await fetch(new URL(asset, launch), { headers, signal: AbortSignal.timeout(5_000) })
-            if (bundle.ok) {
-                const served = Buffer.from(await bundle.arrayBuffer())
-                // The official route appends a revisioned source-map trailer;
-                // its executable prefix must still be the completed workspace
-                // bundle before the history smoke is allowed to claim release.
-                if (localClient && !served.subarray(0, localClient.length).equals(localClient)) {
-                    clientMismatch = entry.rev
-                    break
-                }
-                ready = true
-                break
-            }
-        }
-    } catch { /* The display Host may still be starting. */ }
-    if (clientMismatch) break
+        verification = await verifyDeploymentBuild({ launch, headers, localClient, expectedHostBuildId })
+        if (verification.ready) { ready = true; break }
+    } catch (error) {
+        if (error instanceof DeploymentBuildMismatch) throw error
+        // The display Host may still be starting.
+    }
     if (attempt % 5 === 0) process.stdout.write('Waiting for the display Host HTTP endpoint…\n')
     await new Promise(resolve => setTimeout(resolve, 2_000))
 }
-if (clientMismatch) throw new Error(`Client-only build did not reach the active HAPI-DSh release (live graph revision ${clientMismatch}); the smoke would otherwise test a stale client`)
 if (!ready) throw new Error('Build finished, but the HTTP endpoint did not become ready; inspect the service log')
 // HTTP readiness cannot detect an authority-bound cookie lost by a WS proxy.
 // Exercise the public TLS route with the same admitted cookie, without opening
@@ -76,4 +61,5 @@ await new Promise((resolve, reject) => {
     })
 })
 run('npm', ['run', 'test:smoke:history'])
-process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. Authenticated HTTP, compressed WebSocket and continuous history reading passed; screenshot and physical device acceptance are reported separately.\n`)
+const buildStatus = host ? 'Current Host and client builds verified.' : 'Current client build verified.'
+process.stdout.write(`Published ${host ? 'Host and client' : 'client without restarting the Host'}. ${buildStatus} Authenticated HTTP, compressed WebSocket and continuous history reading passed; screenshot and physical device acceptance are reported separately.\n`)

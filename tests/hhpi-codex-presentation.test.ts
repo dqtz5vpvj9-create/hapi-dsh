@@ -77,6 +77,32 @@ test('MCP and dynamic tools preserve readable content and native failures', () =
     } finally { index.dispose(); }
 });
 
+test('native function output uses the pinned snake_case text contract', () => {
+    const { index, history } = fixture();
+    try {
+        history.acceptItem(session, 'turn', { id: 'function-text', type: 'functionCallOutput', name: 'lookup', namespace: null,
+            output: [{ type: 'input_text', text: 'Readable native result' }] }, true);
+        const result = entries(index).find(value => value.event.type === 'tool/result')!;
+        if (result.event.type !== 'tool/result') throw new Error('Expected native function result');
+        assert.deepEqual(result.event.data.message.content, [{ type: 'text', text: 'Readable native result' }]);
+    } finally { index.dispose(); }
+});
+
+test('native function media and encrypted output keep transport bytes out of visible tool content', () => {
+    const { index, history } = fixture();
+    try {
+        history.acceptItem(session, 'turn', { id: 'function-media', type: 'functionCallOutput', name: 'lookup', namespace: null,
+            output: [{ type: 'input_image', image_url: 'data:image/png;base64,SYNTHETIC_IMAGE_TRANSPORT' },
+                { type: 'input_audio', audio_url: 'data:audio/wav;base64,SYNTHETIC_AUDIO_TRANSPORT' },
+                { type: 'encrypted_content', encrypted_content: 'SYNTHETIC_ENCRYPTED_TRANSPORT' }] }, true);
+        const result = entries(index).find(value => value.event.type === 'tool/result')!;
+        if (result.event.type !== 'tool/result') throw new Error('Expected native function result');
+        assert.deepEqual(result.event.data.message.content, [{ type: 'text', text: 'Image output' }, { type: 'text', text: 'Audio output' },
+            { type: 'text', text: 'Encrypted output' }]);
+        assert.doesNotMatch(JSON.stringify(entries(index)), /SYNTHETIC_(?:IMAGE|AUDIO|ENCRYPTED)_TRANSPORT/);
+    } finally { index.dispose(); }
+});
+
 test('late image preparation enriches the existing user and read_image result without new message identities', () => {
     const index = new SourceEventIndex(':memory:', session);
     let prepared: ContentBlock[] | undefined;

@@ -16,9 +16,10 @@ function outputContent(value: unknown): ContentBlock[] {
     if (!Array.isArray(value)) return text(value);
     return value.flatMap((part): ContentBlock[] => {
         if (!isRecord(part)) return text(part);
-        if ((part.type === 'text' || part.type === 'inputText' || part.type === 'output_text') && typeof part.text === 'string') return text(part.text);
+        if ((part.type === 'text' || part.type === 'inputText' || part.type === 'input_text' || part.type === 'output_text') && typeof part.text === 'string') return text(part.text);
         if (part.type === 'image' || part.type === 'inputImage' || part.type === 'input_image') return text('Image output');
-        if (part.type === 'audio' || part.type === 'inputAudio') return text('Audio output');
+        if (part.type === 'audio' || part.type === 'inputAudio' || part.type === 'input_audio') return text('Audio output');
+        if (part.type === 'encrypted_content') return text('Encrypted output');
         return text(part);
     });
 }

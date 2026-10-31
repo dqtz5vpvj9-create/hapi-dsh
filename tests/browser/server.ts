@@ -8,6 +8,7 @@ import { output } from './build.mjs'
 import { seedCodexRendering, type CodexRenderingResources } from './codex-rendering-fixture.ts'
 
 export async function startLab(options: { codexRendering?: boolean } = {}) {
+  let codexRendering = options.codexRendering === true
   const identity = { machineId: 'browser-fixture', sourceId: 'native-fixture', engine: 'codex', nativeId: 'synthetic-only' }
   const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Synthetic browser acceptance', cwd: '/synthetic', updatedAt: 1000, status: 'idle', activeTurnId: null,
     capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
@@ -35,7 +36,7 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
     connections.clear(); await resources?.dispose(); resources = undefined; index?.dispose()
     index = new SourceEventIndex(':memory:', metadata); reads = 0; writes = []; failNext = false
     readPages = []; eventAudit = new Map(); followRequests = []
-    if (options.codexRendering) {
+    if (codexRendering) {
       resources = await seedCodexRendering(index, metadata)
       for (const { event } of index.read({ sessionId: metadata.id, limit: 160 }).entries) {
         eventAudit.set(Number(event.seq), { eventId: `codex-event-${event.seq}`, type: event.type })
@@ -126,9 +127,18 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
     if (request.method === 'POST') {
       if (request.headers['x-hhpi-fixture'] !== '1') return json(response, { error: 'Fixture boundary required' }, 403)
       const body = await jsonBody(request)
-      if (url.pathname === '/api/reset') { await reset(); return json(response, { ok: true }) }
+      if (url.pathname === '/api/reset') {
+        const value = body as { codexRendering?: boolean }
+        if (typeof value.codexRendering === 'boolean') codexRendering = value.codexRendering
+        await reset(); return json(response, { ok: true })
+      }
       if (url.pathname === '/api/interrupt-updates') {
         for (const abort of connections) abort.abort()
+        return json(response, { ok: true })
+      }
+      if (url.pathname === '/api/release-images') {
+        if (!resources) return json(response, { error: 'No pending synthetic Codex images' }, 409)
+        resources.releaseImages()
         return json(response, { ok: true })
       }
       if (url.pathname === '/api/fault') { failNext = true; return json(response, { ok: true }) }
@@ -140,6 +150,9 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
         await new Promise(resolve => setTimeout(resolve, 40))
         if (failNext) { failNext = false; return json(response, { error: 'Synthetic read failure' }, 503) }
         const page = index.read(value)
+        // Preserve the first body snapshot; prepared image revisions arrive on
+        // the real SourceEventIndex change stream after the fixture IO gate.
+        resources?.schedule(page.entries)
         const context = new Set(page.context)
         const events = page.entries.filter(entry => !context.has(Number(entry.event.seq))).map(entry => {
           const seq = Number(entry.event.seq), audit = eventAudit.get(seq)
@@ -179,7 +192,7 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
     if (url.pathname === '/api/stats') {
       const userMessageIds = [...eventAudit.values()].flatMap(event => event.userMessageId ? [Number(event.userMessageId.slice('message-'.length))] : [])
       return json(response, {
-        reads, writes, readPages, followRequests, userMessageCount: userMessageIds.length,
+        reads, writes, readPages, followRequests, sourceVersion: index.version, codexImages: resources?.snapshot(), userMessageCount: userMessageIds.length,
         userMessageRange: { first: Math.min(...userMessageIds), last: Math.max(...userMessageIds) }, sourceEventCount: eventAudit.size,
       })
     }

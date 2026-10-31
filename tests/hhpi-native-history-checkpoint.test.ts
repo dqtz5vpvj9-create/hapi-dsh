@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
@@ -150,6 +150,56 @@ test('a previous display projection upgrades from accepted native records withou
         const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
         adapter = adapterFor(directory, native, reopenedCalls);
         assert.equal((await readOnce(adapter)).text, upgraded.text);
+        assert.equal(reopenedCalls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false);
+    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('an idle v2 function output cache upgrades its display without rereading bodies or mutating the old database', async () => {
+    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-v2-output-'));
+    const native = fixture(directory), session: SourceSession = { ...source, id: sourceId, title: 'Synthetic history', cwd: directory,
+        updatedAt: native.updatedAt * 1000, status: 'idle', activeTurnId: null,
+        capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] };
+    const previousPath = join(directory, 'history', `${createHash('sha256').update(sourceId).digest('hex')}.v2.sqlite`);
+    const previous = new SourceEventIndex(previousPath, session), oldHistory = new CodexHistory(previous);
+    const turn = turns[0]!;
+    const output = [{ type: 'input_text', text: 'Recovered native result' },
+        { type: 'input_audio', audio_url: 'data:audio/wav;base64,SYNTHETIC_AUDIO_TRANSPORT' }];
+    try {
+        oldHistory.beginTurn(session, turn);
+        oldHistory.acceptItem(session, turn.id, { id: 'function-output', type: 'functionCallOutput', name: 'lookup', namespace: null, output }, true);
+        oldHistory.acceptTurn(session, turn);
+        previous.edit(session, () => {
+            const itemKey = JSON.stringify(['item', turn.id, 'function-output']);
+            const resultKey = JSON.stringify([itemKey, 'tool/result']);
+            const entry = previous.entry(resultKey)!;
+            if (entry.event.type !== 'tool/result') throw new Error('Expected the previous function output');
+            const { seq: _seq, ...event } = entry.event;
+            previous.put(resultKey, { ...event, data: { ...event.data, message: { ...event.data.message,
+                content: output.map(part => ({ type: 'text' as const, text: JSON.stringify(part, null, 2) })) } } },
+            [JSON.stringify(['turn', turn.id, 'start']), JSON.stringify([itemKey, 'step/start']),
+                JSON.stringify([itemKey, 'message']), JSON.stringify([itemKey, 'tool/call'])]);
+            previous.cache('turn-order', [turn.id]);
+            previous.cache(`tail:${turn.id}`, { last: 'function-output', previous: null });
+            previous.cache(checkpointKey, { version: 1, state: 'complete', updatedAt: native.updatedAt, statusType: 'idle' });
+        });
+    } finally { previous.dispose(); }
+    const originalBytes = await readFile(previousPath);
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    let adapter = adapterFor(directory, native, calls);
+    try {
+        const upgraded = await adapter.read({ sessionId: sourceId, limit: 100 });
+        const result = upgraded.entries.find(value => value.event.type === 'tool/result')!;
+        if (result.event.type !== 'tool/result') throw new Error('Expected the upgraded native function result');
+        assert.deepEqual(result.event.data.message.content, [{ type: 'text', text: 'Recovered native result' }, { type: 'text', text: 'Audio output' }]);
+        assert.doesNotMatch(JSON.stringify(upgraded.entries), /SYNTHETIC_AUDIO_TRANSPORT/);
+        assert.equal(calls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false,
+            'matching v2 native records must reproject locally even when the source is idle');
+        assert.deepEqual(await readFile(previousPath), originalBytes);
+        await adapter.dispose();
+        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+        adapter = adapterFor(directory, native, reopenedCalls);
+        const reopened = await adapter.read({ sessionId: sourceId, limit: 100 });
+        assert.deepEqual(reopened.entries, upgraded.entries);
         assert.equal(reopenedCalls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false);
     } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
 });

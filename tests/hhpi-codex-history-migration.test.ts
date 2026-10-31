@@ -1,16 +1,21 @@
 /** Real source indexes and projector; the accepted native records are synthetic. */
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
+import type { ContentBlock } from '@deepseek-ai/dsh-llm';
+import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
+import { CodexAttachments } from '../src/remote/codex-attachments.ts';
 import { CodexHistory } from '../src/remote/codex-history.ts';
 import { migrateLegacyCodexHistory } from '../src/remote/codex-history-migration.ts';
 import type { NativeThread } from '../src/remote/codex-native.ts';
+import type { CodexRpc } from '../src/remote/codex-rpc.ts';
 import { SourceEventIndex } from '../src/remote/event-index.ts';
-import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts';
+import { sourceSessionId, type SourcePage, type SourceSession } from '../src/remote/protocol.ts';
 
 const key = (...parts: string[]): string => JSON.stringify(parts);
 const checkpointKey = 'native-history-checkpoint:v1';
@@ -123,5 +128,102 @@ test('the entire new projection is validated before the first durable import', a
         assert.equal(migrateLegacyCodexHistory(path, history, session, thread), false);
         assert.equal(history.index.count, 0, 'an invalid late event must not publish earlier valid items');
         assert.equal(history.index.cached(checkpointKey), undefined);
+    });
+});
+
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC';
+const pageImages = (page: SourcePage) => page.entries.flatMap(({ event }) => (event.type === 'user/message' ? event.data.content
+    : event.type === 'tool/result' ? event.data.message.content : []).filter((block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'));
+
+/** Seed the actual v2 cache and official immutable storage before making the source file unavailable. */
+async function legacyImageFixture(t: TestContext, includeTool = false) {
+    const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-upgrade-'));
+    const oldPath = join(directory, 'history', `${createHash('sha256').update(session.id).digest('hex')}.v2.sqlite`);
+    const old = new SourceEventIndex(oldPath, session), lifetime = new AbortController();
+    const ready = Promise.withResolvers<void>(); let published = 0;
+    const attachments = new CodexAttachments(old, join(directory, 'images'), async () => ({ dataBase64: PNG }), lifetime.signal, ({ turnId, itemId }) => {
+        const state = history.itemState(turnId, itemId)!;
+        history.acceptItem(session, turnId, state.item, state.completed);
+        if (++published === (includeTool ? 2 : 1)) ready.resolve();
+    });
+    const history = new CodexHistory(old, { userContent: (turnId, item) => attachments.content(turnId, item), toolContent: (turnId, item) => attachments.content(turnId, item) });
+    const turn = { id: 'image-turn', status: 'completed' as const, startedAt: 1, completedAt: 12 };
+    history.beginTurn(session, turn);
+    history.acceptItem(session, turn.id, { id: 'image-user', type: 'userMessage', content: [{ type: 'text', text: 'A previously saved screenshot.' },
+        { type: 'localImage', path: '/synthetic/removed-after-v2.png' }] }, true);
+    if (includeTool) history.acceptItem(session, turn.id, { id: 'image-tool', type: 'imageView', path: '/synthetic/removed-preview.png' }, true);
+    history.acceptTurn(session, turn);
+    old.edit(session, () => { old.cache('turn-order', [turn.id]); old.cache(checkpointKey, checkpoint); });
+    attachments.schedule(old.read({ sessionId: session.id, limit: 100 }).entries);
+    await ready.promise; await attachments.dispose(); lifetime.abort();
+    const reference = pageImages(old.read({ sessionId: session.id, limit: 100 }))[0]!.attachment, oldEpoch = old.epoch;
+    old.dispose();
+    let sourceImageReads = 0;
+    const calls: string[] = [];
+    const rpc = {
+        online: true, currentGeneration: 1, connect: async () => ({}), dispose: async () => {},
+        onNotification: () => () => {}, onRequest: () => () => {}, onDisconnect: () => () => {},
+        request: async (method: string): Promise<unknown> => {
+            calls.push(method);
+            if (method === 'thread/loaded/list') return { data: [thread.id], nextCursor: null };
+            if (method === 'thread/list') return { data: [thread], nextCursor: null };
+            if (method === 'thread/read') return { thread };
+            throw new Error(`A verified cache upgrade must not call ${method}`);
+        },
+    } as unknown as CodexRpc;
+    const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex' }, directory, {
+        rpc, readImage: async () => { sourceImageReads++; throw new Error('The original native image was deleted after it was saved.'); },
+    });
+    t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
+    return { adapter, oldPath, reference, oldEpoch, calls, sourceImageReads: () => sourceImageReads };
+}
+
+test('upgrading a v2 cache preserves saved user and tool images even after their original native files disappear', { timeout: 5000 }, async t => {
+    const f = await legacyImageFixture(t, true), originalBytes = readFileSync(f.oldPath);
+    const page = await f.adapter.read({ sessionId: session.id, limit: 100 });
+    assert.equal(pageImages(page).length, 2, 'both images are reprojected from verified immutable references during the upgrade');
+    assert.notEqual(page.epoch, f.oldEpoch);
+    for (const { attachment } of pageImages(page)) {
+        const resource = await f.adapter.readResource({ sessionId: session.id, path: `attachment:${attachment.attachmentId}` });
+        assert.equal(resource.attachment?.attachmentId, attachment.attachmentId);
+        const bytes = Buffer.from(resource.content, 'base64');
+        assert.equal(`sha256:${createHash('sha256').update(bytes).digest('hex')}`, attachment.attachmentId);
+    }
+    assert.equal(f.sourceImageReads(), 0, 'upgrading must not reread a deleted source image whose accepted bytes were already saved');
+    assert.equal(f.calls.some(method => method === 'thread/items/list' || method === 'thread/turns/list' || method.startsWith('fs/')), false);
+    assert.deepEqual(readFileSync(f.oldPath), originalBytes);
+});
+
+test('cache upgrades do not reauthorize revoked, mismatched or malformed saved image references', { timeout: 5000 }, async t => {
+    const contentKey = key('codex-image-content', 'image-turn', 'image-user');
+    const cases: Array<[string, (db: DatabaseSync) => void]> = [
+        ['stale native fingerprint', db => {
+            const value = JSON.parse(String(db.prepare('SELECT value FROM native_cache WHERE key=?').get(contentKey)!.value));
+            value.fingerprint = 'stale'; db.prepare('UPDATE native_cache SET value=? WHERE key=?').run(JSON.stringify(value), contentKey);
+        }],
+        ['grant for another turn', db => {
+            const row = db.prepare("SELECT key,value FROM native_cache WHERE key LIKE 'codex-image-grants:%'").get()!;
+            const value = JSON.parse(String(row.value)); value[0].turnId = 'another-turn';
+            db.prepare('UPDATE native_cache SET value=? WHERE key=?').run(JSON.stringify(value), String(row.key));
+        }],
+        ['invalid official image reference', db => {
+            const value = JSON.parse(String(db.prepare('SELECT value FROM native_cache WHERE key=?').get(contentKey)!.value));
+            value.content.find((block: { type: string }) => block.type === 'image').attachment.width = 0;
+            db.prepare('UPDATE native_cache SET value=? WHERE key=?').run(JSON.stringify(value), contentKey);
+        }],
+        ['native item no longer references an image', db => {
+            const nativeKey = key('item', 'image-turn', 'image-user');
+            const value = JSON.parse(String(db.prepare('SELECT value FROM native_cache WHERE key=?').get(nativeKey)!.value));
+            value.item.content = [{ type: 'text', text: 'The native image was removed.' }]; delete value.presentationContent;
+            db.prepare('UPDATE native_cache SET value=? WHERE key=?').run(JSON.stringify(value), nativeKey);
+        }],
+    ];
+    for (const [name, change] of cases) await t.test(name, async t => {
+        const f = await legacyImageFixture(t);
+        mutate(f.oldPath, change);
+        const originalBytes = readFileSync(f.oldPath), page = await f.adapter.read({ sessionId: session.id, limit: 100 });
+        assert.equal(pageImages(page).length, 0);
+        await assert.rejects(f.adapter.readResource({ sessionId: session.id, path: `attachment:${f.reference.attachmentId}` }), { code: 'INVALID_REQUEST' });
+        assert.deepEqual(readFileSync(f.oldPath), originalBytes);
     });
 });

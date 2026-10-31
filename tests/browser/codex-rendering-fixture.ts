@@ -2,12 +2,16 @@
 import { CodexHistory } from '../../src/remote/codex-history.ts'
 import { CodexAttachments } from '../../src/remote/codex-attachments.ts'
 import type { SourceEventIndex } from '../../src/remote/event-index.ts'
-import type { SourceSession, SourceResource } from '../../src/remote/protocol.ts'
+import type { SourceSession, SourceResource, SourceEntry } from '../../src/remote/protocol.ts'
+import { waitFor } from '../../src/remote/errors.ts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 export interface CodexRenderingResources {
+  schedule(entries: readonly SourceEntry[]): void
+  releaseImages(): void
+  snapshot(): { fileReads: number; pendingFileReads: number; imagesReleased: boolean; imageRevisions: number }
   read(path: string, signal?: AbortSignal): Promise<SourceResource>
   dispose(): Promise<void>
 }
@@ -16,10 +20,17 @@ export async function seedCodexRendering(index: SourceEventIndex, metadata: Sour
   const directory = await mkdtemp(join(tmpdir(), 'hhpi-codex-rendering-')), lifetime = new AbortController()
   const imagePath = '/synthetic/1700000000000-00000000-1111-2222-3333-444444444444-Screenshot.png'
   const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC'
-  const attachments = new CodexAttachments(index, directory, async path => {
+  let release!: () => void, fileReads = 0, pendingFileReads = 0, imagesReleased = false, imageRevisions = 0
+  const imageGate = new Promise<void>(resolve => { release = resolve })
+  const attachments = new CodexAttachments(index, directory, async (path, signal) => {
     if (path !== imagePath && path !== '/synthetic/preview.png') throw new Error('Unknown synthetic source image')
-    return { dataBase64: png }
-  }, lifetime.signal)
+    fileReads++; pendingFileReads++
+    try { await waitFor(imageGate, signal); return { dataBase64: png } }
+    finally { pendingFileReads-- }
+  }, lifetime.signal, ({ turnId, itemId }) => {
+    const state = history.itemState(turnId, itemId)
+    if (state) { history.acceptItem(metadata, state.turnId, state.item, state.completed); imageRevisions++ }
+  })
   const history = new CodexHistory(index, {
     userContent: (turnId, item) => attachments.content(turnId, item),
     toolContent: (turnId, item) => attachments.content(turnId, item),
@@ -45,14 +56,19 @@ export async function seedCodexRendering(index: SourceEventIndex, metadata: Sour
       { id: 'pretty-image', type: 'imageView', status: 'completed', path: '/synthetic/preview.png' },
       { id: 'pretty-agent', type: 'subAgentActivity', kind: 'started', agentThreadId: 'synthetic-child-thread',
         agentPath: 'render-review', model: 'native-fixture', reasoningEffort: 'medium' },
+      { id: 'pretty-function', type: 'functionCallOutput', name: 'lookup', namespace: null, output: [
+        { type: 'input_text', text: 'Readable native function result.' },
+        { type: 'input_audio', audio_url: 'data:audio/wav;base64,SYNTHETIC_AUDIO_TRANSPORT' },
+        { type: 'encrypted_content', encrypted_content: 'SYNTHETIC_ENCRYPTED_TRANSPORT' },
+      ] },
       { id: 'pretty-result', type: 'agentMessage', text: 'Synthetic Codex rendering completed.' },
     ],
   }, true)
-  for (const state of await attachments.enrich(index.read({ sessionId: metadata.id, limit: 160 }).entries)) {
-    history.acceptItem(metadata, state.turnId, state.item, state.completed)
-  }
   return {
+    schedule: entries => attachments.schedule(entries),
+    releaseImages(): void { imagesReleased = true; release() },
+    snapshot: () => ({ fileReads, pendingFileReads, imagesReleased, imageRevisions }),
     read: (path, signal) => attachments.read(path, signal),
-    async dispose(): Promise<void> { lifetime.abort(); attachments.revoke(); await rm(directory, { recursive: true, force: true }) },
+    async dispose(): Promise<void> { lifetime.abort(); await attachments.dispose(); await rm(directory, { recursive: true, force: true }) },
   }
 }

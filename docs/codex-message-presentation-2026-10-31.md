@@ -1,5 +1,11 @@
 # Codex message presentation
 
+The [loading and verification follow-up](codex-image-loading-followup-2026-10-31.md)
+supersedes this first revision's image scheduling and projection version, adds
+native function output compatibility, and integrates presentation checks into
+the default browser release journey. The validation figures below record the
+original presentation change.
+
 The native HHPI source path emitted tool names such as `codex.commandExecution`
 and `codex.fileChange`, while the presentation aliases still recognized the
 older HAPI tool names. Commands consequently fell back to generic tool rows.

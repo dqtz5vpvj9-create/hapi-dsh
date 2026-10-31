@@ -217,6 +217,7 @@ export async function runJourney(page, context, origin, mode, result) {
     assert.equal(value.writes[0].text, baseline.a.draft)
     assert.equal(value.writes[0].sessionId, 'hhpi:browser-fixture:native-fixture:codex:synthetic-only')
     assert.equal((await state()).b.draft, baseline.b.draft)
+    result.syntheticWrites = value.writes.length
   })
   result.measurements = await state(); result.inputs = await gestures.inputs()
   assert.equal(result.inputs.untrusted, 0, 'all exercised gestures must come from the browser input protocol')

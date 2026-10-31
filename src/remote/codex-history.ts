@@ -6,8 +6,8 @@ import { isRecord, nativeText, type NativeItem, type NativeItemEntry, type Nativ
 import { nativeOtherContent, nativeToolPresentation, nativeUserContent } from './codex-presentation.ts';
 import type { SourceSession } from './protocol.ts';
 
-/** A new display index prevents old placeholder projections surviving a cache-first reopen. */
-export const CODEX_HISTORY_PROJECTION_VERSION = 2;
+/** Reproject accepted native records so cached function output uses the pinned content-block contract. */
+export const CODEX_HISTORY_PROJECTION_VERSION = 3;
 export interface CodexHistoryOptions {
     userContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
     toolContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;

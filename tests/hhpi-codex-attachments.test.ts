@@ -19,7 +19,7 @@ const images = (page: SourcePage): Image[] => page.entries.flatMap(({ event }) =
     return content.filter((block): block is Image => block.type === 'image');
 });
 
-async function fixture(t: TestContext, items: NativeItem[], options: { turns?: number; readFile?: (path: string) => Promise<unknown>; beforeThreadRead?: () => Promise<void> } = {}) {
+async function fixture(t: TestContext, items: NativeItem[], options: { turns?: number; readFile?: (path: string, signal: AbortSignal) => Promise<unknown>; beforeThreadRead?: () => Promise<void> } = {}) {
     const directory = await mkdtemp(join(tmpdir(), 'hhpi-image-')), calls: string[] = [], fileReads: string[] = [];
     const thread = { id: 'thread-images', cwd: '/native', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const other = { ...thread, id: 'other-thread' };
@@ -40,19 +40,29 @@ async function fixture(t: TestContext, items: NativeItem[], options: { turns?: n
             if (method === 'thread/items/list') return { data: (params.threadId === other.id
                 ? [{ type: 'userMessage', id: 'other-user', content: [{ type: 'text', text: 'No images in this session.' }] }]
                 : items).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
-            if (method === 'fs/readFile') {
-                assert.equal(typeof params.path, 'string'); fileReads.push(String(params.path));
-                return options.readFile ? options.readFile(String(params.path)) : { dataBase64: PNG };
-            }
             throw new Error(`Unexpected native method ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory, { rpc, pollMs: 60_000 });
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory, { rpc, pollMs: 60_000,
+        readImage: async (path, signal) => { fileReads.push(path); return options.readFile ? options.readFile(path, signal) : { dataBase64: PNG }; } });
     t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
     const sessions = await adapter.list(), session = sessions.find(value => value.nativeId === thread.id)!, otherSession = sessions.find(value => value.nativeId === other.id)!;
     const read = (limit = 100): Promise<SourcePage> => adapter.read({ sessionId: session.id, limit });
     const rewrite = (sameTimestamp = false): void => { turnCount = 0; if (!sameTimestamp) thread.updatedAt++; notify({ method: 'thread/reverted', params: { threadId: thread.id } }); };
     return { adapter, session, otherSession, calls, fileReads, read, rewrite, notify };
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+async function preparedPage(f: Fixture, ready: (page: SourcePage) => boolean = page => images(page).length > 0, limit = 100): Promise<SourcePage> {
+    let page = await f.read(limit);
+    if (ready(page)) return page;
+    const stop = new AbortController();
+    const changes = f.adapter.changes({ sessionId: f.session.id, epoch: page.epoch, version: page.version }, stop.signal)[Symbol.asyncIterator]();
+    try {
+        for (;;) {
+            const next = await changes.next(); assert.equal(next.done, false);
+            page = await f.read(limit); if (ready(page)) return page;
+        }
+    } finally { stop.abort(); await changes.return?.(); }
 }
 
 test('native images are imported only for a requested page and displayed with verified official references', async t => {
@@ -61,8 +71,8 @@ test('native images are imported only for a requested page and displayed with ve
             { type: 'localImage', path: '/native/1700000000000-00000000-1111-2222-3333-444444444444-Screenshot.jpg' }] },
         { id: 'answer', type: 'agentMessage', text: 'Screenshot reviewed.' },
     ], { turns: 40 });
-    const page = await f.read(6), [image] = images(page);
-    assert.ok(image, 'the initial requested page must have an official image block');
+    const page = await preparedPage(f, undefined, 6), [image] = images(page);
+    assert.ok(image, 'the requested page receives its official image block through a source revision');
     assert.equal(image.attachment.name, 'Screenshot.jpg');
     assert.equal(image.attachment.width, 1); assert.equal(image.attachment.height, 1);
     assert.ok(f.fileReads.length > 0 && f.fileReads.length <= 2, 'opening the latest page must not load forty historical images');
@@ -75,11 +85,12 @@ test('native images are imported only for a requested page and displayed with ve
     assert.equal(bytes.length, image.attachment.bytes);
     assert.equal(`sha256:${createHash('sha256').update(bytes).digest('hex')}`, image.attachment.attachmentId);
     assert.equal(f.session.capabilities.files, false, 'attachment preview must not claim arbitrary native file browsing');
+    assert.equal(f.calls.some(method => method.startsWith('fs/')), false, 'image IO stays outside the execution RPC');
 });
 
 test('source resource reads reject arbitrary paths, cross-thread images and revoked transcript references', async t => {
     const f = await fixture(t, [{ id: 'user', type: 'userMessage', content: [{ type: 'localImage', path: '/native/only-this-thread.png' }] }]);
-    const [image] = images(await f.read()); assert.ok(image);
+    const [image] = images(await preparedPage(f)); assert.ok(image);
     const path = `attachment:${image.attachment.attachmentId}`, count = f.fileReads.length;
     await assert.rejects(f.adapter.readResource({ sessionId: f.session.id, path: '/etc/passwd' }), { code: 'INVALID_REQUEST' });
     await assert.rejects(f.adapter.readResource({ sessionId: f.otherSession.id, path }), { code: 'INVALID_REQUEST' });
@@ -94,10 +105,10 @@ test('a later page read retries a transient native image failure without retryin
     const f = await fixture(t, [{ id: 'user', type: 'userMessage', content: [{ type: 'localImage', path: '/native/recoverable.png' }] }], {
         readFile: async () => { if (++attempts === 1) throw new Error('Native source temporarily unavailable'); return { dataBase64: PNG }; },
     });
-    assert.equal(images(await f.read()).length, 0);
+    assert.equal(images(await preparedPage(f, page => JSON.stringify(page.entries).includes('Image preview unavailable'))).length, 0);
     assert.equal(images(await f.read()).length, 0); assert.equal(attempts, 1);
     now += 30_001;
-    assert.equal(images(await f.read()).length, 1); assert.equal(attempts, 2);
+    assert.equal(images(await preparedPage(f)).length, 1); assert.equal(attempts, 2);
 });
 
 test('a refresh started before a same-timestamp rewrite cannot readmit the old image grant', async t => {
@@ -107,7 +118,7 @@ test('a refresh started before a same-timestamp rewrite cannot readmit the old i
     const f = await fixture(t, [{ id: 'user', type: 'userMessage', content: [{ type: 'localImage', path: '/native/rewritten.png' }] }], {
         beforeThreadRead: async () => { if (pause) { reading.resolve(); await gate.promise; } },
     });
-    const [image] = images(await f.read()); assert.ok(image);
+    const [image] = images(await preparedPage(f)); assert.ok(image);
     const path = `attachment:${image.attachment.attachmentId}`;
     pause = true;
     f.notify({ method: 'thread/status/changed', params: { threadId: f.session.nativeId, status: { type: 'active' } } });
@@ -128,7 +139,7 @@ test('embedded images and image-view results use real image blocks while inacces
         ] },
         { id: 'view', type: 'imageView', path: '/native/viewed.png' },
     ]);
-    const page = await f.read();
+    const page = await preparedPage(f, page => images(page).length === 2);
     assert.equal(images(page).length, 2);
     assert.deepEqual(f.fileReads, ['/native/viewed.png'], 'data URLs are already authenticated source bytes; external URLs are not fetched');
     assert.match(JSON.stringify(page.entries), /Image preview unavailable/);
@@ -148,17 +159,22 @@ test('a source rewrite while native image bytes are pending cannot reauthorize t
     await reading.promise; f.rewrite(); gate.resolve({ dataBase64: PNG });
     const page = await pending;
     assert.equal(images(page).length, 0, 'late bytes from a revoked source reference must never become a displayed image');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(images(await f.read()).length, 0, 'background completion cannot restore the revoked image');
 });
 
-test('cancelled image-page waiters complete promptly and released adapters revoke the pending import', async t => {
+test('history pages return before image IO and disposing the adapter aborts its background import', async t => {
     const gate = Promise.withResolvers<unknown>(), reading = Promise.withResolvers<void>();
+    let cancelled = false;
     const f = await fixture(t, [{ id: 'user', type: 'userMessage', content: [{ type: 'localImage', path: '/native/pending.png' }] }], {
-        readFile: async () => { reading.resolve(); return gate.promise; },
+        readFile: async (_path, signal) => { signal.addEventListener('abort', () => { cancelled = true; }, { once: true }); reading.resolve(); return gate.promise; },
     });
     const abort = new AbortController();
     const pending = f.adapter.read({ sessionId: f.session.id }, abort.signal);
-    await reading.promise; abort.abort(new DOMException('Reading was cancelled.', 'AbortError'));
-    await assert.rejects(pending, { name: 'AbortError' });
+    await reading.promise;
+    assert.equal(images(await pending).length, 0, 'text and navigation are usable while image bytes remain pending');
+    abort.abort(new DOMException('Reading was cancelled.', 'AbortError'));
     await f.adapter.dispose(); gate.resolve({ dataBase64: PNG });
+    assert.equal(cancelled, true, 'source disposal aborts the private image read without waiting for slow bytes');
     await assert.rejects(f.adapter.readResource({ sessionId: f.session.id, path: 'attachment:sha256:' + '0'.repeat(64) }));
 });

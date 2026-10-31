@@ -2,7 +2,7 @@ name: HHPI bounded official browser lab
 on:
   push:
     branches: [main, feat/hhpi-remote-access-20261029]
-    paths: ['tests/browser/**', 'tests/contracts/hhpi-reading-*', 'tests/contracts/dom-geometry*', 'src/client/**', 'scripts/dsh-ext/**', 'source-snapshots/dsh-ext/**', '.github/workflows/hhpi-browser.yml']
+    paths: ['tests/browser/**', 'tests/contracts/**', 'src/client/**', 'src/remote/**', 'src/shared/**', 'src/session-provider/**', 'src/hhpi-api.ts', 'src/client-api.ts', 'src/build-info.ts', 'src/index.ts', 'package.json', 'package-lock.json', 'tsconfig*.json', 'scripts/dsh-ext/**', 'source-snapshots/dsh-ext/**', '.github/workflows/hhpi-browser.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
           mkdir -p .tmp/hhpi-browser/results
           npm install --prefix .tmp/hhpi-browser-tools --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.56.1
           node .tmp/hhpi-browser-tools/node_modules/playwright/cli.js install --with-deps chromium > .tmp/hhpi-browser/results/browser-install.log 2>&1 || { tail -80 .tmp/hhpi-browser/results/browser-install.log; exit 1; }
-      - name: Two real browser journeys without geometry mocks
+      - name: Two bounded reading and Codex rendering journeys
         timeout-minutes: 3
         run: node --import tsx tests/browser/run.mjs --browser
       - name: Publish bounded result diagnostics

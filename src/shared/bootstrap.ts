@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { DSH_VERSION } from '../cli/config.ts';
 import { BOOTSTRAP_PATH } from '../runner/protocol.ts';
+import { HAPI_DSH_BUILD_ID } from '../build-info.ts';
 
 export interface BootstrapServices {
     connection: { requestRejection(req: IncomingMessage): number | undefined };
@@ -20,7 +21,7 @@ export const SAFE_GLOBALS = new Set([
 
 /** Forward the official graph and public JSON config without executing injection scripts. */
 export function bootstrapPayload(services: Pick<BootstrapServices, 'webServer' | 'clientModules'>): {
-    dshVersion: string; graph: unknown; globals: Record<string, unknown>;
+    dshVersion: string; hostBuildId: string; graph: unknown; globals: Record<string, unknown>;
 } {
     const graph = services.clientModules.graph();
     if (graph.release?.version && graph.release.version !== DSH_VERSION) throw new Error('Host DSH release does not match the pinned distribution');
@@ -28,7 +29,7 @@ export function bootstrapPayload(services: Pick<BootstrapServices, 'webServer' |
     for (const row of services.webServer.collectIndexInjections()) {
         if (row.kind === 'global' && row.name && SAFE_GLOBALS.has(row.name)) globals[row.name] = row.value;
     }
-    return { dshVersion: DSH_VERSION, graph, globals };
+    return { dshVersion: DSH_VERSION, hostBuildId: HAPI_DSH_BUILD_ID, graph, globals };
 }
 
 /** Local panes and federated panes receive the same authenticated public boot contract. */

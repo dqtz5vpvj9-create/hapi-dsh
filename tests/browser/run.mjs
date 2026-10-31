@@ -19,7 +19,7 @@ const codexRendering = args.has('--codex-rendering')
 const out = resolve(root, '.tmp/hhpi-browser/results', codexRendering ? 'codex-rendering' : '.')
 await mkdir(out, { recursive: true })
 const report = { schema: 1, commit: process.env.GITHUB_SHA ?? spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim(),
-  startedAt: new Date().toISOString(), status: 'running', scope: `${codexRendering ? 'native Codex source projection and ' : ''}official component lab; synthetic source and outer shell`,
+  startedAt: new Date().toISOString(), status: 'running', scope: `${codexRendering ? '' : 'continuous history reading, independent drafts and idle reconnection; '}native Codex source projection and official component lab; synthetic source and outer shell`,
   geometryMocks: false, physicalKeyboard: 'not-run', physicalPhone: 'not-run', operatingSystemIME: 'not-run', softKeyboard: 'not-run',
   visualReview: 'not-performed', productionDeployment: 'not-run', scenarios: [] }
 let server, browser
@@ -36,7 +36,7 @@ try {
     report.browser = { engine: 'chromium', version: browser.version() }
     for (const mode of ['desktop', 'mobile']) {
       const mobile = mode === 'mobile'
-      await fetch(server.origin + '/api/reset', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: '{}' })
+      await fetch(server.origin + '/api/reset', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: JSON.stringify({ codexRendering }) })
       const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1440, height: 900 }, isMobile: mobile, hasTouch: mobile, deviceScaleFactor: mobile ? 3 : 1, locale: 'en-US' })
       const result = { mode, status: 'running', budgetMs: 60_000, steps: [], errors: [], unexpectedRequests: [] }
       report.scenarios.push(result)
@@ -51,8 +51,23 @@ try {
         page = await context.newPage(); page.setDefaultTimeout(8_000)
         page.on('pageerror', error => result.errors.push(error.message))
         page.on('console', message => { if (message.type() === 'error') result.errors.push(message.text()) })
-        const journey = codexRendering ? runCodexRenderingJourney : runJourney
-        await Promise.race([journey(page, context, server.origin, mode, result), new Promise((_, reject) => {
+        const journey = async () => {
+          if (codexRendering) return runCodexRenderingJourney(page, context, server.origin, mode, result)
+          result.activePhase = 'continuous-reading'
+          await runJourney(page, context, server.origin, mode, result)
+          // Both phases share this viewport context and its single 60s deadline.
+          // Reset only the declared synthetic source after disposing its readers.
+          const reset = await fetch(server.origin + '/api/reset', { method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: JSON.stringify({ codexRendering: true }) })
+          if (!reset.ok) throw new Error('Cannot switch the synthetic Codex source')
+          result.activePhase = 'codex-rendering'
+          const codex = result.codexRendering = { status: 'running', steps: [], errors: result.errors, unexpectedRequests: result.unexpectedRequests }
+          const started = performance.now()
+          try { await runCodexRenderingJourney(page, context, server.origin, mode, codex); codex.status = 'passed' }
+          finally { codex.durationMs = Math.round(performance.now() - started) }
+          delete result.activePhase
+        }
+        await Promise.race([journey(), new Promise((_, reject) => {
           deadline = setTimeout(() => { reject(new Error('Scenario exceeded its 60 second budget')); void context.close() }, 60_000)
         })])
         result.status = 'passed'
