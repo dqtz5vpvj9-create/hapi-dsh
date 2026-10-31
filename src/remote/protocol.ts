@@ -1,5 +1,6 @@
 /** HHPI source wire, v1. Native DSH continues using its unchanged federation wire. */
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 
 export interface SourceIdentity { machineId: string; sourceId: string; engine: string; nativeId: string }
 export function sourceSessionId(source: SourceIdentity): string {
@@ -52,7 +53,7 @@ export interface SourceReceipt {
     message: string; turnId?: string;
 }
 export interface SourceResourceRequest { sessionId: string; path: string }
-export interface SourceResource { encoding: 'base64'; content: string; mimeType: string }
+export interface SourceResource { encoding: 'base64'; content: string; mimeType: string; attachment?: ImageAttachmentRef }
 export interface SourceCreateRequest { sourceId: string; operationId: string; cwd?: string }
 export interface SourceCreationReceipt { sourceId: string; operationId: string; status: 'accepted' | 'rejected' | 'indeterminate'; message: string; session?: SourceSession }
 export interface SourceCatalog { protocol: 1; legacyHapi: boolean; sessions: SourceSession[]; sources: Array<{ id: string; machineId: string; engine: string; online: boolean; create: boolean }> }

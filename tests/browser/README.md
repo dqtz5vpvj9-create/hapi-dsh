@@ -15,6 +15,14 @@ node .tmp/hhpi-browser-tools/node_modules/playwright/cli.js install chromium
 node --import tsx tests/browser/run.mjs --browser
 ```
 
+The Codex presentation regression uses the same official build and two bounded viewport contexts:
+
+```sh
+node --import tsx tests/browser/run.mjs --browser --codex-rendering
+```
+
+This variant seeds native `commandExecution`, `fileChange`, `imageView`, image-bearing `userMessage`, and `subAgentActivity` records through the production `CodexHistory` and `CodexAttachments` adapters. It loads the actual official Tool and Attachment UI with production source-tool registrations, expands command output and a recorded file diff, decodes user/tool image previews through the session-scoped resource route, checks failed exit state and structured subagent text, and verifies that the mobile conversation and editor remain within the viewport. Source file bytes, loopback IO and the outer workspace shell are fixtures. It sends no operations. Results and traces are stored under `.tmp/hhpi-browser/results/codex-rendering`; layout and interaction assertions do not imply screenshot review, production deployment, or physical-device acceptance.
+
 The isolated optional browser tool uses Playwright 1.56.1, Apache-2.0, from microsoft/playwright and the npm registry. It is not a product dependency and does not modify the root lockfile. `HHPI_PLAYWRIGHT_MODULE` may point to an existing compatible Playwright library. The workflow installs browser OS dependencies explicitly. No browser availability failure becomes a skip.
 
 One source-build cache is keyed by all extension inputs. One component build and one browser process serve both fresh isolated contexts. The existing fast DOM command has a 30-second process budget; each browser scenario has a 60-second deadline and no retries. Reports include actual build and scenario times. Failures preserve traces and reports under `.tmp/hhpi-browser/results`; these contain synthetic data only.

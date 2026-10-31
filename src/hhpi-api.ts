@@ -1,5 +1,6 @@
 /** Browser-safe schemas for authenticated official Typert transport. */
 import { z } from 'zod';
+import { sourceImageAttachmentRefSchema } from './source-attachment-types.ts';
 import type { InvocationDescriptor, RemoteResult, RemoteStreamHandle, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt, SourceEntry, SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './remote/protocol.ts';
 
@@ -41,7 +42,7 @@ const inputs = { read: readSchema, changes: z.strictObject({ sessionId: id, epoc
     create: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
 const outputs = { catalog: z.strictObject({ protocol: z.literal(1), legacyHapi: z.boolean(), sessions: z.array(session), sources: z.array(z.strictObject({ id, machineId: id, engine: z.string(), online: z.boolean(), create: z.boolean() })) }),
     read: page, changes, operate: z.strictObject({ operationId: id, sessionId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), turnId: id.optional() }),
-    create: z.strictObject({ sourceId: id, operationId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), session: session.optional() }), resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string() }) };
+    create: z.strictObject({ sourceId: id, operationId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), session: session.optional() }), resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string(), attachment: sourceImageAttachmentRefSchema.optional() }) };
 const codec = (name: string, schema: z.ZodType) => ({ mode: 'strict' as const, typeSymbol: `hapi-dsh#hhpi/${name}`, create: () => schema });
 export const HHPI_REMOTE: TypertRemoteContribution = {
     package: 'hapi-dsh', descriptors: (Object.keys(outputs) as Array<keyof HhpiRemoteApi>).map((method): InvocationDescriptor => ({

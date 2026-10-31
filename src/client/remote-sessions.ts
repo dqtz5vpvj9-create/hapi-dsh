@@ -11,6 +11,7 @@ import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
+import { decodeSourceAttachmentValue } from '../source-attachment-types.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession } }
@@ -152,7 +153,20 @@ export class RemoteSourceSession implements SessionFace {
       return { ok: true, value: { accepted: true } }
     } catch (cause) { return { ok: false, error: sourceError(cause instanceof Error ? cause.message : 'Cancellation was not acknowledged.', true) } }
   }
-  async readAttachment(): ReturnType<SessionFace['readAttachment']> { return { ok: false, error: sourceError('This attachment requires a source resource reference.') } }
+  async readAttachment(...[attachmentId]: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
+    if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
+    try {
+      const epoch = this.history.sourceEpoch
+      const resource = result(await this.api.resource({ sessionId: this.sessionId, path: `attachment:${attachmentId}` }))
+      if (this.disposed || this.history.sourceEpoch !== epoch) throw sourceError('The source history changed while its image was loading.')
+      if (!resource.attachment || resource.attachment.attachmentId !== attachmentId || resource.attachment.mediaType !== resource.mimeType) {
+        throw sourceError('The source returned a different image reference.')
+      }
+      return { ok: true, value: decodeSourceAttachmentValue({ attachment: resource.attachment, data: resource.content }) }
+    } catch (cause) {
+      return { ok: false, error: sourceError(cause instanceof Error ? cause.message : 'The native image is unavailable.') }
+    }
+  }
   async updateQueue(): ReturnType<SessionFace['updateQueue']> { return { ok: false, error: sourceError('This engine does not expose native queue editing.') } }
   async rename(): ReturnType<SessionFace['rename']> { return { ok: false, error: sourceError('This engine does not expose native rename.') } }
   async command(): ReturnType<SessionFace['command']> { return { ok: false, error: sourceError('Send source commands as text through its native input.') } }

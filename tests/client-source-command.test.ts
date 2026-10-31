@@ -8,7 +8,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { installSourceCommandViews } from '../src/client/source-command-view.tsx'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 import type { StartedToolCall, ToolResultNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceCommandModel, sourceToolSummary, sourceShellBlock, sourceToolBlocks } from '../src/client/source-command-model.ts'
+import { sourceCommandModel, sourceToolSummary, sourceShellBlock, sourceToolBlocks, sourceToolView } from '../src/client/source-command-model.ts'
 
 test('source shell aliases render the registered official component and leave specialized providers intact', () => {
     const slots = new SlotCore()
@@ -23,6 +23,11 @@ test('source shell aliases render the registered official component and leave sp
     const html = renderToStaticMarkup(createElement(alias.component as ComponentType<ToolCallViewProps>,
         { phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash', t: (key: string) => key } as unknown as ToolCallViewProps))
     assert.equal(html, '<span data-official-bash="bash">pwd</span>')
+    const nativeAlias = slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'codex.commandExecution')!
+    assert.ok(nativeAlias, 'native HHPI Codex calls must reach the same official Bash view')
+    assert.equal(renderToStaticMarkup(createElement(nativeAlias.component as ComponentType<ToolCallViewProps>,
+        { phase: 'start', block: { ...call({ command: 'npm test' }), name: 'codex.commandExecution' }, toolName: 'codex.commandExecution',
+            t: (key: string) => key } as unknown as ToolCallViewProps)), '<span data-official-bash="bash">npm test</span>')
     const Specialized = () => null
     const remove = slots.register({ name: 'tool.call.toolview', key: 'CodexBash', priority: 0 } as never, Specialized as never)
     assert.equal(slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'CodexBash')!.component, Specialized)
@@ -167,4 +172,117 @@ test('patch and file aliases retain source errors and never fabricate an applied
     assert.equal(edits[1]!.args.text('file_path'), '/a')
     assert.equal(edits[1]!.args.text('new_string'), 'd')
     assert.equal(sourceToolBlocks({ ...call({ path: '/read' }), name: 'read_file' }, 'read')[0]!.args.text('file_path'), '/read')
+})
+
+test('native Codex commands preserve action summaries, full output and explicit failure state', () => {
+    const original = { ...result({ command: '/bin/bash -lc \'cat src/index.ts\'', cwd: '/repo', commandActions: [
+        { type: 'read', name: 'index.ts', path: '/repo/src/index.ts' },
+    ] }, { aggregatedOutput: 'export const value = 1\n', exitCode: 0 }), name: 'codex.commandExecution' }
+    const before = JSON.stringify(original), adapted = sourceToolBlocks(original, 'bash', { read: '读取', search: '搜索', listFiles: '查找文件' })[0] as ToolResultNode
+    assert.equal(adapted.args.text('description'), '读取 index.ts')
+    assert.equal(adapted.args.text('command'), 'cat src/index.ts')
+    assert.equal(adapted.args.text('workdir'), '/repo')
+    assert.deepEqual(adapted.content, [{ type: 'text', text: 'export const value = 1\n\n[exit code: 0]' }])
+    assert.equal(adapted.callId, original.callId)
+    assert.equal(JSON.stringify(original), before)
+    const failed = sourceShellBlock({ ...original, isError: true }) as ToolResultNode
+    assert.equal(failed.isError, true, 'A source failure with a zero exit code must not become success')
+})
+
+test('native multi-file changes use official path and diff data without changing native identity', () => {
+    const changes = [
+        { path: '/repo/a.ts', kind: { type: 'update' }, diff: '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new\n' },
+        { path: '/repo/b.ts', kind: { type: 'add' }, diff: 'added' },
+    ]
+    const original = { ...result({ changes }, changes), name: 'codex.fileChange' }
+    const before = JSON.stringify(original), adapted = sourceToolBlocks(original, 'edit') as ToolResultNode[]
+    assert.equal(adapted.length, 2)
+    assert.equal(sourceToolSummary(original), '/repo/a.ts, /repo/b.ts')
+    assert.equal(adapted[0]!.args.text('file_path'), '/repo/a.ts')
+    assert.equal(adapted[0]!.args.text('old_string'), 'old\n')
+    assert.equal(adapted[0]!.args.text('new_string'), 'new\n')
+    assert.deepEqual(adapted[0]!.meta, { path: '/repo/a.ts', diffs: [{ path: '/repo/a.ts', oldText: 'old\n', newText: 'new\n' }] })
+    assert.deepEqual(adapted[1]!.meta, { path: '/repo/b.ts', diffs: [{ path: '/repo/b.ts', oldText: null, newText: 'added' }] })
+    assert.ok(adapted.every(block => block.callId === original.callId && block.seq === original.seq))
+    assert.equal(JSON.stringify(original), before)
+    for (const failed of sourceToolBlocks({ ...original, isError: true }, 'edit') as ToolResultNode[]) {
+        assert.equal(failed.isError, true)
+        assert.equal(failed.meta, undefined, 'A declined source patch cannot acquire a successful applied diff')
+        assert.deepEqual(failed.content, original.content)
+    }
+})
+
+test('native edit excerpts keep all hunks and opaque or incomplete patches stay inspectable', () => {
+    const diff = '@@ -1 +1 @@\n-a\n+b\n@@ -9,2 +9,2 @@\n context\n-old\n+new\n'
+    const original = { ...result({ changes: [{ path: '/a.ts', kind: { type: 'update' }, diff }] }, 'source output'), name: 'codex.fileChange' }
+    const adapted = sourceToolBlocks(original, 'edit')[0] as ToolResultNode
+    assert.deepEqual(adapted.meta, { path: '/a.ts', diffs: [
+        { path: '/a.ts', oldText: 'a\n', newText: 'b\n' },
+        { path: '/a.ts', oldText: 'context\nold\n', newText: 'context\nnew\n' },
+    ] })
+    for (const malformed of ['opaque source patch', '@@ -1,2 +1 @@\n-old\n+new\n']) {
+        const block = { ...result({ changes: [{ path: '/a.ts', diff: malformed }] }, malformed), name: 'codex.fileChange' }
+        const shown = sourceToolBlocks(block, 'edit')[0] as ToolResultNode
+        assert.equal(shown.meta, undefined)
+        assert.equal(shown.args.text('old_string'), undefined)
+        assert.equal(shown.args.text('file_path'), '/a.ts')
+        assert.deepEqual(shown.content, block.content)
+    }
+})
+
+test('native additions, deletions and moves use their recorded file semantics', () => {
+    const content = '@@ This is literal file content\n+including patch-like prefixes\n'
+    const original = { ...result({ changes: [
+        { path: '/new.txt', kind: { type: 'add' }, diff: content },
+        { path: '/removed.txt', kind: { type: 'delete' }, diff: content },
+        { path: '/old.ts', kind: { type: 'update', move_path: '/moved.ts' }, diff: '@@ -1 +1 @@\n-a\n+b\n\nMoved to: /moved.ts' },
+    ] }, 'source changes'), name: 'codex.fileChange' }
+    const [added, removed, moved] = sourceToolBlocks(original, 'edit') as ToolResultNode[]
+    assert.deepEqual(added!.meta, { path: '/new.txt', diffs: [{ path: '/new.txt', oldText: null, newText: content }] })
+    assert.deepEqual(removed!.meta, { path: '/removed.txt', diffs: [{ path: '/removed.txt', oldText: content, newText: '' }] })
+    assert.equal(moved!.args.text('file_path'), '/moved.ts', 'The official file link names the recorded move target')
+    assert.deepEqual(moved!.meta, { path: '/moved.ts', diffs: [{ path: '/moved.ts', oldText: 'a\n', newText: 'b\n' }] })
+})
+
+test('Codex web and legacy image calls select official semantic titles and paths', () => {
+    const search = { ...call({ query: 'quantum compiler', action: { type: 'search', queries: ['quantum compiler', 'quantum routing'] } }), name: 'codex.webSearch' }
+    const adapted = sourceToolBlocks(search, 'web_search')[0] as StartedToolCall
+    assert.deepEqual(JSON.parse(adapted.argsRaw).queries, ['quantum compiler', 'quantum routing'])
+    const open = { ...call({ action: { type: 'openPage', url: 'https://example.com/paper' } }), name: 'codex.webSearch' }
+    assert.deepEqual(sourceToolView(open, 'web_search'), { renderer: 'web_fetch', toolName: 'web_fetch' })
+    assert.equal(sourceToolBlocks(open, 'web_fetch')[0]!.args.text('url'), 'https://example.com/paper')
+    const image = { ...call({ path: '/repo/chart.png' }), name: 'codex.imageView' }
+    assert.deepEqual(sourceToolView(image, 'read'), { renderer: 'read', toolName: 'read_image' })
+    assert.equal(sourceToolBlocks(image, 'read_image')[0]!.args.text('file_path'), '/repo/chart.png')
+})
+
+test('Codex collaboration records show activity without impersonating a DSH subagent reply', () => {
+    const original = { ...result({ kind: 'running', agentThreadId: 'opaque-thread', agentPath: '/root/review' }, { status: 'running' }), name: 'codex.subAgentActivity' }
+    original.call = { name: original.name, argsRaw: original.call!.argsRaw }
+    const shown = sourceToolBlocks(original, 'subagent', { read: 'Read', search: 'Search', listFiles: 'List files', agentActivity: () => '运行中' })[0] as ToolResultNode
+    assert.equal(shown.args.text('description'), '运行中 · /root/review')
+    assert.equal(shown.name, 'codex.subAgentActivity')
+    assert.equal(shown.call?.name, 'codex.subAgentActivity')
+    assert.equal(shown.callId, original.callId)
+    assert.deepEqual(shown.content, original.content)
+    const spawned = { ...call({ tool: 'spawnAgent', prompt: 'Review source rendering' }), name: 'codex.collabAgentToolCall' }
+    assert.deepEqual(sourceToolView(spawned, 'subagent'), { renderer: 'subagent', toolName: 'spawn_teammate' })
+})
+
+test('dynamic and MCP rows expose actual source tools and arguments without local execution aliases', () => {
+    const dynamic = { ...call({ tool: 'functions.exec_command', arguments: { cmd: 'npm test', workdir: '/repo' } }), name: 'codex.dynamicToolCall' }
+    assert.deepEqual(sourceToolView(dynamic, 'subagent'), { renderer: 'bash', toolName: 'bash' })
+    assert.equal(sourceToolBlocks(dynamic, 'bash')[0]!.args.text('command'), 'npm test')
+    const patch = { ...call({ tool: 'apply_patch', arguments: '*** Begin Patch\n*** Update File: /repo/a.ts\n@@\n-a\n+b\n*** End Patch' }), name: 'codex.dynamicToolCall' }
+    assert.equal(sourceToolBlocks(patch, 'edit')[0]!.args.text('file_path'), '/repo/a.ts')
+    const mcp = { ...call({ server: 'docs', tool: 'find', arguments: { query: 'message schema' } }), name: 'codex.mcpToolCall' }
+    const before = JSON.stringify(mcp)
+    assert.deepEqual(sourceToolView(mcp, 'subagent'), { renderer: 'subagent', toolName: 'docs.find' })
+    const shown = sourceToolBlocks(mcp, 'docs.find')[0]!
+    assert.equal(shown.args.text('query'), 'message schema')
+    assert.equal(shown.name, 'codex.mcpToolCall')
+    assert.equal(JSON.stringify(mcp), before)
+    const output = { ...result({ tool: 'functions.exec' }, 'Original tool output'), name: 'codex.functionCallOutput' }
+    assert.deepEqual(sourceToolView(output, 'subagent'), { renderer: 'subagent', toolName: 'functions.exec' })
+    assert.equal(sourceToolBlocks(output, 'functions.exec')[0], output, 'Output-only records do not fabricate missing call arguments')
 })

@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
-import { CodexHistory } from '../src/remote/codex-history.ts';
+import { CODEX_HISTORY_PROJECTION_VERSION, CodexHistory } from '../src/remote/codex-history.ts';
 import { SourceEventIndex } from '../src/remote/event-index.ts';
 import type { NativeTurn } from '../src/remote/codex-native.ts';
 import { sourceSessionId, type DirectCodexConfig, type SourceSession } from '../src/remote/protocol.ts';
@@ -74,7 +74,7 @@ async function readOnce(adapter: DirectCodexAdapter): Promise<{ session: SourceS
 
 function databasePath(directory: string): string {
     const hash = createHash('sha256').update(sourceId).digest('hex');
-    return join(directory, 'history', `${hash}.sqlite`);
+    return join(directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`);
 }
 
 async function removeCheckpoint(directory: string, session: SourceSession): Promise<void> {
@@ -104,6 +104,53 @@ test('a complete idle native index reopens without turn or item scans at the sam
         assert.deepEqual(reopenedCalls.map(call => call.method).filter(method => method === 'thread/read'), ['thread/read']);
         assert.equal(reopenedCalls.some(call => call.method === 'thread/turns/list' || call.method === 'thread/items/list'), false,
             'a verified checkpoint serves the persistent DSH event page directly');
+    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('a previous display projection upgrades from accepted native records without rereading bodies', async () => {
+    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-presentation-upgrade-'));
+    const native = fixture(directory), session: SourceSession = { ...source, id: sourceId, title: 'Synthetic history', cwd: directory,
+        updatedAt: native.updatedAt * 1000, status: 'idle', activeTurnId: null,
+        capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] };
+    const hash = createHash('sha256').update(sourceId).digest('hex');
+    const previous = new SourceEventIndex(join(directory, 'history', `${hash}.sqlite`), session);
+    const oldHistory = new CodexHistory(previous);
+    try {
+        for (const turn of turns) {
+            oldHistory.beginTurn(session, turn);
+            oldHistory.acceptItems(session, entriesFor(turn.id, `Answer ${turn.id}`), true);
+            oldHistory.acceptTurn(session, turn);
+        }
+        previous.edit(session, () => {
+            // Simulate the previous broken display while preserving its accepted
+            // native item cache, exactly the material available during upgrade.
+            for (const turn of turns) {
+                const itemKey = JSON.stringify(['item', turn.id, `${turn.id}-assistant`]);
+                const messageKey = JSON.stringify([itemKey, 'message']);
+                const entry = previous.entry(messageKey)!;
+                if (entry.event.type !== 'assistant/message') throw new Error('Expected the previous assistant display');
+                const { seq: _seq, ...event } = entry.event;
+                previous.put(messageKey, { ...event, data: { ...event.data, message: { ...event.data.message,
+                    content: [{ type: 'text', text: 'Legacy display placeholder' }] } } },
+                [JSON.stringify(['turn', turn.id, 'start']), JSON.stringify([itemKey, 'step/start'])]);
+            }
+            previous.cache('turn-order', turns.map(turn => turn.id));
+            previous.cache(checkpointKey, { version: 1, state: 'complete', updatedAt: native.updatedAt, statusType: 'idle' });
+        });
+    } finally { previous.dispose(); }
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    let adapter = adapterFor(directory, native, calls);
+    try {
+        const upgraded = await readOnce(adapter);
+        assert.equal(upgraded.text.includes('Legacy display placeholder'), false);
+        assert.match(upgraded.text, /Answer turn-1/);
+        assert.equal(calls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false,
+            'complete unchanged native records upgrade locally without a long native history replay');
+        await adapter.dispose();
+        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+        adapter = adapterFor(directory, native, reopenedCalls);
+        assert.equal((await readOnce(adapter)).text, upgraded.text);
+        assert.equal(reopenedCalls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false);
     } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
 });
 

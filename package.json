@@ -138,6 +138,7 @@
     "@deepseek-ai/dsh-api-workspace-files": "0.2.1-rc.3",
     "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.3",
     "@deepseek-ai/dsh-attachment": "0.2.1-rc.3",
+    "@deepseek-ai/dsh-attachment-local": "0.2.1-rc.3",
     "@deepseek-ai/dsh-client-connection": "0.2.1-rc.3",
     "@deepseek-ai/dsh-client-file-upload": "0.2.1-rc.3",
     "@deepseek-ai/dsh-client-locale": "0.2.1-rc.3",

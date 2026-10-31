@@ -3,14 +3,16 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { SourceError, waitFor } from './errors.ts';
 import { CodexRpc, CodexRpcError, type NativeNotification, type NativeRequest } from './codex-rpc.ts';
-import { CodexHistory } from './codex-history.ts';
+import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION } from './codex-history.ts';
+import { migrateLegacyCodexHistory } from './codex-history-migration.ts';
+import { CodexAttachments } from './codex-attachments.ts';
 import { SourceEventIndex } from './event-index.ts';
 import { OperationLedger, CreationLedger } from './operation-ledger.ts';
 import { isRecord, itemListSchema, loadedListSchema, nativeItemSchema, nativeThreadSchema, nativeTurnSchema, threadListSchema, threadResponseSchema, turnListSchema, type NativeItemEntry, type NativeThread, type NativeTurn } from './codex-native.ts';
-import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest, type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceSession } from './protocol.ts';
+import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest, type SourceCreateRequest, type SourceCreationReceipt, type SourceEntry, type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
 
 interface ThreadOwner {
-    native: NativeThread; session: SourceSession; history?: CodexHistory;
+    native: NativeThread; session: SourceSession; history?: CodexHistory; attachments?: CodexAttachments;
     preparing?: Promise<void>; refreshing?: Promise<void>; dirty: boolean; full: boolean;
     /** Versions only cover accepted source snapshots; native delta strings are not reapplied over snapshots. */
     pending: NativeNotification[]; pendingBytes: number; pendingOverflow: boolean; ready: boolean;
@@ -104,6 +106,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (owner.history) owner.history.index.edit(session, () => {});
     }
     private markOffline(owner: ThreadOwner): void {
+        owner.attachments?.revoke();
         owner.full = true;
         this.metadata(owner, { ...owner.session, status: 'offline', capabilities: { ...owner.session.capabilities, send: false, steer: false, cancel: false, approve: false }, pendingRequests: [] });
     }
@@ -178,7 +181,15 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (owner.history && owner.ready) return;
         const work = (async () => {
             const hash = createHash('sha256').update(owner.session.id).digest('hex');
-            const history = owner.history ?? new CodexHistory(new SourceEventIndex(join(this.directory, 'history', `${hash}.sqlite`), owner.session));
+            let history = owner.history;
+            if (!history) {
+                const index = new SourceEventIndex(join(this.directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`), owner.session);
+                const attachments = new CodexAttachments(index, join(this.directory, 'images'),
+                    (path, signal) => this.rpc.request('fs/readFile', { path }, { signal }), this.lifetime.signal);
+                owner.attachments = attachments;
+                history = new CodexHistory(index, { userContent: (turnId, item) => attachments.content(turnId, item),
+                    toolContent: (turnId, item) => attachments.content(turnId, item) });
+            }
             owner.history = history;
             try {
                 await this.refresh(owner, true);
@@ -212,7 +223,10 @@ export class DirectCodexAdapter implements SourceAdapter {
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
         const owner = await this.owner(request.sessionId, signal);
         await waitFor(this.prepare(owner), signal); signal?.throwIfAborted();
-        return owner.history!.index.read(request);
+        const page = owner.history!.index.read(request);
+        await this.enrich(owner, page.entries, signal);
+        signal?.throwIfAborted();
+        return owner.history!.index.read({ ...request, epoch: page.epoch });
     }
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const owner = await this.owner(request.sessionId, signal);
@@ -223,7 +237,25 @@ export class DirectCodexAdapter implements SourceAdapter {
             yield { session: index.session, epoch: index.epoch, base: index.version, version: index.version,
                 reset: false, upserts: [], removed: [] };
         }
-        yield* index.changes(request, signal);
+        for await (const change of index.changes(request, signal)) {
+            yield change;
+            await this.enrich(owner, change.upserts, signal);
+        }
+    }
+    private async enrich(owner: ThreadOwner, entries: readonly SourceEntry[], signal?: AbortSignal): Promise<void> {
+        if (!owner.attachments || !owner.history) return;
+        const prepared = await owner.attachments.enrich(entries, signal);
+        for (const state of prepared) {
+            const current = owner.history.itemState(state.turnId, state.item.id);
+            if (current) owner.history.acceptItem(owner.session, current.turnId, current.item, current.completed);
+        }
+    }
+    async readResource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> {
+        const owner = await this.owner(request.sessionId, signal);
+        await waitFor(this.prepare(owner), signal);
+        if (owner.full) await waitFor(this.refresh(owner, true), signal);
+        if (owner.session.status === 'offline') throw new SourceError('TARGET_UNAVAILABLE', 'The native source is offline.');
+        return owner.attachments!.read(request.path, signal);
     }
     private refresh(owner: ThreadOwner, full: boolean): Promise<void> {
         if (owner.refreshing) { owner.dirty = true; owner.full ||= full; return owner.refreshing; }
@@ -233,22 +265,30 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     private async refreshNative(owner: ThreadOwner, full: boolean): Promise<void> {
         const signal = this.lifetime.signal, history = owner.history!;
+        const attachmentRevision = owner.attachments?.revisionToken;
         owner.dirty = false; owner.full = false;
         const response = threadResponseSchema.parse(await this.rpc.request('thread/read', { threadId: owner.native.id, includeTurns: false }, { signal }));
         if (response.thread.id !== owner.native.id) throw new SourceError('INVALID_REQUEST', 'The native source returned another thread.');
         const persistedSession = full ? history.index.session : undefined;
-        const rawCheckpoint = full ? history.index.cached<unknown>(NATIVE_HISTORY_CHECKPOINT) : undefined;
-        const checkpoint = this.nativeHistoryCheckpoint(rawCheckpoint);
         this.remember(response.thread);
         this.assertReadable(response.thread);
+        if (full && !owner.attachments?.needsReconciliation && history.index.count === 0) {
+            const legacyPath = join(this.directory, 'history', `${createHash('sha256').update(owner.session.id).digest('hex')}.sqlite`);
+            migrateLegacyCodexHistory(legacyPath, history, owner.session, response.thread);
+        }
+        const rawCheckpoint = full ? history.index.cached<unknown>(NATIVE_HISTORY_CHECKPOINT) : undefined;
+        const checkpoint = this.nativeHistoryCheckpoint(rawCheckpoint);
 
         // A completed native revision is already the source-owned read model.
         // This also applies to an active thread when the native revision and
         // status still match: the ordinary running poll below will read only
         // its latest tail after this cache-first opening.
-        if (full && checkpoint?.state === 'complete' && checkpoint.statusType === response.thread.status.type
+        if (full && !owner.attachments?.needsReconciliation && checkpoint?.state === 'complete' && checkpoint.statusType === response.thread.status.type
             && checkpoint.updatedAt === response.thread.updatedAt
-            && history.index.count > 0 && history.index.cached<string[]>('turn-order') !== undefined) return;
+            && history.index.count > 0 && history.index.cached<string[]>('turn-order') !== undefined) {
+            if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
+            return;
+        }
 
         const turns: NativeTurn[] = [], cursors = new Set<string>();
         let cursor: string | null = null;
@@ -272,7 +312,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         } while (cursor);
         if (!full) turns.reverse();
         const known = history.index.cached<string[]>('turn-order') ?? [];
-        if (full && rawCheckpoint === undefined && this.canAdoptLegacyIndex(history, persistedSession!, response.thread, turns, known)) {
+        if (full && !owner.attachments?.needsReconciliation && rawCheckpoint === undefined && this.canAdoptLegacyIndex(history, persistedSession!, response.thread, turns, known)) {
             // Older indexes have no explicit completion marker. Their final
             // turn-order write was the old full-build commit point; verify the
             // complete idle turn-header sequence before adopting that cache.
@@ -283,6 +323,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                     statusType: response.thread.status.type,
                 } satisfies NativeHistoryCheckpoint);
             });
+            if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
             return;
         }
         if (full) this.setNativeHistoryCheckpoint(history, owner.session, {
@@ -332,6 +373,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 statusType: response.thread.status.type,
             } satisfies NativeHistoryCheckpoint);
         });
+        if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
     }
     private nativeHistoryCheckpoint(value: unknown): NativeHistoryCheckpoint | undefined {
         if (!isRecord(value) || value.version !== 1 || (value.state !== 'building' && value.state !== 'complete')
@@ -389,7 +431,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const { method, params } = frame;
         owner.dirty = true;
         try {
-            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.full = true; return; }
+            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.attachments?.revoke(true); owner.full = true; return; }
             if (method === 'thread/deleted' || method === 'thread/closed' || method === 'thread/archived') { this.markOffline(owner); this.catalogAt = 0; return; }
             if (method === 'serverRequest/resolved') {
                 const requestId = this.approvalId(params.requestId, this.rpc.currentGeneration), pending = this.approvals.get(requestId);

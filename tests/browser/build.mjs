@@ -9,7 +9,7 @@ import { EXTENSION_NAMES } from '../../scripts/dsh-ext/install-extension.mjs'
 const require = createRequire(import.meta.url)
 export const root = resolve(import.meta.dirname, '../..')
 export const output = resolve(root, '.tmp/hhpi-browser/site')
-const plugins = ['api-session-controller', 'client-ui-renderer', 'client-ui-session', 'client-ui-conversation', 'client-ui-chat'].map(name => `@deepseek-ai/dsh-${name}`)
+const plugins = ['api-session-controller', 'client-ui-renderer', 'client-ui-session', 'client-ui-conversation', 'client-ui-chat', 'client-ui-tool', 'client-ui-attachment'].map(name => `@deepseek-ai/dsh-${name}`)
 const platform = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis', 'zod', '@tanstack/react-virtual', '@deepseek-ai/dsh-client-store', '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-dockkit']
 
 /** Node resolution must not select the Node half of a dual-client package. */

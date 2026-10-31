@@ -13,6 +13,7 @@ import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/cli
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceChanges } from '../../src/remote/protocol.ts'
 import { readingAnchor, anchorDrift, stableAnchorDrift, waitForOlderSourceCommit, observeReadingCommit } from './reading-probe.ts'
+import { installSourceCommandViews } from '../../src/client/source-command-view.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap { 'hhpi.lab.pane': { kind: 'single'; scope: 'session' } } }
 const runtime = window as unknown as { __HHPI_REQUIRE__(id: string): any; __hhpi: any; __hhpiFailure?: string }
@@ -34,6 +35,7 @@ const api: HhpiRemoteApi = {
   catalog: signal => request('/api/catalog', undefined, signal),
   read: (value, signal) => request('/api/read', value, signal),
   operate: value => request('/api/operate', value),
+  resource: (value, signal) => request('/api/resource', value, signal),
   async *changes(value, signal): AsyncIterable<SourceChanges> {
     const response = await fetch('/api/changes?request=' + encodeURIComponent(JSON.stringify(value)), { signal })
     if (!response.ok || !response.body) throw new Error('Synthetic change stream unavailable')
@@ -53,7 +55,8 @@ await remote.refresh()
 ctx.reflect.provide('sessions', sessions)
 const { RemoteStream } = runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-api-gateway/client') as typeof import('@deepseek-ai/dsh-api-gateway/client')
 const generation = store({} as never)
-ctx.reflect.provide('remote', { $on: () => () => {}, $stream: options => new RemoteStream({ generation }, options) } as Context['remote'])
+ctx.reflect.provide('remote', { $on: () => () => {}, $host: { home: '/synthetic' },
+  $stream: options => new RemoteStream({ generation }, options) } as Context['remote'])
 ctx.reflect.provide('remote.session', {} as never)
 ctx.reflect.provide('remoteAccess', { source: () => store(true) } as unknown as Context['remoteAccess'])
 const dictionaries = new Map<string, Record<string, string>>()
@@ -70,6 +73,11 @@ ctx.reflect.provide('sidebarRight', { openResource: () => {}, openTab: () => {} 
 for (const name of ['renderer', 'session', 'conversation', 'chat']) {
   await ctx.plugin(runtime.__HHPI_REQUIRE__(`@deepseek-ai/dsh-client-ui-${name}`))
   if (name === 'renderer') ctx.slots.installLocale({ ...localeState, bind: translate })
+}
+if (new URLSearchParams(location.search).has('codex-rendering')) {
+  await ctx.plugin(runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-client-ui-tool'))
+  await ctx.plugin(runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-client-ui-attachment'))
+  ctx.effect(() => installSourceCommandViews(ctx))
 }
 ctx.reflect.provide('mountedChatConsumer', { onMountedChat(control: MountedChatV1 | null, element: HTMLElement) {
   const id = element.closest<HTMLElement>('[data-lab-pane]')?.dataset.labPane

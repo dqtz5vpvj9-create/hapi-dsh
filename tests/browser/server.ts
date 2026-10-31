@@ -3,10 +3,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { readFile, stat } from 'node:fs/promises'
 import { resolve, extname, sep } from 'node:path'
 import { SourceEventIndex, type EventInput } from '../../src/remote/event-index.ts'
-import { sourceSessionId, type SourceSession, type SourceReadRequest, type SourceChangesRequest, type SourceOperation } from '../../src/remote/protocol.ts'
+import { sourceSessionId, type SourceSession, type SourceReadRequest, type SourceChangesRequest, type SourceOperation, type SourceResourceRequest } from '../../src/remote/protocol.ts'
 import { output } from './build.mjs'
+import { seedCodexRendering, type CodexRenderingResources } from './codex-rendering-fixture.ts'
 
-export async function startLab() {
+export async function startLab(options: { codexRendering?: boolean } = {}) {
   const identity = { machineId: 'browser-fixture', sourceId: 'native-fixture', engine: 'codex', nativeId: 'synthetic-only' }
   const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Synthetic browser acceptance', cwd: '/synthetic', updatedAt: 1000, status: 'idle', activeTurnId: null,
     capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
@@ -24,15 +25,23 @@ export async function startLab() {
     typeCounts: Record<string, number>
   }
   let index: SourceEventIndex
+  let resources: CodexRenderingResources | undefined
   let reads = 0, writes: SourceOperation[] = [], failNext = false
   let followRequests: SourceChangesRequest[] = []
   let readPages: ReadAudit[] = [], eventAudit = new Map<number, EventAudit>()
   const connections = new Set<AbortController>()
-  function reset(): void {
+  async function reset(): Promise<void> {
     for (const abort of connections) abort.abort()
-    connections.clear(); index?.dispose()
+    connections.clear(); await resources?.dispose(); resources = undefined; index?.dispose()
     index = new SourceEventIndex(':memory:', metadata); reads = 0; writes = []; failNext = false
     readPages = []; eventAudit = new Map(); followRequests = []
+    if (options.codexRendering) {
+      resources = await seedCodexRendering(index, metadata)
+      for (const { event } of index.read({ sessionId: metadata.id, limit: 160 }).entries) {
+        eventAudit.set(Number(event.seq), { eventId: `codex-event-${event.seq}`, type: event.type })
+      }
+      return
+    }
     const put = (key: string, event: EventInput, audit: EventAudit): void => {
       const seq = index.put(key, event)
       eventAudit.set(Number(seq), audit)
@@ -96,7 +105,7 @@ export async function startLab() {
       if (nextUserId !== 2498) throw new Error(`Synthetic history seeded ${nextUserId - 1} user messages instead of 2497.`)
     })
   }
-  reset()
+  await reset()
   let origin = ''
   async function jsonBody(request: IncomingMessage): Promise<unknown> {
     const chunks: Buffer[] = []; let bytes = 0
@@ -117,7 +126,7 @@ export async function startLab() {
     if (request.method === 'POST') {
       if (request.headers['x-hhpi-fixture'] !== '1') return json(response, { error: 'Fixture boundary required' }, 403)
       const body = await jsonBody(request)
-      if (url.pathname === '/api/reset') { reset(); return json(response, { ok: true }) }
+      if (url.pathname === '/api/reset') { await reset(); return json(response, { ok: true }) }
       if (url.pathname === '/api/interrupt-updates') {
         for (const abort of connections) abort.abort()
         return json(response, { ok: true })
@@ -157,6 +166,11 @@ export async function startLab() {
         if (value.sessionId !== metadata.id || typeof value.operationId !== 'string') return json(response, { error: 'Only synthetic operations are allowed' }, 403)
         if (!writes.some(item => item.operationId === value.operationId)) writes.push(value)
         return json(response, { ok: true, value: { sessionId: metadata.id, operationId: value.operationId, status: 'accepted', message: 'Synthetic IO receipt only' } })
+      }
+      if (url.pathname === '/api/resource') {
+        const value = body as SourceResourceRequest
+        if (value.sessionId !== metadata.id || !resources) return json(response, { error: 'Unknown synthetic resource owner' }, 403)
+        return json(response, { ok: true, value: await resources.read(value.path) })
       }
       return json(response, { error: 'Unknown fixture operation' }, 404)
     }
@@ -202,6 +216,6 @@ export async function startLab() {
     for (const abort of connections) abort.abort()
     server.closeAllConnections()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
-    index.dispose()
+    await resources?.dispose(); index.dispose()
   } }
 }
