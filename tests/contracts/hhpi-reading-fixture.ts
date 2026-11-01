@@ -43,6 +43,18 @@ function official(name: string): { apply(ctx: Context): void; inject: string[]; 
   assert.ok(registration)
   return registration.factory(resolveOfficialBrowserDependency)
 }
+/** Compile a freshly prepared pinned Chat package without mutating the installed extension. */
+async function preparedChat(source: string): Promise<ReturnType<typeof official>> {
+  const output = await build({ entryPoints: [resolve(source, 'packages/client/ui-chat/src/client/index.ts')], nodePaths: [resolve(root, 'node_modules')],
+    bundle: true, packages: 'external', platform: 'node', format: 'cjs', target: 'node24', write: false, outfile: resolve(root, '.tmp/reading-memory-chat.cjs'),
+    tsconfigRaw: { compilerOptions: { experimentalDecorators: true, useDefineForClassFields: true, jsx: 'react-jsx' } },
+    loader: { '.css': 'css', '.module.css': 'local-css', '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' }, logLevel: 'silent' })
+  const script = output.outputFiles.find(file => file.path.endsWith('.cjs'))
+  assert.ok(script)
+  const module = { exports: {} as ReturnType<typeof official> }
+  new Function('require', 'module', 'exports', script.text)(resolveOfficialBrowserDependency, module, module.exports)
+  return module.exports
+}
 async function facadeClasses() {
   const output = await build({ stdin: { contents: "export { RemoteSessions } from './src/client/remote-sessions.ts'; export { SourceSessions } from './src/client/source-sessions.ts';", resolveDir: root, loader: 'ts' },
     alias: { '@deepseek-ai/dsh-api-session-controller/client': resolve(root, 'tests/fixtures/client-session-contract.ts') },
@@ -56,7 +68,7 @@ const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), ti
   capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
 const message = (id: number): EventInput => ({ type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: `body-${id}` }] } } as EventInput)
 
-export async function fixture(t: TestContext) {
+export async function fixture(t: TestContext, options: { preparedChatSource?: string | undefined } = {}) {
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://synthetic.invalid/', pretendToBeVisual: true })
   // jsdom has no font loader. Composer layout observes this external boundary;
@@ -77,12 +89,16 @@ export async function fixture(t: TestContext) {
   const original = { list: store({ ids: [], byId: {}, phase: 'ready' }), windowCommit: createWindowCommitFactory(),
     binding: () => undefined, scope: () => undefined, scopeOf: () => undefined, sessionOf: () => undefined,
     retainInfo: () => store({ referenceCount: 0, retainedBy: {} }), searchResultLimit: 100, refresh: async () => {} } as unknown as ISessions
-  const remote = new RemoteSessions(ctx, original, {
-    catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, sessions: [metadata], sources: [] } }),
+  // Production keeps its native Session owner in a separate realm from the
+  // consumers. The memory provider must validate the facade's bindings.
+  const originalOwner = ctx.isolate('sessions', Symbol('synthetic-native-session-owner'))
+  originalOwner.reflect.provide('sessions', original)
+  const remote = new RemoteSessions(originalOwner, original, {
+    catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, storageScope: 'synthetic-reading', sessions: [metadata], sources: [] } }),
     read: async request => { calls.push(request); return { ok: true, value: index.read(request) } },
     changes: (request, signal) => index.changes(request, signal),
     operate: async operation => { writes.push(operation); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Accepted at synthetic wire boundary' } } },
-  } as HhpiRemoteApi)
+  } as HhpiRemoteApi, { storage: dom.window.localStorage, scope: 'synthetic-reading' })
   const sessions = new SourceSessions(remote), references: SessionReference[] = []
   t.after(async () => {
     for (const reference of references.reverse()) reference.release()
@@ -110,13 +126,15 @@ export async function fixture(t: TestContext) {
   ctx.slots.installLocale({ ...localeState, bind: () => (key: string) => key })
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-session'))
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-conversation'))
-  await ctx.plugin(official('@deepseek-ai/dsh-client-ui-chat'))
+  await ctx.plugin(options.preparedChatSource ? await preparedChat(options.preparedChatSource) : official('@deepseek-ai/dsh-client-ui-chat'))
   const canonical = sessions.retain(metadata.id as SessionBinding['sessionId'], { source: 'hapiWorkspace' }); references.push(canonical)
   await canonical.ready
-  async function open(id: string) {
+  async function open(id: string, cacheId = id) {
     const reference = sessions.openReadingView(canonical, id)
     assert.ok(reference); references.push(reference)
-    const binding = reference.binding, conversation = ctx.uiConversation.binding(binding), reading = conversation.readingView
+    const binding = reference.binding
+    ;(binding.session as RemotePaneSession).bindReadingCache(cacheId)
+    const conversation = ctx.uiConversation.binding(binding), reading = conversation.readingView
     assert.ok(reading)
     ;(binding.session as RemotePaneSession).attach(reading)
     await reference.ready

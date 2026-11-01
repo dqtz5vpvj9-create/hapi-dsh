@@ -738,6 +738,7 @@ export function installSessionViewHost(ctx: Context): {
                 const reference = ctx.sessions.openReadingView?.(options.reference, identity)
                 if (!reference) throw new Error('This Host has no independent official source reader.')
                 try {
+                    ;(reference.binding.session as RemotePaneSession).bindReadingCache(options.paneId)
                     const reading = ctx.uiConversation.binding(reference.binding).readingView
                     if (!reading) throw new Error('The official Conversation did not install the Pane reading window.')
                     ;(reference.binding.session as RemotePaneSession).attach(reading)

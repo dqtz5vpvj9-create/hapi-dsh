@@ -10,10 +10,13 @@ import { Context, type Plugin } from '@deepseek-ai/cordis'
 import { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import { apply as applyGateway, inject as gatewayInject } from '@deepseek-ai/dsh-api-gateway/client'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { SOURCE_SESSIONS_REALM } from '../src/client/source-sessions-composition.ts'
 import { HAPI_DSH_REMOTE } from '../src/shared/client-remote.ts'
 import type {} from '../src/client/remote-sessions.ts'
+import { SourceReadingCache } from '../src/client/remote-reading-cache.ts'
+import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -70,6 +73,31 @@ async function fixture({ mountHapiConsumer = false }: { mountHapiConsumer?: bool
 }
 
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
+
+test('production provider restores authorized source metadata from the authenticated bootstrap scope', async () => {
+  const { JSDOM } = require('jsdom') as { JSDOM: new (html: string, options: { url: string }) => { window: { localStorage: Storage; close(): void } } }
+  const dom = new JSDOM('', { url: 'https://synthetic.invalid/' }), access = { storage: dom.window.localStorage, scope: 'synthetic-owner-installation' }
+  const previous = ['localStorage', '__HHPI_STORAGE_SCOPE__'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: access.storage })
+  Object.defineProperty(globalThis, '__HHPI_STORAGE_SCOPE__', { configurable: true, value: access.scope })
+  const identity = { machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'thread' }
+  const session: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Saved native thread', cwd: '/synthetic', updatedAt: 1,
+    status: 'idle', activeTurnId: null, pendingRequests: [], capabilities: { send: true, steer: false, cancel: false, approve: false, files: false } }
+  const cache = new SourceReadingCache(access)
+  cache.write({ session, epoch: 'epoch', version: 1, windows: [], head: { session, epoch: 'epoch', version: 1, entries: [], before: null, after: null, hasBefore: false, hasAfter: false, context: [] } })
+  cache.dispose()
+  const f = await fixture()
+  const original = { list: { getSnapshot: () => ({ ids: [], byId: {}, phase: 'ready' }), subscribe: () => () => {} }, refresh: async () => {} }
+  f.ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
+  try {
+    const installed = f.ctx.plugin(provider)
+    await f.create(); await installed; await f.ctx.loader.await(); await f.ctx.hhpiSessions.refresh()
+    assert.equal(f.ctx.hhpiSessions.list.getSnapshot().byId[session.id as SessionId]?.title, session.title)
+  } finally {
+    await f.ctx.fiber.dispose(); dom.window.close()
+    for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) }
+  }
+})
 
 test('early hook isolates new consumers before a delayed original service becomes available', async () => {
   const { ctx, started, stopped, create } = await fixture()

@@ -16,7 +16,7 @@ export interface BootstrapServices {
 
 export const SAFE_GLOBALS = new Set([
     '__DSH_CONNECTION_RECOVERY__', '__DSH_DOCUMENT_PREVIEW_CONFIG__', '__DSH_SHORTCUTS_CONFIG__',
-    '__DSH_MODELS_ONBOARDING__', '__DSH_CONTACT_CONFIG__',
+    '__DSH_MODELS_ONBOARDING__', '__DSH_CONTACT_CONFIG__', '__HHPI_STORAGE_SCOPE__',
 ]);
 
 /** Forward the official graph and public JSON config without executing injection scripts. */

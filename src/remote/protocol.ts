@@ -56,7 +56,7 @@ export interface SourceResourceRequest { sessionId: string; path: string }
 export interface SourceResource { encoding: 'base64'; content: string; mimeType: string; attachment?: ImageAttachmentRef }
 export interface SourceCreateRequest { sourceId: string; operationId: string; cwd?: string }
 export interface SourceCreationReceipt { sourceId: string; operationId: string; status: 'accepted' | 'rejected' | 'indeterminate'; message: string; session?: SourceSession }
-export interface SourceCatalog { protocol: 1; legacyHapi: boolean; sessions: SourceSession[]; sources: Array<{ id: string; machineId: string; engine: string; online: boolean; create: boolean }> }
+export interface SourceCatalog { protocol: 1; legacyHapi: boolean; storageScope?: string; sessions: SourceSession[]; sources: Array<{ id: string; machineId: string; engine: string; online: boolean; create: boolean }> }
 
 /** Each adapter owns its native protocol and operations. It never creates a DSH Agent. */
 export interface SourceAdapter {

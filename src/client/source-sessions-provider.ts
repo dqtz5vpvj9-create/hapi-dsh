@@ -14,6 +14,7 @@ import type { Loader, Entry } from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import { SourceSessions } from './source-sessions.ts'
 import { RemoteSessions } from './remote-sessions.ts'
+import { browserSourceStorage } from './remote-storage.ts'
 import { HAPI_DSH_REMOTE } from '../shared/client-remote.ts'
 import { SOURCE_SESSION_CONSUMERS, SOURCE_SESSIONS_REALM, sourceSessionsContext } from './source-sessions-composition.ts'
 import { installCommandDirectoryProvider } from './command-directory-provider.ts'
@@ -109,7 +110,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         // that dotted service through Cordis injection instead of reading an
         // undeclared nested service from the root Remote service.
         hhpiOwner = owner.inject(['remote.hhpi'], async hhpiContext => {
-          remote = new RemoteSessions(owner, owner.sessions, hhpiContext.remote.hhpi)
+          remote = new RemoteSessions(owner, owner.sessions, hhpiContext.remote.hhpi, browserSourceStorage())
           facade = new SourceSessions(remote)
           const scope = await sourceSessionsContext(owner)
           provider = scope.plugin({ name: 'hapi-source-sessions-provider', apply(providerContext: Context) {

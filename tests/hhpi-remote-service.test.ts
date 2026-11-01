@@ -14,7 +14,7 @@ import { HapiController } from '../src/index.ts';
 import { FederationHub } from '../src/hub/federation.ts';
 import { WorkspaceRepository } from '../src/hub/workspaces.ts';
 import { WorkspaceShell } from '../src/hub/workspace-shell.ts';
-import { HhpiSourceService, installSources, registerSourceContract } from '../src/remote/service.ts';
+import { HhpiSourceService, installSources, registerSourceContract, sourceStorageScope } from '../src/remote/service.ts';
 import { SourceGateway } from '../src/remote/gateway.ts';
 import { sourceSessionId, type SourceAdapter, type SourceCatalog, type SourcePage, type SourceSession } from '../src/remote/protocol.ts';
 
@@ -36,7 +36,7 @@ async function mount() {
         dispose: () => {},
     };
     const source = new SourceGateway([adapter], false);
-    new HhpiSourceService(ctx, source);
+    new HhpiSourceService(ctx, source, '/synthetic/installation');
     registerSourceContract(ctx);
     const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}));
     const grants: RemoteAccessBinding[] = [];
@@ -75,6 +75,7 @@ for (const legacyHapi of [true, false]) test(`real Host registers HHPI and works
             interactions: 'answer', signal: new AbortController().signal, dispose: async () => {} };
         const catalog = await gateway.invoke({ peer, namespace: 'hhpi', method: 'catalog', args: {} }) as SourceCatalog;
         assert.equal(catalog.legacyHapi, legacyHapi);
+        assert.equal(catalog.storageScope, sourceStorageScope(join(directory, 'sources')), 'owner bootstrap and authenticated invocation use the same stable installation scope');
         assert.deepEqual(catalog.sources, []);
         assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
         if (!legacyHapi) await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
@@ -108,6 +109,8 @@ test('invocation-scoped grants filter catalog and authorize the exact source on 
             { role: { name: 'One source session', resource: 'session', actions: ['hhpi/catalog', 'hhpi/read', 'hhpi/changes', 'hhpi/operate'] }, resource: { kind: 'session', id: SessionId(session.id) } });
         const filtered = await app.invoke('catalog', {}) as SourceCatalog;
         assert.deepEqual(filtered.sessions.map(value => value.id), [session.id]); assert.deepEqual(filtered.sources, []);
+        assert.equal(filtered.storageScope, sourceStorageScope('/synthetic/installation', { kind: 'hhpi-service-fixture' }));
+        assert.notEqual(filtered.storageScope, sourceStorageScope('/synthetic/installation'), 'session-only readers never adopt the owner cache scope');
         assert.deepEqual(await app.invoke('read', { request: { sessionId: session.id } }), page);
         await assert.rejects(app.invoke('read', { request: { sessionId: privateSession.id } }), denied);
         await app.invoke('operate', { request: { sessionId: session.id, operationId: 'one', kind: 'send', text: 'synthetic' } });

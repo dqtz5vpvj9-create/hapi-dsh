@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createRequire } from 'node:module'
 import { resolve } from 'node:path'
 import { fixture } from './hhpi-reading-fixture.ts'
+import { SourceReadingCache, type SourceReadingPosition } from '../../src/client/remote-reading-cache.ts'
 const require = createRequire(import.meta.url)
 
 test('all official readers and input shells use exact independent occurrences of one canonical Session', { timeout: 15000 }, async t => {
@@ -70,4 +71,44 @@ test('manufactured presentation bindings fail closed and capability-off refuses 
     const { createWindowCommitFactory } = require(resolve(controllerRoot, 'lib/types/client/sessions/window-commit.js'))
     assert.equal(createWindowCommitFactory().readingOccurrences, undefined)
   } finally { Reflect.deleteProperty(globalThis, '__DSH_CLIENT_READING_OCCURRENCES') }
+})
+
+test('official Chat persists semantic positions per stable Pane and rejects late saves across storage scopes', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { preparedChatSource: process.env.HHPI_DSH_READING_MEMORY_SOURCE })
+  const a = await f.open('pane-a:1', 'pane-a'), b = await f.open('pane-b:2', 'pane-b')
+  const stopRoot = f.ctx.slots.register({ name: 'root', children: { main: { kind: 'keyed', scope: 'root' } } }, () => null)
+  t.after(stopRoot)
+  const registration = f.ctx.slots.entriesOfSlot('conversation.view').find(entry => entry.options.id === 'chat')
+  assert.ok(registration?.inject)
+  const inject = registration.inject as (...args: unknown[]) => { chatScroll: { read(): SourceReadingPosition | null; save(position: SourceReadingPosition | null): void } }
+  const scroll = (pane: typeof a) => inject(f.canonical.sessionId, undefined, pane.scoped).chatScroll
+  const position = { anchorKey: a.conversation.target('chat').getSnapshot()!.order[0]!, anchorTop: 27, scrollTop: 890 }
+  const access = { storage: f.dom.window.localStorage, scope: 'synthetic-reading' }
+  const durableA = scroll(a), durableB = scroll(b)
+  durableA.save(position); durableB.save(null)
+  f.dom.window.dispatchEvent(new f.dom.window.Event('pagehide'))
+  const persisted = new SourceReadingCache(access)
+  t.after(() => persisted.dispose())
+  assert.deepEqual(persisted.readPosition(f.canonical.sessionId, 'pane-a'), position, 'production RemoteSessions enables the authenticated browser cache and official memory provider')
+  const reopened = await f.open('pane-a:99', 'pane-a')
+  assert.deepEqual(scroll(reopened).read(), position, 'runtime view sequence changes must not lose the persistent Pane anchor')
+  assert.equal(scroll(b).read(), null, 'independent Pane scroll memory is not copied from another reader')
+  const retiring = scroll(b)
+  b.reference.release()
+  assert.doesNotThrow(() => retiring.save(position), 'a late unmount save cannot query an already released official binding')
+  assert.equal(persisted.readPosition(f.canonical.sessionId, 'pane-b'), null)
+  Reflect.set(globalThis, '__DSH_CLIENT_READING_MEMORY', 'off')
+  try {
+    const disabled = scroll(reopened)
+    assert.equal(disabled.read(), null)
+    disabled.save({ ...position, scrollTop: 100 })
+    assert.deepEqual(persisted.readPosition(f.canonical.sessionId, 'pane-a'), position, 'turning the optional extension off restores the unchanged in-memory path')
+    assert.deepEqual(disabled.read(), { ...position, scrollTop: 100 })
+  } finally { Reflect.deleteProperty(globalThis, '__DSH_CLIENT_READING_MEMORY') }
+  f.remote.setReadingStorage({ ...access, scope: 'another-authenticated-account' })
+  durableA.save({ ...position, scrollTop: 9999 })
+  f.dom.window.dispatchEvent(new f.dom.window.Event('pagehide'))
+  const replacement = new SourceReadingCache({ ...access, scope: 'another-authenticated-account' })
+  try { assert.equal(replacement.readPosition(f.canonical.sessionId, 'pane-a'), null, 'retired bindings cannot write across authenticated storage scopes') }
+  finally { replacement.dispose() }
 })

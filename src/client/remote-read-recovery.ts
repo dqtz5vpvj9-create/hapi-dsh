@@ -17,6 +17,14 @@ export function recoverableSourceRead(error: unknown): boolean {
   return /fetch|network|connection|socket|offline|timed? ?out/i.test(error.message)
 }
 
+/** Explicit authorization failures invalidate durable source content, not just a retry attempt. */
+export function revokedSourceRead(error: unknown): boolean {
+  const code = sourceReadFailureCode(error)
+  if (code === 'UNSUPPORTED' || code === 'remote-access/denied') return true
+  return code === 'gateway/internal' && error instanceof Error
+    && /^client api: hhpi\/(?:read|changes) failed: /.test(error.message) && /HTTP (?:401|403)\b/.test(error.message)
+}
+
 /** Backoff is bounded and paused offline; foreground/online events immediately retry a pending read. */
 export function waitForSourceReadRecovery(attempt: number, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()

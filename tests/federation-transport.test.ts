@@ -312,13 +312,14 @@ test('Runner bootstrap exports only official safe JSON globals and keeps the ori
     const payload = bootstrapPayload({ clientModules: { graph: () => graph }, webServer: {
         collectIndexInjections: () => [
             { kind: 'global', name: '__DSH_CONNECTION_RECOVERY__', value: { backoffBaseMs: 200 } },
+            { kind: 'global', name: '__HHPI_STORAGE_SCOPE__', value: 'synthetic-authenticated-installation-account' },
             { kind: 'global', name: 'private-token', value: 'fixture-private' },
             { kind: 'script', value: 'throw new Error("must not execute")' },
         ],
         getOrigin: () => 'http://127.0.0.1', register: () => () => {},
     } });
     assert.equal(payload.graph, graph);
-    assert.deepEqual(payload.globals, { __DSH_CONNECTION_RECOVERY__: { backoffBaseMs: 200 } });
+    assert.deepEqual(payload.globals, { __DSH_CONNECTION_RECOVERY__: { backoffBaseMs: 200 }, __HHPI_STORAGE_SCOPE__: 'synthetic-authenticated-installation-account' });
     assert.ok(!JSON.stringify(payload).includes('fixture-private'));
 });
 

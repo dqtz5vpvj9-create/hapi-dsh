@@ -12,6 +12,9 @@ import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
 import { decodeSourceAttachmentValue } from '../source-attachment-types.ts'
+import { SourceReadingCache, type SourceReadingStorage } from './remote-reading-cache.ts'
+import { installRemoteReadingMemory } from './remote-reading-memory.ts'
+import { browserSourceStorage } from './remote-storage.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession } }
@@ -36,7 +39,7 @@ interface TrackedOperation { readonly fingerprint: string; readonly promise: Pro
 export class RemoteSourceSession implements SessionFace {
   readonly eventSource = new MutableSessionEventSource()
   readonly metadata: Value<SourceSession>
-  readonly historyRead: { readonly version: 1; openView(viewId: string, budget?: Budget, signal?: AbortSignal): Promise<HistoryFeedV1> }
+  readonly historyRead: { readonly version: 1; openView(viewId: string, budget?: Budget, signal?: AbortSignal, cacheId?: string): Promise<HistoryFeedV1> }
   readonly projections: ProjectionsFace
   private readonly state: Value<SessionSnapshot>
   private readonly projectionValues = new Map<string, Value<unknown>>()
@@ -57,11 +60,11 @@ export class RemoteSourceSession implements SessionFace {
       if (!value) { value = new Value<unknown>(undefined); this.projectionValues.set(key, value) }
       return value
     } }
-    this.historyRead = { version: 1, openView: (viewId, budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }, signal) => {
+    this.historyRead = { version: 1, openView: (viewId, budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }, signal, cacheId) => {
       if (this.disposed) return Promise.reject(new DOMException('The source view was released.', 'AbortError'))
-      return history.openView(viewId, budget, signal)
+      return history.openView(viewId, budget, signal, cacheId)
     } }
-    this.stopMetadata = history.subscribeSession(session => { if (this.metadata.getSnapshot() !== session) this.update(session) })
+    this.stopMetadata = history.subscribeSession(session => { if (!history.metadataFromCache && this.metadata.getSnapshot() !== session) this.update(session) })
     this.update(metadata)
     this.ready = history.prepare(this.lifetime.signal).then(page => {
       if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
@@ -187,6 +190,7 @@ export class RemoteSessions implements ISessions {
   readonly historySource?: NonNullable<ISessions['historySource']>
   readonly windowCommit?: NonNullable<ISessions['windowCommit']>
   private readonly metadata = new Map<string, SourceSession>()
+  private readonly revokedReadingSources = new Set<string>()
   private historyMetadataRevision = 0
   private readonly historyMetadataRevisions = new Map<string, number>()
   private readonly records = new Map<SessionId, RecordOwner>()
@@ -195,7 +199,13 @@ export class RemoteSessions implements ISessions {
   private readonly retainObservers = new Map<SessionId, Value<SessionRetainInfo>>()
   private readonly stopOriginal: () => void
   private readonly lifetime = new AbortController()
+  private readingCache: SourceReadingCache | undefined
+  private readingStorage: SourceReadingStorage | undefined
+  private storageRevoked = false
+  private stopReadingMemory: (() => void) | undefined
   private refreshRead: Promise<void> | undefined
+  private refreshAbort: AbortController | undefined
+  private storageGeneration = 0
   private timer: ReturnType<typeof setInterval> | undefined
   private catalogChecked = false
   private catalogReceived = false
@@ -203,19 +213,59 @@ export class RemoteSessions implements ISessions {
   private readonly capabilityState: Value<HhpiCatalogCapability>
   legacyHapi = false
 
-  constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi) {
+  constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi, readingStorage?: SourceReadingStorage) {
     if (original.historySource) this.historySource = original.historySource
     if (original.windowCommit) this.windowCommit = original.windowCommit
     this.capabilityState = new Value({ catalogReady: false, legacyHapi: false })
     this.capabilities = this.capabilityState
     this.list = new Value(this.listSnapshot(original.list.getSnapshot()))
     this.stopOriginal = original.list.subscribe(() => { this.publish() })
+    this.setReadingStorage(readingStorage)
     void this.refreshSources().catch(() => {
       // A failed HHPI request must not keep ordinary DSH sessions in `pending`.
       // The next interval retry will publish advertised source rows on success.
       if (!this.catalogChecked) { this.catalogChecked = true; this.publish() }
     })
     this.timer = setInterval(() => { void this.refreshSources().catch(() => {}) }, 5000)
+  }
+  /** The caller supplies only storage selected by the authenticated bootstrap/catalog scope. */
+  setReadingStorage(access: SourceReadingStorage | undefined, refresh = true): void {
+    if (this.storageRevoked && access) return
+    if (!this.storageRevoked && access?.scope === this.readingStorage?.scope && access?.storage === this.readingStorage?.storage) return
+    ++this.storageGeneration; this.refreshAbort?.abort(); this.refreshAbort = undefined; this.refreshRead = undefined
+    for (const id of [...this.metadata.keys()]) this.removeReadingSource(id)
+    this.revokedReadingSources.clear()
+    if (this.readingCache) {
+      this.readingCache.clear(); this.readingCache.dispose(); this.readingCache = undefined
+    }
+    this.readingStorage = access
+    if (access) {
+      this.readingCache = new SourceReadingCache(access)
+      for (const session of this.readingCache.sessions()) this.metadata.set(session.id, { ...session, status: 'offline' })
+      if (!this.stopReadingMemory) this.stopReadingMemory = installRemoteReadingMemory(this.ctx, () => this.readingCache, binding => this.ownsBinding(binding))
+      if (this.metadata.size) this.catalogChecked = true
+    }
+    this.publish()
+    if (refresh && this.timer !== undefined) void this.refreshSources().catch(() => {})
+  }
+  /** Explicit Host/account revocation, never an ordinary network loss or page close. */
+  revokeStorage(): void {
+    this.storageRevoked = true
+    this.setReadingStorage(undefined, false)
+  }
+  private removeReadingSource(id: string): void {
+    this.histories.get(id as SessionId)?.revokeCachedReading()
+    this.readingViews.releaseSession(id)
+    const record = this.records.get(id as SessionId)
+    if (record) { this.records.delete(id as SessionId); record.session.dispose(); void record.scope.fiber.dispose() }
+    this.histories.get(id as SessionId)?.dispose(); this.histories.delete(id as SessionId)
+    this.readingCache?.remove(id); this.metadata.delete(id); this.historyMetadataRevisions.delete(id); this.retainObservers.delete(id as SessionId)
+  }
+  /** Called only for an explicit source removal/revocation, never a partial directory omission. */
+  revokeReadingSource(id: string): void {
+    if (!isSourceSessionId(id)) throw new Error('Only a native HHPI source reading cache can be revoked.')
+    this.revokedReadingSources.add(id)
+    this.removeReadingSource(id); this.publish()
   }
   get searchResultLimit(): number { return this.original.searchResultLimit }
   ownsBinding(binding: SessionBinding): boolean {
@@ -234,29 +284,45 @@ export class RemoteSessions implements ISessions {
     return this.readingViews.open(this.retain(reference.sessionId, { source: 'hapiWorkspace' }), viewId)
   }
   private async refreshSources(): Promise<void> {
+    if (this.storageRevoked || this.lifetime.signal.aborted) return
     if (this.refreshRead) return this.refreshRead
     // Catalog metadata has no source version. A response may only replace a
     // source whose accepted history state has not advanced since this request.
     // Native updatedAt cannot order ownership/capability changes in one second.
     const startedAt = this.historyMetadataRevision
+    const generation = this.storageGeneration, abort = new AbortController()
+    this.refreshAbort = abort
+    const signal = AbortSignal.any([this.lifetime.signal, abort.signal])
     const work = (async () => {
-      const catalog = result(await this.api.catalog(this.lifetime.signal))
-      this.lifetime.signal.throwIfAborted()
+      const catalog = result(await this.api.catalog(signal))
+      signal.throwIfAborted()
+      if (generation !== this.storageGeneration) return
+      if (catalog.storageScope && catalog.storageScope !== this.readingStorage?.scope) {
+        // This response is already authenticated. Adopt its identity once and
+        // apply the same catalog after retiring every old-scope reader/request.
+        const access = this.readingStorage ? { ...this.readingStorage, scope: catalog.storageScope } : browserSourceStorage(catalog.storageScope)
+        this.setReadingStorage(access, false)
+      }
       this.catalogReceived = true
       this.legacyHapi = catalog.legacyHapi
       this.catalogChecked = true
       const active = new Set(catalog.sessions.map(session => session.id))
       const unchanged = (id: string): boolean => (this.historyMetadataRevisions.get(id) ?? 0) <= startedAt
       for (const [id, old] of this.metadata) if (!active.has(id) && unchanged(id)) {
+        // A source may return its prior successful directory while discovery
+        // runs. Neither omission nor an old `online` flag authorizes deletion.
         const offline: SourceSession = { ...old, status: 'offline' }
         this.metadata.set(id, offline); this.records.get(id as SessionId)?.session.update(offline)
       }
-      for (const session of catalog.sessions) if (unchanged(session.id)) {
+      for (const session of catalog.sessions) if (!this.revokedReadingSources.has(session.id) && unchanged(session.id)) {
         this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session)
       }
       this.publish()
       this.capabilityState.set({ catalogReady: true, legacyHapi: catalog.legacyHapi })
-    })().finally(() => { if (this.refreshRead === work) this.refreshRead = undefined })
+    })().finally(() => {
+      if (this.refreshRead === work) this.refreshRead = undefined
+      if (this.refreshAbort === abort) this.refreshAbort = undefined
+    })
     this.refreshRead = work
     return work
   }
@@ -294,13 +360,14 @@ export class RemoteSessions implements ISessions {
         history = new RemoteSourceHistory(target, {
           read: async (request, signal) => result(await this.api.read(request, signal)),
           changes: (request, signal) => followSourceChanges(this.ctx.remote, (cursor, generation) => this.api.changes(cursor, generation), request, signal),
-        })
+        }, undefined, this.readingCache)
         this.histories.set(target, history)
         // Subscribe once per shared history, not per Pane/Session face. Cached
         // metadata replay on a later retain is not a new native observation.
         // History disposal clears this subscription with its accepted cache.
+        const observedHistory = history
         history.subscribeSession(session => {
-          if (this.lifetime.signal.aborted) return
+          if (this.lifetime.signal.aborted || observedHistory.metadataFromCache) return
           const changed = JSON.stringify(this.metadata.get(target)) !== JSON.stringify(session)
           this.metadata.set(target, session)
           this.historyMetadataRevisions.set(target, ++this.historyMetadataRevision)
@@ -326,9 +393,12 @@ export class RemoteSessions implements ISessions {
       options.signal?.removeEventListener('abort', release)
       const count = held.counts.get(options.source) ?? 0
       if (count <= 1) held.counts.delete(options.source); else held.counts.set(options.source, count - 1)
-      this.publishRetains(target, held)
+      if (this.records.get(target) === held) this.publishRetains(target, held)
       if (held.counts.size === 0 && this.records.get(target) === held) {
         this.records.delete(target); held.session.dispose(); void held.scope.fiber.dispose()
+        // A durable checkpoint replaces an unbounded set of inactive in-memory
+        // transcript owners. The next retain rebuilds from that accepted body.
+        if (this.readingCache) { this.histories.get(target)?.dispose(); this.histories.delete(target) }
       }
     }
     options.signal?.addEventListener('abort', release, { once: true })
@@ -371,6 +441,7 @@ export class RemoteSessions implements ISessions {
     this.lifetime.abort(); if (this.timer) clearInterval(this.timer); this.stopOriginal()
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()
-    this.records.clear(); this.histories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear()
+    this.readingCache?.dispose(); this.stopReadingMemory?.()
+    this.records.clear(); this.histories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
   }
 }

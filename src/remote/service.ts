@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
-import { Remote, RemoteError, TypertRemoteService, type RemoteStream, type TypertResource } from '@deepseek-ai/dsh-typert-protocol';
+import { Remote, RemoteError, TypertRemoteService, principalOf, type RemoteStream, type TypertResource } from '@deepseek-ai/dsh-typert-protocol';
 import type {} from '@deepseek-ai/dsh-typert-registry';
 import type {} from '@deepseek-ai/dsh-api-remote-access';
 import type { SessionId } from '@deepseek-ai/dsh-session';
@@ -27,6 +27,12 @@ export const HHPI_HOST_CONTRACT = {
     invocations: HHPI_REMOTE.descriptors,
     services: [{ key: 'hhpi', exportName: 'HhpiSourceService', tags: [], members: [], types: [], summary: 'Scoped native source access.' }],
 };
+/** Principal fields are JSON identity, never credentials. Canonical ordering keeps one account scope across restarts. */
+export function sourceStorageScope(directory: string, principal: unknown = { kind: 'owner' }): string {
+    const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+        : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value;
+    return createHash('sha256').update(JSON.stringify([directory, canonical(principal)])).digest('hex');
+}
 /** Runner-only composition; display Hosts publish the combined workspace face. */
 export function registerSourceContract(ctx: Context): void {
     ctx.effect(() => ctx.typert.register({ package: 'hapi-dsh', face: 'host', schemas: [], invocations: HHPI_HOST_CONTRACT.invocations,
@@ -34,7 +40,7 @@ export function registerSourceContract(ctx: Context): void {
 }
 
 export class HhpiSourceService extends TypertRemoteService {
-    constructor(ctx: Context, private readonly gateway: SourceGateway) {
+    constructor(ctx: Context, private readonly gateway: SourceGateway, private readonly directory?: string) {
         super(ctx, 'hhpi');
         ctx.typert.resources.register('hhpiSource', { field: 'sourceId' });
     }
@@ -45,7 +51,12 @@ export class HhpiSourceService extends TypertRemoteService {
             : ctx.remoteAccess.allows({ kind: 'session', id: resource.id as SessionId });
     }
     @Remote('catalog')
-    async catalog(signal?: AbortSignal): Promise<SourceCatalog> { try { return await this.gateway.catalog(this.access, signal); } catch (error) { remoteError(error); } }
+    async catalog(signal?: AbortSignal): Promise<SourceCatalog> {
+        try {
+            const catalog = await this.gateway.catalog(this.access, signal);
+            return { ...catalog, ...(this.directory ? { storageScope: sourceStorageScope(this.directory, principalOf(this.ctx.invocation)) } : {}) };
+        } catch (error) { remoteError(error); }
+    }
     @Remote({ name: 'read', resources: { session: addressedSession } })
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error); } }
     @Remote({ name: 'changes', mode: 'stream', resources: { session: addressedSession } })
@@ -65,7 +76,12 @@ export function installSources(ctx: Context, sources: readonly DirectSourceConfi
         return source.engine === 'dsh' ? new DirectDshAdapter(source, cache) : new DirectCodexAdapter(source, cache);
     });
     const gateway = new SourceGateway(adapters, legacyHapi);
-    new HhpiSourceService(ctx, gateway);
+    new HhpiSourceService(ctx, gateway, directory);
+    // The official index belongs to the owner. Non-owner clients adopt their
+    // invocation-derived scope from catalog before any retained write can run.
+    ctx.inject(['webServer'], webCtx => {
+        webCtx.on('webserver/index-inject', table => { table.push({ kind: 'global', name: '__HHPI_STORAGE_SCOPE__', value: sourceStorageScope(directory) }); });
+    });
     ctx.effect(() => () => gateway.dispose(), 'hhpi: native source ownership');
     return gateway;
 }

@@ -26,6 +26,7 @@ export class RemotePaneSession implements SessionFace {
   private window: ConversationHistoryViewV1 | undefined
   private state: SessionSnapshot
   private disposed = false
+  private cacheId: string
   private olderRevision = 0
   private olderRead: { abort: AbortController; promise: Promise<void> } | undefined
   private progress: SourceWindowProgress & { hasMoreAfter: boolean } = { before: null, hasMoreAfter: false }
@@ -34,10 +35,13 @@ export class RemotePaneSession implements SessionFace {
     subscribe: (listener: () => void): (() => void) => this.subscribe(listener),
   }
 
-  constructor(private readonly owner: RemoteSourceSession, ownerReady: Promise<SessionBinding>) {
+  constructor(private readonly owner: RemoteSourceSession, ownerReady: Promise<SessionBinding>, viewId: string) {
+    this.cacheId = viewId
     this.sessionId = owner.sessionId
     this.projections = owner.projections
-    this.historyRead = owner.historyRead
+    this.historyRead = { version: 1, openView: (id, budget, signal) => {
+      this.assertLive(); return owner.historyRead.openView(id, budget, signal, this.cacheId)
+    } }
     this.metadata = owner.metadata
     this.state = { ...owner.getSnapshot(), openState: 'loading', hasMore: false, loadingOlder: false }
     this.stopOwner = owner.subscribe(() => { this.publish() })
@@ -46,6 +50,12 @@ export class RemotePaneSession implements SessionFace {
   }
 
   get readingView(): ConversationHistoryViewV1 | undefined { return this.window }
+  get readingCacheId(): string { return this.cacheId }
+  bindReadingCache(paneId: string): void {
+    if (this.window) throw new Error('Reading cache identity must be bound before the official window opens.')
+    this.cacheId = paneId
+  }
+  checkpointReading(): void { if (!this.disposed) this.owner.history.persist() }
   readonly getSnapshot = (): SessionSnapshot => this.state
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -183,7 +193,7 @@ export class RemotePaneViews {
     const key = JSON.stringify([held.sessionId, viewId])
     if (this.keys.has(key)) { held.release(); throw new Error('This Pane reading occurrence is already retained.') }
     const scope = createScope(held.binding.ctx, held.sessionId), tag: PaneTag = {}
-    const session = new RemotePaneSession(owner, held.ready)
+    const session = new RemotePaneSession(owner, held.ready, viewId)
     const binding: SessionBinding = { sessionId: held.sessionId, viewId, session,
       eventSource: held.binding.eventSource,
       ctx: scope.ctx.extend({ [paneScope]: tag }) as SessionBinding['ctx'] }
@@ -218,5 +228,6 @@ export class RemotePaneViews {
     const binding = (ctx as Context & { [paneScope]?: PaneTag })[paneScope]?.binding
     return binding !== undefined && this.records.has(binding) ? binding : undefined
   }
+  releaseSession(id: string): void { for (const record of [...this.records.values()]) if (record.binding.sessionId === id) record.release() }
   dispose(): void { for (const record of [...this.records.values()]) record.release() }
 }

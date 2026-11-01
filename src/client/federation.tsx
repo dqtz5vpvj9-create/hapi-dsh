@@ -35,7 +35,8 @@ import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
 import { HostBootQueue } from './surface/host-boot-queue.ts'
-import { FederationHosts } from './federation-hosts.ts'
+import { FederationHosts, FederatedHostRevocation } from './federation-hosts.ts'
+import { clearSourceStorage } from './remote-storage.ts'
 import { observeForegroundActivity } from './foreground-activity.ts'
 import { canReleaseHistory } from './surface/history-retention.ts'
 import type { UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
@@ -89,8 +90,8 @@ export function hostRequestUrl(basePath: string, input: string, origin: string):
 }
 
 interface KeyboardRegistration { listener: EventListenerOrEventListenerObject; capture: boolean; target: 'window' | 'document' }
-interface GraphRuntime { ctx: Context; dispatch(event: KeyboardEvent, capture: boolean): void; stop(): Promise<void> }
-interface HostRuntime { stop(): Promise<void> }
+interface GraphRuntime { ctx: Context; dispatch(event: KeyboardEvent, capture: boolean): void; revoke(): void; stop(): Promise<void> }
+interface HostRuntime { revoke(): void; stop(): Promise<void> }
 // Shared official primitives deliberately coordinate modal/focus ownership on
 // element.ownerDocument. Their document listeners must receive pane events;
 // only the primary application's later window shortcuts should be excluded.
@@ -341,7 +342,12 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         ctx.reflect.provide('hapiWorkspacePane', navigation)
         ctx.reflect.provide('hapiWorkspaceUi', navigation)
     }
-    let stopped = false
+    let stopped = false, revoked = false
+    const revoke = (): void => {
+        revoked = true
+        ctx.get('hhpiSessions')?.revokeStorage()
+        clearSourceStorage(localStorageFacade)
+    }
     let stopDeferred = (): void => {}
     const stop = async (): Promise<void> => {
         if (stopped) return
@@ -353,6 +359,9 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
         try { await ctx.fiber.dispose() } finally {
             for (const entry of registrations) entry.target.removeEventListener(entry.type, entry.installed, entry.options)
             registrations.length = 0
+            // A provider finishing during an aborted boot may have flushed its
+            // checkpoint on disposal; explicit revocation must remove it too.
+            if (revoked || signal.reason instanceof FederatedHostRevocation) clearSourceStorage(localStorageFacade)
         }
     }
     try {
@@ -381,7 +390,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
             preload: graph => prefetchPaneArtifacts({ entries: graph.batches, baseUrl,
                 artifacts: resources.artifacts, concurrency: 6, load: fetchBundle }),
         })
-        return { ctx: viewContext, stop, dispatch(event, capture) {
+        return { ctx: viewContext, revoke, stop, dispatch(event, capture) {
             const seen = capture ? captured : bubbled
             if (seen.has(event)) return
             seen.add(event); remoteKeyboardEvents.add(event)
@@ -1130,7 +1139,12 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         uninitialCatalog = list.subscribe(catalogReady)
         catalogReady()
         let stopped = false
-        return { async stop() {
+        return { revoke() {
+            // A remote Host without a completed catalog never owns the local
+            // primary graph's cache. Its bootstrap cleanup uses its own facade.
+            if (host.id === 'local') root.get('hhpiSessions')?.revokeStorage()
+            else catalog?.revoke()
+        }, async stop() {
             if (stopped) return
             stopped = true; unsubscribeLayout?.(); uninitialCatalog(); removeHost?.()
             await Promise.allSettled([...allPanes].map(graph => graph.stop(true)))
@@ -1187,6 +1201,11 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
             const message = errorMessage(error)
             workspace.catalogHostFailed(host.id, host.label, message)
             if (reported.get(host.id) !== message) { reported.set(host.id, message); workspace.report(message) }
+        },
+        revoked: host => {
+            // Shared and legacy catalog graphs are the only source providers;
+            // plugin preferences/drafts and other Hosts retain their namespaces.
+            for (const graph of ['shared', 'catalog']) clearSourceStorage(graphStorage(window.localStorage, host.id, graph))
         },
     })
     const containShortcuts = (event: KeyboardEvent): void => {

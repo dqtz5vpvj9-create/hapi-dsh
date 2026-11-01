@@ -29,6 +29,8 @@ const session: z.ZodType<SourceSession> = z.strictObject({ id, sourceId: id, mac
     title: z.string(), cwd: z.string(), updatedAt: z.number().finite(), status: z.enum(['idle', 'running', 'waiting', 'offline']), activeTurnId: id.nullable(),
     capabilities: z.strictObject({ send: z.boolean(), steer: z.boolean(), cancel: z.boolean(), approve: z.boolean(), files: z.boolean() }), pendingRequests: z.array(approval),
     legacyOrigin: z.strictObject({ hubId: id, sessionId: id }).optional() });
+/** The same boundary contract validates optional authenticated browser history snapshots. */
+export const sourceSessionSchema = session;
 // The source normalizer uses the pinned DSH event validator. The wire additionally
 // bounds structural identity; browser code cannot submit event payloads to Host.
 const entry = z.strictObject({ type: z.literal('event'), event: z.object({ seq, type: z.string().min(1), time: z.number().finite(), data: z.unknown() }).passthrough() }) as unknown as z.ZodType<SourceEntry>;
@@ -40,7 +42,7 @@ const page = z.strictObject({ session, epoch: id, version: seq, entries: z.array
 const changes = z.strictObject({ session, epoch: id, base: seq, version: seq, reset: z.boolean(), upserts: z.array(entry), removed: z.array(seq) });
 const inputs = { read: readSchema, changes: z.strictObject({ sessionId: id, epoch: id, version: seq }), operate: operationSchema,
     create: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
-const outputs = { catalog: z.strictObject({ protocol: z.literal(1), legacyHapi: z.boolean(), sessions: z.array(session), sources: z.array(z.strictObject({ id, machineId: id, engine: z.string(), online: z.boolean(), create: z.boolean() })) }),
+const outputs = { catalog: z.strictObject({ protocol: z.literal(1), legacyHapi: z.boolean(), storageScope: id.optional(), sessions: z.array(session), sources: z.array(z.strictObject({ id, machineId: id, engine: z.string(), online: z.boolean(), create: z.boolean() })) }),
     read: page, changes, operate: z.strictObject({ operationId: id, sessionId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), turnId: id.optional() }),
     create: z.strictObject({ sourceId: id, operationId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), session: session.optional() }), resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string(), attachment: sourceImageAttachmentRefSchema.optional() }) };
 const codec = (name: string, schema: z.ZodType) => ({ mode: 'strict' as const, typeSymbol: `hapi-dsh#hhpi/${name}`, create: () => schema });

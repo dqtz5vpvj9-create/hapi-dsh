@@ -472,14 +472,14 @@ test('paired Host disconnect and incomplete inventory preserve the same pane ref
     remote.add('one', 'First conversation'); remote.add('two', 'Second conversation')
     const controller = new WorkspaceController(local.options)
     const booted: Promise<void>[] = []
-    let starts = 0, stops = 0
+    let starts = 0, stops = 0, revocations = 0
     const hosts = new FederationHosts({
         enqueue: (_id, start) => { booted.push(start()) },
         async boot(host) {
             starts++
             const remove = controller.addHost({ id: host.id, label: host.label, sessions: remote.sessions,
                 navigation: remote.navigation, renderConversation: reference => reference.sessionId })
-            return { async stop() { stops++; remove() } }
+            return { revoke() { revocations++ }, async stop() { stops++; remove() } }
         },
         ready: host => controller.catalogHostReady(host.id, host.label),
         failed: (_host, error) => { throw error },
@@ -504,6 +504,7 @@ test('paired Host disconnect and incomplete inventory preserve the same pane ref
         await observe([{ ...host, online: false }], true)
         await observe([], false)
         assert.equal(stops, 0, 'temporary availability never disposes the running graph')
+        assert.equal(revocations, 0, 'temporary availability retains durable reading data')
         assert.equal(controller.getSnapshot().leases.get(first), firstLease)
         assert.equal(controller.getSnapshot().leases.get(second), secondLease)
         assert.ok(references.every(ref => !ref.released), 'both readers retain their original Session owners')
@@ -515,6 +516,7 @@ test('paired Host disconnect and incomplete inventory preserve the same pane ref
         assert.equal(controller.getSnapshot().catalogDiscovery.hosts.find(row => row.id === host.id)?.phase, 'ready')
         await observe([], true)
         assert.equal(stops, 1, 'the authoritative removal disposes the same graph')
+        assert.equal(revocations, 1, 'explicit removal clears durable data before disposal')
         assert.equal(controller.host(host.id), undefined)
         assert.ok(references.every(ref => ref.released))
         assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId(host.id, 'one')], undefined)
@@ -524,7 +526,7 @@ test('paired Host disconnect and incomplete inventory preserve the same pane ref
 test('revocation during Host bootstrap aborts ownership and disposes a late runtime without registering readiness', async () => {
     const boot = Promise.withResolvers<FederatedHostRuntime>()
     const tasks: Promise<void>[] = []
-    let signal: AbortSignal | undefined, ready = 0, stopped = 0
+    let signal: AbortSignal | undefined, ready = 0, stopped = 0, revoked = 0
     const hosts = new FederationHosts({
         enqueue: (_id, start) => { tasks.push(start()) },
         boot: (_host, value) => { signal = value; return boot.promise },
@@ -534,11 +536,30 @@ test('revocation during Host bootstrap aborts ownership and disposes a late runt
     await hosts.reconcile([{ id: 'paired', label: 'Paired', online: true, basePath: '/hapi-dsh/machine/paired/' }], true)
     await hosts.reconcile([], true)
     assert.equal(signal?.aborted, true)
-    boot.resolve({ async stop() { stopped++ } })
+    boot.resolve({ revoke() { revoked++ }, async stop() { stopped++ } })
     await Promise.all(tasks)
     assert.equal(stopped, 1)
+    assert.equal(revoked, 1, 'a late runtime cannot persist a revoked Host again')
     assert.equal(ready, 0, 'a late bootstrap cannot re-advertise a revoked Host')
     await hosts.dispose()
+})
+
+test('confirmed Host removal clears an offline saved Host while ordinary teardown preserves it', async () => {
+    const cleared: string[] = [], tasks: Promise<void>[] = []
+    let stopped = 0, revoked = 0
+    const hosts = new FederationHosts({ enqueue: (_id, start) => { tasks.push(start()) },
+        boot: async () => ({ revoke() { revoked++ }, async stop() { stopped++ } }),
+        ready() {}, failed(_host, error) { throw error }, revoked: host => { cleared.push(host.id) } })
+    await hosts.reconcile([{ id: 'offline', label: 'Offline', online: false, basePath: '/hapi-dsh/machine/offline/' }], true)
+    await hosts.reconcile([], false)
+    assert.deepEqual(cleared, [], 'an incomplete directory has no revocation authority')
+    await hosts.reconcile([], true)
+    assert.deepEqual(cleared, ['offline'], 'saved data is cleared even if this page never booted the offline Host')
+    await hosts.reconcile([{ id: 'live', label: 'Live', online: true, basePath: '/hapi-dsh/machine/live/' }], true)
+    await Promise.all(tasks)
+    await hosts.dispose()
+    assert.equal(stopped, 1); assert.equal(revoked, 0)
+    assert.deepEqual(cleared, ['offline'], 'page close retains live Host reading data')
 })
 
 test('renaming, pinning and forking route to the owning Host', async () => {
