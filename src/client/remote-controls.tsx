@@ -5,6 +5,26 @@ import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { isSourceSessionId, type SourceApproval, type SourceReceipt } from '../remote/protocol.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
+import type { SourceDelivery } from './remote-outbox.ts'
+
+function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
+  const labels = { queued: ['已保存在本机，等待连接后发送', 'Saved on this device; waiting to send'],
+    sending: ['正在发送已保存的消息', 'Sending saved message'],
+    confirming: ['正在确认投递结果，消息仍保留', 'Confirming delivery; your message is retained'],
+    accepted: ['源端已接收，等待正文同步', 'Accepted by the source; waiting for history'],
+    rejected: ['源端未接受，消息仍保留', 'The source did not accept this saved message'] } as const
+  return labels[delivery.state][zh ? 0 : 1]
+}
+
+/** Delivery feedback augments the official pending submission bubble. */
+export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSourceSession, 'deliveries' | 'discardSubmission'>; zh: boolean }) {
+  const deliveries = useSyncExternalStore(session.deliveries.subscribe, session.deliveries.getSnapshot)
+  if (!deliveries.length) return null
+  return <div className="hhpi-source-deliveries" style={{ maxHeight: 128, overflowY: 'auto', overscrollBehavior: 'contain' }}>{deliveries.map(delivery => <p key={delivery.operation.operationId} role={delivery.state === 'rejected' ? 'alert' : 'status'} data-hhpi-delivery={delivery.state}>
+    {deliveryLabel(delivery, zh)}
+    {delivery.state === 'rejected' && <> · “{delivery.operation.text?.slice(0, 40)}{(delivery.operation.text?.length ?? 0) > 40 ? '…' : ''}” · {delivery.message} <button type="button" onClick={() => { session.discardSubmission(delivery.operation.operationId) }}>{zh ? '移除' : 'Dismiss'}</button></>}
+  </p>)}</div>
+}
 
 interface ApprovalProps {
   session: Pick<RemoteSourceSession, 'sessionId' | 'operate'>
@@ -74,6 +94,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     return <div className="hhpi-source-dock" data-hhpi-source={metadata.id}>
       {metadata.status === 'offline' && <p role="status">{zh ? '源机器连接中断，已读历史仍然保留。' : 'The source is disconnected. Accepted history is retained.'}</p>}
       {state.promptError && <p role="alert">{state.promptError.error.message}</p>}
+      <SourceDeliveryStatus session={session} zh={zh}/>
       {metadata.pendingRequests.map(request => <SourceApprovalControl key={request.id} session={session} request={request} zh={zh}/>)}
     </div>
   }

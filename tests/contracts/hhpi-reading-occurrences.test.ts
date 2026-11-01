@@ -73,6 +73,20 @@ test('manufactured presentation bindings fail closed and capability-off refuses 
   } finally { Reflect.deleteProperty(globalThis, '__DSH_CLIENT_READING_OCCURRENCES') }
 })
 
+test('a released real Pane forwards only its already saved submission after Conversation yields a paint', { timeout: 15000 }, async t => {
+  const f = await fixture(t), pane = await f.open('pane-admission'), face = pane.binding.session
+  const pending = face.beginSubmission({ text: 'Saved before the Pane closes', attachments: [], mode: 'queue' })
+  const lifetime = new AbortController(); lifetime.abort(); pane.reference.release()
+  assert.equal(f.writes.length, 0, 'saving an intent does not dispatch before prompt confirms preparation')
+  const outcome = await face.prompt([{ type: 'text', text: 'Saved before the Pane closes' }], 'queue', lifetime.signal, pending.requestId)
+  assert.equal(outcome.ok, true)
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0]!.operationId, pending.requestId)
+  assert.throws(() => face.beginSubmission({ text: 'New work after release', attachments: [], mode: 'queue' }), /released/)
+  await assert.rejects(face.prompt([{ type: 'text', text: 'Unadmitted work' }], 'queue'), /released/)
+  await assert.rejects(face.prompt([{ type: 'text', text: 'Unadmitted steer' }], 'steer', undefined, pending.requestId), /released/)
+  assert.equal(f.writes.length, 1)
+})
+
 test('official Chat persists semantic positions per stable Pane and rejects late saves across storage scopes', { timeout: 15000 }, async t => {
   const f = await fixture(t, { preparedChatSource: process.env.HHPI_DSH_READING_MEMORY_SOURCE })
   const a = await f.open('pane-a:1', 'pane-a'), b = await f.open('pane-b:2', 'pane-b')

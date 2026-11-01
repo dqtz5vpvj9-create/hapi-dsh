@@ -9,8 +9,9 @@ import { Context } from '@deepseek-ai/cordis'
 import type { ISessions, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { HhpiRemoteApi } from '../src/hhpi-api.ts'
 import type { RemoteSessions, RemoteSourceSession } from '../src/client/remote-sessions.ts'
-import { SourceEventIndex } from '../src/remote/event-index.ts'
+import { SourceEventIndex, type EventInput } from '../src/remote/event-index.ts'
 import { sourceSessionId, type SourceOperation, type SourceSession } from '../src/remote/protocol.ts'
+import { BrowserStorage } from './fixtures/browser-storage.ts'
 
 const require = createRequire(import.meta.url), root = resolve(import.meta.dirname, '..')
 const { RemoteStream } = require('@deepseek-ai/dsh-api-gateway/client') as typeof import('@deepseek-ai/dsh-api-gateway/client')
@@ -38,7 +39,7 @@ async function fixture(t: TestContext, initial = metadata()) {
   const writes: SourceOperation[] = [], references: SessionReference[] = []
   const pendingCatalogs = new Set<ReturnType<typeof Promise.withResolvers<Awaited<ReturnType<HhpiRemoteApi['catalog']>>>>>()
   let advertised = [initial, peer], nextCatalog: Promise<Awaited<ReturnType<HhpiRemoteApi['catalog']>>> | undefined
-  const catalog = (sessions: SourceSession[]) => ({ ok: true as const, value: { protocol: 1 as const, legacyHapi: false, sessions, sources: [] } })
+  const catalog = (sessions: SourceSession[]) => ({ ok: true as const, value: { protocol: 1 as const, storageScope: 'synthetic-source', legacyHapi: false, sessions, sources: [] } })
   const api: HhpiRemoteApi = {
     catalog: () => { const pending = nextCatalog; nextCatalog = undefined; return pending ?? Promise.resolve(catalog(advertised)) },
     read: async request => ({ ok: true, value: index.read(request) }),
@@ -51,7 +52,7 @@ async function fixture(t: TestContext, initial = metadata()) {
     searchResultLimit: 100, refresh: async () => {}, binding: () => undefined,
     retainInfo: () => store({ referenceCount: 0, retainedBy: {} }) } as unknown as ISessions
   ctx.reflect.provide('remote', { $stream: options => new RemoteStream({ generation: store({} as never) }, options) } as Context['remote'])
-  const sessions = new Sessions(ctx, original, api)
+  const sessions = new Sessions(ctx, original, api, { storage: new BrowserStorage(), scope: 'synthetic-source' })
   t.after(async () => {
     for (const reference of references.reverse()) reference.release()
     sessions.dispose()
@@ -81,6 +82,14 @@ async function fixture(t: TestContext, initial = metadata()) {
     try { index.edit(value, () => {}); await accepted.promise } finally { stop() }
   }
   return { sessions, face, reference, peer, writes, row, retain, holdCatalog, accept,
+    observe: async (operationId: string) => {
+      const retired = Promise.withResolvers<void>(), stop = face.subscribe(() => { if (!face.getSnapshot().pendingSubmissions.length) retired.resolve() })
+      try {
+        index.edit(index.session, () => index.put('native-user-message', { type: 'user/message', time: 1001, surfaceOp: 'append',
+          data: { id: 'native-user-message', role: 'user', source: { kind: 'user-rpc', rpcId: operationId }, content: [{ type: 'text', text: 'hello' }] } } as EventInput))
+        await retired.promise
+      } finally { stop() }
+    },
     advertise: (values: SourceSession[]) => { advertised = values } }
 }
 
@@ -98,6 +107,8 @@ test('a late catalog cannot revoke a newer accepted send capability or replace i
   assert.equal((await f.face.prompt([{ type: 'text', text: 'hello' }], 'queue', undefined, pendingSend.requestId)).ok, true)
   assert.equal(f.writes.length, 1)
   assert.equal(f.writes[0]!.operationId, pendingSend.requestId)
+  assert.equal(f.face.getSnapshot().pendingSubmissions.length, 1, 'the receipt cannot retire an echo before its native user message is observed')
+  await f.observe(pendingSend.requestId)
   assert.equal(f.face.getSnapshot().pendingSubmissions.length, 0)
   f.reference.release()
   const reopened = f.retain(); await reopened.ready
@@ -121,9 +132,8 @@ test('a late catalog cannot restore permission revoked by the accepted source', 
   assert.equal(f.face.metadata.getSnapshot().capabilities.send, false, 'a stale catalog must not regrant revoked send permission')
   assert.deepEqual(f.row(), revoked)
   const retirement: string[] = []
-  const submission = f.face.beginSubmission({ mode: 'queue', text: 'retained draft', attachments: [], onRetire: value => { retirement.push(value.reason) } })
-  assert.equal((await f.face.prompt([{ type: 'text', text: 'retained draft' }], 'queue', undefined, submission.requestId)).ok, false)
-  assert.deepEqual(retirement, ['failed'])
+  assert.throws(() => f.face.beginSubmission({ mode: 'queue', text: 'retained draft', attachments: [], onRetire: value => { retirement.push(value.reason) } }), /does not support send/)
+  assert.deepEqual(retirement, [], 'rejected local admission leaves the original draft in its input owner')
   assert.equal(f.face.getSnapshot().pendingSubmissions.length, 0)
   assert.equal(f.writes.length, 0)
 })

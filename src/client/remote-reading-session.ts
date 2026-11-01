@@ -11,10 +11,12 @@ interface PaneTag { binding?: SessionBinding }
 
 /** The official reader owns navigation/assembly. All mutations retain their canonical native owner. */
 export class RemotePaneSession implements SessionFace {
+  readonly inputCommitPolicy = 'after-acceptance' as const
   readonly sessionId: SessionFace['sessionId']
   readonly projections: SessionFace['projections']
   readonly historyRead: RemoteSourceSession['historyRead']
   readonly metadata: RemoteSourceSession['metadata']
+  readonly deliveries: RemoteSourceSession['deliveries']
   readonly ready: Promise<void>
   /** Direct sources use accepted-page cache sharing; no speculative prefetch is advertised. */
   readonly prefetchOlderPage?: () => Promise<void>
@@ -43,6 +45,7 @@ export class RemotePaneSession implements SessionFace {
       this.assertLive(); return owner.historyRead.openView(id, budget, signal, this.cacheId)
     } }
     this.metadata = owner.metadata
+    this.deliveries = owner.deliveries
     this.state = { ...owner.getSnapshot(), openState: 'loading', hasMore: false, loadingOlder: false }
     this.stopOwner = owner.subscribe(() => { this.publish() })
     this.ready = Promise.all([ownerReady, this.opened.promise]).then(() => { this.assertLive() })
@@ -56,6 +59,7 @@ export class RemotePaneSession implements SessionFace {
     this.cacheId = paneId
   }
   checkpointReading(): void { if (!this.disposed) this.owner.history.persist() }
+  discardSubmission(operationId: string): void { this.owner.discardSubmission(operationId) }
   readonly getSnapshot = (): SessionSnapshot => this.state
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -143,7 +147,10 @@ export class RemotePaneSession implements SessionFace {
     this.assertLive(); return this.owner.beginSubmission(...args)
   }
   async prompt(...args: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
-    this.assertLive(); return this.owner.prompt(...args)
+    // Conversation yields a paint after durable admission. Releasing this
+    // presentation during that yield must not strand an already saved click.
+    if (args[1] !== 'queue' || !this.owner.ownsSavedSubmission(args[3])) this.assertLive()
+    return this.owner.prompt(...args)
   }
   async cancel(...args: Parameters<SessionFace['cancel']>): ReturnType<SessionFace['cancel']> {
     this.assertLive(); return this.owner.cancel(...args)

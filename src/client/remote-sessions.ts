@@ -15,6 +15,7 @@ import { decodeSourceAttachmentValue } from '../source-attachment-types.ts'
 import { SourceReadingCache, type SourceReadingStorage } from './remote-reading-cache.ts'
 import { installRemoteReadingMemory } from './remote-reading-memory.ts'
 import { browserSourceStorage } from './remote-storage.ts'
+import { RemoteOutbox, type SourceDeliveryStore } from './remote-outbox.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession } }
@@ -37,20 +38,25 @@ function sourceError(message: string, indeterminate = false): RemoteError<'hhpi/
 interface TrackedOperation { readonly fingerprint: string; readonly promise: Promise<SourceReceipt> }
 
 export class RemoteSourceSession implements SessionFace {
+  readonly inputCommitPolicy = 'after-acceptance' as const
   readonly eventSource = new MutableSessionEventSource()
   readonly metadata: Value<SourceSession>
   readonly historyRead: { readonly version: 1; openView(viewId: string, budget?: Budget, signal?: AbortSignal, cacheId?: string): Promise<HistoryFeedV1> }
   readonly projections: ProjectionsFace
+  readonly deliveries: SourceDeliveryStore
   private readonly state: Value<SessionSnapshot>
   private readonly projectionValues = new Map<string, Value<unknown>>()
   private readonly submissions = new Map<string, BeginSubmissionInput>()
   private readonly operations = new Map<string, TrackedOperation>()
   private readonly stopMetadata: () => void
+  private readonly stopDeliveries: () => void
+  private readonly stopRetirements: () => void
+  private durableIds = new Set<string>()
   private readonly lifetime = new AbortController()
   private disposed = false
   readonly ready: Promise<void>
 
-  constructor(readonly sessionId: SessionId, metadata: SourceSession, readonly history: RemoteSourceHistory, private readonly api: HhpiRemoteApi) {
+  constructor(readonly sessionId: SessionId, metadata: SourceSession, readonly history: RemoteSourceHistory, private readonly api: HhpiRemoteApi, private readonly outbox?: RemoteOutbox) {
     this.metadata = new Value(metadata)
     this.state = new Value<SessionSnapshot>({ sessionId, pendingSubmissions: [], running: metadata.status === 'running' || metadata.status === 'waiting', subagent: null,
       removed: false, openState: 'loading', openError: null, hasMore: false, loadingOlder: false, promptError: null, blank: false,
@@ -65,6 +71,10 @@ export class RemoteSourceSession implements SessionFace {
       return history.openView(viewId, budget, signal, cacheId)
     } }
     this.stopMetadata = history.subscribeSession(session => { if (!history.metadataFromCache && this.metadata.getSnapshot() !== session) this.update(session) })
+    this.deliveries = outbox?.view(sessionId) ?? new Value([])
+    this.stopDeliveries = this.deliveries.subscribe(() => { this.syncDeliveries() })
+    this.stopRetirements = outbox?.onRetire((id, observed) => { this.retire(id, observed ? { reason: 'observed', attachments: [] } : { reason: 'failed' }) }) ?? (() => {})
+    this.syncDeliveries()
     this.update(metadata)
     this.ready = history.prepare(this.lifetime.signal).then(page => {
       if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
@@ -78,6 +88,19 @@ export class RemoteSourceSession implements SessionFace {
   }
   readonly getSnapshot = (): SessionSnapshot => this.state.getSnapshot()
   readonly subscribe = (listener: () => void): (() => void) => this.state.subscribe(listener)
+  private syncDeliveries(): void {
+    if (this.disposed) return
+    const deliveries = this.deliveries.getSnapshot(), prior = this.durableIds
+    this.durableIds = new Set(deliveries.map(entry => entry.operation.operationId))
+    const state = this.state.getSnapshot()
+    this.state.set({ ...state, pendingSubmissions: [...state.pendingSubmissions.filter(entry => !prior.has(entry.requestId) && !this.durableIds.has(entry.requestId)),
+      ...deliveries.map(entry => ({ requestId: entry.operation.operationId as SessionRequestId, placement: 'transcript' as const,
+        time: entry.createdAt, text: entry.operation.text ?? '', attachments: [] }))] })
+  }
+  discardSubmission(operationId: string): void { this.outbox?.discard(operationId) }
+  ownsSavedSubmission(operationId: string | undefined): boolean {
+    return operationId !== undefined && this.outbox?.get(operationId)?.operation.sessionId === this.sessionId
+  }
   update(session: SourceSession): void {
     if (this.disposed) return
     if (session.id !== this.sessionId) throw new Error('Source metadata crossed session identities')
@@ -90,7 +113,16 @@ export class RemoteSourceSession implements SessionFace {
   }
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
     if (this.disposed) throw sourceError('The source view was released.')
+    if (input.attachments.length) throw sourceError('This source currently accepts text input. Your files and draft have been kept.')
     const requestId = crypto.randomUUID() as SessionRequestId
+    if (input.mode === 'queue' && this.outbox) {
+      const metadata = this.metadata.getSnapshot()
+      const offline = metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline'
+      if (!offline && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+      this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text: input.text })
+      this.submissions.set(requestId, input)
+      return { requestId, abandon: () => { this.outbox?.abandon(requestId) } }
+    }
     this.submissions.set(requestId, input)
     this.state.set({ ...this.state.getSnapshot(), pendingSubmissions: [...this.state.getSnapshot().pendingSubmissions,
       { requestId, placement: input.mode === 'steer' ? 'steering' : 'transcript', time: Date.now(), text: input.text, attachments: input.attachments }] })
@@ -105,6 +137,36 @@ export class RemoteSourceSession implements SessionFace {
   }
   async prompt(...[content, mode, signal, suppliedId]: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
     const requestId = suppliedId ?? crypto.randomUUID() as SessionRequestId
+    if (mode === 'queue' && this.outbox) {
+      try {
+        if (content.some(part => part.type !== 'text')) {
+          this.outbox.abandon(requestId)
+          throw sourceError('This source currently accepts text input. Your files and draft have been kept.')
+        }
+        const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
+        const saved = this.outbox.get(requestId)
+        if (!saved) signal?.throwIfAborted()
+        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text)) {
+          this.outbox.abandon(requestId)
+          throw sourceError('A saved submission cannot be changed after admission.')
+        }
+        if (!saved) {
+          if (this.disposed) throw sourceError('The source view was released.')
+          signal?.throwIfAborted()
+          const metadata = this.metadata.getSnapshot()
+          const offline = metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline'
+          if (!offline && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+          this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text })
+        }
+        this.outbox.start(requestId)
+        if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
+        return { ok: true, value: { accepted: true } }
+      } catch (cause) {
+        const error = cause instanceof RemoteError ? cause as RemoteError<'hhpi/source'> : sourceError(cause instanceof Error ? cause.message : 'The message could not be saved.')
+        if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
+        return { ok: false, error }
+      }
+    }
     if (signal?.aborted) {
       this.retire(requestId, { reason: 'failed' })
       signal.throwIfAborted()
@@ -178,8 +240,9 @@ export class RemoteSourceSession implements SessionFace {
   async loadThrough(): Promise<void> { throw sourceError('History navigation requires the current Pane reader.') }
   dispose(): void {
     if (this.disposed) return
-    this.disposed = true; this.lifetime.abort(); this.stopMetadata()
-    for (const id of this.submissions.keys()) this.retire(id, { reason: 'failed' })
+    this.disposed = true; this.lifetime.abort(); this.stopMetadata(); this.stopDeliveries(); this.stopRetirements()
+    for (const id of this.submissions.keys()) if (!this.outbox?.get(id)) this.retire(id, { reason: 'failed' })
+    this.submissions.clear()
   }
 }
 
@@ -202,6 +265,7 @@ export class RemoteSessions implements ISessions {
   private readingCache: SourceReadingCache | undefined
   private readingStorage: SourceReadingStorage | undefined
   private storageRevoked = false
+  private readonly outbox: RemoteOutbox
   private stopReadingMemory: (() => void) | undefined
   private refreshRead: Promise<void> | undefined
   private refreshAbort: AbortController | undefined
@@ -214,6 +278,7 @@ export class RemoteSessions implements ISessions {
   legacyHapi = false
 
   constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi, readingStorage?: SourceReadingStorage) {
+    this.outbox = new RemoteOutbox(async operation => result(await this.api.operate(operation)))
     if (original.historySource) this.historySource = original.historySource
     if (original.windowCommit) this.windowCommit = original.windowCommit
     this.capabilityState = new Value({ catalogReady: false, legacyHapi: false })
@@ -239,6 +304,7 @@ export class RemoteSessions implements ISessions {
       this.readingCache.clear(); this.readingCache.dispose(); this.readingCache = undefined
     }
     this.readingStorage = access
+    this.outbox.clear(); this.outbox.setStorage(access)
     if (access) {
       this.readingCache = new SourceReadingCache(access)
       for (const session of this.readingCache.sessions()) this.metadata.set(session.id, { ...session, status: 'offline' })
@@ -265,7 +331,7 @@ export class RemoteSessions implements ISessions {
   revokeReadingSource(id: string): void {
     if (!isSourceSessionId(id)) throw new Error('Only a native HHPI source reading cache can be revoked.')
     this.revokedReadingSources.add(id)
-    this.removeReadingSource(id); this.publish()
+    this.outbox.revokeSession(id); this.removeReadingSource(id); this.publish()
   }
   get searchResultLimit(): number { return this.original.searchResultLimit }
   ownsBinding(binding: SessionBinding): boolean {
@@ -317,6 +383,9 @@ export class RemoteSessions implements ISessions {
       for (const session of catalog.sessions) if (!this.revokedReadingSources.has(session.id) && unchanged(session.id)) {
         this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session)
       }
+      if (catalog.storageScope && catalog.storageScope === this.readingStorage?.scope) {
+        this.outbox.acceptCatalog([...this.metadata.values()].filter(session => !this.revokedReadingSources.has(session.id)))
+      }
       this.publish()
       this.capabilityState.set({ catalogReady: true, legacyHapi: catalog.legacyHapi })
     })().finally(() => {
@@ -362,6 +431,7 @@ export class RemoteSessions implements ISessions {
           changes: (request, signal) => followSourceChanges(this.ctx.remote, (cursor, generation) => this.api.changes(cursor, generation), request, signal),
         }, undefined, this.readingCache)
         this.histories.set(target, history)
+        history.subscribeEntries(entries => { this.outbox.observe(target, entries) })
         // Subscribe once per shared history, not per Pane/Session face. Cached
         // metadata replay on a later retain is not a new native observation.
         // History disposal clears this subscription with its accepted cache.
@@ -372,13 +442,14 @@ export class RemoteSessions implements ISessions {
           this.metadata.set(target, session)
           this.historyMetadataRevisions.set(target, ++this.historyMetadataRevision)
           this.records.get(target)?.session.update(session)
+          this.outbox.updateSession(session)
           // Body-only changes often repeat metadata; avoid rebuilding the
           // complete sidebar catalog for every accepted output chunk.
           if (changed) this.publish()
         })
       }
       const scope = createScope(this.ctx, target)
-      const session = new RemoteSourceSession(target, metadata, history, this.api)
+      const session = new RemoteSourceSession(target, metadata, history, this.api, this.outbox)
       const binding: SessionBinding = { sessionId: target, session, eventSource: session.eventSource, ctx: scope.ctx }
       record = { scope, session, binding, counts: new Map() }
       this.records.set(target, record)
@@ -441,7 +512,7 @@ export class RemoteSessions implements ISessions {
     this.lifetime.abort(); if (this.timer) clearInterval(this.timer); this.stopOriginal()
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()
-    this.readingCache?.dispose(); this.stopReadingMemory?.()
+    this.readingCache?.dispose(); this.stopReadingMemory?.(); this.outbox.dispose()
     this.records.clear(); this.histories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
   }
 }
