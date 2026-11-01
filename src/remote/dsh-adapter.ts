@@ -45,10 +45,9 @@ export class DirectDshAdapter implements SourceAdapter {
         return sessions.filter(session => stored.has(session.nativeId));
     }
     private async session(sessionId: string, signal?: AbortSignal): Promise<SourceSession> {
-        this.identity(sessionId);
-        const session = (await this.owner.catalog()).find(session => session.id === sessionId);
+        const nativeId = this.identity(sessionId);
+        const session = await this.owner.readingSession(nativeId, signal);
         signal?.throwIfAborted();
-        if (!session) throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner no longer advertises this native session.');
         return session;
     }
     private async refresh(session: SourceSession, signal?: AbortSignal): Promise<State> {
@@ -82,6 +81,7 @@ export class DirectDshAdapter implements SourceAdapter {
     }
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
         const session = await this.session(request.sessionId, signal), state = await this.refresh(session, signal);
+        this.owner.assertReadingSession(session.nativeId);
         if (request.epoch && request.epoch !== state.epoch) throw new SourceError('STALE_VERSION', 'The native DSH source generation changed.');
         const { epoch: _epoch, ...nativeRequest } = request;
         const page = pageNativeEvents(state.session, state.snapshot, nativeRequest);
@@ -93,6 +93,7 @@ export class DirectDshAdapter implements SourceAdapter {
         let version = request.version, epoch = request.epoch, opening = true;
         while (!combined.aborted) {
             const session = await this.session(request.sessionId, combined), state = await this.refresh(session, combined);
+            this.owner.assertReadingSession(session.nativeId);
             if (epoch !== state.epoch) {
                 yield { session, epoch: state.epoch, base: version, version: state.version, reset: true, upserts: [], removed: [] };
                 epoch = state.epoch; version = state.version;

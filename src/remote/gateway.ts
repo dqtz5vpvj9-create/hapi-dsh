@@ -59,6 +59,7 @@ export class SourceGateway {
         }).catch((error: unknown) => {
             if (this.disposed) return;
             this.catalogOnline.set(adapter.id, false);
+            if (error instanceof SourceError && error.code === 'UNSUPPORTED') this.catalogs.delete(adapter.id);
             if (error instanceof SourceError && error.code === 'INVALID_REQUEST') {
                 this.catalogs.delete(adapter.id);
                 this.catalogErrors.set(adapter.id, error);

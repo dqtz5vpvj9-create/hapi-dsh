@@ -1,13 +1,18 @@
 /** Original HAPI owner bridge for native DSH identities and writes. */
 import { HapiClient } from '../hapi/client.ts'
 import { HapiRequestError, type HapiSession, type HapiSessionSummary, type HapiApprovalAnswer } from '../codex/contracts.ts'
-import { SourceError } from './errors.ts'
+import { SourceError, waitFor } from './errors.ts'
 import { parseSourceSessionId, sourceSessionId, type DirectDshConfig, type SourceOperation, type SourceReceipt, type SourceSession } from './protocol.ts'
 
 export interface DshOwnerConnectionOptions {
   env?: NodeJS.ProcessEnv
   fetch?: typeof fetch
+  now?: () => number
 }
+
+/** An owner identity may authorize cached local reading for a bounded outage. */
+const READING_IDENTITY_LEASE_MS = 15 * 60_000
+interface KnownOwner { session: SourceSession; verifiedAt: number }
 
 function nativeDshId(session: Pick<HapiSessionSummary, 'metadata'>): string | undefined {
   const metadata = session.metadata
@@ -75,10 +80,16 @@ export class DshOwnerConnection {
   readonly machineId: string
   readonly engine = 'dsh' as const
   private readonly client: HapiClient
+  private readonly now: () => number
+  private readonly knownOwners = new Map<string, KnownOwner>()
+  private readonly readable = new Map<string, KnownOwner>()
+  private catalogRead: Promise<SourceSession[]> | undefined
+  private disposed = false
 
   constructor(private readonly config: DirectDshConfig, options: DshOwnerConnectionOptions = {}) {
     this.id = config.id
     this.machineId = config.machineId
+    this.now = options.now ?? Date.now
     const env = options.env ?? process.env
     const token = env[config.owner.tokenEnv]
     if (!token?.trim()) throw new Error(`Set ${config.owner.tokenEnv} to the HAPI access token before starting`)
@@ -87,27 +98,90 @@ export class DshOwnerConnection {
   }
 
   async catalog(): Promise<SourceSession[]> {
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    if (!this.catalogRead) {
+      const work = this.readCatalog().finally(() => { if (this.catalogRead === work) this.catalogRead = undefined })
+      this.catalogRead = work
+    }
+    return this.catalogRead
+  }
+
+  private revoke(): void { this.knownOwners.clear(); this.readable.clear() }
+
+  private forgetOwner(ownerId: string): void {
+    const known = this.knownOwners.get(ownerId)
+    this.knownOwners.delete(ownerId)
+    if (known && this.readable.get(known.session.nativeId)?.session.legacyOrigin?.sessionId === ownerId) this.readable.delete(known.session.nativeId)
+  }
+
+  private async readCatalog(): Promise<SourceSession[]> {
     // HAPI summaries intentionally omit some native locators. Filter on the
     // stable summary fields, then confirm dshSessionId from the detail endpoint.
-    const candidates = (await this.client.listSessions()).filter(summary => dshOwnerCandidate(summary, this.machineId))
-    const rows = await Promise.all(candidates.map(async summary => {
-      let session: HapiSession
-      try { session = await this.client.getSession(summary.id) }
-      catch (error) {
-        if (error instanceof HapiRequestError && error.status === 404) return undefined
-        throw error
+    let rows: Array<{ ownerId: string; known: KnownOwner } | undefined>
+    try {
+      const candidates = (await this.client.listSessions()).filter(summary => dshOwnerCandidate(summary, this.machineId))
+      const advertised = new Set(candidates.map(summary => summary.id))
+      // The owner list is authoritative for deletion, even when a different
+      // session's detail endpoint is temporarily unreachable.
+      for (const id of this.knownOwners.keys()) if (!advertised.has(id)) this.forgetOwner(id)
+      rows = await Promise.all(candidates.map(async summary => {
+        try {
+          const session = toSourceSession(this.config, await this.client.getSession(summary.id))
+          if (!session || this.knownOwners.get(summary.id)?.session.nativeId !== session.nativeId) this.forgetOwner(summary.id)
+          return session ? { ownerId: summary.id, known: { session, verifiedAt: this.now() } } : undefined
+        } catch (error) {
+          if (error instanceof HapiRequestError && error.status === 404) { this.forgetOwner(summary.id); return undefined }
+          if (error instanceof HapiRequestError && (error.status === 401 || error.status === 403)) throw error
+          const known = this.knownOwners.get(summary.id)
+          return known && this.now() - known.verifiedAt < READING_IDENTITY_LEASE_MS ? { ownerId: summary.id, known } : undefined
+        }
+      }))
+    } catch (error) {
+      if (error instanceof HapiRequestError && (error.status === 401 || error.status === 403)) {
+        this.revoke()
+        throw new SourceError('UNSUPPORTED', 'The original DSH owner revoked access to its sessions.')
       }
-      return toSourceSession(this.config, session)
-    }))
+      throw error
+    }
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
 
-    const byNativeId = new Map<string, SourceSession>()
+    const byNativeId = new Map<string, KnownOwner>()
     const ambiguous = new Set<string>()
+    this.knownOwners.clear()
     for (const row of rows) {
       if (!row) continue
-      if (byNativeId.has(row.nativeId)) ambiguous.add(row.nativeId)
-      else byNativeId.set(row.nativeId, row)
+      this.knownOwners.set(row.ownerId, row.known)
+      const nativeId = row.known.session.nativeId
+      if (byNativeId.has(nativeId)) ambiguous.add(nativeId)
+      else byNativeId.set(nativeId, row.known)
     }
-    return [...byNativeId.values()].filter(row => !ambiguous.has(row.nativeId)).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+    this.readable.clear()
+    for (const [id, known] of byNativeId) if (!ambiguous.has(id)) this.readable.set(id, known)
+    return [...this.readable.values()].map(value => value.session).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+  }
+
+  /** Existing history uses a previously verified native identity, never a guessed path. */
+  async readingSession(nativeId: string, signal?: AbortSignal): Promise<SourceSession> {
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    signal?.throwIfAborted()
+    let known = this.readable.get(nativeId)
+    if (!known || this.now() - known.verifiedAt >= READING_IDENTITY_LEASE_MS) {
+      await waitFor(this.catalog(), signal)
+      known = this.readable.get(nativeId)
+    }
+    if (!known || this.now() - known.verifiedAt >= READING_IDENTITY_LEASE_MS) {
+      throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner must confirm this native session before more history can be read.')
+    }
+    return known.session
+  }
+
+  /** Recheck deletion/revocation after local IO before publishing another page. */
+  assertReadingSession(nativeId: string): void {
+    const known = this.readable.get(nativeId)
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    if (!known || this.now() - known.verifiedAt >= READING_IDENTITY_LEASE_MS) {
+      throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner no longer authorizes this cached reading identity.')
+    }
   }
 
   private async ownerSession(nativeId: string): Promise<HapiSession> {
@@ -194,5 +268,5 @@ export class DshOwnerConnection {
     }
   }
 
-  async dispose(): Promise<void> { await this.client.close() }
+  async dispose(): Promise<void> { this.disposed = true; this.revoke(); await this.client.close() }
 }

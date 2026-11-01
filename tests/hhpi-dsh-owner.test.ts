@@ -28,9 +28,11 @@ function makeSession(patch: Partial<HapiSession> & { id?: string; machineId?: st
 class OwnerFixture {
   readonly sessions = new Map<string, HapiSession>()
   readonly detailOverrides = new Map<string, HapiSession>()
+  readonly detailFailures = new Map<string, number>()
   readonly calls: Array<{ method: string; path: string; body?: unknown }> = []
   listSummaryStrippedNativeId = false
   loseSendAck = false
+  listFailure: number | undefined
 
   fetch: typeof fetch = async (input, init) => {
     const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url)
@@ -39,6 +41,7 @@ class OwnerFixture {
     this.calls.push({ method, path: url.pathname, ...(body === undefined ? {} : { body }) })
 
     if (url.pathname === '/api/auth' && method === 'POST') return Response.json({ token: 'fixture-hapi-session-token' })
+    if (url.pathname === '/api/sessions' && this.listFailure) return Response.json({ error: 'Synthetic catalog failure' }, { status: this.listFailure })
     if (url.pathname === '/api/sessions' && method === 'GET') return Response.json({ sessions: [...this.sessions.values()].map(session => {
       const summary = structuredClone(session)
       if (summary.metadata) {
@@ -50,6 +53,8 @@ class OwnerFixture {
     const match = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname)
     if (match && method === 'GET') {
       const id = decodeURIComponent(match[1]!)
+      const failure = this.detailFailures.get(id)
+      if (failure) return Response.json({ error: 'Synthetic detail failure' }, { status: failure })
       const session = this.detailOverrides.get(id) ?? this.sessions.get(id)
       return session ? Response.json({ session: structuredClone(session) }) : Response.json({ error: 'not found' }, { status: 404 })
     }
@@ -62,8 +67,8 @@ class OwnerFixture {
     throw new Error(`Unexpected owner request: ${method} ${url.pathname}`)
   }
 
-  connection(): DshOwnerConnection {
-    return new DshOwnerConnection(config, { env: { DSH_OWNER_TOKEN: token }, fetch: this.fetch })
+  connection(now?: () => number): DshOwnerConnection {
+    return new DshOwnerConnection(config, { env: { DSH_OWNER_TOKEN: token }, fetch: this.fetch, ...(now ? { now } : {}) })
   }
 }
 
@@ -169,5 +174,51 @@ test('cancel and approval use the current exact owner, turn, and HAPI request id
     await owner.operate('native-dsh-session', decline)
     const deny = fixture.calls.find(call => call.method === 'POST' && call.path.endsWith('/permissions/permission-7/deny'))
     assert.deepEqual(deny?.body, { decision: 'denied' })
+  } finally { await owner.dispose() }
+})
+
+test('verified reading survives a temporary owner outage without extending its authorization lease', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession())
+  let now = 100
+  const owner = fixture.connection(() => now)
+  try {
+    const [verified] = await owner.catalog()
+    fixture.listFailure = 503
+    const calls = fixture.calls.length
+    assert.equal(await owner.readingSession('native-dsh-session'), verified)
+    assert.equal(fixture.calls.length, calls, 'local reads do not issue an owner request')
+    await assert.rejects(owner.readingSession('unknown-native-session'))
+    await assert.rejects(owner.operate('native-dsh-session', operation('send')))
+    assert.equal(fixture.calls.some(call => call.path.endsWith('/messages')), false, 'a read lease never authorizes a native write')
+    now += 15 * 60_000
+    await assert.rejects(owner.readingSession('native-dsh-session'))
+    assert.throws(() => owner.assertReadingSession('native-dsh-session'), /no longer authorizes/)
+    fixture.listFailure = undefined
+    assert.equal((await owner.readingSession('native-dsh-session')).nativeId, 'native-dsh-session')
+  } finally { await owner.dispose() }
+})
+
+test('partial detail outages keep healthy sources readable while deletion and access revocation invalidate cached identities', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('healthy', makeSession({ id: 'healthy' }))
+  fixture.sessions.set('flaky', makeSession({ id: 'flaky', nativeId: 'other-native' }))
+  const owner = fixture.connection()
+  try {
+    await owner.catalog()
+    fixture.detailFailures.set('flaky', 503)
+    fixture.sessions.set('new-unverified', makeSession({ id: 'new-unverified', nativeId: 'unverified' }))
+    fixture.detailFailures.set('new-unverified', 503)
+    assert.deepEqual((await owner.catalog()).map(row => row.nativeId).sort(), ['native-dsh-session', 'other-native'])
+    assert.equal((await owner.readingSession('native-dsh-session')).legacyOrigin?.sessionId, 'healthy')
+    await assert.rejects(owner.readingSession('unverified'), { code: 'TARGET_UNAVAILABLE' })
+
+    fixture.sessions.delete('healthy')
+    await owner.catalog()
+    assert.throws(() => owner.assertReadingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+    await assert.rejects(owner.readingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+    fixture.listFailure = 403
+    await assert.rejects(owner.catalog(), { code: 'UNSUPPORTED' })
+    assert.throws(() => owner.assertReadingSession('other-native'), { code: 'TARGET_UNAVAILABLE' })
   } finally { await owner.dispose() }
 })

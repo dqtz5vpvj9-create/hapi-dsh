@@ -22,11 +22,13 @@ test('a migrated native DSH source keeps continuous pages, live append and exact
     const config: DirectDshConfig = { id: 'native-dsh', machineId: 'machine', engine: 'dsh', root,
         owner: { hubId: 'old-hub', url: 'http://owner.fixture', tokenEnv: 'FIXTURE_OWNER_TOKEN' } };
     const writes: unknown[] = [], paths: string[] = [];
+    let ownerOffline = false;
     const metadata = { name: 'Original native', path: '/synthetic', flavor: 'dsh', machineId: 'machine', dshSessionId: 'native-root' };
     const sourceRow = { id: 'old-source', metadata, active: true, thinking: false, activeAt: 100, updatedAt: 100,
         metadataVersion: 1, agentStateVersion: 0, namespace: 'fixture', seq: 0, createdAt: 100, thinkingAt: 0, agentState: {} };
     const fetcher: typeof fetch = async (input, init) => {
         const url = new URL(String(input)); paths.push(`${init?.method ?? 'GET'} ${url.pathname}`);
+        if (ownerOffline) throw new Error('Synthetic owner network outage');
         if (url.pathname === '/api/auth') return Response.json({ token: 'fixture-jwt' });
         if (url.pathname === '/api/sessions') {
             const { dshSessionId: _native, ...summary } = metadata;
@@ -45,6 +47,8 @@ test('a migrated native DSH source keeps continuous pages, live append and exact
     assert.equal(catalog.legacyHapi, false); assert.equal(catalog.sessions.length, 1);
     assert.deepEqual(session.legacyOrigin, { hubId: 'old-hub', sessionId: 'old-source' });
     assert.equal(session.id, sourceSessionId({ sourceId: config.id, machineId: config.machineId, engine: 'dsh', nativeId: 'native-root' }));
+    ownerOffline = true;
+    const verifiedRequests = paths.length;
     const baseline = await gateway.read({ sessionId: session.id }, access);
     let page = baseline;
     for (let i = 0; i < 6; i++) {
@@ -62,10 +66,13 @@ test('a migrated native DSH source keeps continuous pages, live append and exact
     const update = await changes.next();
     assert.equal(update.value?.base, baseline.version); assert.deepEqual(update.value?.upserts.map(entry => entry.event.seq), [1120]);
     assert.equal(update.value?.reset, false); signal.abort(); await changes.return?.();
+    assert.equal(paths.length, verifiedRequests, 'existing native history and live append require no online owner catalog');
+    ownerOffline = false;
     const operation = { sessionId: session.id, operationId: 'one-message', kind: 'send' as const, text: 'Continue' };
     const [one, two] = await Promise.all([gateway.operate(operation, access), gateway.operate(operation, access)]);
     assert.equal(one.status, 'accepted'); assert.deepEqual(one, two);
     assert.deepEqual(writes, [{ text: 'Continue', localId: 'one-message', deliveryMode: 'queue' }]);
+    assert.ok(paths.length > verifiedRequests, 'writes revalidate the current owner instead of trusting the reading lease');
     assert.equal(paths.some(path => path === 'GET /api/sessions/old-source/messages'), false, 'HAPI bodies never enter native DSH reading');
     assert.equal(writer.access, 'write', 'opening and paging did not transfer native execution ownership');
 });
