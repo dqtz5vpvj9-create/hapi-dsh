@@ -65,6 +65,12 @@ test('release verification admits the actual current client and running Host ide
     assert.deepEqual(value.requests, ['/', '/hapi-dsh/bootstrap', '/client.js', '/', '/hapi-dsh/bootstrap', '/client.js']);
 });
 
+test('release verification accepts the official carrier semicolon and source-map trailer', async t => {
+    const value = await fixture(t); value.activate();
+    value.control.trailer = ';\n//# sourceMappingURL=??hapi-dsh/client.js.map&rev=current\n';
+    assert.equal((await value.verify(hostBuildId)).ready, true);
+});
+
 test('a healthy old client fails both client-only and Host publication checks before smoke can run', async t => {
     const value = await fixture(t); value.activate();
     value.control.client = Buffer.from('window.oldWorkspace = true;\n');
@@ -75,7 +81,7 @@ test('a healthy old client fails both client-only and Host publication checks be
 
 test('an unchanged client prefix cannot hide extra executable bytes behind its source-map trailer', async t => {
     const value = await fixture(t); value.activate();
-    for (const trailer of ['\nwindow.extraCode = true;\n', '//# sourceMappingURL=/client.map\nwindow.extraCode = true;\n',
+    for (const trailer of ['\nwindow.extraCode = true;\n', ';\nwindow.extraCode = true;\n//# sourceMappingURL=/client.map\n', '//# sourceMappingURL=/client.map\nwindow.extraCode = true;\n',
         '//# sourceMappingURL=/client.map\u2028window.extraCode=true;']) {
         value.control.trailer = trailer;
         await assert.rejects(value.verify(hostBuildId), error => error instanceof DeploymentBuildMismatch && /executable bytes/.test(error.message));

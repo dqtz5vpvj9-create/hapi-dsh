@@ -2,7 +2,7 @@
 export class DeploymentBuildMismatch extends Error {}
 
 /**
- * The official client route adds a source-map trailer to the completed bundle.
+ * The official client route adds a semicolon and source-map trailer to the completed bundle.
  * Host identity comes from its authenticated, uncached bootstrap response;
  * reading an on-disk client alone cannot identify the running Host process.
  */
@@ -27,7 +27,7 @@ export async function verifyDeploymentBuild({ launch, headers, localClient, expe
         throw new DeploymentBuildMismatch('The completed client build did not reach the active release; history smoke would test a stale client');
     }
     const trailer = served.subarray(localClient.length).toString('utf8');
-    if (trailer && !/^(?:\r?\n)?\/\/# sourceMappingURL=[^\s\u2028\u2029]+(?:\r?\n)?$/.test(trailer)) {
+    if (trailer && !/^;?(?:\r?\n)?\/\/# sourceMappingURL=[^\s\u2028\u2029]+(?:\r?\n)?$/.test(trailer)) {
         throw new DeploymentBuildMismatch('The served client adds executable bytes beyond the completed workspace bundle');
     }
     let hostIdentity = { status: 'not-requested' };
