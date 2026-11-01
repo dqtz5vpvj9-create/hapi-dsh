@@ -4,6 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceTranslate } from './locales.ts'
 import type {} from '../hapi-agent/projection-types.ts'
 import type {} from './remote-sessions.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
 
 /** Use the official composer admission face, preserving other plugins' blocks. */
 export function installNativeComposerAdmission(
@@ -23,17 +24,16 @@ export function installNativeComposerAdmission(
         if (disposed) return
         const needed = new Set<SessionId>()
         for (const row of Object.values(sessions.list.getSnapshot().byId)) {
-            // The legacy HAPI path accepts durable delivery. Direct HHPI input
-            // follows its source capability, including metadata-only recovery.
+            // Submitted HHPI messages have their own durable delivery lifetime.
+            // An offline observation cannot establish a permanent capability refusal.
             const source = row.projectionValues?.hhpiSource
             const observed = row.projectionValues?.hapiObserved
             const engineOwned = Boolean(observed && (observed.controlledByUser || observed.readOnlyReason === 'engine-owned'))
-            const unavailable = source?.status === 'offline'
-            const readOnly = source && !source.capabilities.send
-            if (!unavailable && !readOnly && !engineOwned) continue
+            const readOnly = source && !sourceIsOffline(source) && !source.capabilities.send
+            if (!readOnly && !engineOwned) continue
             const id = row.id
             needed.add(id)
-            const reason = locale.t(unavailable ? 'sourceDisconnected' : readOnly ? 'sourceReadOnly' : 'sourceLocallyControlled')
+            const reason = locale.t(readOnly ? 'sourceReadOnly' : 'sourceLocallyControlled')
             const store = blocks.storeFor(id)
             let entry = entries.get(id)
             if (entry && entry.store !== store) { remove(id, entry); entry = undefined }

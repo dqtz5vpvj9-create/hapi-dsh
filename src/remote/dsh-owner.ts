@@ -2,6 +2,7 @@
 import { HapiClient } from '../hapi/client.ts'
 import { HapiRequestError, type HapiSession, type HapiSessionSummary, type HapiApprovalAnswer } from '../codex/contracts.ts'
 import { SourceError, waitFor } from './errors.ts'
+import { sourceIsOffline, sourceOffline, sourceOnlineConnection } from '../shared/source-connectivity.ts'
 import { parseSourceSessionId, sourceSessionId, type DirectDshConfig, type SourceOperation, type SourceReceipt, type SourceSession } from './protocol.ts'
 
 export interface DshOwnerConnectionOptions {
@@ -31,11 +32,16 @@ function ownerMatches(session: HapiSession, machineId: string, nativeId: string)
     && session.metadata.dshSessionId === nativeId
 }
 
-function toSourceSession(config: DirectDshConfig, session: HapiSession): SourceSession | undefined {
+function toSourceSession(config: DirectDshConfig, session: HapiSession, previous?: SourceSession, now = Date.now()): SourceSession | undefined {
   const nativeId = nativeDshId(session)
   if (!nativeId || session.metadata?.machineId !== config.machineId) return undefined
+  const id = sourceSessionId({ sourceId: config.id, machineId: config.machineId, engine: 'dsh', nativeId })
+  // The same HAPI locator can later refer to a different native conversation.
+  // Availability observations must never transfer its old turn or approvals.
+  if (previous?.id !== id) previous = undefined
 
   const execution = session.execution ?? null
+  const disconnected = execution?.status === 'disconnected' || execution?.status === 'systemError'
   const activeTurnId = session.active && execution?.status === 'active' ? execution.turnId : null
   const requests = session.agentState?.requests ?? {}
   const pendingRequests = Object.entries(requests).map(([id, request]) => ({
@@ -45,30 +51,30 @@ function toSourceSession(config: DirectDshConfig, session: HapiSession): SourceS
     itemId: request.toolCallId ?? null,
     params: { tool: request.tool, arguments: request.arguments, ...(request.blocking === undefined ? {} : { blocking: request.blocking }) },
   }))
-  const status: SourceSession['status'] = !session.active || execution?.status === 'disconnected' || execution?.status === 'systemError'
-    ? execution?.status === 'disconnected' || execution?.status === 'systemError' ? 'offline' : 'idle'
+  const status: SourceSession['status'] = disconnected ? previous?.status ?? 'idle' : !session.active ? 'idle'
     : execution?.waitingOn.length ? 'waiting'
       : activeTurnId || session.thinking ? 'running' : 'idle'
-  const id = sourceSessionId({ sourceId: config.id, machineId: config.machineId, engine: 'dsh', nativeId })
 
-  return {
+  const descriptor: SourceSession = {
     id, sourceId: config.id, machineId: config.machineId, engine: 'dsh', nativeId,
     title: session.metadata?.name?.trim() || session.metadata?.summary?.text?.trim() || nativeId,
     cwd: session.metadata?.path ?? '', updatedAt: session.updatedAt,
-    status, activeTurnId,
+    status, activeTurnId: disconnected ? previous?.activeTurnId ?? activeTurnId : activeTurnId,
+    connection: disconnected && previous?.connection?.state === 'offline' ? previous.connection : sourceOnlineConnection(previous, now),
     // HAPI's Hub normalizes DSH deliveryMode="steer" to "queue". Advertising
     // steer here would report support for a different operation than DSH's
     // live-turn followup protocol.
-    capabilities: {
-      send: session.active,
+    capabilities: disconnected && previous ? previous.capabilities : {
+      send: disconnected || session.active,
       steer: false,
       cancel: session.active && activeTurnId !== null,
       approve: session.active && pendingRequests.length > 0,
       files: false,
     },
-    pendingRequests,
+    pendingRequests: disconnected && previous ? previous.pendingRequests : pendingRequests,
     legacyOrigin: { hubId: config.owner.hubId, sessionId: session.id },
   }
+  return disconnected ? sourceOffline(descriptor, now) : descriptor
 }
 
 /**
@@ -126,13 +132,14 @@ export class DshOwnerConnection {
       for (const id of this.knownOwners.keys()) if (!advertised.has(id)) this.forgetOwner(id)
       rows = await Promise.all(candidates.map(async summary => {
         try {
-          const session = toSourceSession(this.config, await this.client.getSession(summary.id))
+          const session = toSourceSession(this.config, await this.client.getSession(summary.id), this.knownOwners.get(summary.id)?.session, this.now())
           if (!session || this.knownOwners.get(summary.id)?.session.nativeId !== session.nativeId) this.forgetOwner(summary.id)
           return session ? { ownerId: summary.id, known: { session, verifiedAt: this.now() } } : undefined
         } catch (error) {
           if (error instanceof HapiRequestError && error.status === 404) { this.forgetOwner(summary.id); return undefined }
           if (error instanceof HapiRequestError && (error.status === 401 || error.status === 403)) throw error
           const known = this.knownOwners.get(summary.id)
+          if (known) known.session = sourceOffline(known.session, this.now())
           return known && this.now() - known.verifiedAt < READING_IDENTITY_LEASE_MS ? { ownerId: summary.id, known } : undefined
         }
       }))
@@ -141,6 +148,7 @@ export class DshOwnerConnection {
         this.revoke()
         throw new SourceError('UNSUPPORTED', 'The original DSH owner revoked access to its sessions.')
       }
+      for (const known of this.knownOwners.values()) known.session = sourceOffline(known.session, this.now())
       throw error
     }
     if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
@@ -252,6 +260,9 @@ export class DshOwnerConnection {
     }
     const current = toSourceSession(this.config, session)
     if (!current) throw new SourceError('INVALID_REQUEST', 'The HAPI session no longer matches this native DSH source.')
+    // Retained display capabilities are not authorization to write through an
+    // unavailable owner. Every control uses this fresh execution observation.
+    if (sourceIsOffline(current)) throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner is temporarily disconnected. Nothing was sent.', 'not-dispatched')
     if (operation.kind === 'send') {
       if (!operation.text?.trim()) throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.')
       if (!current.capabilities.send) throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner is inactive; it will not be resumed.', 'not-dispatched')

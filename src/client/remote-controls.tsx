@@ -6,6 +6,16 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { isSourceSessionId, type SourceApproval, type SourceReceipt } from '../remote/protocol.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 import type { SourceDelivery } from './remote-outbox.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
+import { sourceReadFailureCode } from './remote-read-recovery.ts'
+
+function awaitingControlReceipt(error: unknown): boolean {
+  const code = sourceReadFailureCode(error)
+  if (code === 'OUTCOME_UNKNOWN' || code === 'outcome_unknown' || code === 'TARGET_UNAVAILABLE') return true
+  if (code !== 'gateway/internal' || !(error instanceof Error) || !/^client api: hhpi\/(?:operate|receipt) failed: /.test(error.message)) return false
+  const http = /HTTP (\d{3})\b/.exec(error.message)
+  return http ? [408, 425, 429].includes(Number(http[1])) || Number(http[1]) >= 500 : /fetch|network|connection|socket|offline|timed? ?out/i.test(error.message)
+}
 
 function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
   const labels = { queued: ['已保存在本机，等待连接后发送', 'Saved on this device; waiting to send'],
@@ -34,39 +44,47 @@ interface ApprovalProps {
   session: Pick<RemoteSourceSession, 'sessionId' | 'operate'>
   request: SourceApproval
   zh: boolean
+  disabled?: boolean
 }
 export function SourceApprovalControl(props: ApprovalProps) {
   return <SourceApprovalButtons key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
 }
-function SourceApprovalButtons({ session, request, zh }: ApprovalProps) {
+function SourceApprovalButtons({ session, request, zh, disabled = false }: ApprovalProps) {
   const [receipt, setReceipt] = useState<SourceReceipt | undefined>()
   const [error, setError] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
   const inFlight = useRef(false)
+  const chosen = useRef<'accept' | 'decline' | undefined>(undefined)
   const lifetime = useRef(0)
   // A reconnect may replace the Session face without changing its native ID.
   // Invalidate old callbacks before the new owner can receive an input event.
   useLayoutEffect(() => {
-    ++lifetime.current; inFlight.current = false
+    ++lifetime.current; inFlight.current = false; chosen.current = undefined
     setReceipt(undefined); setError(undefined); setBusy(false)
     return () => { ++lifetime.current }
   }, [session, request.id])
   const answer = async (decision: 'accept' | 'decline'): Promise<void> => {
-    if (inFlight.current || receipt?.status === 'accepted') return
-    inFlight.current = true; setBusy(true); setError(undefined)
+    if (disabled || inFlight.current || receipt?.status === 'accepted' || receipt?.status === 'indeterminate' && chosen.current !== decision) return
+    inFlight.current = true; chosen.current = decision; setBusy(true); setError(undefined)
     const generation = lifetime.current
     try {
       const result = await session.operate({ sessionId: session.sessionId, operationId: `approval:${request.id}`, kind: 'approve', requestId: request.id, decision })
       if (generation === lifetime.current) setReceipt(result)
-    } catch (cause) { if (generation === lifetime.current) setError(cause instanceof Error ? cause.message : String(cause)) }
+    } catch (cause) {
+      if (generation === lifetime.current) {
+        if (awaitingControlReceipt(cause)) setReceipt({ sessionId: session.sessionId, operationId: `approval:${request.id}`, status: 'indeterminate',
+          message: zh ? '审批结果待确认，连接恢复后可重试当前选择。' : 'Waiting to confirm this approval. Retry the same choice after the connection recovers.' })
+        else setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    }
     finally { if (generation === lifetime.current) { inFlight.current = false; setBusy(false) } }
   }
   return <section className="hhpi-source-approval" data-hhpi-request={request.id} tabIndex={-1} aria-label={zh ? '源端审批' : 'Source approval'}>
     <strong>{request.method}</strong>
     <pre>{JSON.stringify(request.params, null, 2)}</pre>
-    <div><button type="button" disabled={busy || receipt?.status === 'accepted'} onClick={() => { void answer('accept') }}>{zh ? '允许' : 'Allow'}</button>
-      <button type="button" disabled={busy || receipt?.status === 'accepted'} onClick={() => { void answer('decline') }}>{zh ? '拒绝' : 'Deny'}</button></div>
-    {receipt && <p role={receipt.status === 'accepted' ? 'status' : 'alert'}>{receipt.message}</p>}
+    <div><button type="button" disabled={disabled || busy || receipt?.status === 'accepted' || receipt?.status === 'indeterminate' && chosen.current !== 'accept'} onClick={() => { void answer('accept') }}>{zh ? '允许' : 'Allow'}</button>
+      <button type="button" disabled={disabled || busy || receipt?.status === 'accepted' || receipt?.status === 'indeterminate' && chosen.current !== 'decline'} onClick={() => { void answer('decline') }}>{zh ? '拒绝' : 'Deny'}</button></div>
+    {receipt && <p role={receipt.status === 'rejected' ? 'alert' : 'status'}>{receipt.message}</p>}
     {error && <p role="alert">{error}</p>}
   </section>
 }
@@ -84,7 +102,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     return <>
       <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}`}</style>
       {metadata.capabilities.steer && state.running && <button type="button" className="hhpi-source-steer" aria-label="Steer"
-        disabled={input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim() || !metadata.activeTurnId}
+        disabled={sourceIsOffline(metadata) || input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim() || !metadata.activeTurnId}
         onClick={() => {
           const scope = props.sessionBinding?.ctx ?? ctx.sessions.scope(props.sessionId)
           if (scope) ctx.conversation.input.for(scope).submit('steer', 'click')
@@ -97,11 +115,11 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     const controlStatus = useSyncExternalStore(session.controlStatus.subscribe, session.controlStatus.getSnapshot)
     const zh = ctx.locale.getSnapshot().active.startsWith('zh')
     return <div className="hhpi-source-dock" data-hhpi-source={metadata.id}>
-      {metadata.status === 'offline' && <p role="status">{zh ? '源机器连接中断，已读历史仍然保留。' : 'The source is disconnected. Accepted history is retained.'}</p>}
+      {sourceIsOffline(metadata) && <p role="status">{zh ? '等待连接恢复，已读内容与已提交消息保留。' : 'Waiting for the source connection. Read history and submitted messages are retained.'}</p>}
       {state.promptError && <p role="alert">{state.promptError.error.message}</p>}
       {controlStatus && <p role="status">{controlStatus}</p>}
       <SourceDeliveryStatus session={session} zh={zh}/>
-      {metadata.pendingRequests.map(request => <SourceApprovalControl key={request.id} session={session} request={request} zh={zh}/>)}
+      {metadata.pendingRequests.map(request => <SourceApprovalControl key={request.id} session={session} request={request} zh={zh} disabled={sourceIsOffline(metadata)}/>)}
     </div>
   }
   const Dock = (props: PropsRuntime<'conversation.input.dock'>) => {

@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { SourceError, waitFor } from './errors.ts';
+import { sourceIsOffline, sourceOffline, sourceOnlineConnection } from '../shared/source-connectivity.ts';
 import { CodexRpc, CodexRpcError, type NativeNotification, type NativeRequest } from './codex-rpc.ts';
 import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION } from './codex-history.ts';
 import { migrateLegacyCodexHistory } from './codex-history-migration.ts';
@@ -117,6 +118,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     private descriptor(thread: NativeThread): SourceSession {
         const nativeId = thread.id, previous = this.threads.get(nativeId)?.session;
+        if (!this.rpc.online && previous) return sourceOffline(previous, this.now());
         const id = sourceSessionId({ sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId });
         const pendingRequests = [...this.approvals].filter(([, pending]) => pending.sessionId === id).map(([requestId, pending]) => ({
             id: requestId, method: pending.request.method,
@@ -125,15 +127,16 @@ export class DirectCodexAdapter implements SourceAdapter {
             params: pending.request.params,
         }));
         const running = thread.status.type === 'active';
-        const loaded = this.rpc.online && this.loaded.has(nativeId);
+        const loaded = this.loaded.has(nativeId);
         // A stored thread can accept an explicit continuation without already
         // being loaded here. The native writer lock decides execution ownership.
         const resumable = this.config.ownership === 'exclusive' || this.rpc.supportsThreadWriterLock;
         return { id, sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId,
             title: thread.name || thread.preview || `Codex ${nativeId.slice(0, 12)}`, cwd: thread.cwd, updatedAt: thread.updatedAt * 1000,
-            status: this.rpc.online ? pendingRequests.length ? 'waiting' : running ? 'running' : 'idle' : 'offline',
+            status: pendingRequests.length ? 'waiting' : running ? 'running' : 'idle',
+            connection: this.rpc.online ? sourceOnlineConnection(previous, this.now()) : { state: 'offline', observedAt: this.now() },
             activeTurnId: running ? previous?.activeTurnId ?? null : null,
-            capabilities: { send: this.rpc.online && (loaded || resumable), steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false }, pendingRequests };
+            capabilities: { send: loaded || resumable, steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false }, pendingRequests };
     }
     private remember(thread: NativeThread): ThreadOwner {
         let owner = this.threads.get(thread.id);
@@ -149,7 +152,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     private markOffline(owner: ThreadOwner): void {
         owner.attachments?.revoke();
         owner.full = true;
-        this.metadata(owner, { ...owner.session, status: 'offline', capabilities: { ...owner.session.capabilities, send: false, steer: false, cancel: false, approve: false }, pendingRequests: [] });
+        this.metadata(owner, sourceOffline(owner.session, this.now()));
     }
     private disconnected(): void {
         this.readFailed();
@@ -293,7 +296,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const owner = await this.owner(request.sessionId, signal);
         await waitFor(this.prepare(owner), signal);
         if (owner.full) await waitFor(this.refresh(owner, true), signal);
-        if (owner.session.status === 'offline') throw new SourceError('TARGET_UNAVAILABLE', 'The native source is offline.');
+        if (sourceIsOffline(owner.session)) throw new SourceError('TARGET_UNAVAILABLE', 'The native source is offline.');
         return owner.attachments!.read(request.path, signal);
     }
     private refresh(owner: ThreadOwner, full: boolean): Promise<void> {

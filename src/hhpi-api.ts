@@ -28,6 +28,7 @@ const seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const approval = z.strictObject({ id, method: z.string(), turnId: id.nullable(), itemId: id.nullable(), params: z.record(z.string(), z.unknown()) });
 const session: z.ZodType<SourceSession> = z.strictObject({ id, sourceId: id, machineId: id, engine: z.string(), nativeId: id,
     title: z.string(), cwd: z.string(), updatedAt: z.number().finite(), status: z.enum(['idle', 'running', 'waiting', 'offline']), activeTurnId: id.nullable(),
+    connection: z.strictObject({ state: z.enum(['online', 'offline']), observedAt: z.number().finite() }).optional(),
     capabilities: z.strictObject({ send: z.boolean(), steer: z.boolean(), cancel: z.boolean(), approve: z.boolean(), files: z.boolean() }), pendingRequests: z.array(approval),
     legacyOrigin: z.strictObject({ hubId: id, sessionId: id }).optional() });
 /** The same boundary contract validates optional authenticated browser history snapshots. */

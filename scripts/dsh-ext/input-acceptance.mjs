@@ -15,18 +15,46 @@ async function edit(root, file, transform) {
 }
 
 export async function applyInputAcceptance(root) {
-  await edit(root, 'packages/api/session-controller/src/client/contract/session.ts', text => replace(text,
-    'export interface ISession {', `export interface ISession {
+  await edit(root, 'packages/api/session-controller/src/client/contract/session.ts', text => {
+    text = replace(text, 'export interface SubmissionHandle {', `export interface SubmissionHandle {
+  /** The complete immutable input already has a durable owner before prompt(). */
+  readonly admitted?: true
+`);
+    return replace(text, 'export interface ISession {', `export interface ISession {
   /**
    * Optional composer policy: retain the draft until the default sink accepts
    * ownership. A local durable queue may accept before any network delivery.
    * Absence preserves optimistic clear and concurrent native DSH submissions.
    */
   readonly inputCommitPolicy?: 'after-acceptance'
-`));
+`);
+  });
 
-  await edit(root, 'packages/client/ui-conversation/src/client/input/hub.ts', text => replace(text,
-    '      actx,\n      submissionState:', '      actx,\n      inputCommitPolicy: session.inputCommitPolicy,\n      submissionState:'));
+  await edit(root, 'packages/client/ui-conversation/src/client/input/hub.ts', text => {
+    text = replace(text, '      actx,\n      submissionState:', '      actx,\n      inputCommitPolicy: session.inputCommitPolicy,\n      submissionState:');
+    text = replace(text, '    signal?: AbortSignal,\n  ): Promise<SubmitOutcome>', '    signal?: AbortSignal,\n    onAdmission?: () => void,\n  ): Promise<SubmitOutcome>');
+    text = replace(text, '      defaultSink: (text, attachmentIds, mode, signal) => this.sink(session, text, attachmentIds, mode, signal),',
+      '      defaultSink: (text, attachmentIds, mode, signal, onAdmission) => this.sink(session, text, attachmentIds, mode, signal, onAdmission),');
+    text = replace(text, '    signal: AbortSignal,\n  ): Promise<SubmitOutcome>', '    signal: AbortSignal,\n    onAdmission?: () => void,\n  ): Promise<SubmitOutcome>');
+    return replace(text, 'return this.conversation().sendSession(session, text, attachmentIds, mode, signal)',
+      'return this.conversation().sendSession(session, text, attachmentIds, mode, signal, onAdmission)');
+  });
+
+  await edit(root, 'packages/client/ui-conversation/src/client/service.ts', text => {
+    text = replace(text, `    signal?: AbortSignal,
+  ): Promise<SubmitOutcome> {`, `    signal?: AbortSignal,
+    onAdmission?: () => void,
+  ): Promise<SubmitOutcome> {`);
+    return replace(text, `    let content: Parameters<SessionFace['prompt']>[0]
+    try {`, `    // A durable owner can accept before the paint/serialization yield. Tell
+    // the exact input attempt synchronously so closing the view cannot restore
+    // its already-owned draft. The optional callback is presentation only.
+    if (session.inputCommitPolicy === 'after-acceptance' && submission.admitted === true) {
+      try { onAdmission?.() } catch { /* A notification cannot revoke durable ownership. */ }
+    }
+    let content: Parameters<SessionFace['prompt']>[0]
+    try {`);
+  });
 
   await edit(root, 'packages/client/ui-conversation/src/client/contract/input.ts', text => replace(text,
     "  | { readonly type: 'commit-draft'; readonly retainSuffixOf: string | null }",
@@ -72,6 +100,8 @@ export async function applyInputAcceptance(root) {
     text = replace(text, 'export interface SessionInputDeps {', `export interface SessionInputDeps {
   /** Optional local admission boundary; the sink must resolve success only after taking ownership. */
   inputCommitPolicy?: 'after-acceptance' | undefined`);
+    text = replace(text, '    signal: AbortSignal,\n  ): Promise<SubmitOutcome>', '    signal: AbortSignal,\n    onAdmission?: () => void,\n  ): Promise<SubmitOutcome>');
+    text = replace(text, 'interface DetachedDraft {\n  readonly draft: string', 'interface DetachedDraft {\n  readonly revision: number\n  committed?: boolean\n  readonly draft: string');
     text = replace(text, '  private readonly core = new SubmitMachine()', '  private readonly core: SubmitMachine\n  private readonly commitAfterAcceptance: boolean');
     text = replace(text, '  constructor(private readonly deps: SessionInputDeps) {', `  constructor(private readonly deps: SessionInputDeps) {
     this.commitAfterAcceptance = deps.inputCommitPolicy === 'after-acceptance'
@@ -84,7 +114,9 @@ export async function applyInputAcceptance(root) {
     text = replace(text, '        this.commitSend(attachmentIds)\n        this.notifySubmission(submission)',
       '        if (!this.commitAfterAcceptance) this.commitSend(attachmentIds)\n        this.notifySubmission(submission)');
     text = replace(text, "        void this.deps.defaultSink('', attachmentIds, mode, controller.signal).then((outcome) => {",
-      "        void this.callDefaultSink('', attachmentIds, mode, controller.signal).then((outcome) => {");
+      `        void this.callDefaultSink('', attachmentIds, mode, controller.signal, () => {
+          if (!this.disposed && this.attachmentFlights.has(flight)) this.retireAcceptedAttachments(attachmentIds)
+        }).then((outcome) => {`);
     text = replace(text, `          if (outcome.kind === 'success') return
           this.restoreAttachments(attachmentIds)`, `          if (outcome.kind === 'success') {
             if (this.commitAfterAcceptance) this.retireAcceptedAttachments(attachmentIds)
@@ -96,7 +128,15 @@ export async function applyInputAcceptance(root) {
       `          if (!this.commitAfterAcceptance) this.restoreAttachments(attachmentIds)
           this.notify('error', error instanceof Error ? error.message : String(error))`);
     text = replace(text, '        this.commitDraft(fx.retainSuffixOf)', '        this.commitDraft(fx.retainSuffixOf, fx.attempt)');
-    text = replace(text, '  private commitDraft(retainSuffixOf: string | null): void {', `  private commitDraft(retainSuffixOf: string | null, attempt?: SubmitAttempt): void {
+    text = replace(text, '  private commitDraft(retainSuffixOf: string | null): void {', `  private commitDraft(retainSuffixOf: string | null, attempt?: SubmitAttempt, exactRevision = false): void {
+    if (attempt !== undefined) {
+      const record = this.detachedDrafts.get(attempt.seq)
+      if (record === undefined || record.committed) return
+      record.committed = true
+      // The synchronous durable-admission notification may only consume its
+      // original revision. Later sink settlement must never commit it again.
+      if (exactRevision && record.revision !== this.rev) return
+    }
     // A replacement/interleaved edit is a new draft. Only an unchanged sent
     // prefix can be removed without discarding text typed during admission.
     if (attempt !== undefined && retainSuffixOf !== null) {
@@ -114,8 +154,10 @@ export async function applyInputAcceptance(root) {
     const occurrences`, `    const attachmentIds = [...this.attachmentIds]
     if (!this.commitAfterAcceptance) this.attachmentIds = []
     const occurrences`);
-    text = replace(text, 'this.deps.defaultSink(draft.trim(), attachmentIds, mode, attempt.signal)', 'this.callDefaultSink(draft.trim(), attachmentIds, mode, attempt.signal)');
-    text = replace(text, 'this.deps.defaultSink(out.trim(), attachmentIds, mode, attempt.signal)', 'this.callDefaultSink(out.trim(), attachmentIds, mode, attempt.signal)');
+    text = replace(text, '    this.notifySubmission(attempt.submission)\n    const attachmentIds', '    const revision = this.rev\n    this.notifySubmission(attempt.submission)\n    const attachmentIds');
+    text = replace(text, '    const record = { draft, occurrences, attachmentIds }', '    const record = { draft, occurrences, attachmentIds, revision }');
+    text = replace(text, 'this.deps.defaultSink(draft.trim(), attachmentIds, mode, attempt.signal)', 'this.callDefaultSink(draft.trim(), attachmentIds, mode, attempt.signal, () => { this.admitDetached(attempt) })');
+    text = replace(text, 'this.deps.defaultSink(out.trim(), attachmentIds, mode, attempt.signal)', 'this.callDefaultSink(out.trim(), attachmentIds, mode, attempt.signal, () => { this.admitDetached(attempt) })');
     text = replace(text, `        this.detachedDrafts.delete(attempt.seq)
         this.dispatchRun(({ type: 'sink-settled', attempt, ok: true, outcome }))`, `        const record = this.detachedDrafts.get(attempt.seq)
         if (this.commitAfterAcceptance && record !== undefined) this.retireAcceptedAttachments(record.attachmentIds)
@@ -124,18 +166,28 @@ export async function applyInputAcceptance(root) {
     text = replace(text, `    this.detachedDrafts.delete(attempt.seq)
     this.restoreAttachments(record.attachmentIds)`, `    this.detachedDrafts.delete(attempt.seq)
     if (this.commitAfterAcceptance) {
-      // The original editor never cleared. Failure must not overwrite edits
-      // or restore attachments the user deliberately removed in the meantime.
+      // Before admission the editor never cleared; after admission its owner
+      // already holds the input. Neither failure may overwrite later edits or
+      // restore attachments the user deliberately removed in the meantime.
       this.dispatchRun({ type: 'sink-settled', attempt, ok: false, ...(message === undefined ? {} : { message }) })
       return
     }
     this.restoreAttachments(record.attachmentIds)`);
     return replace(text, '  private notifySubmission(submission: MessageSubmission | undefined): void {', `  /** Normalize a synchronous local-admission refusal into the existing sink error path. */
   private callDefaultSink(
-    text: string, attachmentIds: readonly DraftAttachmentId[], mode: InputSubmitMode, signal: AbortSignal,
+    text: string, attachmentIds: readonly DraftAttachmentId[], mode: InputSubmitMode, signal: AbortSignal, onAdmission?: () => void,
   ): Promise<SubmitOutcome> {
-    try { return this.deps.defaultSink(text, attachmentIds, mode, signal) }
+    try { return this.deps.defaultSink(text, attachmentIds, mode, signal, this.commitAfterAcceptance ? onAdmission : undefined) }
     catch (error) { return Promise.reject(error) }
+  }
+
+  /** Consume only the exact attempt/revision whose immutable input has a durable owner. */
+  private admitDetached(attempt: SubmitAttempt): void {
+    if (!this.commitAfterAcceptance || this.dead(attempt)) return
+    const record = this.detachedDrafts.get(attempt.seq)
+    if (record === undefined || record.committed) return
+    this.commitDraft(attempt.draftSnapshot, attempt, true)
+    if (!this.disposed) this.retireAcceptedAttachments(record.attachmentIds)
   }
 
   /** Retire only the accepted rail entries; attachments added while waiting survive. */

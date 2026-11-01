@@ -12,10 +12,14 @@ An opted-in input allows editing while serializing submit gestures until accepta
 
 Acceptance is defined by the sink owner. A durable local outbox may accept before a remote connection exists; this API does not require waiting for execution or a network acknowledgement. Authorization, native queues and operation identity remain outside the composer.
 
+For synchronous durable admission, `SubmissionHandle` may additionally return `admitted: true`. `ConversationController.sendSession` accepts an optional `onAdmission` callback and invokes it before its first paint yield. InputHub forwards the exact originating attempt; the shell commits only that attempt's captured draft revision, once. If the user has changed the revision during preparation, it remains untouched. Later sink settlement cannot clear text typed after the admission. This prevents closing a Pane between local enqueue and the next frame from restoring a draft whose ownership already transferred. A provider must complete validation and durable ownership before setting the flag; default native handles omit it.
+
 ## Compatibility and validation
 
 The property is optional and the default path is unchanged. The implementation can be disabled independently with `globalThis.__DSH_CLIENT_INPUT_ACCEPTANCE = 'off'` before shell construction. No second editor or renderer is introduced.
 
 Contracts execute pinned DSH InputHub, SessionInputShell with real Lexical, and ConversationController. They use actual browser Storage quota failure at the Session admission boundary and inspect the editor DOM, published revisions and operation calls. They cover local refusal, retry, acceptance, double clicks, concurrent editing, semantic-reference preservation, unsupported attachment/reference preparation, disposal and default/disabled compatibility. Live browser and mobile keyboard validation are separately scoped.
+
+The lifecycle contract also uses the production autosave implementation and actual official conversation draft store. It closes a real binding immediately after synchronous admission, reopens it before the original sink settles, and checks the restored draft and subsequent typing. This tests persistence and ownership across the complete close/reopen boundary without correlating messages by text.
 
 This document is a reviewable proposal only. No changes have been sent to the upstream repository.

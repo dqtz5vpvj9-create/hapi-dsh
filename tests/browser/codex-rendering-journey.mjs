@@ -1,5 +1,6 @@
 /** Two viewport checks of the actual official tool rows through production Codex adaptation. */
 import assert from 'node:assert/strict'
+import { waitForFixtureStats } from './fixture-wait.mjs'
 
 export async function runCodexRenderingJourney(page, _context, origin, _mode, result) {
   const pane = page.locator('[data-lab-pane="a"]')
@@ -36,7 +37,7 @@ export async function runCodexRenderingJourney(page, _context, origin, _mode, re
     assert.equal(await page.evaluate(() => window.__hhpiFailure), undefined)
     await pane.getByText('Synthetic Codex rendering completed.', { exact: true }).waitFor({ state: 'visible' })
     result.initialLayout = await layout()
-    await page.waitForFunction(async () => (await (await fetch('/api/stats')).json()).followRequests.length === 1)
+    await waitForFixtureStats(stats, value => value.followRequests.length === 1)
     initialImageState = await stats()
     assert.equal(initialImageState.codexImages.imagesReleased, false)
     assert.equal(initialImageState.codexImages.pendingFileReads, 2, 'both native image reads remain pending while the first body and editor are usable')

@@ -180,6 +180,13 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
         if (!writes.some(item => item.operationId === value.operationId)) writes.push(value)
         return json(response, { ok: true, value: { sessionId: metadata.id, operationId: value.operationId, status: 'accepted', message: 'Synthetic IO receipt only' } })
       }
+      if (url.pathname === '/api/receipt') {
+        const value = body as SourceOperation
+        if (value.sessionId !== metadata.id || typeof value.operationId !== 'string') return json(response, { error: 'Only synthetic receipts are readable' }, 403)
+        const prior = writes.find(item => item.operationId === value.operationId)
+        if (prior && JSON.stringify(prior) !== JSON.stringify(value)) return json(response, { error: 'A synthetic operation identity was reused' }, 409)
+        return json(response, { ok: true, value: prior ? { sessionId: metadata.id, operationId: value.operationId, status: 'accepted', message: 'Synthetic IO receipt only' } : null })
+      }
       if (url.pathname === '/api/resource') {
         const value = body as SourceResourceRequest
         if (value.sessionId !== metadata.id || !resources) return json(response, { error: 'Unknown synthetic resource owner' }, 403)
@@ -188,7 +195,10 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
       return json(response, { error: 'Unknown fixture operation' }, 404)
     }
     if (request.method !== 'GET') return json(response, { error: 'Method refused' }, 405)
-    if (url.pathname === '/api/catalog') return json(response, { ok: true, value: { protocol: 1, legacyHapi: false, sessions: [metadata], sources: [] } })
+    if (url.pathname === '/api/catalog') return json(response, { ok: true, value: { protocol: 1, legacyHapi: false,
+      // This loopback authority replaces only IO. Exercise the production
+      // browser storage admission and keep the two synthetic datasets isolated.
+      storageScope: `browser-fixture-${codexRendering ? 'rendering' : 'history'}`, sessions: [metadata], sources: [] } })
     if (url.pathname === '/api/stats') {
       const userMessageIds = [...eventAudit.values()].flatMap(event => event.userMessageId ? [Number(event.userMessageId.slice('message-'.length))] : [])
       return json(response, {

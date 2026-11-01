@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { createGestures } from './gestures.mjs'
 import { exerciseDraftInput } from './keyboard.mjs'
+import { waitForFixtureStats } from './fixture-wait.mjs'
 
 export async function runJourney(page, context, origin, mode, result) {
   const mobile = mode === 'mobile'
@@ -58,14 +59,14 @@ export async function runJourney(page, context, origin, mode, result) {
     assert.ok((await visible()).min !== null, 'first target frame must contain visible source bodies')
   })
   await step('idle update stream closes without failing the mounted readers', async () => {
-    await page.waitForFunction(async () => (await (await fetch('/api/stats')).json()).followRequests.length === 1)
+    await waitForFixtureStats(stats, value => value.followRequests.length === 1)
     const before = await state(), beforeStats = await stats(), anchor = await visible()
     for (const count of [2, 3]) {
       await page.evaluate(async () => {
         const response = await fetch('/api/interrupt-updates', { method: 'POST', headers: { 'content-type': 'application/json', 'x-hhpi-fixture': '1' }, body: '{}' })
         if (!response.ok) throw new Error('Synthetic update interruption refused')
       })
-      await page.waitForFunction(async count => (await (await fetch('/api/stats')).json()).followRequests.length === count, count)
+      await waitForFixtureStats(stats, value => value.followRequests.length === count)
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     }
     const after = await state(), afterStats = await stats(), retained = await visible()
@@ -210,8 +211,9 @@ export async function runJourney(page, context, origin, mode, result) {
     result.finalLayout = await assertLayout()
   })
   await step('synthetic native submission through official keyboard', async () => {
+    const acknowledgement = page.waitForResponse(response => response.url() === `${origin}/api/operate` && response.request().method() === 'POST')
     await editor('a').click(); await page.keyboard.press('Enter')
-    await page.waitForFunction(async () => (await (await fetch('/api/stats')).json()).writes.length === 1)
+    assert.equal((await acknowledgement).status(), 200, 'the admitted draft must reach the synthetic source')
     const value = await stats()
     assert.equal(value.writes.length, 1); assert.equal(value.writes[0].kind, 'send')
     assert.equal(value.writes[0].text, baseline.a.draft)

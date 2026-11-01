@@ -61,8 +61,10 @@ test('unavailable source retains offline catalog but never falls back to central
     try {
         await gateway.catalog(allow); adapter.list = async () => { throw new Error('Synthetic source outage'); };
         const catalog = await gateway.catalog(allow);
-        assert.equal(catalog.sessions[0]?.status, 'offline'); assert.equal(catalog.sources[0]?.online, false);
-        assert.equal(catalog.sessions[0]?.capabilities.send, false);
+        assert.equal(catalog.sessions[0]?.status, session.status, 'a missing connection cannot change native execution state');
+        assert.equal(catalog.sessions[0]?.connection?.state, 'offline'); assert.equal(catalog.sources[0]?.online, false);
+        assert.deepEqual(catalog.sessions[0]?.capabilities, session.capabilities, 'capabilities remain last known until a real source observation');
+        assert.equal(catalog.sessions[0]?.activeTurnId, session.activeTurnId);
         await assert.rejects(gateway.resource({ sessionId: session.id, path: '/etc/passwd' }, allow), { code: 'UNSUPPORTED' });
         assert.ok(!calls.includes('read'));
     } finally { await gateway.dispose(); }

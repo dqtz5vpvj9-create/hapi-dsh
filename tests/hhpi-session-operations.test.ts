@@ -167,3 +167,19 @@ test('an offline source rejects new prompt submission without losing retirement 
   assert.equal(calls.length, 0)
   assert.deepEqual(retirements.map(item => item.reason), ['failed'])
 })
+
+test('offline cancellation neither dispatches nor queues a stale turn or publishes a prompt error', async t => {
+  const value = metadata(); value.connection = { state: 'offline', observedAt: 100 }
+  const { session, calls } = fixture(t, value)
+  await session.ready
+  const outcome = await session.cancel()
+  assert.equal(outcome.ok, false)
+  if (!outcome.ok) assert.equal(outcome.error.details.sourceCode, 'TARGET_UNAVAILABLE')
+  assert.equal(calls.length, 0)
+  assert.equal(session.getSnapshot().running, true, 'connection loss does not imply native completion')
+  assert.equal(session.getSnapshot().promptError, null)
+  session.update({ ...value, activeTurnId: 'new-native-turn', connection: { state: 'online', observedAt: 200 } })
+  assert.equal(calls.length, 0, 'connection recovery never replays the old cancellation')
+  assert.equal((await session.cancel()).ok, true)
+  assert.equal(calls[0]?.turnId, 'new-native-turn', 'an explicit subsequent cancellation uses the current native turn')
+})

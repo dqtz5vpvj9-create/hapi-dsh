@@ -58,7 +58,7 @@ function deferred<T>() {
 }
 const flush = () => new Promise<void>(resolve => { setImmediate(resolve) })
 
-async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; quota?: number; disabled?: boolean } = { policy: 'after-acceptance' }) {
+async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; quota?: number; disabled?: boolean; admitted?: true } = { policy: 'after-acceptance' }) {
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div contenteditable="true"></div></body></html>', {
     url: 'https://synthetic.invalid/', pretendToBeVisual: true, storageQuota: options.quota ?? 4096,
@@ -93,7 +93,7 @@ async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; q
       // async ConversationController.sendSession; no manufactured throw.
       dom.window.localStorage.setItem(requestId, input.text)
       admissions.push(input.text)
-      return { requestId, abandon() { dom.window.localStorage.removeItem(requestId) } }
+      return { requestId, ...options.admitted ? { admitted: true } : {}, abandon() { dom.window.localStorage.removeItem(requestId) } }
     },
     prompt(...args: unknown[]) { prompts.push(args); prompted.resolve(); return gate.promise },
   } as unknown as SessionFace
@@ -150,6 +150,23 @@ test('official composer serializes double clicks and retains text typed during d
   assert.equal(f.dom.window.document.querySelector('[contenteditable]')!.textContent, '继续输入')
 })
 
+test('synchronous durable admission commits once before paint while blocking repeated sends and preserving the next draft', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { policy: 'after-acceptance', admitted: true })
+  f.shell.setDraft('same words, separate intent')
+  f.shell.submit('queue', 'click')
+  assert.equal(f.shell.snapshot.draft, '', 'the exact admitted attempt commits before sendSession yields')
+  assert.deepEqual(f.admissions, ['same words, separate intent'])
+  assert.equal(f.prompts.length, 0, 'the prompt call is still behind nextPaint')
+  f.shell.setDraft('same words, separate intent')
+  f.shell.submit('queue', 'click')
+  assert.equal(f.admissions.length, 1, 'the original attempt continues to serialize clicks until its sink settles')
+  await f.prompted
+  f.gate.resolve({ ok: true, value: { accepted: true } })
+  await flush()
+  assert.equal(f.shell.snapshot.draft, 'same words, separate intent', 'late success cannot recommit a new draft with identical text')
+  assert.equal(f.prompts.length, 1)
+})
+
 test('official composer keeps a replacement draft on successful or rejected admission', { timeout: 15000 }, async t => {
   for (const accepted of [true, false]) {
     await t.test(accepted ? 'success' : 'failure', async child => {
@@ -169,7 +186,7 @@ test('official composer keeps a replacement draft on successful or rejected admi
 })
 
 test('ordinary native DSH and the explicit disable switch retain optimistic input behavior', { timeout: 15000 }, async t => {
-  for (const options of [{}, { policy: 'after-acceptance' as const, disabled: true }]) {
+  for (const options of [{ admitted: true as const }, { policy: 'after-acceptance' as const, disabled: true, admitted: true as const }]) {
     await t.test(options.disabled ? 'disabled' : 'default', async child => {
       const f = await fixture(child, options)
       f.shell.setDraft('first')

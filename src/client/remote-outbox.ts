@@ -1,6 +1,7 @@
 /** Clicked text submissions belong to the account/Host, not to a mounted Pane. */
 import { operationSchema } from '../hhpi-api.ts'
 import type { SourceEntry, SourceOperation, SourceReceipt, SourceSession } from '../remote/protocol.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { SourceStorage } from './remote-storage.ts'
 
 export type DeliveryState = 'queued' | 'sending' | 'confirming' | 'accepted' | 'rejected' | 'owner-accepted'
@@ -25,8 +26,6 @@ const EMPTY: readonly SourceDelivery[] = Object.freeze([])
 const prefixOf = (scope: string): string => `hhpi:outbox:v1:${scope}:`
 const fingerprint = (operation: SourceOperation): string => JSON.stringify([operation.sessionId, operation.operationId, operation.kind,
   operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
-const offline = (session: SourceSession): boolean => session.status === 'offline'
-  || (session as SourceSession & { connection?: { state: string } }).connection?.state === 'offline'
 
 function decode(value: string | null): StoredDelivery | undefined {
   if (!value) return undefined
@@ -240,7 +239,7 @@ export class RemoteOutbox {
   }
   private maySend(entry: StoredDelivery): boolean {
     const current = this.sessions.get(entry.operation.sessionId)
-    return this.ready && current !== undefined && !offline(current) && current.capabilities.send
+    return this.ready && current !== undefined && !sourceIsOffline(current) && current.capabilities.send
   }
   private kick(): void {
     if (!this.ready || !this.access || this.disposed || typeof navigator !== 'undefined' && navigator.onLine === false) return
@@ -258,7 +257,7 @@ export class RemoteOutbox {
       if (this.staged.has(entry.operation.operationId)) continue
       // Native execution can be offline while the Host still serves its local
       // receipt/history. Only new writes require that execution connection.
-      if (offline(session) && entry.attempts === 0) continue
+      if (sourceIsOffline(session) && entry.attempts === 0) continue
       if (!session.capabilities.send && entry.state === 'queued' && entry.attempts === 0) {
         this.write({ ...entry, state: 'rejected', message: 'This source no longer permits sending. The saved message is retained.' })
         continue

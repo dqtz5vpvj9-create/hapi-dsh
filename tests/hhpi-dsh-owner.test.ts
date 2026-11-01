@@ -201,6 +201,74 @@ test('verified reading survives a temporary owner outage without extending its a
   } finally { await owner.dispose() }
 })
 
+test('DSH disconnect preserves known execution and capabilities until a fresh native observation', async () => {
+  const fixture = new OwnerFixture(), native = makeSession()
+  fixture.sessions.set(native.id, native)
+  let now = 100
+  const owner = fixture.connection(() => now)
+  try {
+    const [initial] = await owner.catalog()
+    assert.equal(initial?.status, 'running')
+    fixture.sessions.set(native.id, { ...native, active: false, execution: { ...native.execution!, status: 'disconnected' } })
+    now = 200
+    const [offline] = await owner.catalog()
+    assert.equal(offline?.connection?.state, 'offline')
+    assert.equal(offline?.status, 'running')
+    assert.equal(offline?.activeTurnId, initial?.activeTurnId)
+    assert.deepEqual(offline?.capabilities, initial?.capabilities)
+    assert.equal((await owner.readingSession(native.metadata!.dshSessionId as string)).connection?.state, 'offline')
+    await assert.rejects(owner.operate('native-dsh-session', operation('send')), { code: 'TARGET_UNAVAILABLE' })
+    assert.equal(fixture.calls.some(call => call.method === 'POST' && call.path !== '/api/auth'), false, 'retained capabilities never authorize writes during disconnection')
+    fixture.sessions.set(native.id, { ...native, thinking: false, execution: null })
+    now = 300
+    const [recovered] = await owner.catalog()
+    assert.equal(recovered?.connection?.state, 'online')
+    assert.equal(recovered?.status, 'idle', 'only a fresh native observation can settle execution')
+    assert.equal(recovered?.activeTurnId, null)
+    assert.deepEqual((await owner.catalog())[0]?.connection, recovered?.connection, 'unchanged polls do not manufacture connection revisions')
+  } finally { await owner.dispose() }
+})
+
+test('a fresh disconnected native owner blocks all controls even when no prior descriptor exists', async () => {
+  for (const status of ['disconnected', 'systemError'] as const) for (const active of [false, true]) {
+    const fixture = new OwnerFixture(), native = makeSession({ active, agentState: { requests: {
+      'permission-7': { tool: 'commandExecution', toolCallId: 'call-7', arguments: {} },
+    } } })
+    fixture.sessions.set(native.id, { ...native, execution: { ...native.execution!, status } })
+    const owner = fixture.connection()
+    try {
+      for (const request of [operation('send'), operation('cancel'), operation('approve', { requestId: 'permission-7', decision: 'accept' })]) {
+        await assert.rejects(owner.operate('native-dsh-session', request), { code: 'TARGET_UNAVAILABLE' })
+      }
+      assert.equal(fixture.calls.some(call => call.method === 'POST' && call.path !== '/api/auth'), false, `${status} with active=${active} never dispatches a native control`)
+    } finally { await owner.dispose() }
+  }
+})
+
+test('a reused HAPI owner locator cannot transfer execution or approvals to a new native identity', async () => {
+  const fixture = new OwnerFixture(), native = makeSession({ agentState: { requests: {
+    'old-permission': { tool: 'commandExecution', toolCallId: 'old-call', arguments: {} },
+  } } })
+  fixture.sessions.set(native.id, native)
+  const owner = fixture.connection()
+  try {
+    const [initial] = await owner.catalog()
+    assert.equal(initial?.activeTurnId, 'turn-one')
+    assert.equal(initial?.pendingRequests.length, 1)
+    fixture.sessions.set(native.id, makeSession({ nativeId: 'replacement-native', active: false, thinking: false,
+      execution: { ...native.execution!, status: 'disconnected' }, agentState: {} }))
+    const [replacement] = await owner.catalog()
+    assert.equal(replacement?.nativeId, 'replacement-native')
+    assert.equal(replacement?.connection?.state, 'offline')
+    assert.equal(replacement?.status, 'idle')
+    assert.equal(replacement?.activeTurnId, null)
+    assert.deepEqual(replacement?.pendingRequests, [])
+    assert.equal(replacement?.capabilities.cancel, false)
+    assert.equal(replacement?.capabilities.approve, false)
+    assert.throws(() => owner.assertReadingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+  } finally { await owner.dispose() }
+})
+
 test('partial detail outages keep healthy sources readable while deletion and access revocation invalidate cached identities', async () => {
   const fixture = new OwnerFixture()
   fixture.sessions.set('healthy', makeSession({ id: 'healthy' }))

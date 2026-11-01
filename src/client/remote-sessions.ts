@@ -8,6 +8,7 @@ import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
+import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
@@ -106,7 +107,8 @@ export class RemoteSourceSession implements SessionFace {
     if (this.disposed) return
     if (session.id !== this.sessionId) throw new Error('Source metadata crossed session identities')
     this.metadata.set(session)
-    this.state.set({ ...this.state.getSnapshot(), running: session.status === 'running' || session.status === 'waiting' })
+    this.state.set({ ...this.state.getSnapshot(), running: session.status === 'offline'
+      ? this.state.getSnapshot().running : session.status === 'running' || session.status === 'waiting' })
     for (const [key, value] of [['title', session.title], ['hhpiSource', session]] as const) {
       let store = this.projectionValues.get(key)
       if (!store) { store = new Value<unknown>(value); this.projectionValues.set(key, store) } else store.set(value)
@@ -118,11 +120,10 @@ export class RemoteSourceSession implements SessionFace {
     const requestId = crypto.randomUUID() as SessionRequestId
     if (input.mode === 'queue' && this.outbox) {
       const metadata = this.metadata.getSnapshot()
-      const offline = metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline'
-      if (!offline && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+      if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
       this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text: input.text })
       this.submissions.set(requestId, input)
-      return { requestId, abandon: () => { this.outbox?.abandon(requestId) } }
+      return { requestId, admitted: true, abandon: () => { this.outbox?.abandon(requestId) } }
     }
     this.submissions.set(requestId, input)
     this.state.set({ ...this.state.getSnapshot(), pendingSubmissions: [...this.state.getSnapshot().pendingSubmissions,
@@ -155,8 +156,7 @@ export class RemoteSourceSession implements SessionFace {
           if (this.disposed) throw sourceError('The source view was released.')
           signal?.throwIfAborted()
           const metadata = this.metadata.getSnapshot()
-          const offline = metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline'
-          if (!offline && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+          if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
           this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text })
         }
         this.outbox.start(requestId)
@@ -179,7 +179,7 @@ export class RemoteSourceSession implements SessionFace {
       const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
       const metadata = this.metadata.getSnapshot()
       const kind = mode === 'steer' ? 'steer' : 'send'
-      if (metadata.status === 'offline') throw sourceError('The source is offline. No operation was sent.')
+      if (sourceIsOffline(metadata)) throw sourceError('The source is offline. No operation was sent.')
       if (!metadata.capabilities[kind]) throw sourceError(`The source does not support ${kind}.`)
       if (kind === 'steer' && !metadata.activeTurnId) throw sourceError('There is no active native turn to steer.')
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text,
@@ -229,20 +229,21 @@ export class RemoteSourceSession implements SessionFace {
   private assertOperationCurrent(operation: SourceOperation): void {
     if (this.disposed) throw sourceError('The source view was released.')
     const metadata = this.metadata.getSnapshot()
-    if (metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline') throw sourceError('Reconnect before controlling the original native operation.')
+    if (sourceIsOffline(metadata)) throw sourceError('Reconnect before controlling the original native operation.')
     if (!metadata.capabilities[operation.kind]) throw sourceError(`The source does not support ${operation.kind}.`)
     if ((operation.kind === 'steer' || operation.kind === 'cancel') && (!operation.turnId || metadata.activeTurnId !== operation.turnId)) throw sourceError('The original native turn is no longer active. No replacement turn was controlled.')
     if (operation.kind === 'approve' && (!operation.requestId || !metadata.pendingRequests.some(request => request.id === operation.requestId))) throw sourceError('The original native approval is no longer available.')
   }
   async cancel(): ReturnType<SessionFace['cancel']> {
     const session = this.metadata.getSnapshot()
+    if (sourceIsOffline(session)) {
+      const message = 'Waiting for the source connection. Reconnect before stopping the original turn.'
+      this.controlStatus.set(message)
+      return { ok: false, error: new RemoteError('hhpi/source', message, { outcome: 'rejected', sourceCode: 'TARGET_UNAVAILABLE' }) }
+    }
     if (!session.activeTurnId || !session.capabilities.cancel) {
       this.controlStatus.set('There is no cancellable native turn. No control was sent.')
       return { ok: false, error: sourceError('There is no cancellable native turn.') }
-    }
-    if (session.status === 'offline' || (session as SourceSession & { connection?: { state: string } }).connection?.state === 'offline') {
-      this.controlStatus.set('Waiting for the source connection. Reconnect before stopping the original turn.')
-      return { ok: false, error: sourceError('Reconnect before stopping the original native turn.') }
     }
     try {
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: `cancel:${session.activeTurnId}`, kind: 'cancel', turnId: session.activeTurnId })
@@ -355,7 +356,7 @@ export class RemoteSessions implements ISessions {
     this.outbox.clear(); this.outbox.setStorage(access)
     if (access) {
       this.readingCache = new SourceReadingCache(access)
-      for (const session of this.readingCache.sessions()) this.metadata.set(session.id, { ...session, status: 'offline' })
+      for (const session of this.readingCache.sessions()) this.metadata.set(session.id, sourceOffline(session))
       if (!this.stopReadingMemory) this.stopReadingMemory = installRemoteReadingMemory(this.ctx, () => this.readingCache, binding => this.ownsBinding(binding))
       if (this.metadata.size) this.catalogChecked = true
     }
@@ -425,7 +426,7 @@ export class RemoteSessions implements ISessions {
       for (const [id, old] of this.metadata) if (!active.has(id) && unchanged(id)) {
         // A source may return its prior successful directory while discovery
         // runs. Neither omission nor an old `online` flag authorizes deletion.
-        const offline: SourceSession = { ...old, status: 'offline' }
+        const offline = sourceOffline(old)
         this.metadata.set(id, offline); this.records.get(id as SessionId)?.session.update(offline)
       }
       for (const session of catalog.sessions) if (!this.revokedReadingSources.has(session.id) && unchanged(session.id)) {

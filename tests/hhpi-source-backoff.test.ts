@@ -46,6 +46,10 @@ test('thread readers share bounded source reconnect backoff while cached history
     const advance = async (ms: number): Promise<void> => { now += ms; t.mock.timers.tick(ms); await flush(); await flush(); };
 
     available = false; online = false; disconnected();
+    const offline = await adapter.read({ sessionId: sessions[0]!.id });
+    assert.equal(offline.session.connection?.state, 'offline');
+    assert.equal(offline.session.status, 'idle', 'a disconnected source retains its last native execution state');
+    assert.deepEqual(offline.session.capabilities, sessions[0]!.capabilities, 'disconnect must not revoke the native send capability');
     await advance(250);
     assert.equal(attempts, 0, 'the 250 ms history poll must not immediately reconnect');
     assert.equal((await adapter.read({ sessionId: sessions[0]!.id })).entries.length, 0, 'a prepared history remains available during cooldown');
@@ -69,6 +73,7 @@ test('thread readers share bounded source reconnect backoff while cached history
     await advance(30_000);
     assert.equal(online, true);
     assert.equal((await adapter.read({ sessionId: sessions[0]!.id })).session.status, 'idle');
+    assert.equal((await adapter.read({ sessionId: sessions[0]!.id })).session.connection?.state, 'online');
     const recovered = attempts;
     available = false; online = false; disconnected();
     await advance(250);

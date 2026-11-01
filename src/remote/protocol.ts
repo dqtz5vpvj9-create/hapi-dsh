@@ -27,6 +27,8 @@ export interface SourceApproval { id: string; method: string; turnId: string | n
 export interface SourceSession extends SourceIdentity {
     id: string; title: string; cwd: string; updatedAt: number;
     status: 'idle' | 'running' | 'waiting' | 'offline'; activeTurnId: string | null;
+    /** Legacy status=offline remains readable; new sources retain execution state across outages. */
+    connection?: { state: 'online' | 'offline'; observedAt: number } | undefined;
     capabilities: SourceCapabilities; pendingRequests: SourceApproval[];
     /** Exact pre-cutover resource, advertised only by its verified native owner. */
     legacyOrigin?: { hubId: string; sessionId: string } | undefined;

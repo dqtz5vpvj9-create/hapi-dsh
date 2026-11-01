@@ -11,7 +11,7 @@ import { SourceSessions } from '../../src/client/source-sessions.ts'
 import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/client/seamless/controller.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
-import type { SourceChanges } from '../../src/remote/protocol.ts'
+import type { SourceChanges, SourceOperation } from '../../src/remote/protocol.ts'
 import { readingAnchor, anchorDrift, stableAnchorDrift, waitForOlderSourceCommit, observeReadingCommit } from './reading-probe.ts'
 import { installSourceCommandViews } from '../../src/client/source-command-view.tsx'
 
@@ -35,6 +35,7 @@ const api: HhpiRemoteApi = {
   catalog: signal => request('/api/catalog', undefined, signal),
   read: (value, signal) => request('/api/read', value, signal),
   operate: value => request('/api/operate', value),
+  receipt: (value: SourceOperation, signal?: AbortSignal) => request('/api/receipt', value, signal),
   resource: (value, signal) => request('/api/resource', value, signal),
   async *changes(value, signal): AsyncIterable<SourceChanges> {
     const response = await fetch('/api/changes?request=' + encodeURIComponent(JSON.stringify(value)), { signal })

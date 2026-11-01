@@ -95,7 +95,9 @@ test('HHPI input admission follows current source send capability and releases o
         app.setProjection({ hhpiSource: { ...metadata, capabilities: { ...metadata.capabilities, send: true } } })
         assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined, 'the same composer becomes available when its source can send')
         app.setProjection({ hhpiSource: { ...metadata, status: 'offline' } })
-        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceDisconnected)
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined, 'a legacy offline observation must permit durable local submission')
+        app.setProjection({ hhpiSource: { ...metadata, status: 'running', connection: { state: 'offline', observedAt: 2000 } } })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined, 'offline is independent of the last native running state')
         app.setProjection({ hhpiSource: { ...metadata, capabilities: { ...metadata.capabilities, send: true } } })
         assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
     } finally { app.dispose() }

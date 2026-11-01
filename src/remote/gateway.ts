@@ -1,5 +1,6 @@
 /** Source registry and exact-scope router. Authentication remains with the official DSH carrier. */
 import { SourceError, waitFor } from './errors.ts';
+import { sourceOffline } from '../shared/source-connectivity.ts';
 import { parseSourceSessionId, sourceSessionId, type SourceAdapter, type SourceCatalog, type SourceChanges, type SourceChangesRequest,
     type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest,
     type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
@@ -64,6 +65,8 @@ export class SourceGateway {
                 this.catalogs.delete(adapter.id);
                 this.catalogErrors.set(adapter.id, error);
             }
+            const known = this.catalogs.get(adapter.id);
+            if (known) this.catalogs.set(adapter.id, known.map(session => sourceOffline(session)));
         }).finally(() => {
             clearTimeout(timer);
             if (this.catalogReads.get(adapter.id) === work) this.catalogReads.delete(adapter.id);
@@ -90,8 +93,7 @@ export class SourceGateway {
         for (const adapter of this.adapters.values()) {
             const online = this.catalogOnline.get(adapter.id) ?? false;
             const sessions: SourceSession[] = online ? this.catalogs.get(adapter.id) ?? []
-                : (this.catalogs.get(adapter.id) ?? []).map(session => ({ ...session, status: 'offline', activeTurnId: null,
-                    pendingRequests: [], capabilities: { send: false, steer: false, cancel: false, approve: false, files: false } }));
+                : (this.catalogs.get(adapter.id) ?? []).map(session => sourceOffline(session));
             result.sessions.push(...sessions.filter(session => access({ kind: 'session', id: session.id })));
             if (access({ kind: 'source', id: adapter.id })) result.sources.push({ id: adapter.id, machineId: adapter.machineId, engine: adapter.engine, online, create: typeof adapter.create === 'function' });
         }
