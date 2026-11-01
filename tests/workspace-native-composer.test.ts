@@ -7,6 +7,7 @@ import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-c
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { HapiObservedProjection } from '../src/hapi-agent/projection-types.ts'
 import type { HapiProjection } from '../src/codex/projection-types.ts'
+import type { SourceSession } from '../src/remote/protocol.ts'
 import { installNativeComposerAdmission } from '../src/client/native-composer.ts'
 import { en } from '../src/client/locales.ts'
 
@@ -21,8 +22,7 @@ function store<T>(initial: T): SnapshotStore<T> {
     }
 }
 
-function fixture() {
-    const id = 'native' as SessionId
+function fixture(id = 'native' as SessionId) {
     const list = store<SessionListState>({ ids: [id], byId: {}, phase: 'ready', projectionsBySession: {} })
     const values = new Map<SessionId, ReturnType<ComposerBlocks['storeFor']>>()
     const blocks: ComposerBlocks = {
@@ -67,7 +67,7 @@ test('native Codex connection and fault availability never freezes the composer'
     } finally { app.dispose() }
 })
 
-test('only the original engine owning local input blocks the composer, with accurate copy', () => {
+test('observed local control blocks the composer while its resumable history stays editable', () => {
     const app = fixture()
     try {
         app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'engine-owned', controlledByUser: true }) })
@@ -78,6 +78,42 @@ test('only the original engine owning local input blocks the composer, with accu
         app.setProjection({ hapiObserved: observed({ readOnly: true, readOnlyReason: 'fault' }) })
         assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
     } finally { app.dispose() }
+})
+
+const source = (): SourceSession => ({
+    id: 'hhpi:machine:native:codex:original', machineId: 'machine', sourceId: 'native', engine: 'codex', nativeId: 'original',
+    title: 'Synthetic source', cwd: '/synthetic', updatedAt: 1000, status: 'idle', activeTurnId: null,
+    capabilities: { send: false, steer: false, cancel: false, approve: false, files: false }, pendingRequests: [],
+})
+
+test('HHPI input admission follows current source send capability and releases on recovery', () => {
+    const metadata = source(), app = fixture(metadata.id as SessionId)
+    try {
+        app.setProjection({ hhpiSource: metadata })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceReadOnly,
+            'a source that cannot send must explain its admission state before submission')
+        app.setProjection({ hhpiSource: { ...metadata, capabilities: { ...metadata.capabilities, send: true } } })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined, 'the same composer becomes available when its source can send')
+        app.setProjection({ hhpiSource: { ...metadata, status: 'offline' } })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceDisconnected)
+        app.setProjection({ hhpiSource: { ...metadata, capabilities: { ...metadata.capabilities, send: true } } })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), undefined)
+    } finally { app.dispose() }
+})
+
+test('HHPI source recovery preserves another plugin admission reason', () => {
+    const metadata = source(), app = fixture(metadata.id as SessionId), foreign = { reason: 'A different plugin owns this block' }
+    try {
+        app.blocks.set(app.id, foreign)
+        app.setProjection({ hhpiSource: metadata })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), foreign)
+        app.blocks.set(app.id, undefined)
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot()?.reason, en.sourceReadOnly)
+        app.blocks.set(app.id, foreign)
+        app.setProjection({ hhpiSource: { ...metadata, capabilities: { ...metadata.capabilities, send: true } } })
+        assert.equal(app.blocks.storeFor(app.id).getSnapshot(), foreign)
+    } finally { app.dispose() }
+    assert.equal(app.blocks.storeFor(app.id).getSnapshot(), foreign)
 })
 
 test('another plugin reason is never erased and the engine-owned block releases with its owner', () => {

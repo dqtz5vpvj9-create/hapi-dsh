@@ -16,7 +16,9 @@ For a daemon on the same Unix account:
 }
 ```
 
-The socket must belong to the Host account and have no group/other access. Credential-free loopback WebSocket endpoints also remain supported. `shared` means that native controls are advertised only for threads already loaded by that daemon; opening persisted history does not load the thread for execution.
+The socket must belong to the Host account and have no group/other access. Credential-free loopback WebSocket endpoints also remain supported. In `shared` mode, loaded threads use their existing native owner. An explicit send may also resume the same persisted thread on a verified stable Codex release at least 0.165.0, whose default Local thread store acquires an exclusive cross-process writer lock before execution. Another live writer rejects the resume; HHPI does not replace that writer or send the prompt after a refusal. Opening, paging and following persisted history never resume it.
+
+All processes sharing a Codex home must use the compatible native writer-lock protocol. Version evidence comes from the server build in the initialization response, independently of the client version. Unknown, older or prerelease shared runtimes retain loaded-thread controls and cannot automatically qualify for cold-thread continuation. The existing `exclusive` option describes an operator-assigned home and retains its explicit-send resume behavior; it does not bypass the native lock. No native execution is resumed by a reconnect alone. Details and regression evidence are recorded in [Codex send recovery](hhpi-codex-send-recovery-2026-11-01.md).
 
 For another machine, use authenticated SSH to run the bundled `dist/remote/native-stdio.cjs` against an existing private socket or Windows named pipe. Configure the source with `command: "ssh"` and an argument array invoking that file through the remote Node executable. On Windows, use an operator-owned PowerShell launcher file so quoting the pipe path is handled on the source machine. The bridge forwards native JSON-RPC over stdio; it closes its own connection when detached and leaves the engine running. It neither starts nor stops a daemon.
 

@@ -15,6 +15,8 @@ import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type Sou
 interface ThreadOwner {
     native: NativeThread; session: SourceSession; history?: CodexHistory; attachments?: CodexAttachments;
     preparing?: Promise<void>; refreshing?: Promise<void>; dirty: boolean; full: boolean;
+    /** Native completion can arrive before its terminal history page is readable. */
+    pendingCompletions: Set<string>;
     /** Versions only cover accepted source snapshots; native delta strings are not reapplied over snapshots. */
     pending: NativeNotification[]; pendingBytes: number; pendingOverflow: boolean; ready: boolean;
 }
@@ -68,7 +70,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.timer = setInterval(() => {
             for (const owner of this.threads.values()) {
                 if (!owner.history || !owner.ready || owner.preparing) continue;
-                if (owner.dirty || owner.full || owner.session.status === 'running' || owner.session.status === 'waiting') {
+                if (owner.dirty || owner.full || owner.pendingCompletions.size || owner.session.status === 'running' || owner.session.status === 'waiting') {
                     void this.refresh(owner, owner.full).catch(() => { this.markOffline(owner); });
                 }
             }
@@ -92,18 +94,21 @@ export class DirectCodexAdapter implements SourceAdapter {
             params: pending.request.params,
         }));
         const running = thread.status.type === 'active';
-        const allowed = this.loaded.has(nativeId) || this.config.ownership === 'exclusive';
+        const loaded = this.rpc.online && this.loaded.has(nativeId);
+        // A stored thread can accept an explicit continuation without already
+        // being loaded here. The native writer lock decides execution ownership.
+        const resumable = this.config.ownership === 'exclusive' || this.rpc.supportsThreadWriterLock;
         return { id, sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId,
             title: thread.name || thread.preview || `Codex ${nativeId.slice(0, 12)}`, cwd: thread.cwd, updatedAt: thread.updatedAt * 1000,
             status: this.rpc.online ? pendingRequests.length ? 'waiting' : running ? 'running' : 'idle' : 'offline',
             activeTurnId: running ? previous?.activeTurnId ?? null : null,
-            capabilities: { send: allowed, steer: allowed, cancel: allowed, approve: pendingRequests.length > 0, files: false }, pendingRequests };
+            capabilities: { send: this.rpc.online && (loaded || resumable), steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false }, pendingRequests };
     }
     private remember(thread: NativeThread): ThreadOwner {
         let owner = this.threads.get(thread.id);
         const session = this.descriptor(thread);
         if (owner) { owner.native = thread; this.metadata(owner, session); }
-        else { owner = { native: thread, session, dirty: false, full: true, pending: [], pendingBytes: 0, pendingOverflow: false, ready: false }; this.threads.set(thread.id, owner); }
+        else { owner = { native: thread, session, dirty: false, full: true, pendingCompletions: new Set(), pending: [], pendingBytes: 0, pendingOverflow: false, ready: false }; this.threads.set(thread.id, owner); }
         return owner;
     }
     private metadata(owner: ThreadOwner, session: SourceSession): void {
@@ -285,7 +290,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         // This also applies to an active thread when the native revision and
         // status still match: the ordinary running poll below will read only
         // its latest tail after this cache-first opening.
-        if (full && !owner.attachments?.needsReconciliation && checkpoint?.state === 'complete' && checkpoint.statusType === response.thread.status.type
+        if (full && !owner.pendingCompletions.size && !owner.attachments?.needsReconciliation && checkpoint?.state === 'complete' && checkpoint.statusType === response.thread.status.type
             && checkpoint.updatedAt === response.thread.updatedAt
             && history.index.count > 0 && history.index.cached<string[]>('turn-order') !== undefined) {
             if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
@@ -306,7 +311,8 @@ export class DirectCodexAdapter implements SourceAdapter {
             const page = turnListSchema.parse(nativePage);
             turns.push(...page.data);
             // The first already-indexed terminal turn bounds an ordinary tail refresh.
-            if (!full && page.data.some(turn => history.hasTurn(turn.id) && turn.status !== 'inProgress')) break;
+            if (!full && page.data.some(turn => turn.status !== 'inProgress' && history.turnState(turn.id)?.status === turn.status
+                && !owner.pendingCompletions.has(turn.id))) break;
             cursor = page.nextCursor;
             if (cursor && cursors.has(cursor)) throw new SourceError('TARGET_UNAVAILABLE', 'The native turn cursor did not progress.');
             if (cursor) cursors.add(cursor);
@@ -314,7 +320,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         } while (cursor);
         if (!full) turns.reverse();
         const known = history.index.cached<string[]>('turn-order') ?? [];
-        if (full && !owner.attachments?.needsReconciliation && rawCheckpoint === undefined && this.canAdoptLegacyIndex(history, persistedSession!, response.thread, turns, known)) {
+        if (full && !owner.pendingCompletions.size && !owner.attachments?.needsReconciliation && rawCheckpoint === undefined && this.canAdoptLegacyIndex(history, persistedSession!, response.thread, turns, known)) {
             // Older indexes have no explicit completion marker. Their final
             // turn-order write was the old full-build commit point; verify the
             // complete idle turn-header sequence before adopting that cache.
@@ -340,7 +346,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         for (const turn of turns) {
             signal.throwIfAborted();
             const previous = history.turnState(turn.id);
-            if (!full && previous && previous.status !== 'inProgress' && previous.status === turn.status) continue;
+            if (!full && previous && previous.status !== 'inProgress' && previous.status === turn.status && !owner.pendingCompletions.has(turn.id)) continue;
             history.beginTurn(owner.session, turn);
             let tail = full ? undefined : history.index.cached<Tail>(`tail:${turn.id}`);
             let position: string | { type: 'item'; itemId: string } | null = tail?.previous ? { type: 'item', itemId: tail.previous } : null;
@@ -363,6 +369,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 if (++pageCount > MAX_NATIVE_PAGES) throw new SourceError('CAPACITY_EXCEEDED', 'The native history exceeded the page safety limit.');
             } while (position);
             history.acceptTurn(owner.session, turn);
+            if (turn.status !== 'inProgress') owner.pendingCompletions.delete(turn.id);
             if (tail) history.index.edit(owner.session, () => { history.index.cache(`tail:${turn.id}`, tail); });
             const order = history.index.cached<string[]>('turn-order') ?? [];
             if (!order.includes(turn.id)) history.index.edit(owner.session, () => { history.index.cache('turn-order', [...order, turn.id]); });
@@ -371,7 +378,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (full) history.index.edit(owner.session, () => {
             history.index.cache('turn-order', turns.map(turn => turn.id));
             history.index.cache(NATIVE_HISTORY_CHECKPOINT, {
-                version: 1, state: 'complete', updatedAt: response.thread.updatedAt,
+                version: 1, state: owner.pendingCompletions.size ? 'building' : 'complete', updatedAt: response.thread.updatedAt,
                 statusType: response.thread.status.type,
             } satisfies NativeHistoryCheckpoint);
         });
@@ -433,7 +440,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const { method, params } = frame;
         owner.dirty = true;
         try {
-            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.attachments?.revoke(true); owner.full = true; return; }
+            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.pendingCompletions.clear(); owner.attachments?.revoke(true); owner.full = true; return; }
             if (method === 'thread/deleted' || method === 'thread/closed' || method === 'thread/archived') { this.markOffline(owner); this.catalogAt = 0; return; }
             if (method === 'serverRequest/resolved') {
                 const requestId = this.approvalId(params.requestId, this.rpc.currentGeneration), pending = this.approvals.get(requestId);
@@ -447,12 +454,18 @@ export class DirectCodexAdapter implements SourceAdapter {
                 const parsed = nativeTurnSchema.safeParse(params.turn);
                 if (!parsed.success) { owner.full = true; return; }
                 const turn = parsed.data;
+                if (method === 'turn/completed') owner.pendingCompletions.add(turn.id);
                 owner.native.status = { type: method === 'turn/started' ? 'active' : 'idle' };
                 this.metadata(owner, { ...this.descriptor(owner.native), activeTurnId: method === 'turn/started' ? turn.id : null });
                 if (owner.history) {
                     if (method === 'turn/started') owner.history.beginTurn(owner.session, turn);
-                    // Completion refreshes bounded native item pages before publishing turn/end.
-                    else owner.dirty = true;
+                    // An idle thread header can precede its persisted turn tail.
+                    // Keep polling until terminal items are read before turn/end,
+                    // and prevent a restart from adopting this incomplete cache.
+                    else this.setNativeHistoryCheckpoint(owner.history, owner.session, {
+                        version: 1, state: 'building', updatedAt: owner.native.updatedAt,
+                        statusType: owner.native.status.type,
+                    });
                 }
                 return;
             }
@@ -497,17 +510,29 @@ export class DirectCodexAdapter implements SourceAdapter {
                 return outcome ? receipt('accepted', 'The native engine resolved the approval request.') : receipt('indeterminate', 'The approval response was sent; native resolution has not been observed. It will not be resent.');
             } finally { timeout.abort(); }
         }
-        // The check happens at execution time, not when a browser rendered its button.
-        const loaded = await this.loadedThreads(signal);
-        if (!loaded.has(owner.native.id)) {
-            if (operation.kind !== 'send' || this.config.ownership !== 'exclusive') throw new SourceError('UNSUPPORTED', 'This thread is not owned by the connected native app-server. Reading does not resume or transfer its execution.');
-            const resumed = threadResponseSchema.parse(await this.rpc.request('thread/resume', { threadId: owner.native.id, excludeTurns: true }, { write: true }));
-            if (resumed.thread.id !== owner.native.id) throw new SourceError('OUTCOME_UNKNOWN', 'The native app-server resumed a different thread. No prompt was sent.');
-            this.loaded.add(owner.native.id); this.remember(resumed.thread);
+        if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim()) {
+            throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.');
         }
         try {
+            // Recheck the configured native owner at dispatch. Only explicit
+            // sends may resume; history, steering and cancellation never do.
+            const loaded = await this.loadedThreads(signal);
+            if (loaded.has(owner.native.id)) this.loaded.add(owner.native.id);
+            else this.loaded.delete(owner.native.id);
+            this.metadata(owner, this.descriptor(owner.native));
+            if (!loaded.has(owner.native.id)) {
+                if (operation.kind !== 'send') throw new SourceError('UNSUPPORTED', 'This thread is not loaded by the connected native app-server. Steering and cancellation cannot resume it.');
+                if (this.config.ownership !== 'exclusive' && !this.rpc.supportsThreadWriterLock) {
+                    throw new SourceError('UNSUPPORTED', 'Continuing shared native history requires Codex 0.165.0 or newer with thread writer locking.');
+                }
+                // Default Local storage acquires its cross-process writer lock
+                // before starting the original thread. A live owner is never
+                // displaced. No new thread, fork or alternate daemon is used.
+                const resumed = threadResponseSchema.parse(await this.rpc.request('thread/resume', { threadId: owner.native.id, excludeTurns: true }, { write: true }));
+                if (resumed.thread.id !== owner.native.id) throw new SourceError('OUTCOME_UNKNOWN', 'The native app-server resumed a different thread. No prompt was sent.');
+                this.loaded.add(owner.native.id); this.remember(resumed.thread);
+            }
             if (operation.kind === 'send' || operation.kind === 'steer') {
-                if (!operation.text?.trim()) throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.');
                 const input = [{ type: 'text', text: operation.text, text_elements: [] }];
                 if (operation.kind === 'steer') {
                     if (!operation.turnId) throw new SourceError('INVALID_REQUEST', 'Steer requires the exact native active turn.');

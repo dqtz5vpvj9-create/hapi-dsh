@@ -3,6 +3,7 @@ import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-c
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceTranslate } from './locales.ts'
 import type {} from '../hapi-agent/projection-types.ts'
+import type {} from './remote-sessions.ts'
 
 /** Use the official composer admission face, preserving other plugins' blocks. */
 export function installNativeComposerAdmission(
@@ -22,17 +23,17 @@ export function installNativeComposerAdmission(
         if (disposed) return
         const needed = new Set<SessionId>()
         for (const row of Object.values(sessions.list.getSnapshot().byId)) {
-            // Native Codex is never inert: inactive/history/disconnected sessions
-            // accept a durable send and resume the original source on delivery.
-            // Only the observed engine owning local input is a real admission
-            // block. Native connection/resume state is shown as non-blocking
-            // status by the source controls, not by freezing the composer.
+            // The legacy HAPI path accepts durable delivery. Direct HHPI input
+            // follows its source capability, including metadata-only recovery.
+            const source = row.projectionValues?.hhpiSource
             const observed = row.projectionValues?.hapiObserved
             const engineOwned = Boolean(observed && (observed.controlledByUser || observed.readOnlyReason === 'engine-owned'))
-            if (!engineOwned) continue
+            const unavailable = source?.status === 'offline'
+            const readOnly = source && !source.capabilities.send
+            if (!unavailable && !readOnly && !engineOwned) continue
             const id = row.id
             needed.add(id)
-            const reason = locale.t('sourceLocallyControlled')
+            const reason = locale.t(unavailable ? 'sourceDisconnected' : readOnly ? 'sourceReadOnly' : 'sourceLocallyControlled')
             const store = blocks.storeFor(id)
             let entry = entries.get(id)
             if (entry && entry.store !== store) { remove(id, entry); entry = undefined }

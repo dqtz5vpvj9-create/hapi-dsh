@@ -41,6 +41,20 @@ export class CodexRpc {
 
     constructor(private readonly config: DirectCodexConfig, private readonly timeoutMs = 30_000) {}
     get online(): boolean { return Boolean(this.initialized && this.connection && !this.connection.closed); }
+    /** Known native LocalThreadStore lock support, not a claim about other writers sharing its home. */
+    get supportsThreadWriterLock(): boolean {
+        if (!this.online) return false;
+        // Native format: originator/build (OS version; architecture) terminal (optional client suffix).
+        // The terminal is sanitized to this token alphabet. Validate the whole shape so a
+        // client-supplied originator cannot smuggle in a version or a second native prefix.
+        // Parenthesized/ambiguous originators and suffixes fail closed; suffix versions stay opaque.
+        const native = /^[^/()\r\n]+\/([^/()\s]+) \([^();\r\n]+; [^();\r\n]+\) [A-Za-z0-9._/-]+(?: \([^()\r\n]*\))?$/.exec(this.initialized!.userAgent);
+        if (!native) return false;
+        const version = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(native[1]!);
+        if (!version) return false;
+        const major = Number(version[1]), minor = Number(version[2]), patch = Number(version[3]);
+        return [major, minor, patch].every(Number.isSafeInteger) && (major > 0 || minor >= 165);
+    }
     get currentGeneration(): number { return this.connection?.generation ?? this.generation; }
     onNotification(listener: (value: NativeNotification) => void): () => void { this.notifications.add(listener); return () => { this.notifications.delete(listener); }; }
     onRequest(listener: (value: NativeRequest) => void): () => void { this.requests.add(listener); return () => { this.requests.delete(listener); }; }

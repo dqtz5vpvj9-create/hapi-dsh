@@ -9,6 +9,8 @@ import type { PropsRuntime, PropsRenderFactories, PropsRenderSlots } from '@deep
 import { fixture } from './hhpi-reading-fixture.ts'
 import { installDomGeometry } from './dom-geometry.ts'
 import { ACTIVE_CONVERSATION_INPUT } from './conversation-content-input.ts'
+import { installNativeComposerAdmission } from '../../src/client/native-composer.ts'
+import { en } from '../../src/client/locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface SlotMap { 'hhpi.test.pane': { kind: 'single'; scope: 'session' } }
@@ -38,6 +40,8 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
       ctx.slots.register({ name: 'hhpi.test.pane' }, (props: PropsRenderFactories) =>
         props.renderFactorySlot('conversation.content', ACTIVE_CONVERSATION_INPUT))
     } })
+    const stopAdmission = installNativeComposerAdmission(f.sessions, f.ctx.conversation.blocks,
+      { t: key => en[key], subscribe: () => () => {} })
     let unmount: (() => void) | undefined
     try {
       await act(async () => { unmount = f.ctx.uiRenderer.mount(f.dom.window.document.getElementById('root')!) })
@@ -55,6 +59,32 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
       const paneA = f.dom.window.document.querySelector<HTMLElement>('[data-test-pane="a"]')!
       assert.ok(a.conversation.windowCommit)
       assert.ok(a.binding.viewId)
+      await act(async () => { a.input.setDraft('Rendered draft A'); b.input.setDraft('Rendered draft B') })
+      assert.equal(editors.get('a')!.textContent, 'Rendered draft A'); assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
+      const sourceSend = async (send: boolean): Promise<void> => {
+        const accepted = Promise.withResolvers<void>(), id = f.canonical.sessionId
+        const stop = f.remote.list.subscribe(() => {
+          if (f.remote.list.getSnapshot().byId[id]?.projectionValues?.hhpiSource?.capabilities.send === send) accepted.resolve()
+        })
+        try {
+          await act(async () => {
+            const current = f.index.session
+            f.index.edit({ ...current, capabilities: { ...current.capabilities, send } }, () => {})
+            await accepted.promise
+          })
+        } finally { stop() }
+      }
+      for (const send of [false, true]) {
+        await sourceSend(send)
+        for (const id of ['a', 'b']) {
+          const pane = f.dom.window.document.querySelector(`[data-test-pane="${id}"]`)!
+          const button = pane.querySelector<HTMLButtonElement>('button[aria-label="input.send"]')
+          assert.ok(button, 'the actual official send button must be mounted')
+          assert.equal(button.disabled, !send, 'official input admission follows accepted source capability changes')
+          assert.equal(editors.get(id)!.textContent, `Rendered draft ${id.toUpperCase()}`, 'capability changes preserve each visible draft')
+        }
+        assert.equal(f.writes.length, 0, 'capability recovery never submits a draft automatically')
+      }
       let revision = 0
       let measured: { readonly key: string; readonly index: number } | null = null
       const corrections: Array<{ readonly key: string; readonly oldIndex: number; readonly orderIndex: number; readonly domIndex: number }> = []
@@ -96,8 +126,6 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
         },
       })
       t.after(stopDomObserver)
-      await act(async () => { a.input.setDraft('Rendered draft A'); b.input.setDraft('Rendered draft B') })
-      assert.equal(editors.get('a')!.textContent, 'Rendered draft A'); assert.equal(editors.get('b')!.textContent, 'Rendered draft B')
       const initialB = b.reading.snapshot.getSnapshot().before
       for (let page = 1; page <= 6; ++page) {
         const before = a.reading.snapshot.getSnapshot().before
@@ -126,6 +154,7 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
       await assert.rejects(disposed.loadOlder(), /attached|disposed|unmounted/i)
       assert.equal(f.writes.length, 0, 'opening, paging and closing views must never issue a native write')
     } finally {
+      stopAdmission()
       if (unmount) await act(async () => { unmount?.() })
       geometry.dispose()
     }

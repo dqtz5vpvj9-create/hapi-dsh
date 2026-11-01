@@ -60,7 +60,7 @@ export class RemoteSourceSession implements SessionFace {
       if (this.disposed) return Promise.reject(new DOMException('The source view was released.', 'AbortError'))
       return history.openView(viewId, budget, signal)
     } }
-    this.stopMetadata = history.subscribeSession(session => { this.update(session) })
+    this.stopMetadata = history.subscribeSession(session => { if (this.metadata.getSnapshot() !== session) this.update(session) })
     this.update(metadata)
     this.ready = history.prepare().then(page => {
       if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
@@ -186,6 +186,8 @@ export class RemoteSessions implements ISessions {
   readonly historySource?: NonNullable<ISessions['historySource']>
   readonly windowCommit?: NonNullable<ISessions['windowCommit']>
   private readonly metadata = new Map<string, SourceSession>()
+  private historyMetadataRevision = 0
+  private readonly historyMetadataRevisions = new Map<string, number>()
   private readonly records = new Map<SessionId, RecordOwner>()
   private readonly readingViews = new RemotePaneViews()
   private readonly histories = new Map<SessionId, RemoteSourceHistory>()
@@ -232,6 +234,10 @@ export class RemoteSessions implements ISessions {
   }
   private async refreshSources(): Promise<void> {
     if (this.refreshRead) return this.refreshRead
+    // Catalog metadata has no source version. A response may only replace a
+    // source whose accepted history state has not advanced since this request.
+    // Native updatedAt cannot order ownership/capability changes in one second.
+    const startedAt = this.historyMetadataRevision
     const work = (async () => {
       const catalog = result(await this.api.catalog(this.lifetime.signal))
       this.lifetime.signal.throwIfAborted()
@@ -239,11 +245,14 @@ export class RemoteSessions implements ISessions {
       this.legacyHapi = catalog.legacyHapi
       this.catalogChecked = true
       const active = new Set(catalog.sessions.map(session => session.id))
-      for (const [id, old] of this.metadata) if (!active.has(id)) {
+      const unchanged = (id: string): boolean => (this.historyMetadataRevisions.get(id) ?? 0) <= startedAt
+      for (const [id, old] of this.metadata) if (!active.has(id) && unchanged(id)) {
         const offline: SourceSession = { ...old, status: 'offline' }
         this.metadata.set(id, offline); this.records.get(id as SessionId)?.session.update(offline)
       }
-      for (const session of catalog.sessions) { this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session) }
+      for (const session of catalog.sessions) if (unchanged(session.id)) {
+        this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session)
+      }
       this.publish()
       this.capabilityState.set({ catalogReady: true, legacyHapi: catalog.legacyHapi })
     })().finally(() => { if (this.refreshRead === work) this.refreshRead = undefined })
@@ -286,6 +295,19 @@ export class RemoteSessions implements ISessions {
           changes: (request, signal) => followSourceChanges(this.ctx.remote, (cursor, generation) => this.api.changes(cursor, generation), request, signal),
         })
         this.histories.set(target, history)
+        // Subscribe once per shared history, not per Pane/Session face. Cached
+        // metadata replay on a later retain is not a new native observation.
+        // History disposal clears this subscription with its accepted cache.
+        history.subscribeSession(session => {
+          if (this.lifetime.signal.aborted) return
+          const changed = JSON.stringify(this.metadata.get(target)) !== JSON.stringify(session)
+          this.metadata.set(target, session)
+          this.historyMetadataRevisions.set(target, ++this.historyMetadataRevision)
+          this.records.get(target)?.session.update(session)
+          // Body-only changes often repeat metadata; avoid rebuilding the
+          // complete sidebar catalog for every accepted output chunk.
+          if (changed) this.publish()
+        })
       }
       const scope = createScope(this.ctx, target)
       const session = new RemoteSourceSession(target, metadata, history, this.api)
@@ -348,6 +370,6 @@ export class RemoteSessions implements ISessions {
     this.lifetime.abort(); if (this.timer) clearInterval(this.timer); this.stopOriginal()
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()
-    this.records.clear(); this.histories.clear(); this.metadata.clear()
+    this.records.clear(); this.histories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear()
   }
 }

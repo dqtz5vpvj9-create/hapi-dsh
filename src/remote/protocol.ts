@@ -72,9 +72,10 @@ export interface SourceAdapter {
 export interface DirectCodexConfig {
     id: string; machineId: string; engine: 'codex'; endpoint?: string;
     command?: string; args?: string[]; cwd?: string; codexHome?: string;
-    /** shared: only threads already loaded by this app-server may be controlled.
-     * exclusive: the operator assigns this Codex home to the source app-server;
-     * an explicit send may resume an idle persisted thread using its native ID. */
+    /** shared/default: explicit sends may resume the same persisted thread on
+     * native releases with cross-process writer locking; a live owner rejects it.
+     * exclusive: the operator assigns this Codex home to this app-server and
+     * also permits explicit resume on older runtimes. Reads never resume. */
     ownership?: 'shared' | 'exclusive';
 }
 /** Native DSH body stays in its official persistence; the existing owner retains all writes. */

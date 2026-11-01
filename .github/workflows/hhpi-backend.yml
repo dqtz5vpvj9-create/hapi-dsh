@@ -2,7 +2,7 @@ name: HHPI backend contract
 
 on:
   push:
-    branches: [feat/hhpi-remote-access-20261029]
+    branches: [main, feat/hhpi-remote-access-20261029]
     paths: ['src/**', 'tests/**', 'scripts/**', 'package*.json', 'tsconfig*.json', 'UPSTREAMS.json', '.github/workflows/hhpi-backend.yml']
   pull_request:
     paths: ['src/**', 'tests/**', 'scripts/**', 'package*.json', 'tsconfig*.json', 'UPSTREAMS.json', '.github/workflows/hhpi-backend.yml']
@@ -26,6 +26,8 @@ jobs:
       - name: Install exact project dependencies
         timeout-minutes: 5
         run: npm ci
+      - uses: ./.github/actions/install-hhpi-extension
+      - uses: ./.github/actions/prepare-data-cache
       - name: Host types and source boundaries
         timeout-minutes: 2
         run: |
