@@ -43,6 +43,7 @@ export class RemoteSourceSession implements SessionFace {
   private readonly submissions = new Map<string, BeginSubmissionInput>()
   private readonly operations = new Map<string, TrackedOperation>()
   private readonly stopMetadata: () => void
+  private readonly lifetime = new AbortController()
   private disposed = false
   readonly ready: Promise<void>
 
@@ -62,7 +63,7 @@ export class RemoteSourceSession implements SessionFace {
     } }
     this.stopMetadata = history.subscribeSession(session => { if (this.metadata.getSnapshot() !== session) this.update(session) })
     this.update(metadata)
-    this.ready = history.prepare().then(page => {
+    this.ready = history.prepare(this.lifetime.signal).then(page => {
       if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
       this.state.set({ ...this.state.getSnapshot(), openState: 'open', hasMore: page.hasBefore,
         blank: !page.entries.some(entry => ['user/message', 'assistant/message', 'tool/call'].includes(entry.event.type)) })
@@ -174,7 +175,7 @@ export class RemoteSourceSession implements SessionFace {
   async loadThrough(): Promise<void> { throw sourceError('History navigation requires the current Pane reader.') }
   dispose(): void {
     if (this.disposed) return
-    this.disposed = true; this.stopMetadata()
+    this.disposed = true; this.lifetime.abort(); this.stopMetadata()
     for (const id of this.submissions.keys()) this.retire(id, { reason: 'failed' })
   }
 }

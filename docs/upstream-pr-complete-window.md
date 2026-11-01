@@ -22,4 +22,6 @@ Avoid measuring each ref during sibling DOM placement: use its cached size or es
 
 ## Review and tests
 
+Resume the accepted window's follow after a complete-window page fails or is cancelled. Publication rejection does not release the accepted window, so it must not silently detach that window from future source revisions. A successful subsequent delta clears the transient reader error. The installed production contract rejects a candidate, delivers another source update without user navigation, and verifies both body publication and ready state.
+
 Review the source transformation and generated diff against the pinned upstream revision. Contract tests should cover actual official Conversation nodes and the reader/coordinator publication order. DOM tests do not certify browser scrolling. Release evidence and outstanding combinations are recorded independently in the HHPI implementation checkpoint.

@@ -28,4 +28,10 @@ Host and Runner must distribute the same extension packages and source-input ide
 
 ## Validation requirements
 
+### Transient source recovery
+
+An unavailable source keeps the same pending read, accepted window and mounted reader. The HHPI read boundary retries only identified transport/availability failures with bounded jittered backoff; online, pageshow and foreground transitions wake the pending operation. Cancelling the last caller cancels shared recovery. Permanent access, malformed-data and capacity failures remain explicit.
+
+A missing source journal segment triggers an authoritative baseline and per-Pane recovery. A failed complete-window page must resume following the last accepted version even when its candidate was rejected. A subsequently committed delta restores the view to ready. This behavior is opt-in with complete-window history; native event-page reading is unchanged.
+
 Contract tests must use the real patched `BoundHistoryView`, assembler and coordinator. The source wire and reader measurement/layout boundary may be controlled fixtures. Required assertions cover repeated body-bearing prepends, one publication for coalesced reads, read-time scrolling measured at commit, rejection before publication preserving the visible window, a live revision during paging, opaque cursors, independent Pane positions, and cancellation. Browser scrolling, mobile viewport and physical-device checks are separate release evidence.

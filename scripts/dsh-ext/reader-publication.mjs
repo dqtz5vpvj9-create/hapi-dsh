@@ -181,13 +181,9 @@ export async function applyReaderPublication(root) {
     visit(publish);
     if (replaced !== 1) throw new Error('Pinned complete-window assembler checkpoint changed.');
     const read = method(owner, ast, 'readComplete');
-    insert(edits, read.body.getStart(ast) + 1, `\n    this.completePreserveAnchor = request === null || request.kind === 'before' || request.kind === 'after'\n    let completed = false\n`);
-    const visitRead = node => {
-      if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression) && node.expression.left.getText(ast) === 'this.phase' && node.expression.right.getText(ast) === "'ready'") insert(edits, node.end, '\n      completed = true;\n      ');
-      if (ts.isIfStatement(node) && node.expression.getText(ast) === '!this.released && this.versionCursor !== null') edits.push({ start: node.expression.getStart(ast), end: node.expression.end, text: '!this.released && this.versionCursor !== null && (completed || signal.aborted)' });
-      ts.forEachChild(node, visitRead);
-    };
-    visitRead(read);
+    insert(edits, read.body.getStart(ast) + 1, `\n    this.completePreserveAnchor = request === null || request.kind === 'before' || request.kind === 'after'\n`);
+    // A rejected candidate leaves the previously accepted window authoritative.
+    // Keep readComplete's unconditional restart of that accepted window's follow.
     const tries = read.body.statements.filter(ts.isTryStatement);
     if (tries.length !== 1 || !tries[0].finallyBlock) throw new Error('Complete-window read cleanup changed.');
     insert(edits, tries[0].finallyBlock.getStart(ast) + 1, '\n      this.completePreserveAnchor = true\n');

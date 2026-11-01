@@ -71,6 +71,7 @@ export async function applyCompleteWindows(root) {
           throw Object.assign(new Error('The complete history stream has a version gap.'), { code: 'STALE_VERSION' })
         }
         await this.commitSnapshot(delta.snapshot, this.abort.signal)
+        this.phase = 'ready'; this.failure = null
         this.headChanged = delta.headChanged
         this.publish()
         return false

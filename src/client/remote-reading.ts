@@ -7,7 +7,7 @@ import { resolveMountedChatForPane } from './mounted-chat-control.ts'
 
 export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference: SessionReference, navigation: WorkspacePaneNavigation): () => void {
   const releaseOwner = bindRemoteReadingOwner(root, reference)
-  let disposed = false, applied = -1
+  let disposed = false, applied = -1, attempting = -1
   let pending: AbortController | undefined
   let error: HTMLElement | undefined
   const clear = (): void => { error?.remove(); error = undefined }
@@ -17,8 +17,8 @@ export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference
     if (!control) return
     const intent = navigation.reading.getSnapshot()
     if (!intent || intent.sessionId !== reference.sessionId) { root.dataset.hapiReading = 'reader'; return }
-    if (intent.revision === applied) return
-    applied = intent.revision
+    if (intent.revision === applied || intent.revision === attempting) return
+    attempting = intent.revision
     pending?.abort(); pending = new AbortController()
     const signal = pending.signal
     clear(); root.dataset.hapiReading = 'waiting'
@@ -50,17 +50,22 @@ export function bindRemotePaneReading(ctx: Context, root: HTMLElement, reference
         target.focus({ preventScroll: true })
       }
     }
-    void read().then(() => { if (!disposed && !signal.aborted) root.dataset.hapiReading = 'ready' }, cause => {
+    void read().then(() => { if (!disposed && !signal.aborted) { applied = intent.revision; root.dataset.hapiReading = 'ready' } }, cause => {
       if (disposed || signal.aborted) return
       root.dataset.hapiReading = 'error'
       error = root.ownerDocument.createElement('p'); error.setAttribute('role', 'alert')
       error.textContent = cause instanceof Error ? cause.message : 'The source target could not be opened.'
       root.append(error)
-    })
+    }).finally(() => { if (attempting === intent.revision) attempting = -1 })
   }
   const observer = new MutationObserver(update)
   observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-hapi-mounted-chat'] })
   const stops = [navigation.state.subscribe(update), navigation.reading.subscribe(update)]
+  const window = root.ownerDocument.defaultView
+  const visible = (): void => { if (root.ownerDocument.visibilityState === 'visible') update() }
+  window?.addEventListener('online', update); window?.addEventListener('pageshow', update)
+  root.ownerDocument.addEventListener('visibilitychange', visible)
   void reference.ready.then(update, () => {})
-  return () => { releaseOwner(); disposed = true; pending?.abort(); observer.disconnect(); for (const stop of stops) stop(); clear(); delete root.dataset.hapiReading }
+  return () => { releaseOwner(); disposed = true; pending?.abort(); observer.disconnect(); for (const stop of stops) stop(); clear(); delete root.dataset.hapiReading
+    window?.removeEventListener('online', update); window?.removeEventListener('pageshow', update); root.ownerDocument.removeEventListener('visibilitychange', visible) }
 }

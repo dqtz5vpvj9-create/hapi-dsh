@@ -356,8 +356,8 @@ test('an official carrier failure reconnects from the last accepted source versi
   assert.equal(view.snapshot.getSnapshot().failure, null)
 })
 
-test('bare and stale source-follow failures stay terminal instead of entering carrier recovery', { timeout: 10000 }, async t => {
-  for (const kind of ['bare', 'stale'] as const) await t.test(kind, async t => {
+test('local source-follow faults stay terminal instead of being retried as network failures', { timeout: 10000 }, async t => {
+  for (const kind of ['bare'] as const) await t.test(kind, async t => {
     const f = fixture(); t.after(() => f.close())
     const { view } = await f.open(`${kind}-pane`)
     await f.waitForFollowCount(1); await settleTurn()
@@ -370,6 +370,21 @@ test('bare and stale source-follow failures stay terminal instead of entering ca
     assert.equal(f.calls.length, reads)
     assert.equal(f.followRequests.length, 1, 'non-carrier protocol/local errors never reopen a RemoteStream generation')
   })
+})
+
+test('a stale source stream rebaselines the same official reader and resumes without user navigation', { timeout: 10000 }, async t => {
+  const f = fixture(); t.after(() => f.close())
+  const { view } = await f.open('stale-pane')
+  await f.waitForFollowCount(1); await settleTurn()
+  const body = readable(view.reads.snapshot('chat'))
+  const failed = f.interruptFollow('stale')
+  await failed.done; f.setGeneration({})
+  await f.waitForFollowCount(2)
+  assert.equal(view.snapshot.getSnapshot().failure, null)
+  assert.deepEqual(readable(view.reads.snapshot('chat')), body)
+  f.index.edit(session, () => { f.index.put('item-1441', user(1441, 'after-source-recovery')) })
+  await waitState(view, () => readable(view.reads.snapshot('chat')).includes('after-source-recovery'))
+  assert.equal(view.snapshot.getSnapshot().phase, 'ready')
 })
 
 test('releasing the final reader aborts its official RemoteStream without reopening it', { timeout: 10000 }, async t => {
@@ -534,6 +549,20 @@ test('failed pre-publication measurement keeps old body and permits explicit rec
   reader.fail = false
   await view.read({ kind: 'before', cursor })
   assert.equal(readable(view.reads.snapshot('chat')).length, 320); assert.equal(f.calls.length, reads)
+})
+
+test('a rejected page keeps the accepted official reader subscribed to subsequent source updates', { timeout: 10000 }, async t => {
+  const f = fixture(); t.after(() => f.close())
+  const { view, reader } = await f.open('failed-page-live-pane')
+  const cursor = view.snapshot.getSnapshot().before!, previous = readable(view.reads.snapshot('chat'))
+  reader.fail = true
+  await assert.rejects(view.read({ kind: 'before', cursor }), { code: 'TARGET_UNAVAILABLE' })
+  assert.deepEqual(readable(view.reads.snapshot('chat')), previous)
+  reader.fail = false
+  f.index.edit(session, () => { f.index.put('item-1441', user(1441, 'live-after-failed-page')) })
+  await waitState(view, () => readable(view.reads.snapshot('chat')).includes('live-after-failed-page') && view.snapshot.getSnapshot().phase === 'ready')
+  assert.equal(view.snapshot.getSnapshot().phase, 'ready')
+  assert.equal(view.snapshot.getSnapshot().failure, null)
 })
 
 test('live revisions arriving while a page is pending remain present in the committed official body', { timeout: 10000 }, async t => {
