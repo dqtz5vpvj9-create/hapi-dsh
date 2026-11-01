@@ -28,7 +28,10 @@ interface NativeHistoryCheckpoint {
     updatedAt: number;
     statusType: string;
 }
-interface AdapterOptions { rpc?: CodexRpc; pollMs?: number; readImage?: (path: string, signal: AbortSignal) => Promise<unknown> }
+interface AdapterOptions {
+    rpc?: CodexRpc; pollMs?: number; readImage?: (path: string, signal: AbortSignal) => Promise<unknown>;
+    now?: () => number; random?: () => number;
+}
 const MAX_CATALOG = 10_000;
 const MAX_NATIVE_PAGES = 10_000;
 const ACK_TIMEOUT = 15_000;
@@ -55,11 +58,18 @@ export class DirectCodexAdapter implements SourceAdapter {
     private readonly stops: Array<() => void>;
     private catalogRead: Promise<SourceSession[]> | undefined;
     private catalogAt = 0;
+    private readonly now: () => number;
+    private readonly random: () => number;
+    private retryReadsAt = 0;
+    private readFailures = 0;
+    private reconnecting: Promise<void> | undefined;
     private readonly timer: ReturnType<typeof setInterval>;
     private disposed = false;
 
     constructor(private readonly config: DirectCodexConfig, private readonly directory: string, options: AdapterOptions = {}) {
         this.id = config.id; this.machineId = config.machineId;
+        this.now = options.now ?? Date.now;
+        this.random = options.random ?? Math.random;
         this.rpc = options.rpc ?? new CodexRpc(config);
         this.imageReader = new CodexImageReader(config);
         this.readImage = options.readImage ?? ((path, signal) => this.imageReader.read(path, signal));
@@ -68,6 +78,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.stops = [this.rpc.onNotification(value => { this.notification(value); }), this.rpc.onRequest(request => { this.approval(request); }), this.rpc.onDisconnect(() => { this.disconnected(); })];
         // A source lifetime is independent of any Pane. This never cancels its native turn.
         this.timer = setInterval(() => {
+            if (this.disposed || this.now() < this.retryReadsAt) return;
             for (const owner of this.threads.values()) {
                 if (!owner.history || !owner.ready || owner.preparing) continue;
                 if (owner.dirty || owner.full || owner.pendingCompletions.size || owner.session.status === 'running' || owner.session.status === 'waiting') {
@@ -78,6 +89,25 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.timer.unref();
     }
     get online(): boolean { return this.rpc.online; }
+    private readFailed(): void {
+        if (this.disposed || this.now() < this.retryReadsAt) return;
+        const ceiling = Math.min(30_000, 500 * 2 ** Math.min(this.readFailures++, 6));
+        this.retryReadsAt = this.now() + Math.ceil(ceiling * (0.75 + 0.25 * this.random()));
+    }
+    private readRecovered(): void { this.readFailures = 0; this.retryReadsAt = 0; }
+    private async connectForRead(): Promise<void> {
+        this.lifetime.signal.throwIfAborted();
+        if (this.reconnecting) return this.reconnecting;
+        if (this.now() < this.retryReadsAt) throw new SourceError('TARGET_UNAVAILABLE', 'The native source is waiting to reconnect.');
+        if (this.rpc.online) return;
+        // Every thread reader and catalog shares one recovery probe. A failed
+        // source connection never creates one reconnect loop per open thread.
+        const work = this.rpc.connect(this.lifetime.signal).then(() => {}).catch((error: unknown) => {
+            this.readFailed(); throw error;
+        }).finally(() => { if (this.reconnecting === work) this.reconnecting = undefined; });
+        this.reconnecting = work;
+        return work;
+    }
     private assertScope(id: string): string {
         let source;
         try { source = parseSourceSessionId(id); } catch { throw new SourceError('INVALID_REQUEST', 'Invalid source session identity.'); }
@@ -121,6 +151,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.metadata(owner, { ...owner.session, status: 'offline', capabilities: { ...owner.session.capabilities, send: false, steer: false, cancel: false, approve: false }, pendingRequests: [] });
     }
     private disconnected(): void {
+        this.readFailed();
         this.catalogAt = 0; this.loaded.clear(); this.approvals.clear();
         for (const owner of this.threads.values()) this.markOffline(owner);
     }
@@ -134,9 +165,11 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     async list(signal?: AbortSignal): Promise<SourceSession[]> {
         this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted();
-        if (this.rpc.online && Date.now() - this.catalogAt < 1500) return this.catalogSessions();
+        if (this.rpc.online && this.now() - this.catalogAt < 1500) return this.catalogSessions();
         if (!this.catalogRead) {
-            const work = this.readCatalog().finally(() => { if (this.catalogRead === work) this.catalogRead = undefined; });
+            const work = this.readCatalog().then(sessions => { this.readRecovered(); return sessions; }, (error: unknown) => {
+                this.readFailed(); throw error;
+            }).finally(() => { if (this.catalogRead === work) this.catalogRead = undefined; });
             this.catalogRead = work;
         }
         return waitFor(this.catalogRead, signal);
@@ -156,7 +189,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     private async readCatalog(): Promise<SourceSession[]> {
         const signal = this.lifetime.signal;
-        await this.rpc.connect(signal);
+        await this.connectForRead();
         const loaded = await this.loadedThreads(signal);
         let cursor: string | null = null;
         this.loaded.clear(); for (const id of loaded) this.loaded.add(id);
@@ -175,7 +208,7 @@ export class DirectCodexAdapter implements SourceAdapter {
             this.remember(response.thread); accepted.add(id);
         }
         for (const [id, owner] of this.threads) if (!accepted.has(id)) this.markOffline(owner);
-        this.catalogAt = Date.now();
+        this.catalogAt = this.now();
         return this.catalogSessions();
     }
     private async owner(sessionId: string, signal?: AbortSignal): Promise<ThreadOwner> {
@@ -264,7 +297,9 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     private refresh(owner: ThreadOwner, full: boolean): Promise<void> {
         if (owner.refreshing) { owner.dirty = true; owner.full ||= full; return owner.refreshing; }
-        const work = this.refreshNative(owner, full).finally(() => { if (owner.refreshing === work) delete owner.refreshing; });
+        const work = this.connectForRead().then(() => this.refreshNative(owner, full)).then(() => { this.readRecovered(); }, (error: unknown) => {
+            this.readFailed(); throw error;
+        }).finally(() => { if (owner.refreshing === work) delete owner.refreshing; });
         owner.refreshing = work;
         return work;
     }
