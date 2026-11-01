@@ -350,6 +350,7 @@ export class HapiController extends TypertRemoteService {
                 sourceListFacts: catalogListFacts(agent.sourceSession, this.sourceSummaries.get(agent.binding.hapiSessionId)),
             })),
             hosts: this.options.federation.listMachines().map(machine => ({ id: machine.id, label: machine.name, online: machine.online, basePath: machine.baseUrl })),
+            hostsComplete: this.options.federation.hostsComplete,
         };
     }
 

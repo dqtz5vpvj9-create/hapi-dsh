@@ -97,7 +97,7 @@ export interface CatalogSession {
     };
 }
 export interface FederationHost { id: string; label: string; online: boolean; basePath: string }
-export interface HapiCatalog { hubId: string; connected: boolean; machines: CatalogMachine[]; sessions: CatalogSession[]; hosts: FederationHost[]; sourceDiscovery?: SourceDiscovery }
+export interface HapiCatalog { hubId: string; connected: boolean; machines: CatalogMachine[]; sessions: CatalogSession[]; hosts: FederationHost[]; hostsComplete?: boolean; sourceDiscovery?: SourceDiscovery }
 export interface MachineOptions {
     homes: Array<{ id: string; name: string; path: string; official?: boolean }>;
     models: Array<{ id: string; name: string; reasoningEfforts: string[] }>;
@@ -375,6 +375,7 @@ const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
                 futureScheduledMessageCount: z.number().int().nonnegative().nullable(), nextScheduledAt: z.number().finite().nullable(), serviceTier: z.string().nullable(),
                 backgroundTaskCount: z.number().int().nonnegative().nullable(), pendingRequestsCount: z.number().int().nonnegative().nullable() }).optional() })),
         hosts: z.array(z.object({ id, label: z.string(), online: z.boolean(), basePath: z.string() })),
+        hostsComplete: z.boolean().optional(),
     }),
     machineOptions: z.object({
         homes: z.array(z.object({ id, name: z.string(), path: z.string(), official: z.boolean().optional() })),

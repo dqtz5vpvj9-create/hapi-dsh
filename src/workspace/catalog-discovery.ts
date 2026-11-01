@@ -42,6 +42,7 @@ export class CatalogDiscovery {
     hostFailed(id: string, label: string, message: string): void {
         if (id !== 'local') this.hosts.set(id, { id, label, phase: 'unavailable', error: message })
     }
+    hostRemoved(id: string): void { this.hosts.delete(id) }
     /** A saved pane can name a Host that has not been booted yet; only a real phase is authoritative. */
     host(id: string): CatalogHostDiscovery | undefined { return id === 'local' ? undefined : this.hosts.get(id) }
     get sourcePhase(): WorkspaceCatalogDiscovery['source'] { return this.source }

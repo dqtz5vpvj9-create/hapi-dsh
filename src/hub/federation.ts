@@ -80,6 +80,7 @@ class ResponseWriter {
 /** Authenticated, identity-preserving proxy for complete official DSH Web transports. */
 export class FederationHub {
     private paired = new Map<string, PairedMachine>();
+    private pairingInventoryComplete = false;
     private readonly runners = new Map<string, RunnerState>();
     private readonly previous = new Map<string, FederatedMachine>();
     private readonly http = new Map<string, HttpChannel>();
@@ -113,11 +114,15 @@ export class FederationHub {
         }).sort((a, b) => a.name.localeCompare(b.name));
     }
 
+    /** A failed policy read closes transports but does not assert a revocation. */
+    get hostsComplete(): boolean { return this.pairingInventoryComplete; }
+
     async refreshCredentials(): Promise<void> {
         const operation = this.refresh.then(async () => {
             let store;
             try { store = await readPairingStore(this.options.credentialsFile); }
             catch (error) {
+                this.pairingInventoryComplete = false;
                 this.paired.clear();
                 for (const state of this.runners.values()) state.tunnel.close(1008);
                 this.changed();
@@ -125,6 +130,7 @@ export class FederationHub {
             }
             if (this.closed) return;
             this.paired = new Map(store.machines.map((machine) => [machine.id, machine]));
+            this.pairingInventoryComplete = true;
             for (const [id, state] of this.runners) if (this.paired.get(id)?.tokenHash !== state.credentialHash) state.tunnel.close(1008);
             this.changed();
         });

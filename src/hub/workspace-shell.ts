@@ -25,7 +25,8 @@ export class WorkspaceShell extends TypertRemoteService {
     @Remote('catalog')
     async catalog(): Promise<HapiCatalog> {
         return { hubId: this.identity, connected: true, machines: [], sessions: [],
-            hosts: this.federation.listMachines().map(machine => ({ id: machine.id, label: machine.name, online: machine.online, basePath: machine.baseUrl })) };
+            hosts: this.federation.listMachines().map(machine => ({ id: machine.id, label: machine.name, online: machine.online, basePath: machine.baseUrl })),
+            hostsComplete: this.federation.hostsComplete };
     }
     @Remote('workspaceGet')
     workspaceGet(): Promise<WorkspaceDocument> { return this.workspace.get(); }

@@ -10,6 +10,8 @@ import { WorkspaceConflictError } from '../src/client/persistence.ts'
 import { sharedWorkspaceSignature, sharedWorkspaceState } from '../src/workspace/legacy.ts'
 import { paneTitle, sessionFolder } from '../src/workspace/presentation.ts'
 import { createWorkspaceNotifications } from '../src/workspace/notifications.ts'
+import { FederationHosts, type FederatedHostRuntime } from '../src/client/federation-hosts.ts'
+import type { FederationHost } from '../src/client-api.ts'
 
 function fixture() {
     const listeners = new Set<() => void>()
@@ -459,10 +461,84 @@ test('foreign and local sessions with identical ids remain isolated and share on
     assert.deepEqual(sessionLocation(controller.getSnapshot().catalog.byId[sessionResourceId('lab', 'same-id')]), { engine: 'dsh', machineId: 'lab', machineName: 'Lab machine' })
     remove()
     assert.equal(controller.getSnapshot().leases.get(remotePane)!.status, 'failed')
-    assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId('lab', 'same-id')]!.hostOnline, false)
+    assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId('lab', 'same-id')], undefined, 'explicit removal releases the Host catalog')
     const reconnect = controller.addHost({ id: 'lab', label: 'Lab machine', sessions: remote.sessions, navigation: remote.navigation, renderConversation: reference => reference.sessionId })
     assert.equal(controller.getSnapshot().leases.get(remotePane)!.status, 'opening')
     reconnect(); controller.dispose(); local.disposeMain(); remote.disposeMain()
+})
+
+test('paired Host disconnect and incomplete inventory preserve the same pane references until authoritative revocation', async () => {
+    const local = fixture(), remote = fixture()
+    remote.add('one', 'First conversation'); remote.add('two', 'Second conversation')
+    const controller = new WorkspaceController(local.options)
+    const booted: Promise<void>[] = []
+    let starts = 0, stops = 0
+    const hosts = new FederationHosts({
+        enqueue: (_id, start) => { booted.push(start()) },
+        async boot(host) {
+            starts++
+            const remove = controller.addHost({ id: host.id, label: host.label, sessions: remote.sessions,
+                navigation: remote.navigation, renderConversation: reference => reference.sessionId })
+            return { async stop() { stops++; remove() } }
+        },
+        ready: host => controller.catalogHostReady(host.id, host.label),
+        failed: (_host, error) => { throw error },
+    })
+    const host: FederationHost = { id: 'paired', label: 'Paired machine', online: true, basePath: '/hapi-dsh/machine/paired/' }
+    const observe = async (rows: FederationHost[], complete: boolean): Promise<void> => {
+        controller.setSourceCatalog([], 'hub', { hosts: rows, connected: true })
+        await hosts.reconcile(rows, complete)
+        await Promise.all(booted)
+    }
+    try {
+        await observe([host], true)
+        controller.openSession(sessionResourceId(host.id, 'one'))
+        const first = controller.store.focusedPane().id
+        controller.openSession(sessionResourceId(host.id, 'two'), 'horizontal')
+        const second = controller.store.focusedPane().id
+        await turn()
+        const firstLease = controller.getSnapshot().leases.get(first)!
+        const secondLease = controller.getSnapshot().leases.get(second)!
+        assert.equal(firstLease.status, 'ready'); assert.equal(secondLease.status, 'ready')
+        const references = remote.refs.filter(ref => ref.source === 'hapiWorkspace')
+        await observe([{ ...host, online: false }], true)
+        await observe([], false)
+        assert.equal(stops, 0, 'temporary availability never disposes the running graph')
+        assert.equal(controller.getSnapshot().leases.get(first), firstLease)
+        assert.equal(controller.getSnapshot().leases.get(second), secondLease)
+        assert.ok(references.every(ref => !ref.released), 'both readers retain their original Session owners')
+        assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId(host.id, 'one')]!.hostOnline, false)
+        await observe([host], true)
+        assert.equal(starts, 1, 'recovery reuses the original graph instead of booting a replacement')
+        assert.equal(controller.getSnapshot().leases.get(first), firstLease)
+        assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId(host.id, 'one')]!.hostOnline, true)
+        assert.equal(controller.getSnapshot().catalogDiscovery.hosts.find(row => row.id === host.id)?.phase, 'ready')
+        await observe([], true)
+        assert.equal(stops, 1, 'the authoritative removal disposes the same graph')
+        assert.equal(controller.host(host.id), undefined)
+        assert.ok(references.every(ref => ref.released))
+        assert.equal(controller.getSnapshot().catalog.byId[sessionResourceId(host.id, 'one')], undefined)
+    } finally { await hosts.dispose(); controller.dispose(); local.disposeMain(); remote.disposeMain() }
+})
+
+test('revocation during Host bootstrap aborts ownership and disposes a late runtime without registering readiness', async () => {
+    const boot = Promise.withResolvers<FederatedHostRuntime>()
+    const tasks: Promise<void>[] = []
+    let signal: AbortSignal | undefined, ready = 0, stopped = 0
+    const hosts = new FederationHosts({
+        enqueue: (_id, start) => { tasks.push(start()) },
+        boot: (_host, value) => { signal = value; return boot.promise },
+        ready: () => { ready++ },
+        failed: (_host, error) => { throw error },
+    })
+    await hosts.reconcile([{ id: 'paired', label: 'Paired', online: true, basePath: '/hapi-dsh/machine/paired/' }], true)
+    await hosts.reconcile([], true)
+    assert.equal(signal?.aborted, true)
+    boot.resolve({ async stop() { stopped++ } })
+    await Promise.all(tasks)
+    assert.equal(stopped, 1)
+    assert.equal(ready, 0, 'a late bootstrap cannot re-advertise a revoked Host')
+    await hosts.dispose()
 })
 
 test('renaming, pinning and forking route to the owning Host', async () => {

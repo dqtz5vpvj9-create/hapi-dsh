@@ -35,6 +35,7 @@ import { installSourceTerminalActions } from './source-terminal-actions.tsx'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
 import { HostBootQueue } from './surface/host-boot-queue.ts'
+import { FederationHosts } from './federation-hosts.ts'
 import { observeForegroundActivity } from './foreground-activity.ts'
 import { canReleaseHistory } from './surface/history-retention.ts'
 import type { UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
@@ -1158,7 +1159,6 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     try { windowStorage = sessionStorage } catch { /* In-memory share ownership is still distinct for this window. */ }
     const sharedUi = createWorkspaceUiBridge(preferenceStorage, window, windowStorage)
     const unprovideUi = ctx.reflect.provide('hapiWorkspaceUi', sharedUi.root)
-    const running = new Map<string, { abort: AbortController; runtime?: HostRuntime }>()
     const logical = new Map<string, string>()
     const reported = new Map<string, string>()
     const activity = observeForegroundActivity(document)
@@ -1179,6 +1179,16 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
         return pending || activity.busy()
     })
     const unprioritize = workspace.store.subscribe(boots.prioritize)
+    const hosts = new FederationHosts({
+        enqueue: (id, start) => boots.add(id, start),
+        boot: (host, signal) => bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, signal]), sharedUi, shared),
+        ready: host => { reported.delete(host.id); workspace.catalogHostReady(host.id, host.label) },
+        failed: (host, error) => {
+            const message = errorMessage(error)
+            workspace.catalogHostFailed(host.id, host.label, message)
+            if (reported.get(host.id) !== message) { reported.set(host.id, message); workspace.report(message) }
+        },
+    })
     const containShortcuts = (event: KeyboardEvent): void => {
         if (remoteKeyboardEvents.has(event) || event.composedPath().some(node => node instanceof Element && node.matches('[data-hapi-host]:not([data-hapi-graph="shared"])'))) {
             // stopPropagation still allows every listener on this Document to
@@ -1190,7 +1200,6 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
     document.addEventListener('keydown', containShortcuts)
     let polling = false
     const local: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
-    running.set('local', local)
     void bootHost(ctx, workspace, { id: 'local', label: 'DSH', online: true, basePath: '/' }, AbortSignal.any([lifetime.signal, local.abort.signal]), sharedUi, shared).then(async runtime => {
         if (lifetime.signal.aborted) await runtime.stop()
         else local.runtime = runtime
@@ -1207,29 +1216,12 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
                 if (previous && previous !== session.id) workspace.replaceSession(previous, session.id)
                 logical.set(session.logicalSessionId, session.id)
             }
-            const online = new Set(['local', ...catalog.hosts.filter(host => host.online).map(host => host.id)])
-            for (const [id, entry] of running) if (!online.has(id)) {
-                running.delete(id); entry.abort.abort(); await entry.runtime?.stop()
-            }
-            for (const host of catalog.hosts) {
-                if (!host.online || running.has(host.id)) continue
-                const entry: { abort: AbortController; runtime?: HostRuntime } = { abort: new AbortController() }
-                running.set(host.id, entry)
-                boots.add(host.id, async () => {
-                if (entry.abort.signal.aborted || lifetime.signal.aborted) return
-                await bootHost(ctx, workspace, host, AbortSignal.any([lifetime.signal, entry.abort.signal]), sharedUi, shared).then(async runtime => {
-                    if (entry.abort.signal.aborted || lifetime.signal.aborted) { await runtime.stop(); return }
-                    entry.runtime = runtime; reported.delete(host.id); workspace.catalogHostReady(host.id, host.label)
-                }).catch(error => {
-                    if (running.get(host.id) === entry) running.delete(host.id)
-                    if (entry.abort.signal.aborted || lifetime.signal.aborted) return
-                    const message = errorMessage(error)
-                    workspace.catalogHostFailed(host.id, host.label, message)
-                    if (reported.get(host.id) !== message) { reported.set(host.id, message); workspace.report(message) }
-                })
-                })
-            }
-        } catch (error) { if (!lifetime.signal.aborted) { workspace.sourceCatalogFailed(error); workspace.report(error) } }
+            await hosts.reconcile(catalog.hosts, catalog.hostsComplete === true)
+        } catch (error) {
+            // Catalog availability is a recoverable status. Keep the current
+            // workspace and avoid a new global error toast on every poll.
+            if (!lifetime.signal.aborted) workspace.sourceCatalogFailed(error)
+        }
         finally { polling = false }
     }
     void poll()
@@ -1238,9 +1230,8 @@ export function installFederation(ctx: Context, workspace: WorkspaceController):
         lifetime.abort(); clearInterval(timer); unprioritize(); boots.dispose(); activity.dispose()
         unresolveSource()
         document.removeEventListener('keydown', containShortcuts)
-        for (const entry of running.values()) entry.abort.abort()
-        await Promise.allSettled([...running.values()].map(entry => entry.runtime?.stop()))
-        running.clear()
+        local.abort.abort()
+        await Promise.allSettled([local.runtime?.stop(), hosts.dispose()])
         try { await sharedUi.dispose() } finally { await unprovideUi() }
     }
 }

@@ -278,6 +278,7 @@ test('a committed mutation interrupted by Runner loss is never replayed after re
     await fixture.runner.stop();
     assert.equal((await response).status, 502);
     await until(() => !fixture.hub.listMachines()[0]?.online, 'The Hub did not mark its Runner offline');
+    assert.equal(fixture.hub.hostsComplete, true, 'a disconnected Runner remains in the complete pairing inventory');
     await fixture.connectRunner();
     await delay(100);
     assert.equal(fixture.mutationCount, 1);
@@ -291,6 +292,7 @@ test('pairing revocation closes the authenticated Runner and removes its catalog
     await revokePairing(fixture.credentialsFile, fixture.id);
     await fixture.hub.refreshCredentials();
     assert.deepEqual(fixture.hub.listMachines(), []);
+    assert.equal(fixture.hub.hostsComplete, true, 'a successfully read revocation is authoritative');
     const response = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/api/read`, { headers: fixture.headers });
     assert.equal(response.status, 404);
 });
@@ -300,6 +302,7 @@ test('an unreadable pairing policy fails closed for active Runner connections', 
     await writeFile(fixture.credentialsFile, '{invalid-json', { mode: 0o600 });
     await assert.rejects(fixture.hub.refreshCredentials());
     assert.deepEqual(fixture.hub.listMachines(), []);
+    assert.equal(fixture.hub.hostsComplete, false, 'a policy read failure cannot masquerade as explicit unpairing');
     const response = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/api/read`, { headers: fixture.headers });
     assert.equal(response.status, 404);
 });

@@ -881,11 +881,13 @@ export class WorkspaceController {
             for (const unsubscribe of this.hostUnsubscribers.get(host.id) ?? []) unsubscribe()
             this.hostUnsubscribers.delete(host.id)
             this.hostMainIds.delete(host.id)
+            this.hostCatalogs.delete(host.id)
+            this.discovery.hostRemoved(host.id)
             this.catalogChangedAt = Date.now()
             for (const [paneId, lease] of this.leases) {
                 if (lease.hostId !== host.id) continue
-                // The machine disconnected. A view that was already open keeps
-                // its reference; an unresolved target explains the reconnect path.
+                // Unregister only on explicit removal or runtime disposal.
+                // A temporary disconnect keeps this Host and its references.
                 const failure = paneOpenState({ kind: 'display', label: host.label,
                     hostId: host.id, sessionId: lease.sessionId, sourcePhase: this.discovery.sourcePhase, currentHubId: this.primarySourceHubId,
                     localPhase: 'ready', hostRegistered: false, hostOnline: false, settled: true })
