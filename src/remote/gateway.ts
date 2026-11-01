@@ -1,16 +1,21 @@
 /** Source registry and exact-scope router. Authentication remains with the official DSH carrier. */
-import { SourceError } from './errors.ts';
+import { SourceError, waitFor } from './errors.ts';
 import { parseSourceSessionId, sourceSessionId, type SourceAdapter, type SourceCatalog, type SourceChanges, type SourceChangesRequest,
     type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest,
     type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
 
 export type SourcePermission = { kind: 'source'; id: string } | { kind: 'session'; id: string };
 export type SourceAccess = (resource: SourcePermission) => boolean;
+interface CatalogOptions { initialWaitMs?: number; sourceTimeoutMs?: number }
 export class SourceGateway {
     private readonly adapters = new Map<string, SourceAdapter>();
     private readonly catalogs = new Map<string, SourceSession[]>();
+    private readonly catalogReads = new Map<string, Promise<void>>();
+    private readonly catalogOnline = new Map<string, boolean>();
+    private readonly catalogErrors = new Map<string, SourceError>();
+    private readonly lifetime = new AbortController();
     private disposed = false;
-    constructor(adapters: readonly SourceAdapter[], private readonly legacyHapi: boolean) {
+    constructor(adapters: readonly SourceAdapter[], private readonly legacyHapi: boolean, private readonly catalogOptions: CatalogOptions = {}) {
         for (const adapter of adapters) {
             if (this.adapters.has(adapter.id)) throw new Error('HHPI source IDs must be unique on one Host');
             this.adapters.set(adapter.id, adapter);
@@ -35,26 +40,60 @@ export class SourceGateway {
             throw new SourceError('INVALID_REQUEST', 'A source response crossed its registered session scope.');
         }
     }
+    private refreshCatalog(adapter: SourceAdapter): Promise<void> {
+        const pending = this.catalogReads.get(adapter.id);
+        if (pending) return pending;
+        const deadline = new AbortController();
+        const timer = setTimeout(() => deadline.abort(new SourceError('TARGET_UNAVAILABLE', 'The source catalog is still unavailable.')), this.catalogOptions.sourceTimeoutMs ?? 30_000);
+        timer.unref();
+        const signal = AbortSignal.any([this.lifetime.signal, deadline.signal]);
+        const work = Promise.resolve().then(() => {
+            signal.throwIfAborted();
+            return waitFor(adapter.list(signal), signal);
+        }).then(sessions => {
+            signal.throwIfAborted();
+            for (const session of sessions) this.checkSession(adapter, session);
+            this.catalogs.set(adapter.id, sessions);
+            this.catalogOnline.set(adapter.id, true);
+            this.catalogErrors.delete(adapter.id);
+        }).catch((error: unknown) => {
+            if (this.disposed) return;
+            this.catalogOnline.set(adapter.id, false);
+            if (error instanceof SourceError && error.code === 'INVALID_REQUEST') {
+                this.catalogs.delete(adapter.id);
+                this.catalogErrors.set(adapter.id, error);
+            }
+        }).finally(() => {
+            clearTimeout(timer);
+            if (this.catalogReads.get(adapter.id) === work) this.catalogReads.delete(adapter.id);
+        });
+        this.catalogReads.set(adapter.id, work);
+        return work;
+    }
     async catalog(access: SourceAccess, signal?: AbortSignal): Promise<SourceCatalog> {
         this.assertLive(); signal?.throwIfAborted();
+        const initial = this.catalogOnline.size === 0;
+        const refreshing = Promise.all([...this.adapters.values()].map(adapter => this.refreshCatalog(adapter)));
+        // Cached sources remain available while each adapter refreshes independently.
+        // The first catalog gives quick sources a small admission budget; a slow
+        // native connection can never hold every other source behind its timeout.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await waitFor(Promise.race([refreshing, new Promise<void>(resolve => {
+                timer = setTimeout(resolve, initial ? this.catalogOptions.initialWaitMs ?? 100 : 0);
+            })]), signal);
+        } finally { clearTimeout(timer); }
+        this.assertLive(); signal?.throwIfAborted();
+        for (const error of this.catalogErrors.values()) throw error;
         const result: SourceCatalog = { protocol: 1, legacyHapi: this.legacyHapi, sessions: [], sources: [] };
-        await Promise.all([...this.adapters.values()].map(async adapter => {
-            let online = true, sessions: SourceSession[];
-            try {
-                sessions = await adapter.list(signal);
-                signal?.throwIfAborted();
-                for (const session of sessions) this.checkSession(adapter, session);
-                this.catalogs.set(adapter.id, sessions);
-            } catch (error) {
-                signal?.throwIfAborted();
-                if (error instanceof SourceError && error.code === 'INVALID_REQUEST') throw error;
-                online = false;
-                sessions = (this.catalogs.get(adapter.id) ?? []).map(session => ({ ...session, status: 'offline', activeTurnId: null,
+        for (const adapter of this.adapters.values()) {
+            const online = this.catalogOnline.get(adapter.id) ?? false;
+            const sessions: SourceSession[] = online ? this.catalogs.get(adapter.id) ?? []
+                : (this.catalogs.get(adapter.id) ?? []).map(session => ({ ...session, status: 'offline', activeTurnId: null,
                     pendingRequests: [], capabilities: { send: false, steer: false, cancel: false, approve: false, files: false } }));
-            }
             result.sessions.push(...sessions.filter(session => access({ kind: 'session', id: session.id })));
             if (access({ kind: 'source', id: adapter.id })) result.sources.push({ id: adapter.id, machineId: adapter.machineId, engine: adapter.engine, online, create: typeof adapter.create === 'function' });
-        }));
+        }
         result.sources.sort((a, b) => a.id.localeCompare(b.id)); result.sessions.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
         return result;
     }
@@ -93,8 +132,9 @@ export class SourceGateway {
     }
     async dispose(): Promise<void> {
         if (this.disposed) return; this.disposed = true;
+        this.lifetime.abort(new SourceError('DISPOSED', 'The source gateway is closed.'));
         const outcomes = await Promise.allSettled([...this.adapters.values()].map(async adapter => { await adapter.dispose(); }));
-        this.adapters.clear(); this.catalogs.clear();
+        this.adapters.clear(); this.catalogs.clear(); this.catalogOnline.clear(); this.catalogErrors.clear(); this.catalogReads.clear();
         const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
         if (failures.length) throw new AggregateError(failures.map(outcome => outcome.reason), 'Some HHPI source connections could not close.');
     }

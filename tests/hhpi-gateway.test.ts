@@ -108,3 +108,59 @@ test('gateway disposal before a late read or resource response rejects the stale
     await assert.rejects(reading, { code: 'DISPOSED' });
     await assert.rejects(resource, { code: 'DISPOSED' });
 });
+
+test('a slow source cannot delay a healthy catalog and late discovery joins the same gateway', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const { adapter } = fixture(), slow = fixture().adapter;
+    const slowSession = { ...session, sourceId: 'slow', nativeId: 'late', id: sourceSessionId({ ...identity, sourceId: 'slow', nativeId: 'late' }) };
+    const gate = Promise.withResolvers<SourceSession[]>();
+    let slowCalls = 0;
+    Object.assign(slow, { id: 'slow', list: async () => { slowCalls++; return gate.promise; } });
+    const gateway = new SourceGateway([adapter, slow], false);
+    try {
+        const opening = gateway.catalog(allow);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        t.mock.timers.tick(100);
+        const first = await opening;
+        assert.deepEqual(first.sessions.map(row => row.id), [session.id]);
+        assert.deepEqual(first.sources.map(row => [row.id, row.online]), [['codex', true], ['slow', false]]);
+
+        const cached = gateway.catalog(allow);
+        t.mock.timers.tick(0);
+        assert.deepEqual((await cached).sessions.map(row => row.id), [session.id]);
+        assert.equal(slowCalls, 1, 'repeated catalogs share the slow source discovery');
+
+        gate.resolve([slowSession]);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const recovered = await gateway.catalog(resource => resource.kind === 'source' || resource.id === slowSession.id);
+        assert.deepEqual(recovered.sessions.map(row => row.id), [slowSession.id], 'late results remain permission filtered');
+        assert.equal(recovered.sources.find(row => row.id === 'slow')?.online, true);
+    } finally { await gateway.dispose(); }
+});
+
+test('catalog cancellation releases only its caller and gateway disposal cancels shared discovery', async () => {
+    const { adapter } = fixture(), gate = Promise.withResolvers<SourceSession[]>();
+    let calls = 0, sourceSignal: AbortSignal | undefined;
+    adapter.list = async signal => { calls++; sourceSignal = signal; return gate.promise; };
+    const gateway = new SourceGateway([adapter], false);
+    const cancelled = new AbortController();
+    const first = gateway.catalog(allow, cancelled.signal), second = gateway.catalog(allow);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    cancelled.abort();
+    await assert.rejects(first, { name: 'AbortError' });
+    assert.equal(sourceSignal?.aborted, false);
+    gate.resolve([session]);
+    assert.deepEqual((await second).sessions, [session]);
+    assert.equal(calls, 1);
+
+    const delayed = Promise.withResolvers<SourceSession[]>();
+    adapter.list = async signal => { sourceSignal = signal; return delayed.promise; };
+    const reading = gateway.catalog(allow);
+    await Promise.resolve();
+    const rejected = assert.rejects(reading, { code: 'DISPOSED' });
+    await gateway.dispose();
+    assert.equal(sourceSignal?.aborted, true);
+    delayed.resolve([session]);
+    await rejected;
+    await assert.rejects(gateway.catalog(allow), { code: 'DISPOSED' });
+});
