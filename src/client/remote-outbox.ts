@@ -3,7 +3,7 @@ import { operationSchema } from '../hhpi-api.ts'
 import type { SourceEntry, SourceOperation, SourceReceipt, SourceSession } from '../remote/protocol.ts'
 import type { SourceStorage } from './remote-storage.ts'
 
-export type DeliveryState = 'queued' | 'sending' | 'confirming' | 'accepted' | 'rejected'
+export type DeliveryState = 'queued' | 'sending' | 'confirming' | 'accepted' | 'rejected' | 'owner-accepted'
 export interface SourceDelivery {
   readonly operation: Readonly<SourceOperation>
   readonly createdAt: number
@@ -11,6 +11,7 @@ export interface SourceDelivery {
   readonly message: string
   readonly attempts: number
   readonly retryAt: number
+  readonly receipt?: SourceReceipt
 }
 export interface SourceDeliveryStore {
   getSnapshot(): readonly SourceDelivery[]
@@ -19,6 +20,7 @@ export interface SourceDeliveryStore {
 interface StoredDelivery extends SourceDelivery { version: 1 }
 const MAX_ENTRIES = 256
 const MAX_BYTES = 4 * 1024 * 1024
+const MAX_OWNER_RECEIPTS = 128
 const EMPTY: readonly SourceDelivery[] = Object.freeze([])
 const prefixOf = (scope: string): string => `hhpi:outbox:v1:${scope}:`
 const fingerprint = (operation: SourceOperation): string => JSON.stringify([operation.sessionId, operation.operationId, operation.kind,
@@ -33,14 +35,19 @@ function decode(value: string | null): StoredDelivery | undefined {
     const operation = operationSchema.safeParse(candidate.operation)
     if (candidate.version !== 1 || !operation.success || operation.data.kind !== 'send' || !operation.data.text?.trim()
       || !Number.isSafeInteger(candidate.createdAt) || candidate.createdAt < 0
-      || !['queued', 'sending', 'confirming', 'accepted', 'rejected'].includes(candidate.state)
+      || !['queued', 'sending', 'confirming', 'accepted', 'rejected', 'owner-accepted'].includes(candidate.state)
       || typeof candidate.message !== 'string' || !Number.isSafeInteger(candidate.attempts) || candidate.attempts < 0
       || !Number.isFinite(candidate.retryAt)) return undefined
+    if (candidate.receipt && (candidate.receipt.operationId !== operation.data.operationId || candidate.receipt.sessionId !== operation.data.sessionId)) return undefined
+    if (candidate.state === 'owner-accepted' && (candidate.receipt?.status !== 'accepted'
+      || candidate.receipt.ownerAdmission?.localId !== operation.data.operationId
+      || !['queued', 'dispatching', 'indeterminate', 'consumed'].includes(candidate.receipt.ownerAdmission.state))) return undefined
     return Object.freeze({ ...candidate, operation: Object.freeze(operation.data) })
   } catch { return undefined }
 }
 
-/** No UI disposal, transport rejection or receipt ACK removes an unobserved message. */
+/** View disposal and transport loss never discard local work. Native history or
+ * an exact durable owner admission can transfer responsibility for its echo. */
 export class RemoteOutbox {
   private access: SourceStorage | undefined
   private readonly entries = new Map<string, StoredDelivery>()
@@ -56,10 +63,12 @@ export class RemoteOutbox {
   private disposed = false
   private timer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(private readonly send: (operation: SourceOperation) => Promise<SourceReceipt>) {
+  constructor(private readonly send: (operation: SourceOperation) => Promise<SourceReceipt>,
+    private readonly lookup?: (operation: SourceOperation) => Promise<SourceReceipt | null>,
+    private readonly readAccepted?: (operation: SourceOperation, receipt: SourceReceipt) => Promise<readonly SourceEntry[]>) {
     const wake = (): void => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      for (const [id, entry] of this.entries) if (entry.state === 'confirming' || entry.state === 'queued') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
+      for (const [id, entry] of this.entries) if (entry.state === 'confirming' || entry.state === 'queued' || entry.state === 'accepted') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
       this.publish(); this.kick()
     }
     const pause = (): void => { if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined }
@@ -98,7 +107,7 @@ export class RemoteOutbox {
   acceptCatalog(sessions: readonly SourceSession[]): void {
     if (this.disposed) return
     if (!this.ready) {
-      for (const [id, entry] of this.entries) if (entry.state === 'confirming') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
+      for (const [id, entry] of this.entries) if (entry.state === 'confirming' || entry.state === 'accepted') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
       this.publish()
     }
     this.ready = true; this.sessions.clear()
@@ -135,9 +144,10 @@ export class RemoteOutbox {
     const entry: StoredDelivery = Object.freeze({ version: 1, operation: Object.freeze({ ...operation }), createdAt,
       state: 'queued', message: 'Saved on this device. Waiting to send.', attempts: 0, retryAt: 0 })
     const serialized = JSON.stringify(entry)
-    const bytes = [...this.entries.values()].reduce((size, value) => size + JSON.stringify(value).length * 2, serialized.length * 2)
-    if (this.entries.size >= MAX_ENTRIES || bytes > MAX_BYTES) throw new Error('The saved-message queue is full. Your draft has been kept.')
-    try { this.access.storage.setItem(this.key(operation.operationId), serialized) }
+    const active = [...this.entries.values()].filter(value => value.state !== 'owner-accepted')
+    const bytes = active.reduce((size, value) => size + JSON.stringify(value).length * 2, serialized.length * 2)
+    if (active.length >= MAX_ENTRIES || bytes > MAX_BYTES) throw new Error('The saved-message queue is full. Your draft has been kept.')
+    try { this.persist(operation.operationId, serialized) }
     catch { throw new Error('This message could not be saved on this device. Your draft has been kept.') }
     this.entries.set(operation.operationId, entry); this.staged.add(operation.operationId); this.publish()
     return entry
@@ -198,9 +208,39 @@ export class RemoteOutbox {
     }
   }
   private write(entry: StoredDelivery): boolean {
-    try { this.access!.storage.setItem(this.key(entry.operation.operationId), JSON.stringify(entry)) }
+    try { this.persist(entry.operation.operationId, JSON.stringify(entry)) }
     catch { return false }
     this.entries.set(entry.operation.operationId, Object.freeze(entry)); this.publish(); return true
+  }
+  private persist(id: string, value: string): void {
+    try { this.access!.storage.setItem(this.key(id), value); return } catch { /* Reclaim only data whose original owner has accepted durable responsibility. */ }
+    for (const receipt of [...this.entries.values()].filter(entry => entry.state === 'owner-accepted').sort((a, b) => a.createdAt - b.createdAt)) this.remove(receipt.operation.operationId, true)
+    this.access!.storage.setItem(this.key(id), value)
+  }
+  private handoff(entry: StoredDelivery, receipt: SourceReceipt): boolean {
+    const current = this.entries.get(entry.operation.operationId)
+    if (!current || current.createdAt !== entry.createdAt || fingerprint(current.operation) !== fingerprint(entry.operation)
+      || receipt.ownerAdmission?.localId !== entry.operation.operationId || receipt.status !== 'accepted') return false
+    if (!this.write({ ...entry, state: 'owner-accepted', receipt, message: 'The original execution owner has saved this message. Native execution is reported separately.', retryAt: 0 })) return false
+    for (const listener of this.retireListeners) listener(entry.operation.operationId, true)
+    // These are viewable receipts for messages owned by the source, not pending
+    // local writes. Their independent bounded retention can never evict work
+    // whose delivery is still unknown. One maximum-sized submitted text fits.
+    const receipts = [...this.entries.values()].filter(value => value.state === 'owner-accepted').sort((a, b) => b.createdAt - a.createdAt)
+    let bytes = 0
+    for (let index = 0; index < receipts.length; index++) {
+      const value = receipts[index]!; bytes += JSON.stringify(value).length * 2
+      if (index >= MAX_OWNER_RECEIPTS || index > 0 && bytes > MAX_BYTES) this.remove(value.operation.operationId, true)
+    }
+    return true
+  }
+  private owns(entry: StoredDelivery, generation: number): boolean {
+    const current = this.entries.get(entry.operation.operationId)
+    return generation === this.generation && !this.disposed && current?.createdAt === entry.createdAt && fingerprint(current.operation) === fingerprint(entry.operation)
+  }
+  private maySend(entry: StoredDelivery): boolean {
+    const current = this.sessions.get(entry.operation.sessionId)
+    return this.ready && current !== undefined && !offline(current) && current.capabilities.send
   }
   private kick(): void {
     if (!this.ready || !this.access || this.disposed || typeof navigator !== 'undefined' && navigator.onLine === false) return
@@ -210,15 +250,17 @@ export class RemoteOutbox {
     for (const [sessionId, rows] of this.snapshots) {
       if (this.sending.has(sessionId)) continue
       const session = this.sessions.get(sessionId)
-      if (!session || offline(session)) continue
-      const entry = rows.find(value => value.state !== 'accepted' && value.state !== 'rejected') as StoredDelivery | undefined
+      if (!session) continue
+      const entry = (rows.find(value => value.state !== 'accepted' && value.state !== 'rejected' && value.state !== 'owner-accepted')
+        ?? (this.readAccepted ? rows.find(value => value.state === 'accepted' && value.retryAt <= Date.now()) : undefined)) as StoredDelivery | undefined
+      if (!entry && this.readAccepted) for (const value of rows) if (value.state === 'accepted') next = Math.min(next, value.retryAt)
       if (!entry) continue
       if (this.staged.has(entry.operation.operationId)) continue
-      if (!session.capabilities.send) {
-        // A pending/unknown operation is queried using its original identity.
-        // Capability loss only rejects a message proven not yet dispatched.
-        if (entry.state === 'queued' && entry.attempts === 0) this.write({ ...entry, state: 'rejected', message: 'This source no longer permits sending. The saved message is retained.' })
-        else next = Math.min(next, Date.now() + 5000)
+      // Native execution can be offline while the Host still serves its local
+      // receipt/history. Only new writes require that execution connection.
+      if (offline(session) && entry.attempts === 0) continue
+      if (!session.capabilities.send && entry.state === 'queued' && entry.attempts === 0) {
+        this.write({ ...entry, state: 'rejected', message: 'This source no longer permits sending. The saved message is retained.' })
         continue
       }
       if (entry.retryAt > Date.now()) { next = Math.min(next, entry.retryAt); continue }
@@ -234,32 +276,58 @@ export class RemoteOutbox {
   private async dispatch(entry: StoredDelivery, generation: number): Promise<void> {
     const attempt = entry.attempts + 1
     // A durable marker precedes the RPC. Reload must query this exact identity.
-    if (!this.write({ ...entry, state: 'sending', attempts: attempt, message: 'Sending the saved message.' })) {
+    if (!this.write({ ...entry, state: entry.state === 'accepted' ? 'accepted' : entry.attempts > 0 ? 'confirming' : 'sending', attempts: attempt,
+      message: entry.state === 'accepted' ? entry.message : entry.attempts > 0 ? 'Confirming the saved message.' : 'Sending the saved message.' })) {
       this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, retryAt: Date.now() + 5000, message: 'Waiting for device storage before sending.' }))
       this.publish(); return
     }
-    let state: DeliveryState, message: string
+    let state: DeliveryState, message: string, receipt: SourceReceipt | undefined = entry.receipt
+    let phase: 'write' | 'lookup' | 'history' = 'lookup'
     try {
-      const receipt = await this.send(entry.operation)
-      if (receipt.operationId !== entry.operation.operationId || receipt.sessionId !== entry.operation.sessionId) throw new Error('The source returned an unrelated acknowledgement.')
-      state = receipt.status === 'indeterminate' ? 'confirming' : receipt.status
-      message = receipt.message
+      if (!this.owns(entry, generation)) return
+      if (entry.attempts > 0 && this.lookup) {
+        receipt = await this.lookup(entry.operation) ?? (entry.state === 'accepted' ? entry.receipt : undefined)
+      } else if (entry.state !== 'accepted' && this.maySend(entry)) { phase = 'write'; receipt = await this.send(entry.operation) }
+      if (!this.owns(entry, generation)) return
+      if (!receipt && entry.state !== 'accepted' && this.maySend(entry)) { phase = 'write'; receipt = await this.send(entry.operation) }
+      if (!this.owns(entry, generation)) return
+      if (!receipt) {
+        state = 'confirming'; message = 'Waiting for a readable receipt. No new native operation was dispatched.'
+      } else {
+        if (receipt.operationId !== entry.operation.operationId || receipt.sessionId !== entry.operation.sessionId) throw new Error('The source returned an unrelated acknowledgement.')
+        if (receipt.status === 'rejected' && receipt.retryable === true && this.maySend(entry) && entry.attempts > 0) { phase = 'write'; receipt = await this.send(entry.operation) }
+        if (!this.owns(entry, generation)) return
+        if (receipt.operationId !== entry.operation.operationId || receipt.sessionId !== entry.operation.sessionId) throw new Error('The source returned an unrelated acknowledgement.')
+        state = receipt.status === 'indeterminate' || receipt.retryable === true ? 'confirming' : receipt.status
+        message = receipt.message
+        if (receipt.status === 'accepted' && receipt.ownerAdmission?.localId === entry.operation.operationId) {
+          if (!this.handoff({ ...entry, attempts: attempt }, receipt)) throw new Error('The owner acknowledgement could not be saved on this device.')
+          return
+        }
+        if (receipt.status === 'accepted' && this.readAccepted) {
+          phase = 'history'
+          const entries = await this.readAccepted(entry.operation, receipt)
+          if (this.owns(entry, generation)) this.observe(entry.operation.sessionId, entries)
+        }
+      }
     } catch (error) {
       const details = error && typeof error === 'object' && 'details' in error ? (error as { details?: { sourceCode?: string; outcome?: string } }).details : undefined
       const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined
       const unauthorized = code === 'gateway/internal' && error instanceof Error
-        && /^client api: hhpi\/(?:operate|receipt) failed: /.test(error.message) && /HTTP (?:401|403)\b/.test(error.message)
-      if (unauthorized) this.ready = false
+        && /^client api: hhpi\/(?:operate|receipt|read) failed: /.test(error.message) && /HTTP (?:401|403)\b/.test(error.message)
+      if (unauthorized && generation === this.generation) this.ready = false
       const permanent = code === 'remote-access/denied' || details?.outcome === 'rejected' && ['UNSUPPORTED', 'INVALID_REQUEST', 'FORBIDDEN', 'unsupported'].includes(details.sourceCode ?? '')
-      state = permanent ? 'rejected' : 'confirming'
+      if (permanent && phase !== 'write' && generation === this.generation) this.ready = false
+      state = entry.state === 'accepted' || receipt?.status === 'accepted' ? 'accepted' : permanent && phase === 'write' ? 'rejected' : 'confirming'
       message = unauthorized ? 'Waiting for authenticated access. The saved message keeps its original identity.'
-        : permanent && error instanceof Error ? error.message : 'Waiting to confirm delivery. The saved message will keep the same identity.'
+        : permanent && phase !== 'write' ? 'Receipt access is not available. The original message is retained for confirmation.'
+          : permanent && error instanceof Error ? error.message : 'Waiting to confirm delivery. The saved message will keep the same identity.'
     }
-    if (generation !== this.generation || this.disposed || !this.entries.has(entry.operation.operationId)) return
-    const retryAt = state === 'confirming' ? Date.now() + Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5)) + Math.floor(Math.random() * 250) : 0
+    if (!this.owns(entry, generation)) return
+    const retryAt = state === 'confirming' || state === 'accepted' ? Date.now() + Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5)) + Math.floor(Math.random() * 250) : 0
     // If storage filled after dispatch, keep the original durable uncertainty
     // marker. A later retry/reload reconciles it; no new identity is invented.
-    if (!this.write({ ...entry, attempts: attempt, state, message, retryAt })) {
+    if (!this.write({ ...entry, attempts: attempt, state, message, retryAt, ...(receipt ? { receipt } : {}) })) {
       this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, attempts: attempt, state: 'confirming', message: 'Delivery is waiting for confirmation; device storage is full.', retryAt: Date.now() + 5000 }))
       this.publish()
     }

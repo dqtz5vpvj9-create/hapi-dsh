@@ -54,6 +54,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     private readonly threads = new Map<string, ThreadOwner>();
     private readonly loaded = new Set<string>();
     private readonly approvals = new Map<string, PendingApproval>();
+    private readonly receiptReads = new Map<string, Promise<void>>();
     private readonly lifetime = new AbortController();
     private readonly stops: Array<() => void>;
     private catalogRead: Promise<SourceSession[]> | undefined;
@@ -527,18 +528,59 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     async operate(operation: SourceOperation): Promise<SourceReceipt> {
         this.assertScope(operation.sessionId);
-        return this.ledger.run(operation, () => this.perform(operation));
+        return this.ledger.run(operation, () => this.perform(operation), receipt => this.reconcile(operation, receipt));
+    }
+    async receipt(operation: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null> {
+        const nativeId = this.assertScope(operation.sessionId);
+        const receipt = await waitFor(this.ledger.lookup(operation, prior => this.reconcile(operation, prior)), signal);
+        if (receipt?.status !== 'accepted') return receipt;
+        // A terminal ledger result is immediately readable while the native
+        // connection is down. Reconciliation remains read-only and runs outside
+        // that response; the next lookup can locate a user item beyond the tail.
+        const index = this.threads.get(nativeId)?.history?.index, seq = index?.userMessageSequence(operation.operationId);
+        if (seq === undefined) this.observeAccepted(operation, nativeId);
+        return seq === undefined || !index ? receipt : { ...receipt, observed: { epoch: index.epoch, seq } };
+    }
+    private observeAccepted(operation: SourceOperation, nativeId: string): void {
+        if (this.disposed || this.receiptReads.has(nativeId) || this.now() < this.retryReadsAt
+            || operation.kind !== 'send' && operation.kind !== 'steer') return;
+        const work = (async () => {
+            const owner = await this.owner(operation.sessionId);
+            await this.prepare(owner);
+            if (owner.history!.index.userMessageSequence(operation.operationId) === undefined) await this.refresh(owner, true);
+        })().catch(() => { /* The accepted receipt remains authoritative during a read outage. */ })
+            .finally(() => { if (this.receiptReads.get(nativeId) === work) this.receiptReads.delete(nativeId); });
+        this.receiptReads.set(nativeId, work);
+    }
+    private async reconcile(operation: SourceOperation, receipt: SourceReceipt): Promise<SourceReceipt | undefined> {
+        if (operation.kind !== 'send' && operation.kind !== 'steer') return undefined;
+        const owner = await this.owner(operation.sessionId), signal = this.lifetime.signal;
+        await this.prepare(owner);
+        let seq = owner.history!.index.userMessageSequence(operation.operationId);
+        if (seq === undefined) {
+            await waitFor(this.refresh(owner, owner.full), signal);
+            seq = owner.history!.index.userMessageSequence(operation.operationId);
+        }
+        if (seq === undefined) return undefined;
+        return { ...receipt, status: 'accepted', message: 'The native user message confirms this operation was accepted.', observed: { epoch: owner.history!.index.epoch, seq } };
     }
     private async perform(operation: SourceOperation): Promise<SourceReceipt> {
-        const owner = await this.owner(operation.sessionId), signal = this.lifetime.signal;
-        await this.rpc.connect(signal);
+        const signal = this.lifetime.signal;
+        let owner: ThreadOwner;
+        try { owner = await this.owner(operation.sessionId); await this.rpc.connect(signal); }
+        catch (error) { throw this.preflightFailure(error); }
         const receipt = (status: SourceReceipt['status'], message: string, turnId?: string): SourceReceipt => ({ sessionId: operation.sessionId, operationId: operation.operationId, status, message, ...(turnId ? { turnId } : {}) });
         if (operation.kind === 'approve') {
             const pending = operation.requestId ? this.approvals.get(operation.requestId) : undefined;
             if (!pending || pending.sessionId !== operation.sessionId || pending.request.generation !== this.rpc.currentGeneration || pending.submitted) throw new SourceError('INVALID_REQUEST', 'The native approval is no longer available for this source session.');
             if (!operation.decision) throw new SourceError('INVALID_REQUEST', 'An explicit native approval decision is required.');
             pending.submitted = true;
-            await this.rpc.respond(pending.request, { decision: operation.decision });
+            try { await this.rpc.respond(pending.request, { decision: operation.decision }); }
+            catch (error) {
+                if (error instanceof SourceError && error.delivery === 'not-dispatched'
+                    && this.approvals.get(operation.requestId!) === pending && pending.request.generation === this.rpc.currentGeneration) pending.submitted = false;
+                throw error;
+            }
             const timeout = new AbortController();
             try {
                 const outcome = await Promise.race([pending.acknowledged.then(() => true), delay(ACK_TIMEOUT, AbortSignal.any([signal, timeout.signal])).then(() => false)]);
@@ -551,7 +593,8 @@ export class DirectCodexAdapter implements SourceAdapter {
         try {
             // Recheck the configured native owner at dispatch. Only explicit
             // sends may resume; history, steering and cancellation never do.
-            const loaded = await this.loadedThreads(signal);
+            let loaded: Set<string>;
+            try { loaded = await this.loadedThreads(signal); } catch (error) { throw this.preflightFailure(error); }
             if (loaded.has(owner.native.id)) this.loaded.add(owner.native.id);
             else this.loaded.delete(owner.native.id);
             this.metadata(owner, this.descriptor(owner.native));
@@ -586,6 +629,11 @@ export class DirectCodexAdapter implements SourceAdapter {
             throw error;
         }
     }
+    private preflightFailure(error: unknown): unknown {
+        if (error instanceof SourceError && ['INVALID_REQUEST', 'UNSUPPORTED'].includes(error.code)) return error;
+        if (error instanceof CodexRpcError) return new SourceError('UNSUPPORTED', error.message);
+        return new SourceError('TARGET_UNAVAILABLE', 'The native source could not be checked. No operation was dispatched.', 'not-dispatched');
+    }
     async create(request: SourceCreateRequest): Promise<SourceCreationReceipt> {
         this.lifetime.signal.throwIfAborted();
         if (request.sourceId !== this.id || !request.operationId) throw new SourceError('INVALID_REQUEST', 'A source and stable creation operation ID are required.');
@@ -609,7 +657,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.disposed = true; clearInterval(this.timer); this.lifetime.abort();
         for (const stop of this.stops) stop();
         await Promise.all([this.rpc.dispose(), this.imageReader.dispose(), ...[...this.threads.values()].map(owner => owner.attachments?.dispose())]);
-        await Promise.allSettled([...this.threads.values()].flatMap(owner => [owner.preparing, owner.refreshing].filter((work): work is Promise<void> => Boolean(work))));
+        await Promise.allSettled([...this.receiptReads.values(), ...[...this.threads.values()].flatMap(owner => [owner.preparing, owner.refreshing].filter((work): work is Promise<void> => Boolean(work)))]);
         for (const owner of this.threads.values()) owner.history?.index.dispose();
         this.threads.clear(); this.approvals.clear();
     }

@@ -6,7 +6,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
-import { CodexRpcError, type CodexRpc } from '../src/remote/codex-rpc.ts';
+import { CodexRpcError, type CodexRpc, type NativeNotification, type NativeRequest } from '../src/remote/codex-rpc.ts';
 import { SourceError } from '../src/remote/errors.ts';
 import type { NativeThread } from '../src/remote/codex-native.ts';
 import { sourceSessionId, type DirectCodexConfig, type SourceOperation } from '../src/remote/protocol.ts';
@@ -17,6 +17,10 @@ interface FixtureOptions {
     writerLock?: boolean;
     resume?: 'reject' | 'wrong-id' | 'ack-lost';
     turnAckLost?: boolean;
+    observedClientId?: 'exact' | 'foreign';
+    preflightFailures?: number;
+    trailingMessages?: number;
+    approvalDelivery?: 'not-dispatched' | 'unknown';
 }
 interface Call { method: string; params: Record<string, unknown>; write: boolean }
 const identity = { sourceId: 'native-source', machineId: 'native-machine', engine: 'codex', nativeId: 'original-thread' } as const;
@@ -32,20 +36,42 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
         name: 'Persisted original thread', status: { type: 'idle' } };
     const calls: Call[] = [];
     let loaded = options.loaded ?? false;
+    let clock = Date.now();
+    let preflightFailures = options.preflightFailures ?? 0;
+    const received: string[] = [];
+    let notify: (frame: NativeNotification) => void = () => {};
+    let requestApproval: (request: NativeRequest) => void = () => {};
+    let responseAttempts = 0;
+    const responses: Array<{ id: NativeRequest['id']; result: unknown }> = [];
     const rpc = {
         online: true, currentGeneration: 1,
         supportsThreadWriterLock: options.writerLock ?? true,
         connect: async () => ({ userAgent: 'hhpi/0.165.0 (Linux 6.8; x86_64) unknown (hhpi; 1)', codexHome: privateHome, platformFamily: 'unix', platformOs: 'linux' }),
-        dispose: async () => {}, onNotification: () => () => {}, onRequest: () => () => {}, onDisconnect: () => () => {},
+        dispose: async () => {},
+        onNotification: (listener: typeof notify) => { notify = listener; return () => {}; },
+        onRequest: (listener: typeof requestApproval) => { requestApproval = listener; return () => {}; }, onDisconnect: () => () => {},
+        respond: async (request: NativeRequest, result: unknown) => {
+            responseAttempts++;
+            if (options.approvalDelivery === 'not-dispatched' && responseAttempts === 1) throw new SourceError('CAPACITY_EXCEEDED', 'Synthetic closed write admission', 'not-dispatched');
+            responses.push({ id: request.id, result });
+            if (options.approvalDelivery === 'unknown') throw new SourceError('OUTCOME_UNKNOWN', 'Synthetic lost native response acknowledgement');
+            notify({ method: 'serverRequest/resolved', params: { threadId: native.id, requestId: request.id } });
+        },
         request: async (method: string, params: Record<string, unknown>, requestOptions?: { write?: boolean }) => {
             calls.push({ method, params: structuredClone(params), write: requestOptions?.write === true });
-            if (method === 'thread/loaded/list') return { data: loaded ? [native.id] : [], nextCursor: null };
+            if (method === 'thread/loaded/list') {
+                if (preflightFailures-- > 0) throw new SourceError('TARGET_UNAVAILABLE', 'Synthetic failed preflight read');
+                return { data: loaded ? [native.id] : [], nextCursor: null };
+            }
             if (method === 'thread/list') return { data: [native], nextCursor: null };
             if (method === 'thread/read') return { thread: native };
             if (method === 'thread/turns/list') return { data: [{ id: 'historical-turn', status: 'completed', startedAt: 1, completedAt: 2 }], nextCursor: null };
             if (method === 'thread/items/list') return { data: [{ turnId: 'historical-turn', item: {
                 id: 'historical-answer', type: 'agentMessage', text: 'Original persisted history',
-            } }], nextCursor: null };
+            } }, ...received.map((clientId, index) => ({ turnId: 'historical-turn', item: { id: `native-user-${index}`, type: 'userMessage', clientId,
+                content: [{ type: 'text', text: 'hello' }] } })), ...Array.from({ length: options.trailingMessages ?? 0 }, (_, index) => ({
+                    turnId: 'historical-turn', item: { id: `later-answer-${index}`, type: 'agentMessage', text: `Later persisted answer ${index}` },
+                }))], nextCursor: null };
             if (method === 'thread/resume') {
                 if (options.resume === 'reject') throw new CodexRpcError(-32600,
                     `thread ${native.id} already has an active writer`);
@@ -54,6 +80,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
                 return { thread: options.resume === 'wrong-id' ? { ...native, id: 'different-native-thread' } : native };
             }
             if (method === 'turn/start') {
+                if (options.observedClientId) received.push(options.observedClientId === 'exact' ? String(params.clientUserMessageId) : 'another-operation');
                 if (options.turnAckLost) throw new SourceError('OUTCOME_UNKNOWN', 'The native turn acknowledgement was lost.');
                 return { turn: { id: 'new-native-turn' } };
             }
@@ -62,12 +89,13 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     } as unknown as CodexRpc;
     const config: DirectCodexConfig = { id: identity.sourceId, machineId: identity.machineId, engine: 'codex',
         ownership: options.ownership ?? 'shared' };
-    let adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000 });
+    let adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000, now: () => clock });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     return {
-        get adapter() { return adapter; }, calls,
+        get adapter() { return adapter; }, calls, responses, requestApproval: (request: NativeRequest) => requestApproval(request),
         writes: () => calls.filter(call => call.write),
-        async restart() { await adapter.dispose(); adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000 }); },
+        advanceRecovery() { clock += 60_000; },
+        async restart() { await adapter.dispose(); adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000, now: () => clock }); },
     };
 }
 
@@ -173,4 +201,72 @@ for (const ownership of ['shared', 'exclusive'] as const) test(`${ownership} ste
         assert.equal(receipt.status, 'rejected');
     }
     assert.deepEqual(f.writes(), []);
+});
+
+test('read-only receipt recovers a lost ACK only from the exact native user clientId after restart', async t => {
+    const f = await fixture(t, { loaded: true, turnAckLost: true, observedClientId: 'exact' }), send = operation('native-client-correlation');
+    assert.equal((await f.adapter.operate(send)).status, 'indeterminate');
+    await f.restart();
+    const receipt = await f.adapter.receipt(send);
+    assert.equal(receipt?.status, 'accepted'); assert.ok(receipt?.observed);
+    const page = await f.adapter.read({ sessionId, epoch: receipt!.observed!.epoch, around: receipt!.observed!.seq });
+    assert.ok(page.entries.some(entry => entry.event.type === 'user/message' && entry.event.data.source.rpcId === send.operationId));
+    assert.deepEqual(f.writes().map(call => call.method), ['turn/start']);
+    const before = f.calls.length;
+    assert.equal((await f.adapter.operate(send)).status, 'accepted');
+    assert.equal(f.calls.length, before, 'a terminal receipt does not wait for native network reconciliation');
+});
+
+test('matching native text with a different clientId cannot confirm or replay an unknown send', async t => {
+    const f = await fixture(t, { loaded: true, turnAckLost: true, observedClientId: 'foreign' }), send = operation('native-client-mismatch');
+    assert.equal((await f.adapter.operate(send)).status, 'indeterminate');
+    await f.restart();
+    const receipt = await f.adapter.receipt(send);
+    assert.equal(receipt?.status, 'indeterminate'); assert.equal(receipt?.observed, undefined);
+    assert.deepEqual(f.writes().map(call => call.method), ['turn/start']);
+});
+
+test('a failed native preflight read permits the original operation to retry without inventing a new ID', async t => {
+    const f = await fixture(t, { loaded: true, preflightFailures: 1 }), send = operation('preflight-recovery');
+    const before = await f.adapter.operate(send);
+    assert.equal(before.status, 'rejected'); assert.equal(before.retryable, true); assert.deepEqual(f.writes(), []);
+    assert.deepEqual(await f.adapter.receipt(send), before, 'receipt lookup itself never performs the allowed retry');
+    f.advanceRecovery();
+    assert.equal((await f.adapter.operate(send)).status, 'accepted');
+    assert.deepEqual(f.writes().map(call => [call.method, call.params.clientUserMessageId]), [['turn/start', send.operationId]]);
+});
+
+test('an accepted receipt supplies an exact cursor after its native user message has left the readable tail', { timeout: 3000 }, async t => {
+    const f = await fixture(t, { loaded: true, observedClientId: 'exact', trailingMessages: 220 }), send = operation('accepted-behind-tail');
+    assert.equal((await f.adapter.operate(send)).status, 'accepted');
+    await f.restart();
+    // Neither a mounted Pane nor a lost ACK is required to trigger reconciliation.
+    let receipt = await f.adapter.receipt(send);
+    assert.equal(receipt?.status, 'accepted');
+    for (let attempt = 0; attempt < 100 && !receipt?.observed; attempt++) {
+        await new Promise<void>(resolve => { setImmediate(resolve); });
+        receipt = await f.adapter.receipt(send);
+    }
+    assert.ok(receipt?.observed);
+    const tail = await f.adapter.read({ sessionId, limit: 160 });
+    assert.equal(tail.entries.some(entry => entry.event.type === 'user/message'), false, 'the ordinary bounded tail cannot acknowledge this old message');
+    const around = await f.adapter.read({ sessionId, epoch: receipt.observed.epoch, around: receipt.observed.seq, limit: 160 });
+    assert.ok(around.entries.some(entry => entry.event.type === 'user/message' && entry.event.data.source.rpcId === send.operationId));
+    assert.deepEqual(f.writes().map(call => call.method), ['turn/start']);
+});
+
+for (const delivery of ['not-dispatched', 'unknown'] as const) test(`an approval ${delivery} response retains the original native request identity on recovery`, async t => {
+    const f = await fixture(t, { loaded: true, approvalDelivery: delivery });
+    await f.adapter.list();
+    f.requestApproval({ id: 42, generation: 1, method: 'item/commandExecution/requestApproval', params: { threadId: identity.nativeId, turnId: 'original-turn', itemId: 'native-command' } });
+    const [session] = await f.adapter.list(), requestId = session?.pendingRequests[0]?.id;
+    assert.ok(requestId);
+    const request: SourceOperation = { sessionId, operationId: `approval-${delivery}`, kind: 'approve', requestId, decision: 'accept' };
+    const first = await f.adapter.operate(request);
+    assert.equal(first.status, delivery === 'not-dispatched' ? 'rejected' : 'indeterminate');
+    assert.equal(first.retryable, delivery === 'not-dispatched' ? true : undefined);
+    const next = await f.adapter.operate(request);
+    assert.equal(next.status, delivery === 'not-dispatched' ? 'accepted' : 'indeterminate');
+    assert.deepEqual(f.responses, [{ id: 42, result: { decision: 'accept' } }], 'only one response ever leaves the local write boundary');
+    assert.deepEqual(f.writes(), [], 'approval recovery never creates, resumes or sends a prompt');
 });

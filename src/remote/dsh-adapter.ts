@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { DshOwnerConnection, type DshOwnerConnectionOptions } from './dsh-owner.ts';
 import { DirectDshHistory, pageNativeEvents, type NativeDshSnapshot } from './dsh-history.ts';
 import { OperationLedger } from './operation-ledger.ts';
-import { SourceError } from './errors.ts';
+import { SourceError, waitFor } from './errors.ts';
 import { parseSourceSessionId, type DirectDshConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest,
     type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceSession } from './protocol.ts';
 
@@ -113,7 +113,26 @@ export class DirectDshAdapter implements SourceAdapter {
     }
     operate(request: SourceOperation): Promise<SourceReceipt> {
         const nativeId = this.identity(request.sessionId);
-        return this.ledger.run(request, () => this.owner.operate(nativeId, request));
+        return this.ledger.run(request, () => this.owner.operate(nativeId, request),
+            () => this.reconcile(nativeId, request, this.lifetime.signal));
+    }
+    private async reconcile(nativeId: string, request: SourceOperation, signal: AbortSignal): Promise<SourceReceipt | undefined> {
+        const ownerAdmission = await this.owner.readAdmission(nativeId, request, signal);
+        return ownerAdmission ? { sessionId: request.sessionId, operationId: request.operationId, status: 'accepted',
+            message: 'The original HAPI owner durably saved this message. Native DSH execution is not confirmed.', ownerAdmission } : undefined;
+    }
+    async receipt(request: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null> {
+        const nativeId = this.identity(request.sessionId);
+        const combined = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]);
+        combined.throwIfAborted();
+        const receipt = await waitFor(this.ledger.lookup(request, () => this.reconcile(nativeId, request, combined)), combined);
+        // A receipt query cannot install a ledger marker or become a first send.
+        if (!receipt || receipt.status !== 'accepted' || receipt.ownerAdmission || request.kind !== 'send') return receipt;
+        // Already-accepted operation retries stay local. Only this explicit
+        // read asks whether the original owner has taken durable responsibility.
+        const ownerAdmission = await this.owner.readAdmission(nativeId, request, combined).catch(() => undefined);
+        combined.throwIfAborted();
+        return ownerAdmission ? { ...receipt, ownerAdmission } : receipt;
     }
     async dispose(): Promise<void> {
         this.lifetime.abort(); this.states.clear();

@@ -44,3 +44,19 @@ test('a refused saved message explains its outcome and can be explicitly dismiss
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(calls).toBe(1)
   } finally { outbox.dispose() }
 })
+
+test('owner handoff keeps the original text viewable and does not claim native execution completed', async () => {
+  const operation = { sessionId: metadata.id, operationId: 'owner-receipt', kind: 'send' as const, text: '原执行端保存的完整消息' }
+  const outbox = new RemoteOutbox(async request => ({ sessionId: request.sessionId, operationId: request.operationId, status: 'accepted',
+    message: 'Saved by original owner', ownerAdmission: { localId: request.operationId, state: 'consumed' } }))
+  outbox.setStorage({ storage: localStorage, scope: 'dock-owner' })
+  try {
+    render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
+    outbox.enqueue(operation); outbox.start(operation.operationId); outbox.acceptCatalog([metadata])
+    const summary = await screen.findByText('原执行端已保存 · 查看原文')
+    await userEvent.click(summary)
+    expect(screen.getByText(operation.text)).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('执行结果见会话正文')
+    expect(screen.queryByText('源端已接收，等待正文同步')).not.toBeInTheDocument()
+  } finally { outbox.dispose() }
+})

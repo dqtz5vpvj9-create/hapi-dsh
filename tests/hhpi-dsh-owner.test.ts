@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import type { DirectDshConfig, SourceOperation } from '../src/remote/protocol.ts'
 import { DshOwnerConnection } from '../src/remote/dsh-owner.ts'
 import { sourceSessionId } from '../src/remote/protocol.ts'
-import type { HapiSession } from '../src/codex/contracts.ts'
+import type { HapiQueuedState, HapiSession } from '../src/codex/contracts.ts'
 
 const config: DirectDshConfig = {
   id: 'dsh-source', machineId: 'machine-one', engine: 'dsh', root: '/fixture/dsh',
@@ -33,6 +33,7 @@ class OwnerFixture {
   listSummaryStrippedNativeId = false
   loseSendAck = false
   listFailure: number | undefined
+  queuedState: HapiQueuedState = { queuedLocalIds: [], invokedLocalMessages: [] }
 
   fetch: typeof fetch = async (input, init) => {
     const url = input instanceof URL ? input : new URL(typeof input === 'string' ? input : input.url)
@@ -58,6 +59,7 @@ class OwnerFixture {
       const session = this.detailOverrides.get(id) ?? this.sessions.get(id)
       return session ? Response.json({ session: structuredClone(session) }) : Response.json({ error: 'not found' }, { status: 404 })
     }
+    if (url.pathname.endsWith('/messages/queued-state') && method === 'POST') return Response.json(this.queuedState)
     if (url.pathname.endsWith('/messages') && method === 'POST') {
       if (this.loseSendAck) throw new Error('connection reset after write')
       return Response.json({ ok: true })
@@ -221,4 +223,50 @@ test('partial detail outages keep healthy sources readable while deletion and ac
     await assert.rejects(owner.catalog(), { code: 'UNSUPPORTED' })
     assert.throws(() => owner.assertReadingSession('other-native'), { code: 'TARGET_UNAVAILABLE' })
   } finally { await owner.dispose() }
+})
+
+test('owner admission reads an exact durable localId without claiming native execution or reading transcript bodies', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession({ active: false }))
+  const owner = fixture.connection(), request = operation('send')
+  try {
+    const states = [
+      { value: { queuedLocalIds: [request.operationId], invokedLocalMessages: [] }, expected: 'queued' },
+      { value: { queuedLocalIds: [], dispatchingLocalIds: [request.operationId], invokedLocalMessages: [] }, expected: 'dispatching' },
+      { value: { queuedLocalIds: [], indeterminateLocalIds: [request.operationId], invokedLocalMessages: [] }, expected: 'indeterminate' },
+      { value: { queuedLocalIds: [], invokedLocalMessages: [{ localId: request.operationId, invokedAt: 123 }] }, expected: 'consumed' },
+    ] satisfies Array<{ value: HapiQueuedState; expected: string }>
+    for (const { value, expected } of states) {
+      fixture.queuedState = value
+      assert.deepEqual(await owner.readAdmission('native-dsh-session', request), { localId: request.operationId, state: expected })
+    }
+    assert.deepEqual(fixture.calls.filter(call => call.path.includes('/messages')), states.map(() => ({
+      method: 'POST', path: '/api/sessions/legacy-hapi-session/messages/queued-state', body: { localIds: [request.operationId] },
+    })), 'only the owner queue read endpoint is called; no native write, transcript read, resume, or queue mutation')
+
+    fixture.queuedState = { queuedLocalIds: ['someone-else'], invokedLocalMessages: [] }
+    assert.equal(await owner.readAdmission('native-dsh-session', request), undefined, 'another localId is not this operation')
+    fixture.queuedState = { queuedLocalIds: [request.operationId], invokedLocalMessages: [{ localId: request.operationId, invokedAt: 123 }] }
+    assert.equal(await owner.readAdmission('native-dsh-session', request), undefined, 'contradictory queue evidence fails closed')
+  } finally { await owner.dispose() }
+})
+
+test('owner admission revalidates exact ownership and cannot use a cached reading lease after identity changes', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession())
+  fixture.queuedState = { queuedLocalIds: ['operation-1'], invokedLocalMessages: [] }
+  const owner = fixture.connection(), request = operation('send')
+  try {
+    await owner.catalog()
+    fixture.detailOverrides.set('legacy-hapi-session', makeSession({ nativeId: 'replacement-dsh-session' }))
+    await assert.rejects(owner.readAdmission('native-dsh-session', request), { code: 'TARGET_UNAVAILABLE' })
+    assert.equal(fixture.calls.some(call => call.path.includes('/messages')), false)
+    const beforeInvalid = fixture.calls.length
+    await assert.rejects(owner.readAdmission('wrong-native', request), { code: 'INVALID_REQUEST' })
+    await assert.rejects(owner.readAdmission('native-dsh-session', request, AbortSignal.abort()), { name: 'AbortError' })
+    assert.equal(fixture.calls.length, beforeInvalid)
+    assert.equal(await owner.readAdmission('native-dsh-session', operation('cancel')), undefined, 'queue evidence never settles another operation kind')
+    assert.equal(fixture.calls.length, beforeInvalid)
+  } finally { await owner.dispose() }
+  await assert.rejects(owner.readAdmission('native-dsh-session', request), { code: 'DISPOSED' })
 })

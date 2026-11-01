@@ -12,7 +12,8 @@ function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
     sending: ['正在发送已保存的消息', 'Sending saved message'],
     confirming: ['正在确认投递结果，消息仍保留', 'Confirming delivery; your message is retained'],
     accepted: ['源端已接收，等待正文同步', 'Accepted by the source; waiting for history'],
-    rejected: ['源端未接受，消息仍保留', 'The source did not accept this saved message'] } as const
+    rejected: ['源端未接受，消息仍保留', 'The source did not accept this saved message'],
+    'owner-accepted': ['原执行端已保存，执行结果见会话正文', 'Saved by the original execution owner; execution is shown in the conversation'] } as const
   return labels[delivery.state][zh ? 0 : 1]
 }
 
@@ -20,7 +21,10 @@ function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
 export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSourceSession, 'deliveries' | 'discardSubmission'>; zh: boolean }) {
   const deliveries = useSyncExternalStore(session.deliveries.subscribe, session.deliveries.getSnapshot)
   if (!deliveries.length) return null
-  return <div className="hhpi-source-deliveries" style={{ maxHeight: 128, overflowY: 'auto', overscrollBehavior: 'contain' }}>{deliveries.map(delivery => <p key={delivery.operation.operationId} role={delivery.state === 'rejected' ? 'alert' : 'status'} data-hhpi-delivery={delivery.state}>
+  return <div className="hhpi-source-deliveries" style={{ maxHeight: 128, overflowY: 'auto', overscrollBehavior: 'contain' }}>{deliveries.map(delivery => delivery.state === 'owner-accepted'
+    ? <details key={delivery.operation.operationId} data-hhpi-delivery="owner-accepted"><summary>{zh ? '原执行端已保存 · 查看原文' : 'Saved by original owner · View message'}</summary>
+      <p role="status">{deliveryLabel(delivery, zh)}</p><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{delivery.operation.text}</pre></details>
+    : <p key={delivery.operation.operationId} role={delivery.state === 'rejected' ? 'alert' : 'status'} data-hhpi-delivery={delivery.state}>
     {deliveryLabel(delivery, zh)}
     {delivery.state === 'rejected' && <> · “{delivery.operation.text?.slice(0, 40)}{(delivery.operation.text?.length ?? 0) > 40 ? '…' : ''}” · {delivery.message} <button type="button" onClick={() => { session.discardSubmission(delivery.operation.operationId) }}>{zh ? '移除' : 'Dismiss'}</button></>}
   </p>)}</div>
@@ -90,10 +94,12 @@ export function installRemoteSourceControls(ctx: Context): () => void {
   const DockBody = ({ session }: { session: RemoteSourceSession }) => {
     const metadata = useSyncExternalStore(session.metadata.subscribe, session.metadata.getSnapshot)
     const state = useSyncExternalStore(session.subscribe, session.getSnapshot)
+    const controlStatus = useSyncExternalStore(session.controlStatus.subscribe, session.controlStatus.getSnapshot)
     const zh = ctx.locale.getSnapshot().active.startsWith('zh')
     return <div className="hhpi-source-dock" data-hhpi-source={metadata.id}>
       {metadata.status === 'offline' && <p role="status">{zh ? '源机器连接中断，已读历史仍然保留。' : 'The source is disconnected. Accepted history is retained.'}</p>}
       {state.promptError && <p role="alert">{state.promptError.error.message}</p>}
+      {controlStatus && <p role="status">{controlStatus}</p>}
       <SourceDeliveryStatus session={session} zh={zh}/>
       {metadata.pendingRequests.map(request => <SourceApprovalControl key={request.id} session={session} request={request} zh={zh}/>)}
     </div>

@@ -10,7 +10,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { RemoteOutbox, type SourceDeliveryStore } from '../src/client/remote-outbox.ts'
 import { clearSourceStorage } from '../src/client/remote-storage.ts'
 import type { RemoteSessions, RemoteSourceSession } from '../src/client/remote-sessions.ts'
-import type { SourceEntry, SourceOperation, SourceReceipt, SourceSession } from '../src/remote/protocol.ts'
+import type { SourceEntry, SourceOperation, SourceReadRequest, SourceReceipt, SourceSession } from '../src/remote/protocol.ts'
 import type { HhpiRemoteApi } from '../src/hhpi-api.ts'
 import { BrowserStorage } from './fixtures/browser-storage.ts'
 
@@ -128,9 +128,10 @@ before(async () => {
 test('public source Session accepts locally while offline, preserves quota-failed drafts, and completes delivery after its Pane closes', { timeout: 3000 }, async t => {
   const storage = new BrowserStorage(), ctx = new Context(), writes: SourceOperation[] = []
   let current = { ...metadata, status: 'offline' as SourceSession['status'] }
+  let observed: SourceEntry[] = []
   const receipt = Promise.withResolvers<SourceReceipt>(), called = Promise.withResolvers<void>()
   const api = { catalog: async () => ({ ok: true, value: { protocol: 1, storageScope: 'account-host', legacyHapi: false, sources: [], sessions: [current] } }),
-    read: async () => ({ ok: true, value: { session: current, epoch: 'epoch', version: 1, entries: [], before: null, after: null, hasBefore: false, hasAfter: false, context: [] } }),
+    read: async () => ({ ok: true, value: { session: current, epoch: 'epoch', version: 1, entries: observed, before: null, after: null, hasBefore: false, hasAfter: false, context: [] } }),
     operate: async (request: SourceOperation) => { writes.push(request); called.resolve(); return { ok: true, value: await receipt.promise } } } as unknown as HhpiRemoteApi
   const original = { list: { getSnapshot: () => ({ ids: [], byId: {}, projectionsBySession: {}, phase: 'ready' }), subscribe: () => () => {} },
     refresh: async () => {}, windowCommit: {}, retainInfo: () => ({ getSnapshot: () => ({ referenceCount: 0, retainedBy: {} }), subscribe: () => () => {} }) } as unknown as ISessions
@@ -153,9 +154,126 @@ test('public source Session accepts locally while offline, preserves quota-faile
   assert.equal(writes.length, 0)
   reference.release(); assert.deepEqual(retired, [], 'closing a Pane does not fail an admitted message or resurrect its draft')
   current = metadata; await sessions.refresh(); await called.promise
-  receipt.resolve(accepted(writes[0]!))
   const probe = new RemoteOutbox(async request => accepted(request)); t.after(() => probe.dispose())
   probe.setStorage({ storage, scope: 'account-host' })
   assert.equal(probe.view(metadata.id).getSnapshot()[0]!.operation.operationId, pending.requestId)
+  observed = history(pending.requestId); receipt.resolve(accepted(writes[0]!))
+  await when(face.deliveries, () => face.deliveries.getSnapshot().length === 0)
+  assert.equal([...Array(storage.length).keys()].filter(index => storage.key(index)?.startsWith('hhpi:outbox:')).length, 0,
+    'a matching background source read frees accepted queue capacity even after every Pane has closed')
   assert.equal(writes.length, 1)
+})
+
+for (const availability of ['read-only', 'offline'] as const) test(`lost ACK recovery reads the existing receipt and matching user message while the native source is ${availability}`, { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'account-host' }
+  const first = new RemoteOutbox(async () => { throw new Error('Lost browser reply') })
+  first.setStorage(access); first.enqueue(operation('read-only-recovery')); first.start('read-only-recovery'); first.acceptCatalog([metadata])
+  await when(first.view(metadata.id), () => first.view(metadata.id).getSnapshot()[0]?.state === 'confirming')
+  first.dispose()
+  let writes = 0, lookups = 0, reads = 0
+  const next = new RemoteOutbox(async request => { writes++; return accepted(request) }, async request => {
+    lookups++; return { ...accepted(request), observed: { epoch: 'source-epoch', seq: 123 } }
+  }, async (request, receipt) => { reads++; assert.equal(receipt.observed?.seq, 123); return history(request.operationId) })
+  t.after(() => next.dispose()); next.setStorage(access)
+  next.acceptCatalog([availability === 'offline' ? { ...metadata, status: 'offline' } : { ...metadata, capabilities: { ...metadata.capabilities, send: false } }])
+  await when(next.view(metadata.id), () => next.view(metadata.id).getSnapshot().length === 0)
+  assert.equal(writes, 0); assert.equal(lookups, 1); assert.equal(reads, 1); assert.equal(storage.length, 0)
+})
+
+test('closing a Pane after an ACK still reconciles an accepted message outside the source tail', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage(), ctx = new Context()
+  let writes = 0, aroundReads = 0
+  const api = { catalog: async () => ({ ok: true, value: { protocol: 1, storageScope: 'account-host', legacyHapi: false, sources: [], sessions: [metadata] } }),
+    read: async (request: SourceReadRequest) => {
+      if (request.around === 1) aroundReads++
+      return { ok: true, value: { session: metadata, epoch: 'epoch', version: 1,
+        entries: request.around === 1 ? history(savedId) : [], before: null, after: null, hasBefore: false, hasAfter: false, context: [] } }
+    },
+    operate: async (request: SourceOperation) => { writes++; return { ok: true, value: accepted(request) } },
+    receipt: async (request: SourceOperation) => ({ ok: true, value: { ...accepted(request), observed: { epoch: 'epoch', seq: 1 } } }),
+  } as unknown as HhpiRemoteApi
+  const original = { list: { getSnapshot: () => ({ ids: [], byId: {}, projectionsBySession: {}, phase: 'ready' }), subscribe: () => () => {} },
+    refresh: async () => {}, windowCommit: {}, retainInfo: () => ({ getSnapshot: () => ({ referenceCount: 0, retainedBy: {} }), subscribe: () => () => {} }) } as unknown as ISessions
+  let savedId = ''
+  const sessions = new Sessions(ctx, original, api, { storage, scope: 'account-host' })
+  t.after(async () => { sessions.dispose(); await ctx.fiber.dispose() }); await sessions.refresh()
+  const ref = sessions.retain(metadata.id as SessionId, { source: 'hapiWorkspace' }); await ref.ready
+  const face = ref.binding.session as RemoteSourceSession
+  const pending = face.beginSubmission({ mode: 'queue', text: 'Saved text', attachments: [] }); savedId = pending.requestId
+  assert.equal((await face.prompt([{ type: 'text', text: 'Saved text' }], 'queue', undefined, pending.requestId)).ok, true)
+  await when(face.deliveries, () => face.deliveries.getSnapshot()[0]?.state === 'accepted')
+  assert.equal(aroundReads, 0)
+  ref.release()
+  await when(face.deliveries, () => face.deliveries.getSnapshot().length === 0)
+  assert.equal(writes, 1); assert.equal(aroundReads, 1)
+  assert.equal([...Array(storage.length).keys()].filter(index => storage.key(index)?.startsWith('hhpi:outbox:')).length, 0)
+})
+
+test('exact owner admission transfers responsibility to a bounded viewable receipt without consuming pending capacity', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage()
+  const outbox = new RemoteOutbox(async request => ({ ...accepted(request), ownerAdmission: { localId: request.operationId, state: 'queued' } }))
+  t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'owner-handoff' }); outbox.acceptCatalog([metadata])
+  const view = outbox.view(metadata.id)
+  for (let index = 0; index < 260; index++) {
+    const id = `owner-message-${index}`; outbox.enqueue(operation(id, `Original text ${index}`)); outbox.start(id)
+    await when(view, () => outbox.get(id)?.state === 'owner-accepted')
+  }
+  assert.equal(view.getSnapshot().length, 128, 'only independently bounded owner receipts remain, not 260 active submissions')
+  assert.equal(view.getSnapshot().at(-1)!.operation.text, 'Original text 259')
+  outbox.enqueue(operation('still-sendable', 'A new draft can still be admitted'))
+  assert.equal(outbox.get('still-sendable')?.state, 'queued')
+})
+
+test('actual browser quota can reclaim only already handed-off receipts before admitting the next text', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage()
+  const outbox = new RemoteOutbox(async request => ({ ...accepted(request), ownerAdmission: { localId: request.operationId, state: 'queued' } }))
+  t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'quota-handoff' }); outbox.acceptCatalog([metadata])
+  outbox.enqueue(operation('saved-by-owner')); outbox.start('saved-by-owner')
+  await when(outbox.view(metadata.id), () => outbox.get('saved-by-owner')?.state === 'owner-accepted')
+  const write = storage.setItem.bind(storage)
+  storage.setItem = (key, value) => {
+    if (storage.length && storage.getItem(key) === null) throw new DOMException('Synthetic device quota', 'QuotaExceededError')
+    write(key, value)
+  }
+  outbox.enqueue(operation('new-local-work'))
+  assert.equal(outbox.get('saved-by-owner'), undefined); assert.equal(outbox.get('new-local-work')?.state, 'queued')
+  assert.throws(() => outbox.enqueue(operation('must-keep-draft')), /draft has been kept/)
+  assert.equal(outbox.get('new-local-work')?.state, 'queued', 'a quota retry never removes unhanded local work')
+})
+
+test('a handed-off long text remains inspectable without blocking new active submissions', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage(), text = '文'.repeat(600_000)
+  const outbox = new RemoteOutbox(async request => ({ ...accepted(request), ownerAdmission: { localId: request.operationId, state: 'queued' } }))
+  t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'long-owner-receipt' }); outbox.acceptCatalog([metadata])
+  outbox.enqueue(operation('long-owner-message', text)); outbox.start('long-owner-message')
+  await when(outbox.view(metadata.id), () => outbox.get('long-owner-message')?.state === 'owner-accepted')
+  assert.equal(outbox.get('long-owner-message')?.operation.text, text, 'a receipt exceeding 1 MiB keeps its exact source-owned original text')
+  outbox.enqueue(operation('new-message-after-large-receipt', 'Still writable'))
+  assert.equal(outbox.get('new-message-after-large-receipt')?.state, 'queued')
+})
+
+test('a late owner admission cannot recreate a source explicitly revoked during its in-flight send', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage(), reply = Promise.withResolvers<SourceReceipt>()
+  const outbox = new RemoteOutbox(() => reply.promise); t.after(() => outbox.dispose())
+  outbox.setStorage({ storage, scope: 'revocation' }); outbox.enqueue(operation('late-admission')); outbox.start('late-admission'); outbox.acceptCatalog([metadata])
+  outbox.revokeSession(metadata.id)
+  reply.resolve({ ...accepted(operation('late-admission')), ownerAdmission: { localId: 'late-admission', state: 'queued' } })
+  await reply.promise; await new Promise<void>(resolve => { setImmediate(resolve) })
+  assert.equal(outbox.view(metadata.id).getSnapshot().length, 0); assert.equal(storage.length, 0)
+})
+
+test('read-only receipt permission denial cannot be mistaken for a rejection of the original write', { timeout: 3000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'receipt-grants' }
+  const first = new RemoteOutbox(async () => { throw new Error('Browser reply lost') }); first.setStorage(access)
+  first.enqueue(operation('receipt-denied')); first.start('receipt-denied'); first.acceptCatalog([metadata])
+  await when(first.view(metadata.id), () => first.get('receipt-denied')?.state === 'confirming'); first.dispose()
+  let writes = 0, lookups = 0
+  const next = new RemoteOutbox(async request => { writes++; return accepted(request) }, async () => {
+    lookups++; throw Object.assign(new Error('Synthetic missing hhpi/receipt grant'), { code: 'remote-access/denied' })
+  })
+  t.after(() => next.dispose()); next.setStorage(access); next.acceptCatalog([metadata])
+  await when(next.view(metadata.id), () => next.get('receipt-denied')?.message.includes('Receipt access') === true)
+  assert.equal(next.get('receipt-denied')?.state, 'confirming'); assert.equal(writes, 0); assert.equal(lookups, 1)
+  next.start('receipt-denied'); assert.equal(lookups, 1, 'a denied read waits for a fresh authenticated catalog')
+  assert.equal(storage.length, 1)
 })

@@ -88,6 +88,11 @@ export class SourceEventIndex {
         const row = this.db.prepare('SELECT event FROM events WHERE source_key=?').get(key);
         return row ? { type: 'event', event: JSON.parse(String(row.event)) as SessionEvent } : undefined;
     }
+    /** Exact native client identity only; matching text or turn status is never delivery evidence. */
+    userMessageSequence(rpcId: string): number | undefined {
+        const row = this.db.prepare("SELECT seq FROM events WHERE json_extract(event,'$.type')='user/message' AND json_extract(event,'$.data.source.rpcId')=? ORDER BY seq LIMIT 1").get(rpcId);
+        return row ? Number(row.seq) : undefined;
+    }
     private assertEditing(): void { if (!this.editing) throw new Error('Source index changes require an atomic edit'); }
 
     /** Atomically publish one accepted source revision, including metadata and the replay journal. */

@@ -15,7 +15,7 @@ interface Pending {
 }
 interface Connection {
     generation: number; child?: ChildProcessWithoutNullStreams; socket?: WebSocket;
-    closed: boolean; stopped: Promise<void>; send(line: string): Promise<void>; close(): void;
+    closed: boolean; stopped: Promise<void>; send(line: string, dispatched?: () => void): Promise<void>; close(): void;
 }
 const MAX_FRAME = 16 * 1024 * 1024;
 const MAX_PENDING = 128;
@@ -100,9 +100,10 @@ export class CodexRpc {
             const url = unix ? `ws+unix://${this.config.endpoint.slice(7)}:/` : this.config.endpoint;
             const socket = new WebSocket(url, { ...(unix ? { headers: { Host: 'localhost' } } : {}), maxPayload: MAX_FRAME, followRedirects: false, handshakeTimeout: this.timeoutMs });
             const connection: Connection = { generation, socket, closed: false, stopped: new Promise<void>(resolve => { socket.once('close', () => { resolve(); }); }),
-                send: line => new Promise((resolve, reject) => {
-                    if (connection.closed || socket.readyState !== WebSocket.OPEN) { reject(new SourceError('TARGET_UNAVAILABLE', 'The native socket is closed.')); return; }
-                    if (socket.bufferedAmount > MAX_FRAME) { reject(new SourceError('CAPACITY_EXCEEDED', 'The native socket is applying backpressure.')); return; }
+                send: (line, dispatched) => new Promise((resolve, reject) => {
+                    if (connection.closed || socket.readyState !== WebSocket.OPEN) { reject(new SourceError('TARGET_UNAVAILABLE', 'The native socket is closed.', 'not-dispatched')); return; }
+                    if (socket.bufferedAmount > MAX_FRAME) { reject(new SourceError('CAPACITY_EXCEEDED', 'The native socket is applying backpressure.', 'not-dispatched')); return; }
+                    dispatched?.();
                     socket.send(line.trimEnd(), error => error ? reject(error) : resolve());
                 }),
                 close: () => { socket.terminate(); },
@@ -125,9 +126,10 @@ export class CodexRpc {
             stdio: ['pipe', 'pipe', 'pipe'], shell: false, windowsHide: true,
         });
         const connection: Connection = { generation, child, closed: false, stopped: new Promise<void>(resolve => { child.once('close', () => { resolve(); }); }),
-            send: line => new Promise((resolve, reject) => {
-                if (connection.closed || child.stdin.destroyed) { reject(new SourceError('TARGET_UNAVAILABLE', 'The native app-server input is closed.')); return; }
-                if (child.stdin.writableLength > MAX_FRAME) { reject(new SourceError('CAPACITY_EXCEEDED', 'The native app-server is applying backpressure.')); return; }
+            send: (line, dispatched) => new Promise((resolve, reject) => {
+                if (connection.closed || child.stdin.destroyed) { reject(new SourceError('TARGET_UNAVAILABLE', 'The native app-server input is closed.', 'not-dispatched')); return; }
+                if (child.stdin.writableLength > MAX_FRAME) { reject(new SourceError('CAPACITY_EXCEEDED', 'The native app-server is applying backpressure.', 'not-dispatched')); return; }
+                dispatched?.();
                 child.stdin.write(line, error => error ? reject(error) : resolve());
             }),
             close: () => { child.stdin.end(); child.kill('SIGTERM'); },
@@ -182,23 +184,24 @@ export class CodexRpc {
     }
 
     private requestOn(connection: Connection, method: string, params: unknown, write: boolean, signal?: AbortSignal): Promise<unknown> {
-        if (connection.closed || this.disposed) return Promise.reject(new SourceError('TARGET_UNAVAILABLE', 'The native source is unavailable. Nothing was dispatched.'));
+        if (connection.closed || this.disposed) return Promise.reject(new SourceError('TARGET_UNAVAILABLE', 'The native source is unavailable. Nothing was dispatched.', 'not-dispatched'));
         signal?.throwIfAborted();
-        if (this.pending.size >= MAX_PENDING) return Promise.reject(new SourceError('CAPACITY_EXCEEDED', 'The native source request limit has been reached. Nothing was dispatched.'));
+        if (this.pending.size >= MAX_PENDING) return Promise.reject(new SourceError('CAPACITY_EXCEEDED', 'The native source request limit has been reached. Nothing was dispatched.', 'not-dispatched'));
         const id = `hhpi-${++this.nextId}`, key = `${connection.generation}:${id}`;
         const line = JSON.stringify({ id, method, params }) + '\n';
-        if (Buffer.byteLength(line) > MAX_FRAME) return Promise.reject(new SourceError('CAPACITY_EXCEEDED', 'The native source request exceeds the frame limit. Nothing was dispatched.'));
+        if (Buffer.byteLength(line) > MAX_FRAME) return Promise.reject(new SourceError('INVALID_REQUEST', 'The native source request exceeds the frame limit. Nothing was dispatched.'));
         const work = new Promise<unknown>((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pending.delete(key);
-                reject(new SourceError(write ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', write ? 'The native operation acknowledgement timed out; it must not be retried automatically.' : 'The native source read timed out.'));
+                reject(new SourceError(write && pending.dispatched ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', write ? 'The native operation acknowledgement timed out; it must not be retried automatically.' : 'The native source read timed out.', pending.dispatched ? undefined : 'not-dispatched'));
             }, this.timeoutMs);
-            const pending: Pending = { resolve, reject, timer, write, dispatched: true };
+            const pending: Pending = { resolve, reject, timer, write, dispatched: false };
             this.pending.set(key, pending);
-            void connection.send(line).catch(() => {
+            void connection.send(line, () => { pending.dispatched = true; }).catch(error => {
                 if (this.pending.get(key) !== pending) return;
                 this.pending.delete(key); clearTimeout(timer);
-                reject(new SourceError(write ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', 'The native transport failed while dispatching the request.'));
+                reject(!pending.dispatched && error instanceof SourceError ? error
+                    : new SourceError(write && pending.dispatched ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', 'The native transport failed while dispatching the request.', pending.dispatched ? undefined : 'not-dispatched'));
             });
         });
         // Remove only this read's pending waiter. Never cancel or resend a native write on a browser disconnect.
@@ -207,15 +210,25 @@ export class CodexRpc {
         return work;
     }
     async request<T>(method: string, params: unknown, options: { write?: boolean; signal?: AbortSignal } = {}): Promise<T> {
-        await this.connect(options.signal);
+        try { await this.connect(options.signal); }
+        catch (error) {
+            if (options.write && !(error instanceof SourceError && ['UNSUPPORTED', 'INVALID_REQUEST'].includes(error.code))) {
+                throw new SourceError('TARGET_UNAVAILABLE', 'The native connection is not available. Nothing was dispatched.', 'not-dispatched');
+            }
+            throw error;
+        }
         options.signal?.throwIfAborted();
         return this.requestOn(this.connection!, method, params, options.write === true, options.signal) as Promise<T>;
     }
     async respond(request: NativeRequest, result?: unknown, error?: { code: number; message: string }): Promise<void> {
         const connection = this.connection;
-        if (!connection || connection.closed || request.generation !== connection.generation) throw new SourceError('TARGET_UNAVAILABLE', 'This approval belongs to an expired native connection. Nothing was dispatched.');
-        try { await connection.send(JSON.stringify({ id: request.id, ...(error ? { error } : { result: result ?? null }) }) + '\n'); }
-        catch { throw new SourceError('OUTCOME_UNKNOWN', 'The native approval response may have been delivered. It must not be resent.'); }
+        if (!connection || connection.closed || request.generation !== connection.generation) throw new SourceError('INVALID_REQUEST', 'This approval belongs to an expired native connection. Nothing was dispatched.');
+        let dispatched = false;
+        try { await connection.send(JSON.stringify({ id: request.id, ...(error ? { error } : { result: result ?? null }) }) + '\n', () => { dispatched = true; }); }
+        catch (cause) {
+            if (!dispatched && cause instanceof SourceError) throw cause;
+            throw new SourceError('OUTCOME_UNKNOWN', 'The native approval response may have been delivered. It must not be resent.');
+        }
     }
     private lost(connection: Connection): void {
         if (connection.closed) return;
@@ -223,7 +236,7 @@ export class CodexRpc {
         for (const [key, pending] of this.pending) {
             if (!key.startsWith(`${connection.generation}:`)) continue;
             this.pending.delete(key); clearTimeout(pending.timer);
-            pending.reject(new SourceError(pending.write && pending.dispatched ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', 'The native source disconnected. No operation is retried automatically.'));
+            pending.reject(new SourceError(pending.write && pending.dispatched ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', 'The native source disconnected. No operation is retried automatically.', pending.dispatched ? undefined : 'not-dispatched'));
         }
         if (this.connection === connection) { this.connection = undefined; this.initialized = undefined; for (const listener of [...this.disconnects]) listener(); }
     }

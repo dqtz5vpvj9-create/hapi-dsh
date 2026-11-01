@@ -17,6 +17,7 @@ export class RemotePaneSession implements SessionFace {
   readonly historyRead: RemoteSourceSession['historyRead']
   readonly metadata: RemoteSourceSession['metadata']
   readonly deliveries: RemoteSourceSession['deliveries']
+  readonly controlStatus: RemoteSourceSession['controlStatus']
   readonly ready: Promise<void>
   /** Direct sources use accepted-page cache sharing; no speculative prefetch is advertised. */
   readonly prefetchOlderPage?: () => Promise<void>
@@ -46,6 +47,7 @@ export class RemotePaneSession implements SessionFace {
     } }
     this.metadata = owner.metadata
     this.deliveries = owner.deliveries
+    this.controlStatus = owner.controlStatus
     this.state = { ...owner.getSnapshot(), openState: 'loading', hasMore: false, loadingOlder: false }
     this.stopOwner = owner.subscribe(() => { this.publish() })
     this.ready = Promise.all([ownerReady, this.opened.promise]).then(() => { this.assertLive() })

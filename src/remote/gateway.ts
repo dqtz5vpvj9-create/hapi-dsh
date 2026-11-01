@@ -115,6 +115,14 @@ export class SourceGateway {
         if (receipt.sessionId !== request.sessionId || receipt.operationId !== request.operationId) throw new SourceError('OUTCOME_UNKNOWN', 'The source acknowledgement belongs to another operation.');
         return receipt;
     }
+    async receipt(request: SourceOperation, access: SourceAccess, signal?: AbortSignal): Promise<SourceReceipt | null> {
+        const adapter = this.adapterFor(request.sessionId, access);
+        if (!adapter.receipt) throw new SourceError('UNSUPPORTED', 'This source does not expose operation receipt lookup.');
+        const receipt = await adapter.receipt(request, signal);
+        signal?.throwIfAborted(); this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId });
+        if (receipt && (receipt.sessionId !== request.sessionId || receipt.operationId !== request.operationId)) throw new SourceError('OUTCOME_UNKNOWN', 'The receipt belongs to another operation.');
+        return receipt;
+    }
     async create(request: SourceCreateRequest, access: SourceAccess): Promise<SourceCreationReceipt> {
         this.assertLive(); this.assertAllowed(access, { kind: 'source', id: request.sourceId });
         const adapter = this.adapters.get(request.sourceId);

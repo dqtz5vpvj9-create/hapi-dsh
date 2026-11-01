@@ -51,6 +51,12 @@ export interface SourceOperation {
 export interface SourceReceipt {
     operationId: string; sessionId: string; status: 'accepted' | 'rejected' | 'indeterminate';
     message: string; turnId?: string;
+    /** A native write was proven not to have been dispatched. Only this result permits the same ID to retry. */
+    retryable?: true;
+    /** Native user-message coordinates, never inferred from matching text. */
+    observed?: { epoch: string; seq: number };
+    /** The original execution owner durably stores this exact local ID; this says nothing about native execution or completion. */
+    ownerAdmission?: { localId: string; state: 'queued' | 'dispatching' | 'indeterminate' | 'consumed' };
 }
 export interface SourceResourceRequest { sessionId: string; path: string }
 export interface SourceResource { encoding: 'base64'; content: string; mimeType: string; attachment?: ImageAttachmentRef }
@@ -65,6 +71,8 @@ export interface SourceAdapter {
     read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage>;
     changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges>;
     operate(request: SourceOperation): Promise<SourceReceipt>;
+    /** Read an existing immutable operation identity without creating or executing it. */
+    receipt?(request: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null>;
     create?(request: SourceCreateRequest): Promise<SourceCreationReceipt>;
     readResource?(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource>;
     dispose(): void | Promise<void>;

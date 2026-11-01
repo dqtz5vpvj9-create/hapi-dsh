@@ -38,6 +38,40 @@ test('lost acknowledgement remains indeterminate after restart and is never rese
     assert.deepEqual(await new OperationLedger(path).run(operation, async () => { calls++; return accepted; }), uncertain);
     assert.equal(calls, 1);
 }));
+test('read-only receipt lookup checks the same immutable payload and never creates a missing operation', () => directory(async path => {
+    const ledger = new OperationLedger(path);
+    assert.equal(await ledger.lookup(operation), null);
+    assert.deepEqual(await readdir(path), [], 'a query cannot install a write-ahead marker');
+    await ledger.run(operation, async () => accepted);
+    assert.deepEqual(await ledger.lookup(operation), accepted);
+    await assert.rejects(ledger.lookup({ ...operation, text: 'different text' }), { code: 'INVALID_REQUEST' });
+}));
+test('only proven not-dispatched operations may retry the same ID, while unknown ones reconcile read-only', () => directory(async path => {
+    let calls = 0;
+    const ledger = new OperationLedger(path);
+    const rejected = await ledger.run(operation, async () => { calls++; throw new SourceError('TARGET_UNAVAILABLE', 'No transport write occurred', 'not-dispatched'); });
+    assert.equal(rejected.status, 'rejected'); assert.equal(rejected.retryable, true);
+    assert.deepEqual(await new OperationLedger(path).lookup(operation), rejected, 'a receipt query itself never performs the allowed retry');
+    assert.deepEqual(await new OperationLedger(path).run(operation, async () => { calls++; return accepted; }), accepted);
+    assert.equal(calls, 2);
+    const unknown = { ...operation, operationId: 'unknown' };
+    await ledger.run(unknown, async () => { calls++; throw new SourceError('OUTCOME_UNKNOWN', 'Acknowledgement lost'); });
+    let reconciliations = 0;
+    const found = { ...accepted, operationId: unknown.operationId, observed: { epoch: 'native-epoch', seq: 42 } };
+    assert.deepEqual(await new OperationLedger(path).lookup(unknown, async () => { reconciliations++; return found; }), found);
+    assert.equal(calls, 3, 'correlation cannot run the native mutation again');
+    assert.deepEqual(await ledger.lookup(unknown, async () => { throw new Error('accepted receipt must not wait on native reconnection'); }), found);
+    assert.equal(reconciliations, 1);
+}));
+test('operation retry metadata never changes the strict native creation receipt or permits creation replay', () => directory(async path => {
+    const request = { sourceId: 'codex', operationId: 'create-before-connect' };
+    let calls = 0;
+    const run = async (): Promise<never> => { calls++; throw new SourceError('TARGET_UNAVAILABLE', 'Not sent', 'not-dispatched'); };
+    const ledger = new CreationLedger(path, 'source');
+    const receipt = await ledger.run(request, run);
+    assert.equal(receipt.status, 'rejected'); assert.equal('retryable' in receipt, false);
+    assert.deepEqual(await new CreationLedger(path, 'source').run(request, run), receipt); assert.equal(calls, 1);
+}));
 test('a durable pre-dispatch uncertainty marker prevents replay after a process crash', () => directory(async path => {
     const gate = Promise.withResolvers<void>(); const entered = Promise.withResolvers<void>();
     const pending = new OperationLedger(path).run(operation, async () => { entered.resolve(); await gate.promise; return accepted; });

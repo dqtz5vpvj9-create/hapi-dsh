@@ -1,7 +1,7 @@
 export type SourceErrorCode = 'INVALID_REQUEST' | 'TARGET_UNAVAILABLE' | 'STALE_VERSION' | 'CAPACITY_EXCEEDED' | 'OUTCOME_UNKNOWN' | 'UNSUPPORTED' | 'DISPOSED';
 export class SourceError extends Error {
     override readonly name = 'SourceError';
-    constructor(readonly code: SourceErrorCode, message: string) { super(message); }
+    constructor(readonly code: SourceErrorCode, message: string, readonly delivery?: 'not-dispatched') { super(message); }
 }
 export function abortError(): DOMException { return new DOMException('The source read was cancelled.', 'AbortError'); }
 /** A cancelled reader cannot cancel another reader's shared source work. */

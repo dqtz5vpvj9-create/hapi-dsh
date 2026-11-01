@@ -16,7 +16,7 @@ import { WorkspaceRepository } from '../src/hub/workspaces.ts';
 import { WorkspaceShell } from '../src/hub/workspace-shell.ts';
 import { HhpiSourceService, installSources, registerSourceContract, sourceStorageScope } from '../src/remote/service.ts';
 import { SourceGateway } from '../src/remote/gateway.ts';
-import { sourceSessionId, type SourceAdapter, type SourceCatalog, type SourcePage, type SourceSession } from '../src/remote/protocol.ts';
+import { sourceSessionId, type SourceAdapter, type SourceCatalog, type SourcePage, type SourceReceipt, type SourceSession } from '../src/remote/protocol.ts';
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface PrincipalMap { 'hhpi-service-fixture': { kind: 'hhpi-service-fixture' } }
@@ -28,11 +28,16 @@ const privateSession: SourceSession = { ...session, nativeId: 'private-thread', 
 const page: SourcePage = { session, epoch: 'epoch-a', version: 1, entries: [], before: null, after: null, hasBefore: false, hasAfter: false, context: [] };
 async function mount() {
     const ctx = new Context(); await ctx.plugin(TypertRegistry); new RemoteAccessService(ctx);
-    const writes: string[] = [];
+    const writes: string[] = [], lookups: string[] = [], receipts = new Map<string, SourceReceipt>();
     const adapter: SourceAdapter = { id: identity.sourceId, machineId: identity.machineId, engine: identity.engine,
         list: async () => [session, privateSession], read: async () => page,
         async *changes() { yield { session, epoch: 'epoch-a', base: 1, version: 2, reset: false, upserts: [], removed: [] }; },
-        operate: async request => { writes.push(request.sessionId); return { sessionId: request.sessionId, operationId: request.operationId, status: 'accepted', message: 'Synthetic acknowledgement' }; },
+        operate: async request => {
+            writes.push(request.sessionId);
+            const receipt: SourceReceipt = { sessionId: request.sessionId, operationId: request.operationId, status: 'accepted', message: 'Synthetic acknowledgement' };
+            receipts.set(JSON.stringify([request.sessionId, request.operationId]), receipt); return receipt;
+        },
+        receipt: async request => { lookups.push(request.sessionId); return receipts.get(JSON.stringify([request.sessionId, request.operationId])) ?? null; },
         dispose: () => {},
     };
     const source = new SourceGateway([adapter], false);
@@ -44,7 +49,7 @@ async function mount() {
     const principal: Principal = { kind: 'hhpi-service-fixture' };
     const signal = new AbortController();
     const peer = (value: Principal): PeerScope => ({ id: 'hhpi-service' as PeerId, ctx, principal: value, interactions: 'answer', signal: signal.signal, dispose: async () => {} });
-    return { ctx, grants, writes, adapter, signal,
+    return { ctx, grants, writes, lookups, adapter, signal,
         invoke: (method: string, args: Readonly<Record<string, unknown>>, value: Principal = principal) => gateway.invoke({ peer: peer(value), namespace: 'hhpi', method, args }),
         stream: (method: string, args: Readonly<Record<string, unknown>>, value: Principal = principal) => gateway.stream({ peer: peer(value), namespace: 'hhpi', method, args }),
         close: async () => { signal.abort(); await source.dispose(); await ctx.fiber.dispose(); },
@@ -117,5 +122,21 @@ test('invocation-scoped grants filter catalog and authorize the exact source on 
         assert.deepEqual(app.writes, [session.id]);
         app.grants.length = 0;
         await assert.rejects(app.invoke('read', { request: { sessionId: session.id } }), denied);
+    } finally { await app.close(); }
+});
+
+test('read-only receipts use official exact-session authorization without granting operate or creating an operation', async () => {
+    const app = await mount(), request = { sessionId: session.id, operationId: 'stored-operation', kind: 'send', text: 'synthetic' };
+    try {
+        const accepted = await app.invoke('operate', { request }, { kind: 'owner' });
+        app.grants.push({ role: { name: 'Read one receipt', resource: 'session', actions: ['hhpi/receipt'] }, resource: { kind: 'session', id: SessionId(session.id) } });
+        assert.deepEqual(await app.invoke('receipt', { request }), accepted);
+        assert.equal(await app.invoke('receipt', { request: { ...request, operationId: 'never-sent' } }), null);
+        await assert.rejects(app.invoke('operate', { request }), denied, 'receipt permission is not write permission');
+        await assert.rejects(app.invoke('receipt', { request: { ...request, sessionId: privateSession.id } }), denied);
+        assert.deepEqual(app.writes, [session.id]); assert.deepEqual(app.lookups, [session.id, session.id]);
+        app.grants.length = 0;
+        await assert.rejects(app.invoke('receipt', { request }), denied);
+        assert.equal(app.lookups.length, 2, 'revoked lookups cannot enter the source adapter');
     } finally { await app.close(); }
 });

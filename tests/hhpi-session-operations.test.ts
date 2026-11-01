@@ -27,7 +27,8 @@ before(async () => {
 function metadata(): SourceSession {
   const identity = { machineId: 'test-machine', sourceId: 'test-source', engine: 'codex', nativeId: 'test-thread' }
   return { ...identity, id: sourceSessionId(identity), title: 'Synthetic source', cwd: '/synthetic', updatedAt: 1,
-    status: 'running', activeTurnId: 'native-turn', capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
+    status: 'running', activeTurnId: 'native-turn', capabilities: { send: true, steer: true, cancel: true, approve: true, files: false },
+    pendingRequests: [{ id: 'request', method: 'command/approval', turnId: 'native-turn', itemId: null, params: {} }] }
 }
 function accepted(operation: SourceOperation): SourceReceipt {
   return { operationId: operation.operationId, sessionId: operation.sessionId, status: 'accepted', message: 'Native source accepted.' }
@@ -45,7 +46,7 @@ function fixture(t: TestContext, value = metadata(), operation: (request: Source
   function submit(mode: BeginSubmissionInput['mode'] = 'queue') {
     return session.beginSubmission({ mode, text: 'Keep this draft', attachments: [], onRetire: value => { retirements.push(value) } })
   }
-  return { session, calls, retirements, submit }
+  return { session, calls, retirements, submit, api }
 }
 const content = [{ type: 'text' as const, text: 'Keep this draft' }]
 
@@ -119,15 +120,26 @@ test('dispatch owns an immutable copy of the operation and preserves the native 
   assert.deepEqual(received, ['original'], 'caller mutation must not change an already identified source write')
 })
 
-test('uncertain writes retain the same failed promise and never automatically resend', async t => {
-  const { session, calls } = fixture(t, metadata(), async () => { throw new Error('Acknowledgement lost') })
+test('a failed browser promise can recover through a read-only same-ID receipt without repeating the native write', async t => {
+  const { session, calls, api } = fixture(t, metadata(), async () => { throw new Error('Acknowledgement lost') })
   await session.ready
   const operation: SourceOperation = { sessionId: session.sessionId, operationId: 'uncertain', kind: 'send', text: 'once' }
   const first = session.operate(operation)
   await assert.rejects(first, /Acknowledgement lost/)
+  api.receipt = async request => ({ ok: true, value: accepted(request) })
   const retry = session.operate({ ...operation })
-  assert.equal(retry, first)
-  await assert.rejects(retry, /Acknowledgement lost/)
+  assert.notEqual(retry, first, 'a rejected Promise cannot permanently block receipt recovery')
+  assert.equal((await retry).status, 'accepted')
+  assert.equal(calls.length, 1)
+})
+
+test('a recovered control revalidates its original native target and does not follow a replacement turn', async t => {
+  const value = metadata(), { session, calls, api } = fixture(t, value, async () => { throw new Error('Reply lost') })
+  const request: SourceOperation = { sessionId: session.sessionId, operationId: 'cancel:native-turn', kind: 'cancel', turnId: 'native-turn' }
+  await assert.rejects(session.operate(request), /Reply lost/)
+  api.receipt = async () => ({ ok: true, value: null })
+  session.update({ ...value, activeTurnId: 'replacement-turn' })
+  await assert.rejects(session.operate(request), /original native turn|replacement turn/)
   assert.equal(calls.length, 1)
 })
 

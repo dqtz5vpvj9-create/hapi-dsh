@@ -212,14 +212,49 @@ export class DshOwnerConnection {
       ...(operation.kind === 'cancel' && operation.turnId ? { turnId: operation.turnId } : {}) }
   }
 
+  /**
+   * Read an exact durable owner queue row, without dispatching or resuming it.
+   * This is a handoff receipt, not a native DSH message coordinate. The owner's
+   * consumed marker can precede ACP prompt admission (and is also set during
+   * session-end cleanup), so none of these states proves native execution.
+   */
+  async readAdmission(nativeId: string, operation: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt['ownerAdmission']> {
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    signal?.throwIfAborted()
+    this.assertOperation(nativeId, operation)
+    if (operation.kind !== 'send') return undefined
+    // A reading lease cannot identify a current write owner. Resolve its exact
+    // native identity again, including machine membership and ambiguity checks.
+    const owner = await waitFor(this.ownerSession(nativeId), signal)
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    signal?.throwIfAborted()
+    const state = await waitFor(this.client.getQueuedState(owner.id, [operation.operationId]), signal)
+    if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+    signal?.throwIfAborted()
+    const matches: NonNullable<SourceReceipt['ownerAdmission']>['state'][] = [
+      ...state.queuedLocalIds.filter(id => id === operation.operationId).map(() => 'queued' as const),
+      ...(state.dispatchingLocalIds ?? []).filter(id => id === operation.operationId).map(() => 'dispatching' as const),
+      ...(state.indeterminateLocalIds ?? []).filter(id => id === operation.operationId).map(() => 'indeterminate' as const),
+      ...state.invokedLocalMessages.filter(row => row.localId === operation.operationId).map(() => 'consumed' as const),
+    ]
+    // Missing or contradictory evidence never authorizes either handoff or replay.
+    return matches.length === 1 ? { localId: operation.operationId, state: matches[0]! } : undefined
+  }
+
   async operate(nativeId: string, operation: SourceOperation): Promise<SourceReceipt> {
     this.assertOperation(nativeId, operation)
-    const session = await this.ownerSession(nativeId)
+    let session: HapiSession
+    try { session = await this.ownerSession(nativeId) }
+    catch (error) {
+      if (error instanceof HapiRequestError && (error.status === 401 || error.status === 403)) throw new SourceError('UNSUPPORTED', 'The original DSH owner revoked this operation access.')
+      if (error instanceof SourceError && ['INVALID_REQUEST', 'UNSUPPORTED'].includes(error.code)) throw error
+      throw new SourceError('TARGET_UNAVAILABLE', error instanceof SourceError ? error.message : 'The original DSH owner could not be checked. Nothing was dispatched.', 'not-dispatched')
+    }
     const current = toSourceSession(this.config, session)
     if (!current) throw new SourceError('INVALID_REQUEST', 'The HAPI session no longer matches this native DSH source.')
     if (operation.kind === 'send') {
       if (!operation.text?.trim()) throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.')
-      if (!current.capabilities.send) throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner is inactive; it will not be resumed.')
+      if (!current.capabilities.send) throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner is inactive; it will not be resumed.', 'not-dispatched')
       try {
         await this.client.sendMessage(session.id, { text: operation.text, localId: operation.operationId, deliveryMode: 'queue' })
         return this.receipt(operation, 'accepted', 'The original HAPI owner accepted the message into its queue; this does not mean the DSH turn completed.')
@@ -250,7 +285,7 @@ export class DshOwnerConnection {
     if (!operation.requestId || !operation.decision || !session.agentState?.requests?.[operation.requestId]) {
       throw new SourceError('INVALID_REQUEST', 'The DSH approval request is no longer pending.')
     }
-    if (!current.capabilities.approve) throw new SourceError('TARGET_UNAVAILABLE', 'The original HAPI owner cannot accept this approval now.')
+    if (!current.capabilities.approve) throw new SourceError('TARGET_UNAVAILABLE', 'The original HAPI owner cannot accept this approval now.', 'not-dispatched')
     const decision = ({
       accept: 'approved',
       acceptForSession: 'approved_for_session',

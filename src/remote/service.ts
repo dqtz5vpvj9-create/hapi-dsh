@@ -65,6 +65,10 @@ export class HhpiSourceService extends TypertRemoteService {
     }
     @Remote({ name: 'operate', resources: { session: addressedSession } })
     async operate(request: SourceOperation): Promise<SourceReceipt> { try { return await this.gateway.operate(request, this.access); } catch (error) { remoteError(error); } }
+    @Remote({ name: 'receipt', resources: { session: addressedSession } })
+    async receipt(request: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null> {
+        try { return await this.gateway.receipt(request, this.access, signal); } catch (error) { remoteError(error); }
+    }
     @Remote({ name: 'create', resources: { hhpiSource: addressedSource } })
     async create(request: SourceCreateRequest): Promise<SourceCreationReceipt> { try { return await this.gateway.create(request, this.access); } catch (error) { remoteError(error); } }
     @Remote({ name: 'resource', resources: { session: addressedSession } })

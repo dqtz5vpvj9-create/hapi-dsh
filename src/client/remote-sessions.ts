@@ -35,7 +35,7 @@ function result<T>(value: RemoteResult<T>): T { if (!value.ok) throw value.error
 function sourceError(message: string, indeterminate = false): RemoteError<'hhpi/source'> {
   return new RemoteError('hhpi/source', message, { outcome: indeterminate ? 'indeterminate' : 'rejected', sourceCode: indeterminate ? 'outcome_unknown' : 'unsupported' })
 }
-interface TrackedOperation { readonly fingerprint: string; readonly promise: Promise<SourceReceipt> }
+interface TrackedOperation { readonly fingerprint: string; promise?: Promise<SourceReceipt> | undefined; receipt?: SourceReceipt | undefined }
 
 export class RemoteSourceSession implements SessionFace {
   readonly inputCommitPolicy = 'after-acceptance' as const
@@ -44,6 +44,7 @@ export class RemoteSourceSession implements SessionFace {
   readonly historyRead: { readonly version: 1; openView(viewId: string, budget?: Budget, signal?: AbortSignal, cacheId?: string): Promise<HistoryFeedV1> }
   readonly projections: ProjectionsFace
   readonly deliveries: SourceDeliveryStore
+  readonly controlStatus = new Value<string | null>(null)
   private readonly state: Value<SessionSnapshot>
   private readonly projectionValues = new Map<string, Value<unknown>>()
   private readonly submissions = new Map<string, BeginSubmissionInput>()
@@ -90,7 +91,7 @@ export class RemoteSourceSession implements SessionFace {
   readonly subscribe = (listener: () => void): (() => void) => this.state.subscribe(listener)
   private syncDeliveries(): void {
     if (this.disposed) return
-    const deliveries = this.deliveries.getSnapshot(), prior = this.durableIds
+    const deliveries = this.deliveries.getSnapshot().filter(entry => entry.state !== 'owner-accepted'), prior = this.durableIds
     this.durableIds = new Set(deliveries.map(entry => entry.operation.operationId))
     const state = this.state.getSnapshot()
     this.state.set({ ...state, pendingSubmissions: [...state.pendingSubmissions.filter(entry => !prior.has(entry.requestId) && !this.durableIds.has(entry.requestId)),
@@ -199,25 +200,60 @@ export class RemoteSourceSession implements SessionFace {
     if (operation.sessionId !== this.sessionId) return Promise.reject(sourceError('An operation belongs to another source session.'))
     const fingerprint = JSON.stringify([operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
     const existing = this.operations.get(operation.operationId)
-    if (existing) return existing.fingerprint === fingerprint ? existing.promise : Promise.reject(sourceError('An operation ID was reused with different arguments.'))
+    if (existing && existing.fingerprint !== fingerprint) return Promise.reject(sourceError('An operation ID was reused with different arguments.'))
+    if (existing?.promise) return existing.promise
+    if (existing?.receipt && existing.receipt.status !== 'indeterminate' && existing.receipt.retryable !== true) return Promise.resolve(existing.receipt)
+    const tracked = existing ?? { fingerprint }
     const request = Object.freeze({ ...operation })
     // Publish the identity before invoking remote code, including a synchronous
     // callback. Once dispatched, releasing a view never cancels the native write.
-    const promise = Promise.resolve().then(() => this.api.operate(request)).then(result).then(receipt => {
+    const promise = Promise.resolve().then(async () => {
+      // Lost browser ACKs are read using the same immutable identity. Looking
+      // up an existing receipt cannot dispatch a control to a replacement turn.
+      if (existing && this.api.receipt) {
+        const prior = result(await this.api.receipt(request))
+        if (prior && prior.retryable !== true) return prior
+      }
+      this.assertOperationCurrent(request)
+      return result(await this.api.operate(request))
+    }).then(receipt => {
       if (receipt.sessionId !== request.sessionId || receipt.operationId !== request.operationId) throw sourceError('The source returned a receipt for a different operation or session.', true)
-      return Object.freeze({ ...receipt })
+      tracked.receipt = Object.freeze({ ...receipt })
+      return tracked.receipt
+    }).finally(() => {
+      if (tracked.promise === promise) tracked.promise = undefined
     })
-    this.operations.set(request.operationId, { fingerprint, promise })
+    tracked.promise = promise; this.operations.set(request.operationId, tracked)
     return promise
+  }
+  private assertOperationCurrent(operation: SourceOperation): void {
+    if (this.disposed) throw sourceError('The source view was released.')
+    const metadata = this.metadata.getSnapshot()
+    if (metadata.status === 'offline' || (metadata as SourceSession & { connection?: { state: string } }).connection?.state === 'offline') throw sourceError('Reconnect before controlling the original native operation.')
+    if (!metadata.capabilities[operation.kind]) throw sourceError(`The source does not support ${operation.kind}.`)
+    if ((operation.kind === 'steer' || operation.kind === 'cancel') && (!operation.turnId || metadata.activeTurnId !== operation.turnId)) throw sourceError('The original native turn is no longer active. No replacement turn was controlled.')
+    if (operation.kind === 'approve' && (!operation.requestId || !metadata.pendingRequests.some(request => request.id === operation.requestId))) throw sourceError('The original native approval is no longer available.')
   }
   async cancel(): ReturnType<SessionFace['cancel']> {
     const session = this.metadata.getSnapshot()
-    if (!session.activeTurnId || !session.capabilities.cancel) return { ok: false, error: sourceError('There is no cancellable native turn.') }
+    if (!session.activeTurnId || !session.capabilities.cancel) {
+      this.controlStatus.set('There is no cancellable native turn. No control was sent.')
+      return { ok: false, error: sourceError('There is no cancellable native turn.') }
+    }
+    if (session.status === 'offline' || (session as SourceSession & { connection?: { state: string } }).connection?.state === 'offline') {
+      this.controlStatus.set('Waiting for the source connection. Reconnect before stopping the original turn.')
+      return { ok: false, error: sourceError('Reconnect before stopping the original native turn.') }
+    }
     try {
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: `cancel:${session.activeTurnId}`, kind: 'cancel', turnId: session.activeTurnId })
+      this.controlStatus.set(receipt.message)
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
       return { ok: true, value: { accepted: true } }
-    } catch (cause) { return { ok: false, error: sourceError(cause instanceof Error ? cause.message : 'Cancellation was not acknowledged.', true) } }
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : 'Cancellation is waiting for confirmation for the original turn.'
+      this.controlStatus.set(message)
+      return { ok: false, error: sourceError(message, true) }
+    }
   }
   async readAttachment(...[attachmentId]: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
     if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
@@ -278,7 +314,19 @@ export class RemoteSessions implements ISessions {
   legacyHapi = false
 
   constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi, readingStorage?: SourceReadingStorage) {
-    this.outbox = new RemoteOutbox(async operation => result(await this.api.operate(operation)))
+    this.outbox = new RemoteOutbox(async operation => result(await this.api.operate(operation)),
+      this.api.receipt ? async operation => result(await this.api.receipt!(operation)) : undefined,
+      async (operation, receipt) => {
+        // An open official reader publishes accepted entries normally. Exact
+        // receipt coordinates still reconcile messages outside its viewport;
+        // with no Pane, a bounded tail read also works without a rendering graph.
+        if (this.records.has(operation.sessionId as SessionId) && !receipt.observed) return []
+        const page = result(await this.api.read({ sessionId: operation.sessionId, limit: 160,
+          ...(receipt.observed ? { epoch: receipt.observed.epoch, around: receipt.observed.seq } : {}) }, this.lifetime.signal))
+        if (page.session.id !== operation.sessionId) throw sourceError('The source returned another session while confirming delivery.', true)
+        if (receipt.observed && page.epoch !== receipt.observed.epoch) return []
+        return page.entries
+      })
     if (original.historySource) this.historySource = original.historySource
     if (original.windowCommit) this.windowCommit = original.windowCommit
     this.capabilityState = new Value({ catalogReady: false, legacyHapi: false })
