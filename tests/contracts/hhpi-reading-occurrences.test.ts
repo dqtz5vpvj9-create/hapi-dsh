@@ -88,7 +88,7 @@ test('a released real Pane forwards only its already saved submission after Conv
 })
 
 test('official Chat persists semantic positions per stable Pane and rejects late saves across storage scopes', { timeout: 15000 }, async t => {
-  const f = await fixture(t, { preparedChatSource: process.env.HHPI_DSH_READING_MEMORY_SOURCE })
+  const f = await fixture(t, { preparedChatSource: process.env.HHPI_DSH_READING_MEMORY_SOURCE, restrictedOwner: true })
   const a = await f.open('pane-a:1', 'pane-a'), b = await f.open('pane-b:2', 'pane-b')
   const stopRoot = f.ctx.slots.register({ name: 'root', children: { main: { kind: 'keyed', scope: 'root' } } }, () => null)
   t.after(stopRoot)

@@ -68,7 +68,7 @@ const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), ti
   capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
 const message = (id: number): EventInput => ({ type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: `body-${id}` }] } } as EventInput)
 
-export async function fixture(t: TestContext, options: { preparedChatSource?: string | undefined } = {}) {
+export async function fixture(t: TestContext, options: { preparedChatSource?: string | undefined; restrictedOwner?: boolean } = {}) {
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://synthetic.invalid/', pretendToBeVisual: true })
   // jsdom has no font loader. Composer layout observes this external boundary;
@@ -93,7 +93,12 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
   // consumers. The memory provider must validate the facade's bindings.
   const originalOwner = ctx.isolate('sessions', Symbol('synthetic-native-session-owner'))
   originalOwner.reflect.provide('sessions', original)
-  const remote = new RemoteSessions(originalOwner, original, {
+  let ownerContext = originalOwner
+  if (options.restrictedOwner) {
+    const injectedOwner = originalOwner.inject(['sessions'], owner => { ownerContext = owner })
+    await injectedOwner
+  }
+  const remote = new RemoteSessions(ownerContext, original, {
     catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, storageScope: 'synthetic-reading', sessions: [metadata], sources: [] } }),
     read: async request => { calls.push(request); return { ok: true, value: index.read(request) } },
     changes: (request, signal) => index.changes(request, signal),

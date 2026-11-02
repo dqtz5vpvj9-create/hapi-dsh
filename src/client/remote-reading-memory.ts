@@ -18,7 +18,8 @@ export function installRemoteReadingMemory(ctx: Context, cache: () => SourceRead
           // its hosting facade owns HHPI bindings in the consumer realm.
           if (!ownsBinding(binding)) return
           const key = position?.anchorOwnerKey ?? position?.anchorKey
-          const snapshot = ctx.uiConversation.binding(binding).target('chat').getSnapshot()
+          // The Session owner is injected before the optional conversation UI activates.
+          const snapshot = ctx.get('uiConversation')?.binding(binding).target('chat').getSnapshot()
           const node = key === undefined ? undefined : snapshot?.nodes.get(key)
           const seq = node === undefined ? undefined : Math.floor(node.anchorSeq)
           if (position && seq === undefined) return
