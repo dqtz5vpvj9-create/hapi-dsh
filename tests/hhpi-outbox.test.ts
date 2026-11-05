@@ -307,6 +307,7 @@ test('two contexts choosing different approval decisions cannot replace the firs
     pendingRequests: [{ id: 'approval', method: 'synthetic', params: {} }] }
   const operationId = await sourceControlOperationId(session.id, 'approve', 'approval')
   const original: SourceOperation = { sessionId: session.id, operationId, kind: 'approve', requestId: 'approval', decision: 'accept' }
+  a.acceptCatalog([session]); b.acceptCatalog([session])
   const first = a.submit(original), second = b.submit({ ...original, decision: 'decline' })
   const rejected = assert.rejects(second, /different arguments/)
   a.acceptCatalog([session]); b.acceptCatalog([session])
@@ -314,4 +315,32 @@ test('two contexts choosing different approval decisions cannot replace the firs
   assert.equal((await first).status, 'accepted')
   assert.equal(calls.length, 1)
   assert.equal(calls[0]!.decision, 'accept')
+})
+
+
+test('a control saved before authenticated access requires explicit resume rather than reconnect dispatch', async t => {
+  const storage = new BrowserStorage(), writes: SourceOperation[] = []
+  const outbox = new RemoteOutbox(async request => { writes.push(request); return accepted(request) })
+  t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'explicit-control' })
+  const session = { ...metadata, status: 'running' as const, activeTurnId: 'original', capabilities: { ...metadata.capabilities, cancel: true } }
+  const request: SourceOperation = { sessionId: session.id, operationId: 'explicit-original', kind: 'cancel', turnId: 'original' }
+  assert.equal((await outbox.submit(request)).status, 'indeterminate')
+  outbox.acceptCatalog([session]); await Promise.resolve()
+  assert.equal(writes.length, 0)
+  outbox.retry(request.operationId)
+  await when(outbox.view(session.id), () => outbox.get(request.operationId)?.state === 'accepted')
+  assert.equal(writes.length, 1)
+})
+
+test('a stale context cannot abandon an intent already claimed by another context', async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'abandon-race' }
+  const called = Promise.withResolvers<void>(), reply = Promise.withResolvers<SourceReceipt>(), retired: boolean[] = []
+  const a = new RemoteOutbox(async () => { called.resolve(); return reply.promise }), b = new RemoteOutbox(async request => accepted(request))
+  t.after(() => { reply.resolve(accepted(operation('original'))); a.dispose(); b.dispose() })
+  a.setStorage(access); a.enqueue(operation('original')); b.setStorage(access); b.onRetire((_, observed) => retired.push(observed))
+  a.acceptCatalog([metadata]); a.start('original'); await called.promise
+  b.abandon('original')
+  await when(b.view(metadata.id), () => (b.get('original')?.attempts ?? 0) > 0)
+  assert.deepEqual(retired, [])
+  assert.equal(storage.length, 1, 'an in-flight intent retains its durable identity')
 })

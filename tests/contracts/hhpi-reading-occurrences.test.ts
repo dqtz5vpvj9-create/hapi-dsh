@@ -1,3 +1,4 @@
+import type { RemoteSourceSession } from '../../src/client/remote-sessions.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRequire } from 'node:module'
@@ -45,6 +46,7 @@ test('all official readers and input shells use exact independent occurrences of
   const pending = a.binding.session.beginSubmission({ text: 'Native target A', attachments: [], mode: 'queue' })
   const outcome = await a.binding.session.prompt([{ type: 'text', text: 'Native target A' }], 'queue', undefined, pending.requestId)
   assert.equal(outcome.ok, true)
+  await f.dispatched
   assert.equal(f.writes.length, 1); assert.equal(f.writes[0]!.sessionId, f.canonical.sessionId)
   const oldScope = a.binding.ctx, oldSession = a.binding.session
   a.reference.release()
@@ -80,6 +82,7 @@ test('a released real Pane forwards only its already saved submission after Conv
   assert.equal(f.writes.length, 0, 'saving an intent does not dispatch before prompt confirms preparation')
   const outcome = await face.prompt([{ type: 'text', text: 'Saved before the Pane closes' }], 'queue', lifetime.signal, pending.requestId)
   assert.equal(outcome.ok, true)
+  await f.dispatched
   assert.equal(f.writes.length, 1); assert.equal(f.writes[0]!.operationId, pending.requestId)
   assert.throws(() => face.beginSubmission({ text: 'New work after release', attachments: [], mode: 'queue' }), /released/)
   await assert.rejects(face.prompt([{ type: 'text', text: 'Unadmitted work' }], 'queue'), /released/)
@@ -125,4 +128,26 @@ test('official Chat persists semantic positions per stable Pane and rejects late
   const replacement = new SourceReadingCache({ ...access, scope: 'another-authenticated-account' })
   try { assert.equal(replacement.readPosition(f.canonical.sessionId, 'pane-a'), null, 'retired bindings cannot write across authenticated storage scopes') }
   finally { replacement.dispose() }
+})
+
+
+test('a durably admitted steer survives Pane release and accepted RPC still waits for native history', { timeout: 15000 }, async t => {
+  const f = await fixture(t), pane = await f.open('steer-admission'), owner = f.canonical.binding.session as RemoteSourceSession
+  const observed = Promise.withResolvers<void>()
+  const stop = owner.metadata.subscribe(() => { if (owner.metadata.getSnapshot().activeTurnId === 'original-turn') observed.resolve() })
+  f.index.edit({ ...f.index.session, status: 'running', activeTurnId: 'original-turn' }, () => {})
+  await observed.promise; stop()
+  const pending = pane.binding.session.beginSubmission({ text: 'Original steering intent', attachments: [], mode: 'steer' })
+  assert.equal(pending.admitted, true)
+  pane.reference.release()
+  const outcome = await pane.binding.session.prompt([{ type: 'text', text: 'Original steering intent' }], 'steer', undefined, pending.requestId)
+  assert.equal(outcome.ok, true)
+  await f.dispatched
+  assert.equal(f.writes.length, 1)
+  assert.equal(f.writes[0]!.kind, 'steer'); assert.equal(f.writes[0]!.turnId, 'original-turn')
+  assert.equal(f.writes[0]!.operationId, pending.requestId)
+  const accepted = Promise.withResolvers<void>()
+  const check = () => { if (owner.deliveries.getSnapshot().some(value => value.receipt?.status === 'accepted')) accepted.resolve() }
+  const stopDelivery = owner.deliveries.subscribe(check); check(); await accepted.promise; stopDelivery()
+  assert.equal(owner.getSnapshot().pendingSubmissions.length, 1, 'accepted steering is not evidence that the native user message was observed')
 })

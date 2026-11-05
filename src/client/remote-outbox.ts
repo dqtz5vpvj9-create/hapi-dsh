@@ -186,7 +186,7 @@ export class RemoteOutbox {
         if (entry && fingerprint(entry.operation) !== fingerprint(operation)) { stop(); reject(new Error('The original operation identity already belongs to different arguments.')); return }
         if (entry?.receipt) { stop(); resolve(entry.receipt) }
         else if (!entry) { stop(); reject(new Error('The saved operation is no longer available.')) }
-        else if (entry.state === 'confirming') {
+        else if (entry.state === 'confirming' || entry.operation.kind !== 'send' && entry.state === 'queued' && this.staged.has(entry.operation.operationId)) {
           stop(); resolve({ operationId: operation.operationId, sessionId: operation.sessionId,
             status: 'indeterminate', message: entry.message })
         }
@@ -197,6 +197,8 @@ export class RemoteOutbox {
   }
   start(operationId: string): void {
     if (!this.entries.has(operationId)) throw new Error('The saved submission is no longer available.')
+    const entry = this.entries.get(operationId)!
+    if (entry.operation.kind !== 'send' && entry.attempts === 0 && !this.maySend(entry)) { this.publish(); return }
     this.staged.delete(operationId)
     this.kick()
   }
@@ -209,11 +211,12 @@ export class RemoteOutbox {
   /** Explicitly abandoning preparation may only remove work that has never left this device. */
   abandon(operationId: string): void {
     const entry = this.entries.get(operationId)
-    if (entry?.state === 'queued' && entry.attempts === 0) this.remove(operationId, false)
+    if (entry?.state === 'queued' && entry.attempts === 0) this.retireConditional(entry, value => value.attempts === 0)
   }
   discard(operationId: string): void {
     const entry = this.entries.get(operationId)
-    if (entry?.state === 'rejected') this.remove(operationId, false)
+    if (entry?.state === 'queued' && entry.operation.kind !== 'send' && entry.attempts === 0) { this.abandon(operationId); return }
+    if (entry?.state === 'rejected') this.retireConditional(entry, value => value.state === 'rejected' && value.receipt?.retryable !== true)
   }
   /** Only accepted source history is evidence that the transcript owns this echo. */
   observe(sessionId: string, entries: readonly SourceEntry[]): void {
@@ -248,6 +251,21 @@ export class RemoteOutbox {
     void this.ledger?.transition(id, () => null, () => { if (access && key) access.storage.removeItem(key) }).catch(() => {})
     this.entries.delete(id); this.staged.delete(id); this.publish()
     for (const listener of this.retireListeners) listener(id, observed)
+  }
+  private retireConditional(entry: StoredDelivery, eligible: (value: StoredDelivery) => boolean): void {
+    const generation = this.generation, access = this.access!, key = this.key(entry.operation.operationId)
+    void this.ledger!.transition(entry.operation.operationId, (value, terminal) => {
+      if (terminal) return null
+      const current = decode(value) ?? entry
+      return eligible(current) ? null : JSON.stringify(current)
+    }, value => { if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value) }).then(value => {
+      if (generation !== this.generation || this.disposed) return
+      if (value === null) {
+        this.entries.delete(entry.operation.operationId); this.staged.delete(entry.operation.operationId)
+        for (const listener of this.retireListeners) listener(entry.operation.operationId, false)
+      } else this.entries.set(entry.operation.operationId, decode(value)!)
+      this.publish()
+    }).catch(() => { /* Failed storage cannot prove that an admitted intent was abandoned. */ })
   }
   private publish(): void {
     const sessions = new Set([...this.snapshots.keys(), ...this.listeners.keys(), ...[...this.entries.values()].map(value => value.operation.sessionId)])

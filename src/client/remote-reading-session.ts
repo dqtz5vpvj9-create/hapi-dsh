@@ -169,7 +169,7 @@ export class RemotePaneSession implements SessionFace {
   async prompt(...args: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
     // Conversation yields a paint after durable admission. Releasing this
     // presentation during that yield must not strand an already saved click.
-    if (args[1] !== 'queue' || !this.owner.ownsSavedSubmission(args[3])) this.assertLive()
+    if (!this.owner.ownsSavedSubmission(args[3], args[1])) this.assertLive()
     return this.owner.prompt(...args)
   }
   async cancel(...args: Parameters<SessionFace['cancel']>): ReturnType<SessionFace['cancel']> {

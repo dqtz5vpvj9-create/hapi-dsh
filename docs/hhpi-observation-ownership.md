@@ -25,7 +25,7 @@ flowchart LR
 
 WorkScope 负责跨 await 的提交资格。RemoteRecovery 合并同一恢复目标，并在旧任务结束或失败后追赶最新 epoch/generation；旧错误不能终结新恢复。Pane 的导航和官方阅读提交仍有各自资格检查。
 
-RemoteOutbox 现在保存 send、steer、cancel 和 approve 的不可变身份与原目标。同步 localStorage 日志满足官方输入的同步保存契约；派发前必须完成 IndexedDB readwrite 事务认领。已有 v1 send 在第一次认领时导入。发送前记录“可能派发”，重载后查询原 ID。receipt=null 和传输失败都不能授权重发；只有明确 retryable=true，且原目标仍有效，才允许继续同 ID 的请求。只读回执查询不受原目标已经结束的影响。控制请求不会离线自动派发到替代 turn；重载前尚未派发的控制需显式继续。
+RemoteOutbox 现在保存 send、steer、cancel 和 approve 的不可变身份与原目标。同步 localStorage 日志满足官方输入的同步保存契约；派发前必须完成 IndexedDB readwrite 事务认领。已有 v1 send 在第一次认领时导入。发送前记录“可能派发”，重载后查询原 ID。receipt=null 和传输失败都不能授权重发；只有明确 retryable=true，且原目标仍有效，才允许继续同 ID 的请求。只读回执查询不受原目标已经结束的影响。控制请求不会离线自动派发到替代 turn；重载前尚未派发的控制需显式继续。鉴权或连接尚未恢复时，已保存控制也不能因目录回来就自动派发；放弃准备通过同一事务核对 attempts，不能撤销另一个标签页已经认领的请求。官方 Conversation 在持久接纳后等待 paint 时，已接纳的 queue/steer 均可在原 Pane 释放后完成原意图，不能生成新的目标或身份。
 
 accepted、原 owner 的精确 durable admission、原生正文观察是不同证据。前者保留待确认回显；owner admission 的移交记录仍可查看原文，并明确不表示执行完成；只有接纳历史中的精确 rpcId 才完成原生回显对账。控制回执使用控制状态文案，不等待不存在的 user/message。控制 ID 从 session/kind/target 完整三元组派生：原生目标 ID 只在会话内唯一，而完整拼接可能超过现有 operationId 的 256 字符限制，因此派生为固定长度主键；这不是新增内容校验。
 

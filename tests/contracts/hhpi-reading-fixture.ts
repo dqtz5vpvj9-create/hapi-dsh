@@ -1,3 +1,4 @@
+import { memoryOperations } from '../fixtures/operation-transactions.ts'
 /** Installed production Session/Renderer/Conversation/Input/Chat contracts.
  * Only source RPC, settings, locale and unused workspace/file services are fixtures.
  * No production reading, assembly, input shell or scope provider is replaced. */
@@ -83,6 +84,7 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
     restored.push(() => { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) })
   }
   const ctx = new Context(), index = new SourceEventIndex(':memory:', sourceMetadata), calls: unknown[] = [], writes: SourceOperation[] = []
+  const dispatched = Promise.withResolvers<void>()
   index.edit(sourceMetadata, () => { for (let i = 1; i <= 1440; ++i) index.put(`item-${i}`, message(i)) })
   const { RemoteSessions, SourceSessions } = await facadeClasses()
   const controllerRoot = resolve(require.resolve('@deepseek-ai/dsh-api-session-controller/package.json'), '..')
@@ -103,8 +105,8 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
     catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, storageScope: 'synthetic-reading', sessions: [sourceMetadata], sources: [] } }),
     read: async request => { calls.push(request); return { ok: true, value: index.read(request) } },
     changes: (request, signal) => index.changes(request, signal),
-    operate: async operation => { writes.push(operation); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Accepted at synthetic wire boundary' } } },
-  } as HhpiRemoteApi, { storage: dom.window.localStorage, scope: 'synthetic-reading' })
+    operate: async operation => { writes.push(operation); dispatched.resolve(); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Accepted at synthetic wire boundary' } } },
+  } as HhpiRemoteApi, { storage: dom.window.localStorage, scope: 'synthetic-reading' }, memoryOperations)
   const sessions = new SourceSessions(remote), references: SessionReference[] = []
   t.after(async () => {
     for (const reference of references.reverse()) reference.release()
@@ -157,5 +159,5 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
       return [...(data.content ?? []), ...(data.blocks ?? [])].flatMap(block => typeof block.text === 'string' ? [block.text] : [])
     })
   }
-  return { ctx, sessions, remote, canonical, calls, writes, open, body, index, dom, officialPlugin: official }
+  return { ctx, sessions, remote, canonical, calls, writes, dispatched: dispatched.promise, open, body, index, dom, officialPlugin: official }
 }

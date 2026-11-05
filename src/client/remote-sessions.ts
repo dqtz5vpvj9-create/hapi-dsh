@@ -18,6 +18,7 @@ import { decodeSourceAttachmentValue } from '../source-attachment-types.ts'
 import { SourceReadingCache, type SourceReadingStorage } from './remote-reading-cache.ts'
 import { installRemoteReadingMemory } from './remote-reading-memory.ts'
 import { browserSourceStorage } from './remote-storage.ts'
+import type { OperationTransactions } from './remote-operation-ledger.ts'
 import { RemoteOutbox, type SourceDeliveryStore } from './remote-outbox.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
@@ -110,8 +111,9 @@ export class RemoteSourceSession implements SessionFace {
     } catch (cause) { this.controlStatus.set(cause instanceof Error ? cause.message : 'The original request cannot be resumed.') }
   }
   discardSubmission(operationId: string): void { this.outbox?.discard(operationId) }
-  ownsSavedSubmission(operationId: string | undefined): boolean {
-    return operationId !== undefined && this.outbox?.get(operationId)?.operation.sessionId === this.sessionId
+  ownsSavedSubmission(operationId: string | undefined, mode: Parameters<SessionFace['prompt']>[1] = 'queue'): boolean {
+    const saved = operationId === undefined ? undefined : this.outbox?.get(operationId)
+    return saved?.operation.sessionId === this.sessionId && saved.operation.kind === (mode === 'steer' ? 'steer' : 'send')
   }
   update(session: SourceSession): void {
     if (this.disposed) return
@@ -344,7 +346,7 @@ export class RemoteSessions implements ISessions {
   private readonly capabilityState: Value<HhpiCatalogCapability>
   legacyHapi = false
 
-  constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi, readingStorage?: SourceReadingStorage) {
+  constructor(private readonly ctx: Context, private readonly original: ISessions, readonly api: HhpiRemoteApi, readingStorage?: SourceReadingStorage, createOperations?: (access: SourceReadingStorage) => OperationTransactions) {
     this.outbox = new RemoteOutbox(async operation => result(await this.api.operate(operation)),
       this.api.receipt ? async operation => result(await this.api.receipt!(operation)) : undefined,
       async (operation, receipt) => {
@@ -357,7 +359,7 @@ export class RemoteSessions implements ISessions {
         if (page.session.id !== operation.sessionId) throw sourceError('The source returned another session while confirming delivery.', true)
         if (receipt.observed && page.epoch !== receipt.observed.epoch) return []
         return page.entries
-      })
+      }, createOperations)
     if (original.historySource) this.historySource = original.historySource
     if (original.windowCommit) this.windowCommit = original.windowCommit
     this.capabilityState = new Value({ catalogReady: false, legacyHapi: false })

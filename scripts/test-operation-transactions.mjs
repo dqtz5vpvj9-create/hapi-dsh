@@ -24,7 +24,7 @@ try {
     window.session = { id: 'hhpi:machine:source:codex:thread', status: 'running', activeTurnId: 'original', pendingRequests: [], capabilities: { send: true, steer: true, cancel: true, approve: true, files: false } }
     window.operation = { sessionId: session.id, operationId: 'native-idb-race', kind: 'steer', turnId: 'original', text: 'Synthetic intent' }
     window.outbox = new Operations.RemoteOutbox(async request => { calls++; return new Promise(resolve => { window.ack = () => resolve({ ...request, status: 'accepted', message: 'Synthetic ACK' }) }) })
-    outbox.setStorage({ storage: localStorage, scope: 'synthetic-idb' }); outbox.enqueue(operation); outbox.start(operation.operationId); outbox.acceptCatalog([session])
+    outbox.setStorage({ storage: localStorage, scope: 'synthetic-idb' }); outbox.acceptCatalog([session]); outbox.enqueue(operation); outbox.start(operation.operationId)
   })
   await a.waitForFunction(() => calls === 1)
   const fixture = await a.evaluate(() => ({ session, operation }))

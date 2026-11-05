@@ -42,6 +42,7 @@ export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSour
     : <p key={delivery.operation.operationId} role={delivery.state === 'rejected' ? 'alert' : 'status'} data-hhpi-delivery={delivery.state}>
     {deliveryLabel(delivery, zh)}
     {delivery.operation.kind !== 'send' && delivery.state === 'queued' && session.retrySubmission && <button type="button" onClick={() => { session.retrySubmission?.(delivery.operation.operationId) }}>{zh ? '继续原请求' : 'Resume original request'}</button>}
+    {delivery.operation.kind !== 'send' && delivery.state === 'queued' && <button type="button" onClick={() => { session.discardSubmission(delivery.operation.operationId) }}>{zh ? '放弃未发送请求' : 'Abandon unsent request'}</button>}
     {delivery.state === 'rejected' && <> · “{delivery.operation.text?.slice(0, 40)}{(delivery.operation.text?.length ?? 0) > 40 ? '…' : ''}” · {delivery.message} <button type="button" onClick={() => { session.discardSubmission(delivery.operation.operationId) }}>{zh ? '移除' : 'Dismiss'}</button></>}
   </p>)}</div>
 }
