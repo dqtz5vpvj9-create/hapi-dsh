@@ -218,11 +218,29 @@ export function syntheticWorkspace(sessionId) {
 export function installObserver({ sessionId, allowedReadStreams, profile = false }) {
   const state = window.__hhpiSmoke = { sessionId, blocked: 0, isolatedWorkspace: 0, isolatedReadState: 0,
     isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], monitor: false, lastFrame: null };
-  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {};
+  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {}; state.mutationReads = [];
   if (profile && typeof HTMLElement === 'function') {
+    const pendingMutations = [], seenRows = new WeakSet();
+    const mutationObserver = new MutationObserver(records => pendingMutations.push(...records));
+    const observeMutations = () => mutationObserver.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
+    if (document.documentElement) observeMutations();
+    else document.addEventListener('DOMContentLoaded', observeMutations, { once: true });
     for (const method of ['getClientRects', 'getBoundingClientRect']) {
       const original = HTMLElement.prototype[method];
       HTMLElement.prototype[method] = function(...args) {
+        if (method === 'getClientRects' && this.hasAttribute('data-chat-virtual-rows')) {
+          const records = pendingMutations.splice(0).concat(mutationObserver.takeRecords()), counts = {};
+          for (const record of records) {
+            const target = record.target instanceof Element ? record.target : record.target.parentElement;
+            if (!target || !this.contains(target)) continue;
+            const key = record.type === 'attributes' ? `attribute:${record.attributeName}` : record.type;
+            counts[key] = (counts[key] ?? 0) + 1;
+          }
+          const rows = [...this.querySelectorAll('[data-chat-virtual-row]')];
+          const fresh = rows.filter(row => !seenRows.has(row)).length;
+          for (const row of rows) seenRows.add(row);
+          state.mutationReads.push({ at: performance.now(), phase: state.phase, rows: rows.length, fresh, counts });
+        }
         const started = performance.now(), value = original.apply(this, args), duration = performance.now() - started;
         const kind = this.hasAttribute('data-chat-virtual-rows') ? 'virtual-list' : this.hasAttribute('data-chat-virtual-row') ? 'virtual-row' : this.hasAttribute('data-conversation-scroll') ? 'scrollport' : this.hasAttribute('data-chat-anchor-key') ? 'anchor' : 'other';
         const key = `${method}:${kind}`, record = state.nativeReads[key] ??= { count: 0, total: 0, max: 0 };
@@ -573,6 +591,10 @@ async function runScenario(browser, config, name) {
       let sourceRequest; try { sourceRequest = request.postDataJSON()?.payload?.args?.request; } catch {}
       if (sourceRequest?.sessionId !== config.sessionId) { blocked('hhpi/read'); return; }
       result.targetReads++;
+      result.sourceReads ??= [];
+      result.sourceReads.push({ ordinal: result.targetReads, phase: result.step,
+        before: sourceRequest.before ?? null, after: sourceRequest.after ?? null,
+        around: sourceRequest.around ?? null, limit: sourceRequest.limit ?? null });
     });
     page.on('requestfailed', request => {
       if (new URL(request.url()).pathname.endsWith('/api/hhpi/read')) {
@@ -756,9 +778,6 @@ async function runScenario(browser, config, name) {
     const corrections = await page.evaluate(() => window.__hhpiSmoke.layoutCommits);
     result.layoutCommits = corrections;
     if (corrections.length < config.pages || corrections.some(item => !item.done || !item.retained || item.delta === null || Math.abs(item.delta) > 2)) fail('reading-anchor-publication-jump');
-    const maxFrameGap = await awaiting('read-frame-gap-verdict', page.evaluate(() => Math.max(0, ...window.__hhpiSmoke.frameGaps)));
-    result.maxFrameGapMs = Math.round(maxFrameGap);
-    const frameHitch = maxFrameGap > 80;
     if (result.legacyHistoryStreams) fail('legacy-source-history-path-used');
     if (result.changesErrors) fail('hhpi-change-stream-failed');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
@@ -772,14 +791,36 @@ async function runScenario(browser, config, name) {
       const scroll = pane?.querySelector('[data-conversation-scroll]');
       return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
     }, config.sessionId, { timeout: 5_000 }));
-    const readCount = result.targetReads, latestRows = await readRows('read-latest-position');
-    for (let index = 0; index < 3; index++) await moveEarlier(`cached-tail-gesture-${index + 1}`);
-    const residentRows = await readRows('read-resident-tail-after-scroll');
-    const cachedEarlier = allSourceMatches(residentRows.rows.filter(row => row.visible)).some(item => item.seq < latestSeq);
-    result.cachedTailReadDelta = result.targetReads - readCount;
-    result.cachedTailMovedPx = Math.round(latestRows.top - residentRows.top);
-    if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
-    if (result.cachedTailMovedPx < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
+    const readCount = result.targetReads;
+    result.cachedTailCycles = [];
+    // Check three complete returns to the same resident tail. Three cumulative
+    // inertial swipes can cross the loaded head and correctly fetch a new page;
+    // that is a pagination exercise, not a cache-hit exercise.
+    for (let index = 0; index < 3; index++) {
+      if (index > 0) {
+        await awaiting(`cached-tail-${index + 1}-return-latest`, latest.click());
+        await awaiting(`cached-tail-${index + 1}-wait-latest`, page.waitForFunction(sessionId => {
+          const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
+          const scroll = pane?.querySelector('[data-conversation-scroll]');
+          return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
+        }, config.sessionId, { timeout: 5_000 }));
+      }
+      const latestRows = await readRows(`read-latest-position-${index + 1}`);
+      await moveEarlier(`cached-tail-gesture-${index + 1}`);
+      const residentRows = await readRows(`read-resident-tail-after-scroll-${index + 1}`);
+      const cachedEarlier = allSourceMatches(residentRows.rows.filter(row => row.visible)).some(item => item.seq < latestSeq);
+      const moved = Math.round(latestRows.top - residentRows.top);
+      result.cachedTailReadDelta = result.targetReads - readCount;
+      result.cachedTailMovedPx = moved;
+      result.cachedTailCycles.push({ movedPx: moved, sourceReadDelta: result.cachedTailReadDelta, earlierBodyVisible: cachedEarlier });
+      if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
+      if (moved < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
+    }
+    const maxFrameGap = await awaiting('read-frame-gap-verdict', page.evaluate(() => {
+      const state = window.__hhpiSmoke; state.monitor = false; return Math.max(0, ...state.frameGaps);
+    }));
+    result.maxFrameGapMs = Math.round(maxFrameGap);
+    const frameHitch = maxFrameGap > 80;
     if (legacyResource) {
       await awaiting('select-preserved-legacy-reference', page.locator('.hapi-window-tabs').getByRole('tab').nth(1).click());
       if (migratedSource) {
@@ -809,7 +850,11 @@ async function runScenario(browser, config, name) {
     result.error = timedOut ? 'scenario-budget-exhausted' : error.smokeCode ?? (error.name === 'TimeoutError' ? 'step-timeout' : 'interaction-failed');
   } finally {
     clearTimeout(deadline);
-    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [], nativeReads: window.__hhpiSmoke?.nativeReads ?? {} })).catch(() => null);
+    if (page && !page.isClosed()) {
+      const gap = await page.evaluate(() => { const state = window.__hhpiSmoke; if (!state) return 0; state.monitor = false; return Math.max(0, ...state.frameGaps); }).catch(() => 0);
+      result.maxFrameGapMs = Math.max(result.maxFrameGapMs ?? 0, Math.round(gap));
+    }
+    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [], nativeReads: window.__hhpiSmoke?.nativeReads ?? {}, mutationReads: window.__hhpiSmoke?.mutationReads ?? [] })).catch(() => null);
     if (traceCompletion) {
       let traceDeadline;
       const saveTrace = async () => {

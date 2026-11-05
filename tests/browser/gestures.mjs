@@ -20,15 +20,15 @@ export async function createGestures(page, context, mobile, result) {
   async function frames(count) {
     await page.evaluate(async count => { for (let i = 0; i < count; i++) await new Promise(requestAnimationFrame) }, count)
   }
-  async function settle() {
-    await page.evaluate(async () => {
+  async function settle(budgetMs = 3000) {
+    await page.evaluate(async budgetMs => {
       const scrollport = document.querySelector('[data-lab-pane="a"] [data-conversation-scroll]')
       const tracker = window.__labScrollTracker
       // Stable RAF samples can precede touch momentum or post-commit anchoring.
       // Wait for the browser's scrollend signal and a quiet interval without changing input.
       const startedAt = performance.now()
       let lastActivityAt = startedAt, priorTop = scrollport.scrollTop, priorScrolls = tracker.scrolls, stableFrames = 0
-      while (performance.now() - startedAt < 3000) {
+      while (performance.now() - startedAt < budgetMs) {
         await new Promise(requestAnimationFrame)
         const now = performance.now(), top = scrollport.scrollTop, busy = window.__hhpi.snapshot().a.busy
         if (top !== priorTop || tracker.scrolls !== priorScrolls || busy) {
@@ -40,9 +40,10 @@ export async function createGestures(page, context, mobile, result) {
         priorTop = top
         priorScrolls = tracker.scrolls
       }
-      throw new Error(`Real scroll/layout did not settle within 3000ms (scrolls=${tracker.scrolls}, ended=${tracker.ended}, top=${scrollport.scrollTop})`)
-    })
+      throw new Error(`Real scroll/layout did not settle within ${budgetMs}ms (scrolls=${tracker.scrolls}, ended=${tracker.ended}, top=${scrollport.scrollTop})`)
+    }, budgetMs)
   }
+  const boundaryDistance = 550
   async function scroll(delta, boundaryCrossing = false) {
     const box = await port.boundingBox()
     assert.ok(box && box.height > 100 && box.width > 100, 'official scrollport must have real geometry')
@@ -51,13 +52,24 @@ export async function createGestures(page, context, mobile, result) {
       const distance = Math.abs(delta)
       assert.ok(distance <= box.height - 220, 'one touch gesture must remain inside its scrollport')
       const y = box.y + (delta < 0 ? 80 : box.height - 140)
+      let approachProgress
+      if (boundaryCrossing) {
+        const start = await port.evaluate(element => ({ top: element.scrollTop, runway: Math.min(element.clientHeight, 600) }))
+        assert.ok(start.top > start.runway && start.top < start.runway + distance,
+          'actual touch start must allow the final contact to cross the source boundary')
+        // Spend only half the actual clearance on the first contact. The
+        // original full gesture still crosses the boundary on its final move.
+        approachProgress = (start.top - start.runway) / (2 * distance)
+        result.boundaryContacts ??= []
+        result.boundaryContacts.push({ startTop: start.top, runway: start.runway, distance, approachProgress })
+      }
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y, id: 1 }] })
       try {
         // The anchor test isolates a prepend from intentional finger movement:
         // approach outside the load runway, cross it with the final contact,
         // then hold the contact still through the commit. Cached traversal
         // below retains its twelve frame-paced moves. No geometry is replaced.
-        const positions = boundaryCrossing ? [0.45, 1] : Array.from({ length: 12 }, (_, i) => (i + 1) / 12)
+        const positions = boundaryCrossing ? [approachProgress, 1] : Array.from({ length: 12 }, (_, i) => (i + 1) / 12)
         for (const progress of positions) {
           await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y - delta * progress, id: 1 }] })
           await frames(boundaryCrossing ? 3 : 1)
@@ -82,8 +94,30 @@ export async function createGestures(page, context, mobile, result) {
     // This setup moves only within accepted content; it is not evidence of a
     // touch traversal through all 160 rows. Browser input crosses the boundary.
     if (mobile) {
-      await port.evaluate(element => element.scrollTo({ top: 900, behavior: 'instant' }))
-      await settle()
+      const geometry = await port.evaluate(element => ({ runway: Math.min(element.clientHeight, 600), top: element.scrollTop }))
+      const minimum = geometry.runway
+      const maximum = geometry.runway + boundaryDistance
+      const target = (minimum + maximum) / 2
+      let requested = target, positioned = false
+      const started = performance.now()
+      // Native positioning may mount unmeasured rows; the official viewport
+      // then preserves their semantic seat as real heights arrive. Validate
+      // the settled numeric position instead of assuming scrollTo kept it.
+      for (let attempt = 0; attempt < 3 && performance.now() - started < 3000; attempt++) {
+        await port.evaluate((element, top) => element.scrollTo({ top, behavior: 'instant' }), requested)
+        await settle(Math.max(0, 3000 - (performance.now() - started)))
+        const actual = await port.evaluate(element => element.scrollTop)
+        const rows = await page.evaluate(() => window.__hhpi.snapshot().a.rows)
+        result.boundarySetups ??= []
+        result.boundarySetups.push({ requested, actual, minimum, maximum, rows })
+        assert.equal(rows, before, 'loaded-window positioning must not page the source')
+        if (actual > minimum && actual < maximum) { positioned = true; break }
+        // The first positioning pass can discover real row heights. Once
+        // that one-time correction finishes, target the same accepted-content
+        // coordinate again; do not add the old correction to a new request.
+        requested = target
+      }
+      assert.ok(positioned, 'settled native positioning must start outside and within one full contact of the source boundary')
     } else {
       const top = await port.evaluate(element => element.scrollTop)
       await scroll(900 - top)
@@ -91,7 +125,7 @@ export async function createGestures(page, context, mobile, result) {
     assert.equal(await page.evaluate(() => window.__hhpi.snapshot().a.rows), before, 'loaded-window positioning must not page the source')
     result.positioning = mobile ? 'native scrollTo inside accepted window; trusted touch crosses each boundary' : 'trusted wheel through accepted window and boundary'
     result.anchorProtocol = mobile ? 'final touch contact crosses runway; stationary contact through official commit' : 'completed wheel displacement followed by official commit'
-    await scroll(-550, mobile)
+    await scroll(-boundaryDistance, mobile)
   }
   return { settle, scroll, boundary, inputs: () => page.evaluate(() => window.__labInputs) }
 }

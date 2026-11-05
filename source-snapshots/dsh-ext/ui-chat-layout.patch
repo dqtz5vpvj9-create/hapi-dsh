@@ -1,6 +1,27 @@
 --- a/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
 +++ b/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
-@@ -101,6 +101,23 @@
+@@ -33,17 +33,19 @@
+ }
+ 
+ /** Publish viewport-owned scroll landings before the browser's scroll event arrives. */
+-function createProgrammaticScrollObserver() {
++function createProgrammaticScrollObserver(onLanding: () => void) {
+   let activeInstance: Parameters<OffsetObserver>[0] | null = null
+   let activeRect: object | null = null
+   let publishLanding: ((offset: number) => void) | null = null
+   const observeOffset: OffsetObserver = (instance, callback) => {
+     let latestOffset: number | undefined
+     const publish = (offset: number, scrolling: boolean) => {
++      if (latestOffset !== undefined && offset !== latestOffset) onLanding()
+       latestOffset = offset
+       callback(offset, scrolling)
+     }
+     const landing = (offset: number) => {
++      onLanding()
+       if (offset !== latestOffset) publish(offset, false)
+     }
+     activeInstance = instance
+@@ -101,6 +103,23 @@
    const layoutRevision = useRef(0)
    const pendingLayout = useRef<{ changed: boolean; revision: number } | null>(null)
  
@@ -24,7 +45,49 @@
    const rowsRef = useRef(rows)
    rowsRef.current = rows
    const indexes = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows])
-@@ -144,16 +161,15 @@
+@@ -119,7 +138,23 @@
+   const [retainedKeys, setRetainedKeys] = useState<ReadonlySet<string>>(() => new Set())
+   const [scrollMargin, setScrollMargin] = useState(0)
+   const measuredLayout = useRef(false)
+-  const [scrollObserver] = useState(createProgrammaticScrollObserver)
++  const previousRows = useRef(rows)
++  const mountedKeys = useRef<readonly string[]>([])
++  const prependRange = useRef<readonly string[] | null>(null)
++  if (previousRows.current !== rows) {
++    const previousIndexes = new Map(previousRows.current.map((row, index) => [row.key, index]))
++    const first = mountedKeys.current[0]
++    const oldIndex = first === undefined ? undefined : previousIndexes.get(first)
++    const newIndex = first === undefined ? undefined : indexes.get(first)
++    const shift = oldIndex === undefined || newIndex === undefined ? 0 : newIndex - oldIndex
++    if (readingKey !== null && destinationKey === null && !virtualization.isNavigating?.() && shift > 0 && mountedKeys.current.every(key => {
++      const before = previousIndexes.get(key), after = indexes.get(key)
++      return before !== undefined && after !== undefined && after - before === shift
++    })) prependRange.current = mountedKeys.current
++    else if (prependRange.current?.some(key => !indexes.has(key))) prependRange.current = null
++    previousRows.current = rows
++  }
++  const [scrollObserver] = useState(() => createProgrammaticScrollObserver(() => { prependRange.current = null }))
+   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+     enabled: true,
+     count: rows.length,
+@@ -134,7 +169,15 @@
+       const pinned = [readingKey, destinationKey, focusedKey, ...retainedKeys]
+         .map(key => key === null ? undefined : indexes.get(key))
+         .filter((index): index is number => index !== undefined)
+-      return [...new Set([...defaultRangeExtractor(range), ...pinned])].sort((a, b) => a - b)
++      // Before the official viewport restores its semantic anchor, the old
++      // scrollTop belongs to the previous source coordinates. Keep the actual
++      // mounted seats instead of mounting an unrelated estimated range first.
++      // The viewport's programmatic landing (or a native scroll) releases this
++      // range through the same offset observer used by the virtualizer.
++      const retained = destinationKey === null ? prependRange.current : null
++      const visible = retained === null ? defaultRangeExtractor(range)
++        : retained.map(key => indexes.get(key)).filter((index): index is number => index !== undefined)
++      return [...new Set([...visible, ...pinned])].sort((a, b) => a - b)
+     }, [destinationKey, focusedKey, indexes, readingKey, retainedKeys]),
+     measureElement: (element, entry, instance) => {
+       // Refs run while React is still committing sibling rows. The parent
+@@ -144,16 +187,15 @@
          return instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? instance.options.estimateSize(index)
        }
  
@@ -50,7 +113,15 @@
        if (instance.itemSizeCache.get(key) !== size) layoutRevision.current++
        return size
      },
-@@ -200,12 +216,37 @@
+@@ -168,6 +210,7 @@
+     contains: rowKey => indexesRef.current.has(rowKey),
+     reveal: rowKey => {
+       if (!indexesRef.current.has(rowKey)) return false
++      prependRange.current = null
+       setDestinationKey(rowKey)
+       return true
+     },
+@@ -200,32 +243,75 @@
  
    const listRef = useRef<HTMLDivElement | null>(null)
    useLayoutEffect(() => {
@@ -92,8 +163,9 @@
 +  }, [scrollElement])
  
    const virtualItems = virtualizer.getVirtualItems()
++  mountedKeys.current = virtualItems.map(item => String(item.key))
    const geometry = virtualItems.map(row => `${row.key}:${row.start}:${row.size}`).join('|')
-@@ -213,19 +254,36 @@
+   const reported = useRef('')
    useLayoutEffect(() => {
      const list = listRef.current
      measuredLayout.current = false
@@ -189,7 +261,7 @@
    const virtualization: ChatFlowVirtualization = {
      getScrollElement: () => scroller,
      savedAnchorKey: null,
-@@ -91,13 +95,81 @@
+@@ -91,13 +95,108 @@
      beforeLayout: () => {},
      afterLayout: () => {},
    }
@@ -217,6 +289,33 @@
 +  act(() => { rerender(<VirtualChatRows rows={[...rebound]} virtualization={virtualization} />) })
 +  expect(rowReads).toBe(0)
 +  expect(listReads).toBe(0)
++
++  // A prepend changes source coordinates before the official viewport can
++  // publish its restored landing. Keep the previously mounted keyed seats;
++  // do not build an unrelated range at the old numeric scrollTop first.
++  const mountedBefore = [...container.querySelectorAll<HTMLElement>('[data-chat-virtual-row]')].map(element => element.dataset.chatVirtualKey)
++  const prefix = Array.from({ length: 100 }, (_, index) => ({
++    ...rows[0]!, key: `prefix-${index}`, anchorKeys: [], render: () => <div>earlier {index}</div>,
++  }))
++  act(() => { rerender(<VirtualChatRows rows={[...prefix, ...rebound]} virtualization={virtualization} />) })
++  expect([...container.querySelectorAll<HTMLElement>('[data-chat-virtual-row]')].map(element => element.dataset.chatVirtualKey)).toEqual(mountedBefore)
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++  await act(async () => { fireEvent.scroll(scroller) })
++  expect([...container.querySelectorAll<HTMLElement>('[data-chat-virtual-row]')].map(element => element.dataset.chatVirtualKey)).toEqual(mountedBefore)
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++  // The same official programmatic offset observer releases the retained
++  // range. Newly available earlier neighbours can then enter normally.
++  act(() => { scroller.scrollTop = 9600; api?.observeProgrammaticScroll(9600) })
++  await waitFor(() => expect(container.querySelector('[data-chat-virtual-key="prefix-99"]')).not.toBeNull())
++  act(() => {
++    scroller.scrollTop = 0
++    api?.observeProgrammaticScroll(0)
++    rerender(<VirtualChatRows rows={rebound} virtualization={virtualization} />)
++  })
++  await waitFor(() => expect(container.querySelector('[data-index="0"]')).not.toBeNull())
++  rowReads = 0; listReads = 0
 +
 +  // Real text, child and style changes must be measured before a layout is
 +  // acknowledged, even when ResizeObserver has not delivered a notification.
@@ -375,3 +474,24 @@
      await b.runtime.dispose()
    })
  
+--- a/packages/client/ui-chat/src/client/contract/slots.ts
++++ b/packages/client/ui-chat/src/client/contract/slots.ts
+@@ -212,6 +212,8 @@
+   readonly registerAnchorOwner: (anchorKey: string, rowKey: string) => () => void
+   /** Retain an expanded group so its local disclosure state survives scrolling. */
+   readonly retainRow: (rowKey: string, retained: boolean) => void
++  /** Explicit destination navigation must admit its target as soon as it loads. */
++  readonly isNavigating?: () => boolean
+   /** Reconcile a turn jump after a new virtual range commits. */
+   readonly rowsCommitted: () => void
+   /** Capture the reading seat immediately before React changes the mounted range. */
+--- a/packages/client/ui-chat/src/client/chat/use-chat-scroll.ts
++++ b/packages/client/ui-chat/src/client/chat/use-chat-scroll.ts
+@@ -189,6 +189,7 @@
+       registerRows: rows => viewport.registerVirtualRows(rows),
+       registerAnchorOwner: (anchorKey, rowKey) => viewport.registerAnchorOwner(anchorKey, rowKey),
+       retainRow: (rowKey, retained) => viewport.retainRow(rowKey, retained),
++      isNavigating: () => navigation.navigating,
+       rowsCommitted: () => {
+         if (queued) return
+         queued = true

@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "commit": "3cbba26939072102bb2aef649e02a45e31d123d3",
-  "startedAt": "2026-11-05T09:24:16.961Z",
+  "commit": "0399e24e3e3a915ab109f822e6a509680d58cc1b",
+  "startedAt": "2026-11-05T10:04:48.430Z",
   "status": "passed",
   "scope": "continuous history reading, independent drafts and idle reconnection; native Codex source projection and official component lab; cold 2048-turn native SQLite via production adapter and SessionViewHost; synthetic item RPC and outer shell",
   "geometryMocks": false,
@@ -19,31 +19,31 @@
       "steps": [
         {
           "name": "first usable official view",
-          "ms": 1764
+          "ms": 1884
         },
         {
           "name": "idle update stream closes without failing the mounted readers",
-          "ms": 173
+          "ms": 159
         },
         {
           "name": "browser keyboard, composition and independent drafts",
-          "ms": 446
+          "ms": 373
         },
         {
           "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
-          "ms": 16165
+          "ms": 16102
         },
         {
           "name": "real viewport width change preserves the reading anchor",
-          "ms": 657
+          "ms": 632
         },
         {
           "name": "cached round trip and latest navigation",
-          "ms": 2056
+          "ms": 2031
         },
         {
           "name": "synthetic native submission through official keyboard",
-          "ms": 104
+          "ms": 218
         }
       ],
       "errors": [],
@@ -181,7 +181,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-2197",
+            "key": "13:input-messagemessage-2196",
             "kind": "node",
             "delta": 0
           }
@@ -189,7 +189,7 @@
         {
           "segment": 3,
           "rows": 616,
-          "firstVisible": 2044,
+          "firstVisible": 2043,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -207,7 +207,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-2046",
+            "key": "13:input-messagemessage-2045",
             "kind": "node",
             "delta": 0
           }
@@ -215,7 +215,7 @@
         {
           "segment": 4,
           "rows": 770,
-          "firstVisible": 1893,
+          "firstVisible": 1892,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -233,7 +233,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1895",
+            "key": "13:input-messagemessage-1894",
             "kind": "node",
             "delta": 0
           }
@@ -259,7 +259,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1744",
+            "key": "13:input-messagemessage-1743",
             "kind": "node",
             "delta": 0
           }
@@ -285,7 +285,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1593",
+            "key": "13:input-messagemessage-1592",
             "kind": "node",
             "delta": 0
           }
@@ -293,7 +293,7 @@
         {
           "segment": 7,
           "rows": 1232,
-          "firstVisible": 1440,
+          "firstVisible": 1439,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -311,7 +311,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1442",
+            "key": "13:input-messagemessage-1441",
             "kind": "node",
             "delta": 0
           }
@@ -319,7 +319,7 @@
         {
           "segment": 8,
           "rows": 1386,
-          "firstVisible": 1289,
+          "firstVisible": 1288,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -337,7 +337,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1291",
+            "key": "13:input-messagemessage-1290",
             "kind": "node",
             "delta": 0
           }
@@ -345,7 +345,7 @@
         {
           "segment": 9,
           "rows": 1540,
-          "firstVisible": 1138,
+          "firstVisible": 1137,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -363,7 +363,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1140",
+            "key": "13:input-messagemessage-1139",
             "kind": "node",
             "delta": 0
           }
@@ -397,7 +397,7 @@
         {
           "segment": 11,
           "rows": 1848,
-          "firstVisible": 836,
+          "firstVisible": 835,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -415,7 +415,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-838",
+            "key": "13:input-messagemessage-837",
             "kind": "node",
             "delta": 0
           }
@@ -423,7 +423,7 @@
         {
           "segment": 12,
           "rows": 2002,
-          "firstVisible": 685,
+          "firstVisible": 684,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -441,7 +441,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-687",
+            "key": "13:input-messagemessage-686",
             "kind": "node",
             "delta": 0
           }
@@ -449,7 +449,7 @@
         {
           "segment": 13,
           "rows": 2156,
-          "firstVisible": 534,
+          "firstVisible": 533,
           "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
@@ -467,7 +467,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-536",
+            "key": "13:input-messagemessage-535",
             "kind": "node",
             "delta": 0
           }
@@ -482,42 +482,42 @@
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-2197",
+          "key": "13:input-messagemessage-2196",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-2046",
+          "key": "13:input-messagemessage-2045",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1895",
+          "key": "13:input-messagemessage-1894",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1744",
+          "key": "13:input-messagemessage-1743",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1593",
+          "key": "13:input-messagemessage-1592",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1442",
+          "key": "13:input-messagemessage-1441",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1291",
+          "key": "13:input-messagemessage-1290",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1140",
+          "key": "13:input-messagemessage-1139",
           "kind": "node",
           "delta": 0
         },
@@ -527,17 +527,17 @@
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-838",
+          "key": "13:input-messagemessage-837",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-687",
+          "key": "13:input-messagemessage-686",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-536",
+          "key": "13:input-messagemessage-535",
           "kind": "node",
           "delta": 0
         }
@@ -546,24 +546,24 @@
         "node": 13
       },
       "viewportResizeAnchor": {
-        "key": "13:input-messagemessage-534",
-        "nodeKey": "13:input-messagemessage-534",
-        "bodyId": 534,
+        "key": "13:input-messagemessage-533",
+        "nodeKey": "13:input-messagemessage-533",
+        "bodyId": 533,
         "originalWidth": 1440,
         "height": 900,
         "samples": [
           {
             "width": 1320,
             "delta": 0,
-            "offset": -112
+            "offset": -330
           },
           {
             "width": 1440,
             "delta": 0,
-            "offset": -112
+            "offset": -330
           }
         ],
-        "elapsedMs": 657
+        "elapsedMs": 632
       },
       "finalLayout": {
         "viewport": {
@@ -592,7 +592,7 @@
       "measurements": {
         "a": {
           "rows": 2156,
-          "before": "[\"49ca0c03-b0eb-40e0-baec-d2033c46d0e3\",384]",
+          "before": "[\"d075cd04-08b7-41b0-badd-c2298405189f\",384]",
           "busy": false,
           "phase": "ready",
           "draft": "",
@@ -600,7 +600,7 @@
         },
         "b": {
           "rows": 154,
-          "before": "[\"49ca0c03-b0eb-40e0-baec-d2033c46d0e3\",2464]",
+          "before": "[\"d075cd04-08b7-41b0-badd-c2298405189f\",2464]",
           "busy": false,
           "phase": "ready",
           "draft": "Draft B",
@@ -614,42 +614,42 @@
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-2197",
+            "key": "13:input-messagemessage-2196",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-2046",
+            "key": "13:input-messagemessage-2045",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1895",
+            "key": "13:input-messagemessage-1894",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1744",
+            "key": "13:input-messagemessage-1743",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1593",
+            "key": "13:input-messagemessage-1592",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1442",
+            "key": "13:input-messagemessage-1441",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1291",
+            "key": "13:input-messagemessage-1290",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1140",
+            "key": "13:input-messagemessage-1139",
             "delta": 0,
             "requestDelta": 0
           },
@@ -659,26 +659,26 @@
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-838",
+            "key": "13:input-messagemessage-837",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-687",
+            "key": "13:input-messagemessage-686",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-536",
+            "key": "13:input-messagemessage-535",
             "delta": 0,
             "requestDelta": 0
           }
         ],
         "readingFailures": [],
         "frames": {
-          "samples": 1179,
+          "samples": 1171,
           "p95": 16.799999999999272,
-          "max": 283.30000000000007
+          "max": 300
         }
       },
       "inputs": {
@@ -693,31 +693,31 @@
         "steps": [
           {
             "name": "native source enters the official conversation",
-            "ms": 1029
+            "ms": 1119
           },
           {
             "name": "official command row expands native output",
-            "ms": 496
+            "ms": 516
           },
           {
             "name": "official edit row expands the native diff",
-            "ms": 270
+            "ms": 257
           },
           {
             "name": "oversized native output uses official keyed tool detail with bounded demand reads",
-            "ms": 449
+            "ms": 477
           },
           {
             "name": "native user and tool images use the official gallery",
-            "ms": 367
+            "ms": 374
           },
           {
             "name": "native function output exposes readable text without transport fields",
-            "ms": 283
+            "ms": 220
           },
           {
             "name": "subagent activity stays structured and source-only",
-            "ms": 39
+            "ms": 41
           }
         ],
         "errors": [],
@@ -773,37 +773,37 @@
           "editorHit": true,
           "errors": 0
         },
-        "durationMs": 2965
+        "durationMs": 3052
       },
       "nativeColdOpen": {
         "status": "passed",
         "steps": [
           {
             "name": "unprepared native archive opens read-only history without an all-archive scan",
-            "ms": 970
+            "ms": 1057
           },
           {
             "name": "a second official Pane opens independently from the shared accepted source page",
-            "ms": 79
+            "ms": 97
           },
           {
             "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
-            "ms": 169
+            "ms": 194
           },
           {
             "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
-            "ms": 91
+            "ms": 98
           }
         ],
         "firstNativePaint": {
-          "ms": 151,
+          "ms": 171,
           "nativeTurns": 2048,
           "bodyReads": 7,
           "readonlyBodyVisible": true
         },
-        "durationMs": 1325
+        "durationMs": 1466
       },
-      "durationMs": 25923
+      "durationMs": 26187
     },
     {
       "mode": "mobile",
@@ -812,31 +812,31 @@
       "steps": [
         {
           "name": "first usable official view",
-          "ms": 1383
+          "ms": 1437
         },
         {
           "name": "idle update stream closes without failing the mounted readers",
-          "ms": 173
+          "ms": 155
         },
         {
           "name": "browser keyboard, composition and independent drafts",
-          "ms": 502
+          "ms": 471
         },
         {
           "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
-          "ms": 41024
+          "ms": 27848
         },
         {
           "name": "real viewport width change preserves the reading anchor",
-          "ms": 662
+          "ms": 647
         },
         {
           "name": "cached round trip and latest navigation",
-          "ms": 5699
+          "ms": 5664
         },
         {
           "name": "synthetic native submission through official keyboard",
-          "ms": 114
+          "ms": 99
         }
       ],
       "errors": [],
@@ -930,8 +930,8 @@
         {
           "segment": 1,
           "rows": 308,
-          "firstVisible": 2345,
-          "bodyGestures": 2,
+          "firstVisible": 2346,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -956,8 +956,8 @@
         {
           "segment": 2,
           "rows": 462,
-          "firstVisible": 2194,
-          "bodyGestures": 2,
+          "firstVisible": 2195,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -974,7 +974,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-2197",
+            "key": "13:input-messagemessage-2196",
             "kind": "node",
             "delta": 0
           }
@@ -982,8 +982,8 @@
         {
           "segment": 3,
           "rows": 616,
-          "firstVisible": 2043,
-          "bodyGestures": 2,
+          "firstVisible": 2044,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1000,7 +1000,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-2046",
+            "key": "13:input-messagemessage-2045",
             "kind": "node",
             "delta": 0
           }
@@ -1008,8 +1008,8 @@
         {
           "segment": 4,
           "rows": 770,
-          "firstVisible": 1892,
-          "bodyGestures": 2,
+          "firstVisible": 1893,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1035,7 +1035,7 @@
           "segment": 5,
           "rows": 924,
           "firstVisible": 1742,
-          "bodyGestures": 2,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1060,8 +1060,8 @@
         {
           "segment": 6,
           "rows": 1078,
-          "firstVisible": 1590,
-          "bodyGestures": 2,
+          "firstVisible": 1591,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1078,7 +1078,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1593",
+            "key": "13:input-messagemessage-1592",
             "kind": "node",
             "delta": 0
           }
@@ -1086,8 +1086,8 @@
         {
           "segment": 7,
           "rows": 1232,
-          "firstVisible": 1439,
-          "bodyGestures": 2,
+          "firstVisible": 1440,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1104,7 +1104,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-1442",
+            "key": "13:input-messagemessage-1441",
             "kind": "node",
             "delta": 0
           }
@@ -1112,8 +1112,8 @@
         {
           "segment": 8,
           "rows": 1386,
-          "firstVisible": 1288,
-          "bodyGestures": 2,
+          "firstVisible": 1289,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1138,8 +1138,8 @@
         {
           "segment": 9,
           "rows": 1540,
-          "firstVisible": 1137,
-          "bodyGestures": 2,
+          "firstVisible": 1138,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1164,8 +1164,8 @@
         {
           "segment": 10,
           "rows": 1694,
-          "firstVisible": 986,
-          "bodyGestures": 2,
+          "firstVisible": 987,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1190,8 +1190,8 @@
         {
           "segment": 11,
           "rows": 1848,
-          "firstVisible": 835,
-          "bodyGestures": 2,
+          "firstVisible": 836,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1208,7 +1208,7 @@
           },
           "officialRowsAdded": 154,
           "preciseCommitAnchor": {
-            "key": "13:input-messagemessage-838",
+            "key": "13:input-messagemessage-837",
             "kind": "node",
             "delta": 0
           }
@@ -1216,8 +1216,8 @@
         {
           "segment": 12,
           "rows": 2002,
-          "firstVisible": 684,
-          "bodyGestures": 2,
+          "firstVisible": 685,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1242,8 +1242,8 @@
         {
           "segment": 13,
           "rows": 2156,
-          "firstVisible": 533,
-          "bodyGestures": 2,
+          "firstVisible": 534,
+          "bodyGestures": 1,
           "sourceEventCount": 160,
           "userMessageCount": 151,
           "toolLifecycleCount": 1,
@@ -1266,8 +1266,181 @@
           }
         }
       ],
+      "boundarySetups": [
+        {
+          "requested": 875,
+          "actual": 875,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 154
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 308
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 462
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 616
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 770
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 924
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1078
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1232
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1386
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1540
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1694
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 1848
+        },
+        {
+          "requested": 875,
+          "actual": 747,
+          "minimum": 600,
+          "maximum": 1150,
+          "rows": 2002
+        }
+      ],
       "positioning": "native scrollTo inside accepted window; trusted touch crosses each boundary",
       "anchorProtocol": "final touch contact crosses runway; stationary contact through official commit",
+      "boundaryContacts": [
+        {
+          "startTop": 875,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.25
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        },
+        {
+          "startTop": 747,
+          "runway": 600,
+          "distance": 550,
+          "approachProgress": 0.13363636363636364
+        }
+      ],
       "preciseCommitAnchors": [
         {
           "key": "13:input-messagemessage-2347",
@@ -1275,12 +1448,12 @@
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-2197",
+          "key": "13:input-messagemessage-2196",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-2046",
+          "key": "13:input-messagemessage-2045",
           "kind": "node",
           "delta": 0
         },
@@ -1295,12 +1468,12 @@
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1593",
+          "key": "13:input-messagemessage-1592",
           "kind": "node",
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-1442",
+          "key": "13:input-messagemessage-1441",
           "kind": "node",
           "delta": 0
         },
@@ -1320,7 +1493,7 @@
           "delta": 0
         },
         {
-          "key": "13:input-messagemessage-838",
+          "key": "13:input-messagemessage-837",
           "kind": "node",
           "delta": 0
         },
@@ -1339,24 +1512,24 @@
         "node": 13
       },
       "viewportResizeAnchor": {
-        "key": "13:input-messagemessage-533",
-        "nodeKey": "13:input-messagemessage-533",
-        "bodyId": 533,
+        "key": "13:input-messagemessage-534",
+        "nodeKey": "13:input-messagemessage-534",
+        "bodyId": 534,
         "originalWidth": 390,
         "height": 844,
         "samples": [
           {
             "width": 450,
             "delta": 0,
-            "offset": -637
+            "offset": -99
           },
           {
             "width": 390,
             "delta": 0,
-            "offset": -637
+            "offset": -99
           }
         ],
-        "elapsedMs": 662
+        "elapsedMs": 647
       },
       "finalLayout": {
         "viewport": {
@@ -1385,7 +1558,7 @@
       "measurements": {
         "a": {
           "rows": 2156,
-          "before": "[\"7ac68262-6b84-4848-8518-9f916bb98126\",384]",
+          "before": "[\"24bc7c03-6022-4f37-9f60-ef121e697779\",384]",
           "busy": false,
           "phase": "ready",
           "draft": "",
@@ -1393,7 +1566,7 @@
         },
         "b": {
           "rows": 154,
-          "before": "[\"7ac68262-6b84-4848-8518-9f916bb98126\",2464]",
+          "before": "[\"24bc7c03-6022-4f37-9f60-ef121e697779\",2464]",
           "busy": false,
           "phase": "ready",
           "draft": "Draft B",
@@ -1407,12 +1580,12 @@
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-2197",
+            "key": "13:input-messagemessage-2196",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-2046",
+            "key": "13:input-messagemessage-2045",
             "delta": 0,
             "requestDelta": 0
           },
@@ -1427,12 +1600,12 @@
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1593",
+            "key": "13:input-messagemessage-1592",
             "delta": 0,
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-1442",
+            "key": "13:input-messagemessage-1441",
             "delta": 0,
             "requestDelta": 0
           },
@@ -1452,7 +1625,7 @@
             "requestDelta": 0
           },
           {
-            "key": "13:input-messagemessage-838",
+            "key": "13:input-messagemessage-837",
             "delta": 0,
             "requestDelta": 0
           },
@@ -1469,16 +1642,16 @@
         ],
         "readingFailures": [],
         "frames": {
-          "samples": 2866,
-          "p95": 16.799999999999272,
-          "max": 199.89999999999998
+          "samples": 2066,
+          "p95": 16.799999999995634,
+          "max": 200.0000000000001
         }
       },
       "inputs": {
         "wheel": 0,
-        "touchstart": 46,
-        "touchmove": 360,
-        "touchend": 33,
+        "touchstart": 33,
+        "touchmove": 223,
+        "touchend": 20,
         "untrusted": 0
       },
       "codexRendering": {
@@ -1486,31 +1659,31 @@
         "steps": [
           {
             "name": "native source enters the official conversation",
-            "ms": 884
+            "ms": 1002
           },
           {
             "name": "official command row expands native output",
-            "ms": 392
+            "ms": 489
           },
           {
             "name": "official edit row expands the native diff",
-            "ms": 266
+            "ms": 244
           },
           {
             "name": "oversized native output uses official keyed tool detail with bounded demand reads",
-            "ms": 428
+            "ms": 488
           },
           {
             "name": "native user and tool images use the official gallery",
-            "ms": 231
+            "ms": 426
           },
           {
             "name": "native function output exposes readable text without transport fields",
-            "ms": 167
+            "ms": 289
           },
           {
             "name": "subagent activity stays structured and source-only",
-            "ms": 33
+            "ms": 69
           }
         ],
         "errors": [],
@@ -1566,37 +1739,37 @@
           "editorHit": true,
           "errors": 0
         },
-        "durationMs": 2428
+        "durationMs": 3060
       },
       "nativeColdOpen": {
         "status": "passed",
         "steps": [
           {
             "name": "unprepared native archive opens read-only history without an all-archive scan",
-            "ms": 837
+            "ms": 988
           },
           {
             "name": "a second official Pane opens independently from the shared accepted source page",
-            "ms": 157
+            "ms": 123
           },
           {
             "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
-            "ms": 178
+            "ms": 175
           },
           {
             "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
-            "ms": 73
+            "ms": 96
           }
         ],
         "firstNativePaint": {
-          "ms": 157,
+          "ms": 154,
           "nativeTurns": 2048,
           "bodyReads": 7,
           "readonlyBodyVisible": true
         },
-        "durationMs": 1261
+        "durationMs": 1403
       },
-      "durationMs": 53450
+      "durationMs": 41039
     }
   ],
   "identity": {
@@ -1613,8 +1786,8 @@
       {
         "name": "@deepseek-ai/dsh-client-ui-chat",
         "file": "deepseek-ai-dsh-client-ui-chat-0.2.1-rc.3.tgz",
-        "bytes": 254858,
-        "sha256": "2a93815eb9ce2e8e36d261c72c19274e2b706638d30b7f54a66485770bfafb97"
+        "bytes": 255153,
+        "sha256": "24be1bb3f587af0ed52bd65cd50802411cab61672621b570506d8891fbb32c03"
       },
       {
         "name": "@deepseek-ai/dsh-client-ui-commands",
@@ -1675,7 +1848,7 @@
       "@deepseek-ai/dsh-client-ui-chat": {
         "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
         "upstreamVersion": "0.2.1-rc.3",
-        "patchSetSha256": "a1a100d952493d8d200fddd71e619a2480aeb92854e7d847d163861774107476"
+        "patchSetSha256": "2a6a1c6bce28835ec6fdbfbde71ac5f929355b3f3baa010c437bf7710414da44"
       }
     },
     "artifacts": [
@@ -1707,7 +1880,7 @@
       {
         "name": "@deepseek-ai/dsh-client-ui-chat",
         "entry": "client.js",
-        "sha256": "34334441ea54138bf00d78497e8b178e791705d43994326437ade60da41ca132"
+        "sha256": "f0a37349c8bd6645656625f401c2c0e37d19b6ebc27229c328f11b0a655fa165"
       },
       {
         "name": "@deepseek-ai/dsh-client-ui-trajectory",
@@ -1759,7 +1932,7 @@
       {
         "name": "@deepseek-ai/dsh-client-ui-chat",
         "browserEntry": "client.js",
-        "sha256": "34334441ea54138bf00d78497e8b178e791705d43994326437ade60da41ca132"
+        "sha256": "f0a37349c8bd6645656625f401c2c0e37d19b6ebc27229c328f11b0a655fa165"
       },
       {
         "name": "@deepseek-ai/dsh-client-ui-tool",
@@ -1790,7 +1963,7 @@
       "@deepseek-ai/dsh-client-ui-primitives",
       "@deepseek-ai/dsh-client-ui-dockkit"
     ],
-    "buildMs": 777,
+    "buildMs": 750,
     "geometryMocks": false,
     "shell": "two-pane component fixture",
     "sourceTransport": "synthetic loopback SourceEventIndex, plus cold native SQLite via production DirectCodexAdapter"
@@ -1799,5 +1972,5 @@
     "engine": "chromium",
     "version": "153.0.8010.12"
   },
-  "finishedAt": "2026-11-05T09:25:40.054Z"
+  "finishedAt": "2026-11-05T10:05:59.048Z"
 }

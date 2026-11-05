@@ -269,9 +269,15 @@ export class RemoteSourceHistory {
               if (change.version <= this.version) continue
               if (change.base !== this.version) throw new RemoteHistoryError('STALE_VERSION', 'The source update stream has a version gap; accepted history remains readable.')
               for (const seq of change.removed) { this.entries.delete(seq); this.removed.set(seq, change.version) }
-              for (const entry of change.upserts) { this.removed.delete(entry.event.seq); this.entries.set(entry.event.seq, { entry, version: change.version, used: ++this.clock }) }
+              const acceptedUpserts = change.upserts.map(entry => {
+                this.removed.delete(entry.event.seq)
+                const previous = this.entries.get(entry.event.seq)?.entry
+                const accepted = previous && (previous === entry || JSON.stringify(previous) === JSON.stringify(entry)) ? previous : entry
+                this.entries.set(entry.event.seq, { entry: accepted, version: change.version, used: ++this.clock })
+                return accepted
+              })
               this.version = change.version; this.acceptSession(change.session, change.version)
-              this.notifyEntries(change.upserts)
+              this.notifyEntries(acceptedUpserts)
               if (this.cachedOpening?.epoch === change.epoch && this.cachedOpening.version <= change.version) {
                 const head = this.cachedOpening, seqs = head.entries.map(entry => entry.event.seq)
                 this.cachedOpening = { ...head, session: change.session, version: change.version,
@@ -281,7 +287,7 @@ export class RemoteSourceHistory {
               for (const [key, page] of this.pages) {
                 if ((!page.page.hasAfter && change.upserts.some(entry => entry.event.seq > (page.page.after ?? -1))) || change.removed.some(seq => page.seqs.includes(seq))) this.pages.delete(key)
               }
-              for (const window of this.windows.values()) window.accept(change)
+              for (const window of this.windows.values()) window.accept({ ...change, upserts: acceptedUpserts })
               this.notifyVersion(); this.trimCache(); this.persist()
               if (this.reads.size === 0) this.removed.clear()
               else if (this.removed.size > this.limits.events) { ++this.generation; this.removed.clear() }
@@ -418,6 +424,8 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   private seqs: number[]
   private context = new Set<number>()
   private revision = 0
+  /** Transport observations may validate an unchanged candidate without rebuilding it. */
+  private readonly coveredVersions = new WeakMap<HistorySnapshotV1, number>()
   private readonly abort = new AbortController()
   private readonly journal: HistoryDeltaV1[] = []
   private journalBytes = 0
@@ -437,14 +445,16 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   }
   sequences(): number[] { return [...new Set([...this.seqs, ...this.publication.windows().flatMap(record => record.snapshot.entries.map(entry => entry.event.seq))])] }
   private snapshot(entries: readonly SessionEventLikeEntry[], before: number | null, after: number | null, hasBefore: boolean, hasAfter: boolean): HistorySnapshotV1 {
-    return { version: token(this.owner.sourceEpoch, this.owner.sourceVersion, ++this.revision), entries: entriesBySeq(entries), before: cursor(this.owner.sourceEpoch, before), after: cursor(this.owner.sourceEpoch, after), hasBefore, hasAfter }
+    const snapshot = { version: token(this.owner.sourceEpoch, this.owner.sourceVersion, ++this.revision), entries: entriesBySeq(entries), before: cursor(this.owner.sourceEpoch, before), after: cursor(this.owner.sourceEpoch, after), hasBefore, hasAfter }
+    this.coveredVersions.set(snapshot, this.owner.sourceVersion)
+    return snapshot
   }
   private stage(): void {
     this.publication.stage(this.state, { epoch: this.stateEpoch, navigation: this.navigation, context: [...this.context], budget: this.budget }, windowBytes(this.state.entries))
   }
   cachePage(session: SourceSession): SourcePage | undefined {
     const published = this.publication.published
-    if (!published || published.metadata.epoch !== this.owner.sourceEpoch || JSON.parse(published.snapshot.version)[1] !== this.owner.sourceVersion) return undefined
+    if (!published || published.metadata.epoch !== this.owner.sourceEpoch || this.coveredVersions.get(published.snapshot) !== this.owner.sourceVersion) return undefined
     const { snapshot, metadata } = published
     return { session, epoch: metadata.epoch, version: this.owner.sourceVersion, entries: snapshot.entries as SourceEntry[],
       before: snapshot.before ? parseCursor(snapshot.before, metadata.epoch) : null,
@@ -532,23 +542,31 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     const previous = this.state, present = new Set(this.seqs), tail = previous.after ? parseCursor(previous.after, this.stateEpoch) : -1
     const updates = change.upserts.filter(entry => present.has(entry.event.seq) || !previous.hasAfter && entry.event.seq > tail)
     const removed = new Set(change.removed)
+    const headChanged = previous.hasAfter && change.upserts.some(entry => entry.event.seq > tail)
     if (updates.length > this.budget.events || windowBytes(updates) > this.budget.bytes) {
       this.fail(new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source revision exceeds the reading admission budget.')); return
     }
     const entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
     const hasAfter = previous.hasAfter
+    const changed = entries.length !== previous.entries.length || entries.some((entry, index) => entry !== previous.entries[index])
+    if (!changed && !headChanged) {
+      // Source versions and cache provenance advance for repeated or unrelated
+      // records, without rebuilding the exact unchanged reading candidate.
+      this.coveredVersions.set(previous, this.owner.sourceVersion)
+      return
+    }
     this.seqs = entries.map(entry => entry.event.seq)
-    const appended = updates.some(entry => entry.event.seq > tail), changed = updates.length > 0 || change.removed.some(seq => present.has(seq))
+    const appended = updates.some(entry => entry.event.seq > tail)
     const before = previous.before ? parseCursor(previous.before, this.stateEpoch) : null
     const after = !previous.hasAfter && appended ? entries.filter(entry => !this.context.has(entry.event.seq)).at(-1)?.event.seq ?? null : previous.after ? parseCursor(previous.after, this.stateEpoch) : null
     this.state = this.snapshot(entries, before, after, previous.hasBefore, hasAfter); this.stage()
     let changes: SessionEventChange[] = []
     if (changed) changes = updates.every(entry => entry.event.seq > tail) && removed.size === 0 ? [{ kind: 'append', entries: updates }] : [{ kind: 'replace', entries }]
-    this.record({ base: previous.version, version: this.state.version, changes, headChanged: hasAfter && change.upserts.some(entry => entry.event.seq > tail), snapshot: this.state })
+    this.record({ base: previous.version, version: this.state.version, changes, headChanged, snapshot: this.state })
   }
   cachedHead(session: SourceSession | undefined): SourcePage | undefined {
     if (!session || this.error || this.state.hasAfter || this.abort.signal.aborted || this.stateEpoch !== this.owner.sourceEpoch
-      || JSON.parse(this.state.version)[1] !== this.owner.sourceVersion) return undefined
+      || this.coveredVersions.get(this.state) !== this.owner.sourceVersion) return undefined
     return { session, epoch: this.owner.sourceEpoch, version: this.owner.sourceVersion, entries: this.owner.currentEntries(this.seqs) as SourceEntry[],
       before: this.state.before ? parseCursor(this.state.before, this.stateEpoch) : null, after: this.state.after ? parseCursor(this.state.after, this.stateEpoch) : null,
       hasBefore: this.state.hasBefore, hasAfter: false, context: [...this.context] }

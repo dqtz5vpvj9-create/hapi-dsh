@@ -24,6 +24,7 @@ export class RemotePaneSession implements SessionFace {
   private readonly opened = Promise.withResolvers<void>()
   private readonly abort = new AbortController()
   private readonly listeners = new Set<() => void>()
+  private readonly progressListeners = new Set<() => void>()
   private readonly stopOwner: () => void
   private stopWindow: () => void = () => {}
   private window: ConversationHistoryViewV1 | undefined
@@ -35,7 +36,10 @@ export class RemotePaneSession implements SessionFace {
   private progress: SourceWindowProgress & { hasMoreAfter: boolean } = { before: null, hasMoreAfter: false }
   readonly sourceWindow = {
     getSnapshot: (): SourceWindowProgress & { hasMoreAfter: boolean } => this.progress,
-    subscribe: (listener: () => void): (() => void) => this.subscribe(listener),
+    subscribe: (listener: () => void): (() => void) => {
+      this.progressListeners.add(listener)
+      return () => { this.progressListeners.delete(listener) }
+    },
   }
 
   constructor(private readonly owner: RemoteSourceSession, ownerReady: Promise<SessionBinding>, viewId: string) {
@@ -88,11 +92,11 @@ export class RemotePaneSession implements SessionFace {
   private publish(): void {
     if (this.disposed) return
     const base = this.owner.getSnapshot(), reading = this.window?.snapshot.getSnapshot()
-    this.state = { ...base, openState: reading?.version == null ? 'loading' : 'open',
+    const nextState: SessionSnapshot = { ...base, openState: reading?.version == null ? 'loading' : 'open',
       hasMore: reading?.hasBefore ?? false, loadingOlder: reading?.busy ?? false }
     // No HAPI coordinate is synthesized from an opaque native cursor. The
     // monotonic count proves that this occurrence committed an older request.
-    this.progress = { before: null, hasMoreAfter: reading?.hasAfter ?? false,
+    const nextProgress: typeof this.progress = { before: null, hasMoreAfter: reading?.hasAfter ?? false,
       olderRevision: this.olderRevision,
       // The canonical source epoch is published only after the official reader
       // accepts its opening window. attach() runs synchronously before that
@@ -100,7 +104,21 @@ export class RemotePaneSession implements SessionFace {
       // would fail the entire pane mount.
       ...(reading?.version != null ? { historyId: JSON.stringify([this.sessionId, this.window!.viewId, this.owner.history.sourceEpoch]) } : {}),
       ...(reading?.phase === 'error' ? { pagingError: true as const } : {}) }
-    for (const listener of this.listeners) listener()
+    // Official reader phases also publish body/correction revisions. Session
+    // consumers observe only SessionSnapshot fields; source navigation has its
+    // own subscribers and must not invalidate the input and conversation face.
+    const different = (left: object, right: object): boolean => {
+      const fields = new Set([...Object.keys(left), ...Object.keys(right)])
+      return [...fields].some(key => !Object.is(Reflect.get(left, key), Reflect.get(right, key)))
+    }
+    if (different(this.state, nextState)) {
+      this.state = nextState
+      for (const listener of this.listeners) listener()
+    }
+    if (different(this.progress, nextProgress)) {
+      this.progress = nextProgress
+      for (const listener of this.progressListeners) listener()
+    }
   }
   private assertLive(): void {
     if (this.disposed) throw new Error('This reading occurrence has been released.')
@@ -178,7 +196,7 @@ export class RemotePaneSession implements SessionFace {
     this.abort.abort()
     this.stopWindow(); this.stopOwner()
     this.opened.reject(new Error('The reading occurrence was released.'))
-    this.listeners.clear()
+    this.listeners.clear(); this.progressListeners.clear()
   }
 }
 
