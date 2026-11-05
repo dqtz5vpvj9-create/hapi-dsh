@@ -17,7 +17,8 @@ export async function mountPasswordLogin(services: Services, passwordFile: strin
     const { connection, webServer } = services;
     let failures = 0, windowStart = Date.now();
     const reply = (res: ServerResponse, status: number, body = '', headers: Record<string, string> = {}) => {
-        res.writeHead(status, { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+        // Native password forms need their same-origin POST Origin preserved.
+        res.writeHead(status, { 'cache-control': 'no-store', 'referrer-policy': 'same-origin',
             'x-content-type-options': 'nosniff', ...headers }); res.end(body);
     };
     const page = (res: ServerResponse, status = 200, error = '', signedIn = false) => reply(res, status, loginPage(error, signedIn), {

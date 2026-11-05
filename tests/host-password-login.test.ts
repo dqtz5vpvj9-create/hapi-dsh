@@ -54,6 +54,7 @@ test('anonymous index shows only the password form while protected endpoints sta
     assert.equal(response.status, 200); const html = await response.text();
     assert.match(html, /autocomplete="current-password"/); assert.doesNotMatch(html, /official\.js|fixture-launch-secret/);
     assert.ok(!html.includes(env.password)); assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('referrer-policy'), 'same-origin', 'native browser forms must preserve their POST Origin');
     assert.match(response.headers.get('content-security-policy')!, /frame-ancestors 'none'/);
     assert.equal((await env.get('/api/session/list')).status, 401);
 });
