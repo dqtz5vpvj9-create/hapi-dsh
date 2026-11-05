@@ -61,6 +61,7 @@ export function installWorkspaceLinkSettings(ctx: Context): () => void {
             }
             return <section className="hapi-appearance-settings" aria-label={tr('Workspace links', '工作区链接')}>
                 <h2>{tr('Workspace links', '工作区链接')}</h2>
+                {document.querySelector('meta[name="hhpi-password-login"]') && <p><a href="/login">{tr('Login and sign out', '登录与退出')}</a></p>}
                 <label>{tr('Open web links', '打开网页链接')}<select value={mode} onChange={event => write(event.currentTarget.value as WorkspaceLinkOpening)}>
                     <option value="same-tab">{tr('Current browser tab', '当前浏览器标签页')}</option>
                     <option value="new-tab">{tr('New browser tab', '新浏览器标签页')}</option>

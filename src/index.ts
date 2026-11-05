@@ -159,6 +159,7 @@ import { mountBootstrapRoute } from './shared/bootstrap.ts';
 import { deferWorkspaceEntry, workspaceBootInjections } from './shared/workspace-boot.ts';
 import { stageWorkspaceBoot } from './shared/boot-graph.ts';
 import { compressedStreamInjection, mountCompressedStream } from './shared/compressed-stream.ts';
+import { mountPasswordLogin } from './shared/password-login.ts';
 import { mountVersionedAssets } from './shared/versioned-assets.ts';
 import { mountPluginEvents } from './shared/plugin-events.ts';
 import { officialProviderConfig } from './shared/official-provider.ts';
@@ -929,6 +930,7 @@ export class HapiController extends TypertRemoteService {
 /** Host composition. Optional source-built DSH reading extensions are pinned by the distribution. */
 export async function apply(ctx: Context, input: Config): Promise<void> {
     const config = await readConfig(input.configFile);
+    if (config.server.loginPasswordFile) ctx.effect(() => mountPasswordLogin({ webServer: ctx.webServer, connection: ctx.connection }, config.server.loginPasswordFile!), 'hapi-dsh: password login');
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
     const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json'),
         identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });

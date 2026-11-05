@@ -35,6 +35,8 @@ export interface RuntimeConfig {
         publicUrl?: string;
         trustedHosts?: string[];
         tls?: { certFile: string; keyFile: string };
+        /** Private UTF-8 password file, read only by the display Host. */
+        loginPasswordFile?: string;
     };
     federation?: { credentialsFile: string };
     sources?: DirectSourceConfig[];
@@ -104,7 +106,7 @@ export function parseConfig(input: unknown): RuntimeConfig {
     const server = record(config.server, 'server');
     keys(dsh, ['home', 'profile', 'command', 'args'], 'dsh');
     if (hapi) keys(hapi, ['id', 'url', 'tokenEnv', 'token', 'companionUrl'], 'hapi');
-    keys(server, ['host', 'port', 'publicUrl', 'trustedHosts', 'tls'], 'server');
+    keys(server, ['host', 'port', 'publicUrl', 'trustedHosts', 'tls', 'loginPasswordFile'], 'server');
     const home = string(dsh.home, 'dsh.home');
     if (!isAbsolute(home)) throw new Error('dsh.home must be an absolute path');
     const profile = string(dsh.profile, 'dsh.profile');
@@ -145,6 +147,11 @@ export function parseConfig(input: unknown): RuntimeConfig {
         if (hapi.companionUrl !== undefined) result.hapi.companionUrl = normalizeCompanionUrl(hapi.companionUrl);
     }
     if (config.sources !== undefined) result.sources = parseSources(config.sources);
+    if (server.loginPasswordFile !== undefined) {
+        const path = string(server.loginPasswordFile, 'server.loginPasswordFile');
+        if (!isAbsolute(path)) throw new Error('server.loginPasswordFile must be an absolute path');
+        result.server.loginPasswordFile = path;
+    }
     if (server.publicUrl !== undefined) result.server.publicUrl = normalizeHttpUrl(server.publicUrl, 'server.publicUrl');
     if (server.trustedHosts !== undefined) {
         if (!Array.isArray(server.trustedHosts) || server.trustedHosts.length > 32) throw new Error('server.trustedHosts must be an array of at most 32 authorities');
