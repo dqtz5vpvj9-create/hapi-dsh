@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 const scratch = existsSync('/mnt/cache/data-cache') ? '/mnt/cache/data-cache' : tmpdir();
-const root = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
+const root = fileURLToPath(new URL('../..', import.meta.url));
 const require = createRequire(root + '/package.json');
 const { build } = require('esbuild');
-async function load(path, alias = {}) { const r = await build({ entryPoints: [root + '/' + path], alias, define: { 'import.meta.url': JSON.stringify('file://' + root + '/' + path) }, external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent' }); const m = { exports: {} }; new Function('require', 'module', 'exports', r.outputFiles[0].text)(require, m, m.exports); return m.exports; }
+async function load(path, alias = {}) { const r = await build({ entryPoints: [root + '/' + path], alias, define: { 'import.meta.url': JSON.stringify(pathToFileURL(root + '/' + path).href) }, external: ['@deepseek-ai/cordis'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent' }); const m = { exports: {} }; new Function('require', 'module', 'exports', r.outputFiles[0].text)(require, m, m.exports); return m.exports; }
 const { RemoteSourceHistory } = await load('src/client/remote-history.ts');
 const { RemoteSourceSession, RemoteSessions } = await load('src/client/remote-sessions.ts', { '@deepseek-ai/dsh-api-session-controller/client': root + '/tests/fixtures/client-session-contract.ts' });
 const { RemoteOutbox } = await load('src/client/remote-outbox.ts');
