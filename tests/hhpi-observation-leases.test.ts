@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts'
 import type { CodexRpc, NativeNotification } from '../src/remote/codex-rpc.ts'
 import { nativeMetadataFixture } from './fixtures/hhpi-native-metadata.ts'
 
 test('reader leases stop idle body polling and reopen the durable index without resetting its epoch', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
-  const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-observation-lease-'))
+  const directory = await mkdtemp(join(existsSync('/mnt/cache/data-cache') ? '/mnt/cache/data-cache' : tmpdir(), 'hhpi-observation-lease-'))
   let now = 1_000, notify: (frame: NativeNotification) => void = () => {}, metadataReads = 0
   const thread = { id: 'thread', cwd: directory, createdAt: 1, updatedAt: 1, status: { type: 'active' } }
   const rpc = { online: true, currentGeneration: 1, connect: async () => ({}), dispose: async () => {},

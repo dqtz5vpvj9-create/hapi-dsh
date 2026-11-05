@@ -3,8 +3,10 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { existsSync } from 'node:fs'
 import { build } from 'esbuild'
 import { pathToFileURL } from 'node:url'
+if (existsSync('/mnt/cache/data-cache')) process.env.TMPDIR = '/mnt/cache/data-cache'
 process.env.PLAYWRIGHT_BROWSERS_PATH ??= '/home/chris/.cache/ms-playwright'
 const { chromium } = await import(pathToFileURL(process.env.HAPI_DSH_PLAYWRIGHT ?? '/home/chris/.agents/tools/webshot/node_modules/playwright/index.mjs').href)
 const bundle = await build({ entryPoints: ['src/client/remote-outbox.ts'], bundle: true, platform: 'browser', format: 'iife', globalName: 'Operations', write: false })

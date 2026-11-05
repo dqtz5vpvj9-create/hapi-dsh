@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+const scratch = existsSync('/mnt/cache/data-cache') ? '/mnt/cache/data-cache' : tmpdir();
 const root = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
 const require = createRequire(root + '/package.json');
 const { build } = require('esbuild');
@@ -207,7 +209,7 @@ test('old native generation cannot overwrite the active turn', { timeout: 5000 }
                 return sliceNativeEntries([{ turnId: 'turn-A', item, startedAtMs: 1000 }], params);
             throw Error(method);
         } };
-    const nativeDirectory = mkdtempSync('/mnt/cache/data-cache/hhpi-audit-native-');
+    const nativeDirectory = mkdtempSync(scratch + '/hhpi-audit-native-');
     const adapter = new DirectCodexAdapter({ id: 'gen-source', machineId: 'machine', engine: 'codex' }, nativeDirectory, { rpc, pollMs: 999999, readMetadata: async (r) => { const p = await metadataRead(r); if (hold) {
             hold = false;
             started.resolve();
@@ -240,7 +242,7 @@ test('explicit native deletion is absent from subsequent catalogs', { timeout: 5
     const rpc = { online: true, currentGeneration: 1, connect: async () => ({ codexHome: '/synthetic' }), dispose: async () => { }, onNotification: f => (notify = f, () => { }), onDisconnect: () => () => { }, onRequest: () => () => { }, request: async (method) => { if (method === 'thread/loaded/list')
             return { data: [], nextCursor: null }; if (method === 'thread/list')
             return { data: deleted ? [] : [native], nextCursor: null }; throw Error(method); } };
-    const directory = mkdtempSync('/mnt/cache/data-cache/hhpi-deleted-source-');
+    const directory = mkdtempSync(scratch + '/hhpi-deleted-source-');
     const adapter = new DirectCodexAdapter({ id: 'good', machineId: 'machine', engine: 'codex' }, directory, { rpc, now: () => now, pollMs: 999999, readMetadata: async () => { throw Error('No body read permitted'); } });
     assert.equal((await adapter.list()).length, 1);
     deleted = true;
@@ -255,7 +257,7 @@ test('overlapping native reads cannot roll a committed body backward', { timeout
     const { DirectCodexAdapter } = await require('tsx/esm/api').tsImport(root + '/src/remote/codex-adapter.ts', import.meta.url);
     const { nativeMetadataFixture } = await load('tests/fixtures/hhpi-native-metadata.ts');
     const { mkdtempSync, rmSync } = require('node:fs');
-    const dir = mkdtempSync('/mnt/cache/data-cache/hhpi-same-generation-');
+    const dir = mkdtempSync(scratch + '/hhpi-same-generation-');
     const native = { id: 'thread', cwd: '/synthetic', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const turn = { id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 };
     let body = 'A', hold = false;
