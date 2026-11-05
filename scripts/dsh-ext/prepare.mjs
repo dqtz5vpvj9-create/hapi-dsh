@@ -14,7 +14,9 @@ import { applyReadingMemory } from './reading-memory.mjs';
 import { applyInputAcceptance } from './input-acceptance.mjs';
 export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
 export const UPSTREAM_VERSION = '0.2.1-rc.3';
-export const EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands'];
+export const UI_EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands'];
+export const NATIVE_EXTENSION_PACKAGES = ['packages/session/session-persistence', 'packages/session/session-format-v3-to-v4', 'packages/session/session-persistence-jsonl'];
+export const EXTENSION_PACKAGES = [...UI_EXTENSION_PACKAGES, ...NATIVE_EXTENSION_PACKAGES];
 export const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
 export function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 180_000, maxBuffer: 16 * 1024 * 1024, ...options });
@@ -39,6 +41,10 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
     run('git', ['apply', '--recount', patch], { cwd: directory });
     inputs.push({ path: patch.slice(ROOT.length + 1), sha256: sha256(await readFile(patch)) });
   }
+  const nativePatch = join(snapshot, 'native-persistence.patch');
+  run('git', ['apply', '--check', '--recount', nativePatch], { cwd: directory });
+  run('git', ['apply', '--recount', nativePatch], { cwd: directory });
+  const nativeInputs = [inputs[0], { path: nativePatch.slice(ROOT.length + 1), sha256: sha256(await readFile(nativePatch)) }];
   const overrides = join(snapshot, 'hhpi-sources');
   const copySources = async (path, relative = '') => {
     for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -62,7 +68,18 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   await applyReadingMemory(directory);
   await applyInputAcceptance(directory);
   for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
-  const provenance = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs, patchSetSha256: sha256(JSON.stringify(inputs)) };
+  const layoutPatch = join(snapshot, 'ui-chat-layout.patch');
+  try {
+    const patch = await readFile(layoutPatch);
+    run('git', ['apply', '--check', layoutPatch], { cwd: directory });
+    run('git', ['apply', layoutPatch], { cwd: directory });
+    inputs.push({ path: layoutPatch.slice(ROOT.length + 1), sha256: sha256(patch) });
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const nativeSourceExtension = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION,
+    inputs: nativeInputs, patchSetSha256: sha256(JSON.stringify(nativeInputs)) };
+  const provenance = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs,
+    patchSetSha256: sha256(JSON.stringify(inputs)), nativeSourceExtension };
+
   await writeFile(join(directory, 'hhpi-source-inputs.json'), `${JSON.stringify(provenance, null, 2)}\n`);
   return { directory, provenance };
 }

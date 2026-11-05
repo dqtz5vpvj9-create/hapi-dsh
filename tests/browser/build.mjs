@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { readFile, writeFile, mkdir, readdir, copyFile, rm } from 'node:fs/promises'
 import { resolve, dirname, join, basename } from 'node:path'
 import { createHash } from 'node:crypto'
-import { EXTENSION_NAMES } from '../../scripts/dsh-ext/install-extension.mjs'
+import { UI_EXTENSION_NAMES as EXTENSION_NAMES } from '../../scripts/dsh-ext/install-extension.mjs'
 
 const require = createRequire(import.meta.url)
 export const root = resolve(import.meta.dirname, '../..')
@@ -57,7 +57,8 @@ export async function buildLab() {
   const artifacts = []
   for (const name of EXTENSION_NAMES) {
     const metadata = require(`${name}/package.json`)
-    if (metadata.version !== identity.upstreamVersion || metadata.hhpiSourceExtension?.upstreamCommit !== identity.upstreamCommit || metadata.hhpiSourceExtension?.patchSetSha256 !== identity.patchSetSha256) throw new Error(`Unverified installed extension: ${name}`)
+    const sourceIdentity = identity.packageIdentities?.[name] ?? identity
+    if (metadata.version !== identity.upstreamVersion || metadata.hhpiSourceExtension?.upstreamCommit !== sourceIdentity.upstreamCommit || metadata.hhpiSourceExtension?.patchSetSha256 !== sourceIdentity.patchSetSha256) throw new Error(`Unverified installed extension: ${name}`)
     const entry = metadata.exports?.['./client'] ? browserEntry(name).entry : require.resolve(name)
     artifacts.push({ name, entry: basename(entry), sha256: createHash('sha256').update(await readFile(entry)).digest('hex') })
   }

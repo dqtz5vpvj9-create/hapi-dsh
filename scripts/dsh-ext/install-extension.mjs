@@ -3,10 +3,17 @@ import { createHash } from 'node:crypto';
 import { readFile, mkdir, writeFile, realpath } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION, EXTENSION_PACKAGES } from './prepare.mjs';
+import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION, EXTENSION_PACKAGES, NATIVE_EXTENSION_PACKAGES, UI_EXTENSION_PACKAGES } from './prepare.mjs';
 
-export const EXTENSION_NAMES = Object.freeze(EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${path.slice('packages/'.length).replaceAll('/', '-')}`));
+export const EXTENSION_NAMES = Object.freeze(EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${NATIVE_EXTENSION_PACKAGES.includes(path) ? path.split('/').at(-1) : path.slice('packages/'.length).replaceAll('/', '-')}`));
+export const UI_EXTENSION_NAMES = Object.freeze(UI_EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${path.slice('packages/'.length).replaceAll('/', '-')}`));
 const digest = value => createHash('sha256').update(value).digest('hex');
+export function extensionIdentity(manifest, name) {
+  return manifest.packageIdentities?.[name] ?? {
+    upstreamCommit: manifest.upstreamCommit, upstreamVersion: manifest.upstreamVersion,
+    patchSetSha256: manifest.patchSetSha256,
+  };
+}
 const archiveName = name => `${name.slice(1).replace('/', '-')}-${UPSTREAM_VERSION}.tgz`;
 
 /** Validate all archives before invoking npm; a missing or mixed set installs nothing. */
@@ -24,11 +31,18 @@ export async function verifyExtensionSet(directory) {
     const path = join(directory, item.file), data = await readFile(path);
     if (data.length !== item.bytes || digest(data) !== item.sha256) throw new Error(`Extension checksum mismatch: ${item.file}`);
     const metadata = JSON.parse(run('tar', ['-xOf', path, 'package/package.json'], { timeout: 10_000 }));
-    const identity = metadata.hhpiSourceExtension;
+    const identity = metadata.hhpiSourceExtension, expectedIdentity = extensionIdentity(manifest, metadata.name);
     if (metadata.name !== expected.get(item.file) || metadata.version !== UPSTREAM_VERSION || !identity
       || identity.upstreamCommit !== UPSTREAM_COMMIT || identity.upstreamVersion !== UPSTREAM_VERSION
-      || identity.patchSetSha256 !== manifest.patchSetSha256) throw new Error(`Mixed or unmarked source extension: ${item.file}`);
-    packages.push({ ...item, path, name: metadata.name });
+      || expectedIdentity.upstreamCommit !== UPSTREAM_COMMIT || expectedIdentity.upstreamVersion !== UPSTREAM_VERSION
+      || identity.patchSetSha256 !== expectedIdentity.patchSetSha256) throw new Error(`Mixed or unmarked source extension: ${item.file}`);
+    if (metadata.name === '@deepseek-ai/dsh-session-persistence-jsonl') {
+      const entries = new Set(run('tar', ['-tzf', path], { timeout: 10_000 }).split('\n'));
+      for (const worker of ['package/lib/worker.cjs', 'package/lib/read-index-worker.mjs']) {
+        if (!entries.has(worker)) throw new Error(`Native persistence archive is missing ${worker}.`);
+      }
+    }
+    packages.push({ ...item, path, name: metadata.name, identity });
   }
   return { manifest, packages };
 }
@@ -45,9 +59,10 @@ export async function installExtensionSet(directory, target = ROOT) {
   if (before.some((data, index) => !data.equals(after[index]))) throw new Error('Installing source extensions changed tracked package inputs.');
   for (const item of packages) {
     const installed = JSON.parse(await readFile(join(target, 'node_modules', item.name, 'package.json'), 'utf8'));
-    if (installed.name !== item.name || installed.version !== UPSTREAM_VERSION || installed.hhpiSourceExtension?.patchSetSha256 !== manifest.patchSetSha256) throw new Error(`Installed extension identity mismatch: ${item.name}`);
+    if (installed.name !== item.name || installed.version !== UPSTREAM_VERSION || installed.hhpiSourceExtension?.upstreamCommit !== item.identity.upstreamCommit || installed.hhpiSourceExtension?.upstreamVersion !== item.identity.upstreamVersion || installed.hhpiSourceExtension?.patchSetSha256 !== item.identity.patchSetSha256) throw new Error(`Installed extension identity mismatch: ${item.name}`);
   }
   const report = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, patchSetSha256: manifest.patchSetSha256,
+    packageIdentities: Object.fromEntries(packages.map(({ name, identity }) => [name, identity])),
     packages: packages.map(({ name, file, bytes, sha256 }) => ({ name, file, bytes, sha256 })) };
   await mkdir(join(target, '.tmp/hhpi-ext'), { recursive: true });
   await writeFile(join(target, '.tmp/hhpi-ext/installed.json'), `${JSON.stringify(report, null, 2)}\n`);

@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { EXTENSION_PACKAGES, ROOT, run } from './prepare.mjs';
+import { EXTENSION_PACKAGES, NATIVE_EXTENSION_PACKAGES, ROOT, run } from './prepare.mjs';
 const source = process.argv[2], output = resolve(process.argv[3] ?? join(ROOT, '.tmp/hhpi-ext/packages'));
 if (!source) throw new Error('A prepared DSH source directory is required.');
 const INLINE_RUNTIME_PACKAGES = [
@@ -48,10 +48,20 @@ for (const path of EXTENSION_PACKAGES) {
   const metadata = JSON.parse(await readFile(metadataPath, 'utf8'));
   // Source package metadata distinguishes this build from the official npm rc.
   // Nothing in compiled JavaScript is intercepted or rewritten.
-  metadata.hhpiSourceExtension = identity;
+  metadata.hhpiSourceExtension = NATIVE_EXTENSION_PACKAGES.includes(path) ? {
+    upstreamCommit: provenance.nativeSourceExtension.upstreamCommit,
+    upstreamVersion: provenance.nativeSourceExtension.upstreamVersion,
+    patchSetSha256: provenance.nativeSourceExtension.patchSetSha256,
+  } : identity;
   await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
   console.log(`Building ${path} with the official compiler preset.`);
-  console.log(pnpm(['exec', 'tsdown', '--config-loader', 'native'], cwd, 180_000));
+  if (path === 'packages/session/session-persistence') {
+    // This abstract service has no package-local preset. Keep its declared .js
+    // runtime export while using the same upstream compiler as the other roots.
+    console.log(pnpm(['exec', 'tsdown', 'lib/types/index.js', '--no-config', '--out-dir', 'lib',
+      '--format', 'esm', '--platform', 'node', '--target', 'es2024', '--no-dts', '--no-clean', '--logLevel', 'error'], cwd));
+    await rename(join(cwd, 'lib/index.mjs'), join(cwd, 'lib/index.js'));
+  } else console.log(pnpm(['exec', 'tsdown', '--config-loader', 'native'], cwd, 180_000));
   const clientBundlePath = join(cwd, 'lib/client.js');
   try {
     const clientBundle = await readFile(clientBundlePath, 'utf8');
@@ -64,10 +74,12 @@ for (const path of EXTENSION_PACKAGES) {
   }
   console.log(pnpm(['pack', '--pack-destination', output], cwd));
 }
-const packages = [];
+const packages = [], packageIdentities = {};
 for (const name of (await readdir(output)).filter(name => name.endsWith('.tgz')).sort()) {
   const bytes = await readFile(join(output, name));
+  const metadata = JSON.parse(run('tar', ['-xOf', join(output, name), 'package/package.json']));
+  packageIdentities[metadata.name] = metadata.hhpiSourceExtension;
   packages.push({ file: name, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
 }
-await writeFile(join(output, 'manifest.json'), `${JSON.stringify({ ...provenance, packages }, null, 2)}\n`);
+await writeFile(join(output, 'manifest.json'), `${JSON.stringify({ ...provenance, packageIdentities, packages }, null, 2)}\n`);
 console.log(JSON.stringify({ output, packages }));

@@ -148,6 +148,25 @@
           "upstreamPrDraft": "ext/upstream-pr/0008.md",
           "publication": "not published upstream",
           "reconstruction": "Apply existing dsh-ext/source.patch to upstream base, then this incremental patch against workspaceHead. Native package source archive is included in the release source offer."
+        },
+        {
+          "name": "ui-chat-layout-batched-geometry",
+          "approvedPackage": "@deepseek-ai/dsh-client-ui-chat",
+          "baseUiSourceIdentity": "6f70a9ca6f5525ce0cf32670d051edbae448ed63a5ed8ecf425e7d7441c566d9",
+          "sourceIdentity": "f78b9d956c0f54ee9ba4ded9ca66e6ab81ef29fc48431b070f3495b8723f8df6",
+          "patch": "dsh-ext/ui-chat-layout.patch",
+          "changedPaths": [
+            "packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx",
+            "packages/client/ui-chat/tests/virtual-chat-rows.client.spec.tsx",
+            "packages/client/ui-chat/tests/chat-view.client.spec.tsx",
+            "packages/client/ui-chat/tests/chat-viewport.client.spec.ts",
+            "packages/client/ui-chat/tests/apply-inject.client.spec.tsx"
+          ],
+          "adr": "ext/adr/0009.md",
+          "upstreamPrDraft": "ext/upstream-pr/0009.md",
+          "reconstruction": "Apply original source snapshot and existing HHPI source transformations, then ui-chat-layout.patch. prepare.mjs performs this order and reproduces all five changed files. Full exact ui-chat source is included in the release source offer.",
+          "baselinePackageComparison": "Before applying this delta, the rebuilt index.js and client.js matched production r-51a9e6000527572d byte for byte.",
+          "publication": "not published upstream"
         }
       ]
     },

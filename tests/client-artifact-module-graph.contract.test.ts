@@ -6,8 +6,8 @@ import { dirname } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { orderByModuleGraph, stripClientSuffix } from '@deepseek-ai/dsh-client-modules'
 
-const { EXTENSION_NAMES } = await import(new URL('../scripts/dsh-ext/install-extension.mjs', import.meta.url).href) as {
-    EXTENSION_NAMES: readonly string[]
+const { UI_EXTENSION_NAMES: EXTENSION_NAMES } = await import(new URL('../scripts/dsh-ext/install-extension.mjs', import.meta.url).href) as {
+    UI_EXTENSION_NAMES: readonly string[]
 }
 
 const require = createRequire(import.meta.url)

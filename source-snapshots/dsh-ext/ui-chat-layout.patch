@@ -1,0 +1,298 @@
+--- a/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
++++ b/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
+@@ -101,6 +101,9 @@
+   const layoutRevision = useRef(0)
+   const pendingLayout = useRef<{ changed: boolean; revision: number } | null>(null)
+ 
++  const paneVisible = useRef(false)
++  const rowMeasurements = useRef(new WeakMap<HTMLElement, { model: readonly VirtualChatRow[]; size: number }>())
++  const [, setWidthRevision] = useState(0)
+   const rowsRef = useRef(rows)
+   rowsRef.current = rows
+   const indexes = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows])
+@@ -144,16 +147,13 @@
+         return instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? instance.options.estimateSize(index)
+       }
+ 
+-      if (element.getClientRects().length === 0) {
+-        const index = instance.indexFromElement(element)
+-        const key = instance.options.getItemKey(index)
+-        return instance.itemSizeCache.get(key) ?? instance.options.estimateSize(index)
+-      }
+-      const borderBox = entry?.borderBoxSize?.[0]?.blockSize
+-        ?? element.getBoundingClientRect().height
+-      const margin = Number.parseFloat(getComputedStyle(element).marginTop) || 0
+-      const size = borderBox + margin
+-      const key = instance.options.getItemKey(instance.indexFromElement(element))
++      const index = instance.indexFromElement(element)
++      const key = instance.options.getItemKey(index)
++      const height = entry.borderBoxSize?.[0]?.blockSize ?? element.getBoundingClientRect().height
++      // Hidden occurrences must not overwrite a usable measured size with zero.
++      if (entry.contentRect.width === 0 && height === 0) return instance.itemSizeCache.get(key) ?? instance.options.estimateSize(index)
++      const size = height + (rowsRef.current[index]?.gapBefore ?? 0)
++      rowMeasurements.current.set(element, { model: rowsRef.current, size })
+       if (instance.itemSizeCache.get(key) !== size) layoutRevision.current++
+       return size
+     },
+@@ -200,12 +200,29 @@
+ 
+   const listRef = useRef<HTMLDivElement | null>(null)
+   useLayoutEffect(() => {
+-    const viewport = scrollElement
+-    const list = listRef.current
+-    if (viewport === null || list === null || list.getClientRects().length === 0) return
+-    const margin = list.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop
+-    if (Math.abs(margin - scrollMargin) > 0.5) setScrollMargin(margin)
+-  })
++    const viewport = scrollElement, list = listRef.current
++    if (viewport === null || list === null) return
++    let width: number | undefined
++    const measureMargin = (): void => {
++      if (list.getClientRects().length === 0) { paneVisible.current = false; measuredLayout.current = false; return }
++      const viewportBox = viewport.getBoundingClientRect()
++      if (viewportBox.width <= 0 || viewportBox.height <= 0) { paneVisible.current = false; measuredLayout.current = false; return }
++      paneVisible.current = true
++      if (width !== undefined && width !== viewportBox.width) {
++        rowMeasurements.current = new WeakMap()
++        setWidthRevision(revision => revision + 1)
++      }
++      width = viewportBox.width
++      const margin = list.getBoundingClientRect().top - viewportBox.top + viewport.scrollTop
++      setScrollMargin(previous => Math.abs(margin - previous) > 0.5 ? margin : previous)
++    }
++    measureMargin()
++    const observer = new ResizeObserver(measureMargin)
++    observer.observe(viewport)
++    if (list.parentElement) observer.observe(list.parentElement)
++    for (let sibling = list.previousElementSibling; sibling; sibling = sibling.previousElementSibling) observer.observe(sibling)
++    return () => observer.disconnect()
++  }, [scrollElement])
+ 
+   const virtualItems = virtualizer.getVirtualItems()
+   const geometry = virtualItems.map(row => `${row.key}:${row.start}:${row.size}`).join('|')
+@@ -213,19 +230,29 @@
+   useLayoutEffect(() => {
+     const list = listRef.current
+     measuredLayout.current = false
+-    if (list === null) return
+-    const visible = list.getClientRects().length > 0
++    if (list === null || !paneVisible.current) return
++    const elements = [...list.querySelectorAll<HTMLElement>('[data-chat-virtual-row]')]
++    const dirty = elements.filter(element => rowMeasurements.current.get(element)?.model !== rows)
++    // Read the complete candidate DOM before any virtualizer update can change
++    // spacers or scroll geometry. Existing rows reuse their accepted measurements.
++    const visible = dirty.length === 0 || list.getClientRects().length > 0
+     if (!visible && rows.length > 0) return
+-    let measured = rows.length === 0 || virtualItems.length > 0
+-    for (const element of visible ? list.querySelectorAll<HTMLElement>('[data-chat-virtual-row]') : []) {
++    const measurements = dirty.map(element => {
+       const index = Number(element.dataset.index)
+-      const item = virtualItems.find(row => row.index === index)
+-      const height = element.getBoundingClientRect().height
+-      const size = Number.isFinite(height)
+-        ? height + (Number.parseFloat(getComputedStyle(element).marginTop) || 0)
+-        : item?.size ?? (rows[index] === undefined ? 96 : 96 + rows[index]!.gapBefore)
++      return { element, size: element.getBoundingClientRect().height + (rows[index]?.gapBefore ?? 0) }
++    })
++    for (const { element, size } of measurements) rowMeasurements.current.set(element, { model: rows, size })
++    let measured = rows.length === 0 || virtualItems.length > 0
++    const changes: Array<{ index: number; size: number }> = []
++    for (const element of elements) {
++      const index = Number(element.dataset.index), item = virtualItems.find(row => row.index === index)
++      const size = rowMeasurements.current.get(element)?.size
++      if (size === undefined || !Number.isFinite(size)) { measured = false; continue }
+       if (item === undefined || Math.abs(item.size - size) > 0.5) measured = false
+-      if (virtualizer.itemSizeCache.get(virtualizer.options.getItemKey(index)) !== size) layoutRevision.current++
++      if (virtualizer.itemSizeCache.get(virtualizer.options.getItemKey(index)) !== size) changes.push({ index, size })
++    }
++    for (const { index, size } of changes) {
++      layoutRevision.current++
+       virtualizer.resizeItem(index, size)
+     }
+     measuredLayout.current = measured
+--- a/packages/client/ui-chat/tests/virtual-chat-rows.client.spec.tsx
++++ b/packages/client/ui-chat/tests/virtual-chat-rows.client.spec.tsx
+@@ -2,7 +2,7 @@
+ 
+ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+ import { afterEach, expect, it, vi } from 'vitest'
+-import type { ChatFlowVirtualization } from '../src/client/contract/slots.ts'
++import type { ChatFlowVirtualization, ChatFlowVirtualRows } from '../src/client/contract/slots.ts'
+ import { VirtualChatRows, type VirtualChatRow } from '../src/client/chat/VirtualChatRows.tsx'
+ 
+ const observers = new Map<Element, Set<ResizeObserverCallback>>()
+@@ -53,20 +53,24 @@
+     clientWidth: { configurable: true, value: 800 },
+     scrollHeight: { configurable: true, value: 30_000 },
+   })
+-  scroller.getBoundingClientRect = () => new DOMRect(0, 0, 800, 400)
++  let rowReads = 0, listReads = 0, hidden = false, width = 800
++  scroller.getBoundingClientRect = () => new DOMRect(0, 0, hidden ? 0 : width, hidden ? 0 : 400)
+ 
++  const heights = new Map<number, number>()
+   const originalRects = HTMLElement.prototype.getClientRects
+   vi.spyOn(HTMLElement.prototype, 'getClientRects').mockImplementation(function (this: HTMLElement) {
+     if (this.hasAttribute('data-chat-virtual-rows') || this.hasAttribute('data-chat-virtual-row')) {
++      if (hidden) return [] as unknown as DOMRectList
+       return [this.getBoundingClientRect()] as unknown as DOMRectList
+     }
+     return originalRects.call(this)
+   })
+   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+-    if (this === scroller) return new DOMRect(0, 0, 800, 400)
+-    if (this.hasAttribute('data-chat-virtual-rows')) return new DOMRect(0, -scroller.scrollTop, 800, 30_000)
++    if (this === scroller) return new DOMRect(0, 0, hidden ? 0 : width, hidden ? 0 : 400)
++    if (this.hasAttribute('data-chat-virtual-rows')) { listReads++; return new DOMRect(0, -scroller.scrollTop, 800, 30_000) }
+     const index = Number(this.dataset.index)
+-    return new DOMRect(0, index * 96 - scroller.scrollTop, 800, 96)
++    if (this.hasAttribute('data-chat-virtual-row')) rowReads++
++    return new DOMRect(0, index * 96 - scroller.scrollTop, 800, heights.get(index) ?? 96)
+   })
+ 
+   const rows: VirtualChatRow[] = Array.from({ length: 300 }, (_, index) => ({
+@@ -80,7 +84,7 @@
+       message {index}
+     </div>,
+   }))
+-  let api: { reveal: (key: string) => boolean; releaseDestination: () => void } | undefined
++  let api: ChatFlowVirtualRows | undefined
+   const virtualization: ChatFlowVirtualization = {
+     getScrollElement: () => scroller,
+     savedAnchorKey: null,
+@@ -98,6 +102,33 @@
+   expect(container.querySelector('[data-index="299"]')).toBeNull()
+   expect(container.querySelectorAll('[data-chat-virtual-row]').length).toBeLessThan(24)
+ 
++  rowReads = 0; listReads = 0
++  act(() => { api?.pinReading('anchor-1') })
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++
++  const growing = container.querySelector<HTMLElement>('[data-index="1"]')!
++  const previousHeight = Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)
++  heights.set(1, 180)
++  act(() => { notify(growing, 800, 180) })
++  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 84))
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++
++  hidden = true
++  act(() => { notify(scroller, 0, 0); notify(growing, 0, 0) })
++  expect(api?.isLayoutReady(false)).toBe(false)
++  hidden = false
++  act(() => { notify(scroller, 800, 400) })
++  await waitFor(() => expect(api?.isLayoutReady(false)).toBe(true))
++  expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 84)
++
++  width = 390; heights.set(1, 240)
++  act(() => { notify(scroller, 390, 400) })
++  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 144))
++  expect(rowReads).toBeGreaterThan(0)
++  expect(api?.isLayoutReady(false)).toBe(true)
++
+   act(() => { expect(api?.reveal('row-299')).toBe(true) })
+   await waitFor(() => expect(container.querySelector('[data-index="299"]')).not.toBeNull())
+   act(() => {
+--- a/packages/client/ui-chat/tests/chat-view.client.spec.tsx
++++ b/packages/client/ui-chat/tests/chat-view.client.spec.tsx
+@@ -89,13 +89,13 @@
+ })
+ 
+ function createViewportResizeObserverStub(onObserve?: (element: Element) => void) {
+-  let notify: (() => void) | undefined
++  const notifications = new Set<() => void>()
+   class ResizeObserverStub implements ResizeObserver {
+     constructor(private readonly callback: ResizeObserverCallback) {}
+     observe(element: Element): void {
+       onObserve?.(element)
+       if (element instanceof HTMLElement && element.hasAttribute('data-chat-flow')) {
+-        notify = () => {
++        notifications.add(() => {
+           const size = [{ inlineSize: 800, blockSize: 300 }]
+           this.callback([{
+             target: element,
+@@ -104,13 +104,13 @@
+             devicePixelContentBoxSize: size,
+             contentRect: new DOMRectReadOnly(0, 0, 800, 300),
+           }], this)
+-        }
++        })
+       }
+     }
+     unobserve(): void {}
+     disconnect(): void {}
+   }
+-  return { Observer: ResizeObserverStub, notify: () => notify?.() }
++  return { Observer: ResizeObserverStub, notify: () => { for (const notify of notifications) notify() } }
+ }
+ 
+ const SID = 's1' as SessionId
+@@ -4072,7 +4072,7 @@
+   })
+ 
+   it('pinned dynamic-height updates select the latest Turn', async () => {
+-    let notify: (() => void) | undefined
++    const notifications = new Set<() => void>()
+     let nextFrame = 0
+     const frames = new Map<number, FrameRequestCallback>()
+     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+@@ -4101,7 +4101,7 @@
+ 
+       override observe(element: Element): void {
+         super.observe(element)
+-        if (element.hasAttribute('data-chat-flow')) notify = () => this.onResize(element)
++        if (element.hasAttribute('data-chat-flow')) notifications.add(() => this.onResize(element))
+       }
+     }
+     vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+@@ -4123,7 +4123,7 @@
+       for (const callback of pending) callback(0)
+     })
+     metrics.setHeight(1_200)
+-    act(() => { notify?.() })
++    act(() => { for (const notify of notifications) notify() })
+     act(() => {
+       const pending = [...frames.values()]
+       frames.clear()
+--- a/packages/client/ui-chat/tests/chat-viewport.client.spec.ts
++++ b/packages/client/ui-chat/tests/chat-viewport.client.spec.ts
+@@ -242,13 +242,13 @@
+   h.column.scrollTop = 100
+ 
+   const position = h.viewport.capturePosition()
+-  expect(position).toEqual({ anchorKey: 'second', anchorTop: 30, scrollTop: 100 })
++  expect(position).toEqual({ anchorKey: 'second', anchorOwnerKey: 'second', anchorTop: 30, scrollTop: 100 })
+   if (position === null) throw new Error('expected a grouped reading anchor')
+   h.viewport.beginPreserving(position)
+   h.prepend(200)
+   const landing = h.viewport.preserve()
+   expect(landing?.metrics.top).toBe(300)
+-  expect(landing?.position).toEqual({ anchorKey: 'second', anchorTop: 30, scrollTop: 300 })
++  expect(landing?.position).toEqual({ anchorKey: 'second', anchorOwnerKey: 'second', anchorTop: 30, scrollTop: 300 })
+ })
+ 
+ it('anchors an open group to its old content even when the pointer ray hits its header', () => {
+--- a/packages/client/ui-chat/tests/apply-inject.client.spec.tsx
++++ b/packages/client/ui-chat/tests/apply-inject.client.spec.tsx
+@@ -417,7 +417,7 @@
+     await b.runtime.dispose()
+   })
+ 
+-  it('fails loud when a Chat View inject resolves no Session', async () => {
++  it('refuses View and flow injection for an unretained Conversation occurrence', async () => {
+     const b = await bench()
+     const entry = b.runtime.slots.entries('conversation.view')[0]!
+     const injectView = entry.inject as unknown as (
+@@ -425,10 +425,10 @@
+       actions: ChatActions,
+     ) => ChatViewInjected
+     expect(() => injectView('never-listed' as SessionId, {} as ChatActions))
+-      .toThrow(/unknown session/)
++      .toThrow('The Conversation reading occurrence is no longer retained.')
+     const flowEntry = b.runtime.slots.entries('conversation.chat.flow')[0]!
+     const injectFlow = flowEntry.inject as (sessionId: SessionId) => ChatFlowDataInjected
+-    expect(() => injectFlow('never-listed' as SessionId)).toThrow(/unknown session/)
++    expect(() => injectFlow('never-listed' as SessionId)).toThrow('The Conversation reading occurrence is no longer retained.')
+     await b.runtime.dispose()
+   })
+ 

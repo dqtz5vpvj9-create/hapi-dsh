@@ -1,0 +1,144 @@
+{
+  "sourceRevisionBeforeChanges": "298bd4849d8b80b6f2a5f1bb6190441b948e19ef",
+  "sourceState": "approved ui-chat layout implementation validated before release commit",
+  "scope": "continuous history reading, independent drafts and idle reconnection; native Codex source projection and official component lab; cold 2048-turn native SQLite via production adapter and SessionViewHost; synthetic item RPC and outer shell",
+  "status": "passed",
+  "browser": {
+    "engine": "chromium",
+    "version": "153.0.8010.12"
+  },
+  "geometryMocks": false,
+  "physicalPhone": "not-run",
+  "softKeyboard": "not-run",
+  "uiChatPatchSet": "f78b9d956c0f54ee9ba4ded9ca66e6ab81ef29fc48431b070f3495b8723f8df6",
+  "scenarios": [
+    {
+      "mode": "desktop",
+      "status": "passed",
+      "durationMs": 27256,
+      "budgetMs": 60000,
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 840
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 156
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 357
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 143
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 166,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1518
+      },
+      "steps": [
+        {
+          "name": "first usable official view",
+          "ms": 1706
+        },
+        {
+          "name": "idle update stream closes without failing the mounted readers",
+          "ms": 220
+        },
+        {
+          "name": "browser keyboard, composition and independent drafts",
+          "ms": 433
+        },
+        {
+          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
+          "ms": 17080
+        },
+        {
+          "name": "real viewport width change preserves the reading anchor",
+          "ms": 686
+        },
+        {
+          "name": "cached round trip and latest navigation",
+          "ms": 2099
+        },
+        {
+          "name": "synthetic native submission through official keyboard",
+          "ms": 168
+        }
+      ]
+    },
+    {
+      "mode": "mobile",
+      "status": "passed",
+      "durationMs": 53561,
+      "budgetMs": 60000,
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 855
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 148
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 199
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 82
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 150,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1306
+      },
+      "steps": [
+        {
+          "name": "first usable official view",
+          "ms": 1390
+        },
+        {
+          "name": "idle update stream closes without failing the mounted readers",
+          "ms": 128
+        },
+        {
+          "name": "browser keyboard, composition and independent drafts",
+          "ms": 468
+        },
+        {
+          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
+          "ms": 40999
+        },
+        {
+          "name": "real viewport width change preserves the reading anchor",
+          "ms": 657
+        },
+        {
+          "name": "cached round trip and latest navigation",
+          "ms": 5676
+        },
+        {
+          "name": "synthetic native submission through official keyboard",
+          "ms": 97
+        }
+      ]
+    }
+  ]
+}
