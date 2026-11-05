@@ -215,9 +215,15 @@ export function syntheticWorkspace(sessionId) {
     activeWindowId: 'hhpi-smoke-window', focused: { 'hhpi-smoke-window': 'hhpi-smoke-pane' }, zoomed: {} };
 }
 
-export function installObserver({ sessionId, allowedReadStreams }) {
+export function installObserver({ sessionId, allowedReadStreams, profile = false }) {
   const state = window.__hhpiSmoke = { sessionId, blocked: 0, isolatedWorkspace: 0, isolatedReadState: 0,
     isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], monitor: false, lastFrame: null };
+  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = [];
+  const phase = name => { state.phase = name; if (profile) state.phases.push({ start: performance.now(), phase: name }); };
+  phase('opening');
+  if (profile && typeof PerformanceObserver === 'function') {
+    new PerformanceObserver(list => { for (const entry of list.getEntries()) state.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
+  }
   const streams = new Set();
   const readStreamNames = new Set(allowedReadStreams);
   const compact = value => String(value ?? '').normalize('NFKC').replace(/\s+/gu, '').trim();
@@ -243,10 +249,10 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     return originalSend.call(this, data);
   };
   window.addEventListener('wheel', event => {
-    if (event.target instanceof Element && event.target.closest('[data-conversation-scroll]')) state.lastInput = performance.now();
+    if (event.target instanceof Element && event.target.closest('[data-conversation-scroll]')) { state.lastInput = performance.now(); phase('reader-input'); }
   }, { capture: true, passive: true });
   const frame = timestamp => {
-    if (state.monitor && state.lastFrame !== null) state.frameGaps.push(timestamp - state.lastFrame);
+    if (state.monitor && state.lastFrame !== null) { state.frameGaps.push(timestamp - state.lastFrame); if (profile) state.frameEvents.push({ start: state.lastFrame, end: timestamp, gap: timestamp - state.lastFrame }); }
     state.lastFrame = state.monitor ? timestamp : null;
     requestAnimationFrame(frame);
   };
@@ -259,6 +265,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     return tracker;
   };
   state.rows = () => {
+    const probeStarted = performance.now();
     const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
       .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
     const scroll = pane?.querySelector('[data-conversation-scroll]');
@@ -289,6 +296,7 @@ export function installObserver({ sessionId, allowedReadStreams }) {
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
             && rect.height > 0 && row.closest('[hidden]') === null };
       });
+    if (profile) state.probeTasks.push({ kind: 'rows', phase: state.phase, start: probeStarted, duration: performance.now() - probeStarted, rows: rows.length, chars: rows.reduce((total, row) => total + row.text.length, 0) });
     return { exists: true, rows, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
       viewport: scroll.clientHeight };
   };
@@ -318,12 +326,17 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
     const port = pane?.querySelector('[data-conversation-scroll]');
     if (!port) throw new Error('No mounted reading port at publication.');
+    phase('wait-input-idle');
     await waitForInputIdle(port);
+    phase('wait-source-publication');
     const bounds = port.getBoundingClientRect();
     const hit = document.elementsFromPoint(bounds.left + bounds.width / 2, bounds.top + 1)
       .map(node => node.closest('[data-chat-anchor-key]'))
       .find(node => node && port.contains(node) && node.dataset.chatFlowKind !== 'turn-process');
     const visible = hit ?? [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => {
+      // Turn controls are regenerated when the partial history prefix changes.
+      // The official viewport excludes them; the probe must measure body content.
+      if (node.dataset.chatFlowKind === 'turn-process' || node.closest('[hidden]')) return false;
       const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
     });
     const anchor = visible?.dataset.chatGroupKey === undefined ? visible
@@ -333,11 +346,13 @@ export function installObserver({ sessionId, allowedReadStreams }) {
     const row = anchor?.closest('[data-chat-virtual-row]');
     if (!anchor || !row) throw new Error('No physical reading anchor at publication.');
     const key = anchor.dataset.chatAnchorKey, oldIndex = row.dataset.index;
+    const inputAtArm = state.lastInput, scrollAtArm = port.scrollTop;
     const loadButton = port.querySelector('[data-chat-flow] > div > button:disabled');
     const top = anchor.getBoundingClientRect().top - bounds.top;
     const semanticOwner = anchor.closest('[data-chat-node-key]')?.dataset.chatNodeKey;
     const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : key?.startsWith('group:') ? 'group' : key?.startsWith('[') ? 'segmented' : 'node',
-      visibleBefore: anchor.getBoundingClientRect().bottom > bounds.top && anchor.getBoundingClientRect().top < bounds.bottom };
+      visibleBefore: anchor.getBoundingClientRect().bottom > bounds.top && anchor.getBoundingClientRect().top < bounds.bottom,
+      flowKind: anchor.dataset.chatFlowKind ?? null, oldIndex: Number(oldIndex), anchorTop: Math.round(top), scrollAtArm: Math.round(scrollAtArm) };
     const token = state.layoutCommits.push(record) - 1;
     const observer = new MutationObserver(() => {
       const current = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
@@ -348,13 +363,21 @@ export function installObserver({ sessionId, allowedReadStreams }) {
       const rangeMoved = currentRow && currentRow.dataset.index !== oldIndex;
       const readCompleted = loadButton && (!loadButton.isConnected || !loadButton.disabled);
       if (!rangeMoved && !readCompleted) return;
+      phase('publication-correction');
+      record.trigger = rangeMoved ? 'range-moved' : 'read-completed';
+      record.scrollAtTrigger = Math.round(port.scrollTop);
       observer.disconnect();
       requestAnimationFrame(() => requestAnimationFrame(() => {
         const settled = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
         record.retained = !!settled;
+        record.inputDuringCommit = state.lastInput !== inputAtArm;
+        record.scrollAtSettle = Math.round(port.scrollTop);
+        record.anchorConnected = anchor.isConnected;
+        record.rowConnected = row.isConnected;
         record.ownerRetained = semanticOwner === undefined ? null : [...port.querySelectorAll('[data-chat-node-key]')].some(node => node.dataset.chatNodeKey === semanticOwner);
         record.delta = settled ? settled.getBoundingClientRect().top - port.getBoundingClientRect().top - top : null;
         record.done = true;
+        phase('reader-settled');
       }));
     });
     observer.observe(port, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-index', 'disabled'] });
@@ -395,7 +418,8 @@ async function runScenario(browser, config, name) {
   const result = { name, status: 'not-run', durationMs: 0, earlierPagesVisible: 0, targetReads: 0,
     cachedTailReadDelta: null, changesStreams: 0, maxFrameGapMs: 0, blockedWrites: 0, blockedStreams: 0 };
   const start = performance.now(); let context, page, cdp, deadline, timedOut = false;
-  let diagnosticCapture;
+  let diagnosticCapture, traceCompletion;
+  const profile = process.env.HAPI_DSH_SMOKE_PROFILE === '1';
   const sourcePages = [], pending = new Set(), layoutCommits = [], socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
   let activePageProbe = null;
   const awaiting = async (step, promise) => { result.step = step; return await promise; };
@@ -422,8 +446,13 @@ async function runScenario(browser, config, name) {
       return unwrap(envelope.result.value);
     };
     const catalog = await awaiting('resolve-canonical-session', bootstrap('hhpi/catalog'));
-    if (!Array.isArray(catalog?.sessions) || !catalog.sessions.some(session => session.id === config.sessionId
-      && canonicalHhpiSessionId(session.id))) fail('canonical-session-not-in-hhpi-catalog');
+    if (!Array.isArray(catalog?.sessions)) fail('catalog-response-invalid');
+    if (!catalog.sessions.some(session => session.id === config.sessionId && canonicalHhpiSessionId(session.id))) {
+      // A freshly started Host may still be discovering its sidebar. Exercise
+      // the same authenticated exact-identity path as a saved production Pane.
+      const resolved = await awaiting('resolve-unadvertised-canonical-session', bootstrap('hhpi/resolve', { request: { sessionId: config.sessionId } }));
+      if (resolved?.id !== config.sessionId || !canonicalHhpiSessionId(resolved.id)) fail('canonical-session-not-in-hhpi-catalog');
+    }
     const workspace = syntheticWorkspace(config.sessionId);
     let legacyResource, migratedSource;
     if (catalog.legacyHapi === false) {
@@ -453,7 +482,7 @@ async function runScenario(browser, config, name) {
     await awaiting('install-synthetic-workspace-bootstrap', context.addInitScript(({ origin, sessionId }) => {
       if (location.origin === origin) localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId }));
     }, { origin: appUrl.origin, sessionId: config.sessionId }));
-    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, allowedReadStreams: [...readStreams] }));
+    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, allowedReadStreams: [...readStreams], profile }));
     await awaiting('install-write-isolation-routes', context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url());
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) return route.continue();
@@ -561,12 +590,17 @@ async function runScenario(browser, config, name) {
         if (pageValue?.session?.id !== config.sessionId || !Array.isArray(pageValue.entries)) {
           sourcePages.push({ request, anchorSnapshot, error: 'wrong-source-or-invalid-page' }); return;
         }
+        if (profile) { result.sourcePayloads ??= []; result.sourcePayloads.push({ bytes: Buffer.byteLength(JSON.stringify(envelope)), events: pageValue.entries.length, context: pageValue.context?.length ?? 0, older: Number.isFinite(request.before) }); }
         sourcePages.push({ request, page: pageValue, anchorSnapshot, receivedAt: performance.now(), used: false });
       })().catch(() => { sourcePages.push({ request: {}, error: 'read-capture-failed' }); });
       pending.add(task); void task.finally(() => pending.delete(task));
     });
     await awaiting('install-blocked-stream-counter', page.exposeBinding('hhpiSmokeBlocked', () => { result.blockedStreams++; }));
     cdp = await awaiting('attach-browser-network-inspector', context.newCDPSession(page));
+    if (profile && name === 'desktop') {
+      traceCompletion = new Promise(resolve => cdp.once('Tracing.tracingComplete', resolve));
+      await cdp.send('Tracing.start', { categories: 'devtools.timeline,v8.execute,disabled-by-default-v8.cpu_profiler', transferMode: 'ReturnAsStream' });
+    }
     await awaiting('enable-browser-network-inspector', cdp.send('Network.enable'));
     const socketUrls = new Map();
     cdp.on('Network.webSocketCreated', event => socketUrls.set(event.requestId, event.url));
@@ -762,6 +796,22 @@ async function runScenario(browser, config, name) {
     result.error = timedOut ? 'scenario-budget-exhausted' : error.smokeCode ?? (error.name === 'TimeoutError' ? 'step-timeout' : 'interaction-failed');
   } finally {
     clearTimeout(deadline);
+    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [] })).catch(() => null);
+    if (traceCompletion) {
+      let traceDeadline;
+      const saveTrace = async () => {
+        await cdp.send('Tracing.end');
+        const { stream } = await traceCompletion; const chunks = [];
+        for (;;) { const chunk = await cdp.send('IO.read', { handle: stream }); chunks.push(chunk.base64Encoded ? Buffer.from(chunk.data, 'base64') : Buffer.from(chunk.data)); if (chunk.eof) break; }
+        await cdp.send('IO.close', { handle: stream });
+        await writeFile('/mnt/cache/data-cache/hhpi-opening-frame-trace.json', Buffer.concat(chunks), { mode: 0o600 });
+        result.profileTrace = 'private-local-file';
+      };
+      try {
+        await Promise.race([saveTrace(), new Promise((_, reject) => { traceDeadline = setTimeout(() => reject(new Error('trace-diagnostic-budget')), 10000); })]);
+      } catch { result.profileTrace = 'unavailable'; await cdp.detach().catch(() => {}); }
+      finally { clearTimeout(traceDeadline); }
+    }
     await diagnosticCapture?.catch(() => {});
     await context?.close().catch(() => {});
     result.durationMs = Math.round(performance.now() - start);

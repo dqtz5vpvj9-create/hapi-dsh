@@ -134,6 +134,35 @@ test('publication measurement keeps a visible group instead of its offscreen fir
   } finally { dom.window.close(); }
 });
 
+test('publication fallback measures a stable body instead of a regenerated turn control', async () => {
+  const dom = new JSDOM(`<section class="hapi-pane" data-session-id="${target}" data-hapi-pane-visible="true">
+    <div data-conversation-scroll><div data-chat-flow><div><button disabled>Loading</button></div>
+      <div data-chat-virtual-row data-index="0"><div data-chat-node-key="partial-turn-control" data-chat-anchor-key="partial-turn-control" data-chat-flow-kind="turn-process">Completed</div></div>
+      <div data-chat-virtual-row data-index="1"><div data-chat-node-key="original-answer" data-chat-anchor-key="original-answer" data-chat-flow-kind="assistant-step">Original readable answer</div></div>
+    </div></div></section>`, { runScripts: 'outside-only', pretendToBeVisual: true });
+  try {
+    const { window } = dom;
+    window.HTMLElement.prototype.getBoundingClientRect = function() {
+      const top = this.dataset.chatFlowKind === 'turn-process' ? 46 : this.dataset.chatFlowKind === 'assistant-step' ? 100 : 0;
+      const height = this.hasAttribute('data-conversation-scroll') ? 500 : 40;
+      return { x: 0, y: top, left: 0, right: 390, top, bottom: top + height, width: 390, height };
+    };
+    // The top pixel hits padding: the real smoke must take its fallback path.
+    window.document.elementsFromPoint = () => [];
+    vm.runInContext(`(${installObserver.toString()})(${JSON.stringify({ sessionId: target, allowedReadStreams: [] })})`, dom.getInternalVMContext());
+    const index = await window.__hhpiSmoke.armLayoutCommit();
+    const record = window.__hhpiSmoke.layoutCommits[index];
+    assert.equal(record.flowKind, 'assistant-step');
+    window.document.querySelector('[data-chat-flow-kind="turn-process"]').closest('[data-chat-virtual-row]').remove();
+    window.document.querySelector('[data-chat-flow-kind="assistant-step"]').closest('[data-chat-virtual-row]').dataset.index = '11';
+    window.document.querySelector('button').disabled = false;
+    for (let i = 0; i < 5 && !record.done; i++) await new Promise(window.requestAnimationFrame);
+    assert.equal(record.done, true);
+    assert.equal(record.retained, true, 'replacing a turn control is not losing the visible original answer');
+    assert.equal(record.delta, 0);
+  } finally { dom.window.close(); }
+});
+
 test('failure diagnostics retain only safe categories, whitelisted missing modules, counts and scrubbed HAPI marks', () => {
   const consoleText = 'web boot: 33 entries did not activate; require("@deepseek-ai/dsh-brand") and require("@deepseek-ai/cosmokit") missed the module table at https://private.example/session/secret';
   assert.equal(publicConsoleCategory(consoleText), 'web-boot-activation');
