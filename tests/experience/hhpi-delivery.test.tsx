@@ -6,6 +6,7 @@ import { SessionSeq } from '@deepseek-ai/dsh-session'
 import { MessageId } from '@deepseek-ai/dsh-llm'
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { SourceDeliveryStatus } from '../../src/client/remote-controls.tsx'
+import { memoryOperations } from '../fixtures/operation-transactions.ts'
 import { RemoteOutbox } from '../../src/client/remote-outbox.ts'
 import type { SourceReceipt, SourceSession } from '../../src/remote/protocol.ts'
 
@@ -15,7 +16,7 @@ const metadata: SourceSession = { id: 'hhpi:machine:source:codex:thread', machin
 
 test('delivery feedback stays through an accepted ACK and leaves only when the source user message appears', async () => {
   const receipt = Promise.withResolvers<SourceReceipt>(), operation = { sessionId: metadata.id, operationId: 'receipt-wait', kind: 'send' as const, text: 'Synthetic saved text' }
-  const outbox = new RemoteOutbox(() => receipt.promise)
+  const outbox = new RemoteOutbox(() => receipt.promise, undefined, undefined, memoryOperations)
   outbox.setStorage({ storage: localStorage, scope: 'dock-ack' })
   try {
     render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
@@ -34,7 +35,7 @@ test('delivery feedback stays through an accepted ACK and leaves only when the s
 test('a refused saved message explains its outcome and can be explicitly dismissed without another send', async () => {
   let calls = 0
   const operation = { sessionId: metadata.id, operationId: 'denied-dock', kind: 'send' as const, text: 'Synthetic denied text' }
-  const outbox = new RemoteOutbox(async request => { calls++; return { sessionId: request.sessionId, operationId: request.operationId, status: 'rejected', message: 'Synthetic permission refused' } })
+  const outbox = new RemoteOutbox(async request => { calls++; return { sessionId: request.sessionId, operationId: request.operationId, status: 'rejected', message: 'Synthetic permission refused' } }, undefined, undefined, memoryOperations)
   outbox.setStorage({ storage: localStorage, scope: 'dock-denied' })
   try {
     render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
@@ -48,7 +49,7 @@ test('a refused saved message explains its outcome and can be explicitly dismiss
 test('owner handoff keeps the original text viewable and does not claim native execution completed', async () => {
   const operation = { sessionId: metadata.id, operationId: 'owner-receipt', kind: 'send' as const, text: '原执行端保存的完整消息' }
   const outbox = new RemoteOutbox(async request => ({ sessionId: request.sessionId, operationId: request.operationId, status: 'accepted',
-    message: 'Saved by original owner', ownerAdmission: { localId: request.operationId, state: 'consumed' } }))
+    message: 'Saved by original owner', ownerAdmission: { localId: request.operationId, state: 'consumed' } }), undefined, undefined, memoryOperations)
   outbox.setStorage({ storage: localStorage, scope: 'dock-owner' })
   try {
     render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)

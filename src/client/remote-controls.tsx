@@ -1,3 +1,4 @@
+import { sourceControlOperationId } from '../shared/source-operation-policy.ts'
 /** Additive controls for capabilities owned by the native source engine. */
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
@@ -18,6 +19,10 @@ function awaitingControlReceipt(error: unknown): boolean {
 }
 
 function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
+  if (delivery.operation.kind === 'cancel' || delivery.operation.kind === 'approve') {
+    if (delivery.state === 'accepted') return zh ? '源端已接受控制请求，最终状态由原执行端更新' : 'Control accepted; the original execution owner reports the final state'
+    if (delivery.state === 'confirming') return zh ? '正在确认原控制请求的结果' : 'Confirming the original control request'
+  }
   const labels = { queued: ['已保存在本机，等待连接后发送', 'Saved on this device; waiting to send'],
     sending: ['正在发送已保存的消息', 'Sending saved message'],
     confirming: ['正在确认投递结果，消息仍保留', 'Confirming delivery; your message is retained'],
@@ -28,7 +33,7 @@ function deliveryLabel(delivery: SourceDelivery, zh: boolean): string {
 }
 
 /** Delivery feedback augments the official pending submission bubble. */
-export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSourceSession, 'deliveries' | 'discardSubmission'>; zh: boolean }) {
+export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSourceSession, 'deliveries' | 'discardSubmission'> & Partial<Pick<RemoteSourceSession, 'retrySubmission'>>; zh: boolean }) {
   const deliveries = useSyncExternalStore(session.deliveries.subscribe, session.deliveries.getSnapshot)
   if (!deliveries.length) return null
   return <div className="hhpi-source-deliveries" style={{ maxHeight: 128, overflowY: 'auto', overscrollBehavior: 'contain' }}>{deliveries.map(delivery => delivery.state === 'owner-accepted'
@@ -36,6 +41,7 @@ export function SourceDeliveryStatus({ session, zh }: { session: Pick<RemoteSour
       <p role="status">{deliveryLabel(delivery, zh)}</p><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{delivery.operation.text}</pre></details>
     : <p key={delivery.operation.operationId} role={delivery.state === 'rejected' ? 'alert' : 'status'} data-hhpi-delivery={delivery.state}>
     {deliveryLabel(delivery, zh)}
+    {delivery.operation.kind !== 'send' && delivery.state === 'queued' && session.retrySubmission && <button type="button" onClick={() => { session.retrySubmission?.(delivery.operation.operationId) }}>{zh ? '继续原请求' : 'Resume original request'}</button>}
     {delivery.state === 'rejected' && <> · “{delivery.operation.text?.slice(0, 40)}{(delivery.operation.text?.length ?? 0) > 40 ? '…' : ''}” · {delivery.message} <button type="button" onClick={() => { session.discardSubmission(delivery.operation.operationId) }}>{zh ? '移除' : 'Dismiss'}</button></>}
   </p>)}</div>
 }
@@ -67,12 +73,15 @@ function SourceApprovalButtons({ session, request, zh, disabled = false }: Appro
     if (disabled || inFlight.current || receipt?.status === 'accepted' || receipt?.status === 'indeterminate' && chosen.current !== decision) return
     inFlight.current = true; chosen.current = decision; setBusy(true); setError(undefined)
     const generation = lifetime.current
+    let operationId = ''
     try {
-      const result = await session.operate({ sessionId: session.sessionId, operationId: `approval:${request.id}`, kind: 'approve', requestId: request.id, decision })
+      operationId = await sourceControlOperationId(session.sessionId, 'approve', request.id)
+      if (generation !== lifetime.current) return
+      const result = await session.operate({ sessionId: session.sessionId, operationId, kind: 'approve', requestId: request.id, decision })
       if (generation === lifetime.current) setReceipt(result)
     } catch (cause) {
       if (generation === lifetime.current) {
-        if (awaitingControlReceipt(cause)) setReceipt({ sessionId: session.sessionId, operationId: `approval:${request.id}`, status: 'indeterminate',
+        if (awaitingControlReceipt(cause)) setReceipt({ sessionId: session.sessionId, operationId, status: 'indeterminate',
           message: zh ? '审批结果待确认，连接恢复后可重试当前选择。' : 'Waiting to confirm this approval. Retry the same choice after the connection recovers.' })
         else setError(cause instanceof Error ? cause.message : String(cause))
       }

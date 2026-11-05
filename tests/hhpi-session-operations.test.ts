@@ -90,7 +90,8 @@ test('a receipt for another native session cannot acknowledge this draft', async
   const outcome = await session.prompt(content, 'queue', undefined, pending.requestId)
   assert.equal(calls.length, 1)
   assert.equal(outcome.ok, false, 'a cross-session receipt must not acknowledge the current submission')
-  assert.deepEqual(retirements.map(item => item.reason), ['failed'])
+  assert.deepEqual(retirements, [], 'an unrelated receipt is no proof that the original write failed')
+  assert.equal(session.getSnapshot().pendingSubmissions.length, 1)
   assert.ok(session.getSnapshot().promptError)
 })
 
@@ -139,8 +140,8 @@ test('a recovered control revalidates its original native target and does not fo
   await assert.rejects(session.operate(request), /Reply lost/)
   api.receipt = async () => ({ ok: true, value: null })
   session.update({ ...value, activeTurnId: 'replacement-turn' })
-  await assert.rejects(session.operate(request), /original native turn|replacement turn/)
-  assert.equal(calls.length, 1)
+  assert.equal((await session.operate(request)).status, 'indeterminate')
+  assert.equal(calls.length, 1, 'a missing receipt cannot authorize a control for either the original or replacement turn')
 })
 
 test('a released Session face cannot dispatch a new source write or reopen on late history', async t => {

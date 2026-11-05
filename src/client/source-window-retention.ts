@@ -153,12 +153,13 @@ export function sourceRetentionPlan(entries: readonly SessionEventLikeEntry[], p
   direction: 'older' | 'newer', budget: { events: number; bytes: number; groups?: number; size(entry: SessionEventLikeEntry): number }): SourceRetentionPlan {
   const groups = sourceGroups(entries)
   if (!groups.length) return { first: 0, last: 0, groups, fits: true, oversizedRow: false }
-  const contentGroups = groups.map(group => group.content)
+  const contentCounts = [0]
+  for (const group of groups) contentCounts.push(contentCounts.at(-1)! + Number(group.content))
   const sums = [0]
   for (const row of entries) sums.push(sums.at(-1)! + budget.size(row))
   const costFits = (first: number, last: number) => {
     const start = groups[first]!.start, end = groups[last]!.end
-    return contentGroups.slice(first, last + 1).filter(Boolean).length <= (budget.groups ?? Number.POSITIVE_INFINITY)
+    return (contentCounts[last + 1]! - contentCounts[first]!) <= (budget.groups ?? Number.POSITIVE_INFINITY)
       && end - start <= budget.events && sums[end]! - sums[start]! <= budget.bytes
   }
   const content = groups.flatMap((group, index) => group.content ? [index] : [])

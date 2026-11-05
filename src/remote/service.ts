@@ -10,16 +10,17 @@ import { HHPI_REMOTE } from '../hhpi-api.ts';
 import { SourceGateway, type SourceAccess } from './gateway.ts';
 import { DirectCodexAdapter } from './codex-adapter.ts';
 import { DirectDshAdapter } from './dsh-adapter.ts';
-import { SourceError } from './errors.ts';
+import { SourceAccessDenied, SourceError } from './errors.ts';
 import type { DirectSourceConfig, SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt,
     SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './protocol.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpi: HhpiSourceService } }
 declare module '@deepseek-ai/dsh-typert-protocol' { interface TypertResourceMap { hhpiSource: TypertResource<string> } }
-function remoteError(error: unknown): never {
+function remoteError(error: unknown, reading = false): never {
     if (error instanceof RemoteError || error instanceof DOMException && error.name === 'AbortError') throw error;
-    const source = error instanceof SourceError ? error : new SourceError('TARGET_UNAVAILABLE', 'The source request could not be completed.');
-    throw new RemoteError('hhpi/source', source.message, { sourceCode: source.code, outcome: source.code === 'OUTCOME_UNKNOWN' ? 'indeterminate' : 'rejected' });
+    if (error instanceof SourceAccessDenied) throw new RemoteError('remote-access/denied', error.message, { action: 'hhpi/source', reason: 'no-allow' });
+    const source = error instanceof SourceError ? error : new SourceError('HISTORY_UNAVAILABLE', 'The source returned data that could not be accepted.');
+    throw new RemoteError('hhpi/source', source.message, { sourceCode: reading && source.code === 'UNSUPPORTED' ? 'HISTORY_UNAVAILABLE' : source.code, outcome: source.code === 'OUTCOME_UNKNOWN' ? 'indeterminate' : 'rejected' });
 }
 const addressedSession = (request: { sessionId: string }): readonly SessionId[] => [request.sessionId as SessionId];
 const addressedSource = (request: { sourceId: string }): readonly string[] => [request.sourceId];
@@ -58,14 +59,14 @@ export class HhpiSourceService extends TypertRemoteService {
         } catch (error) { remoteError(error); }
     }
     @Remote({ name: 'read', resources: { session: addressedSession } })
-    async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error); } }
+    async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error, true); } }
     @Remote({ name: 'resolve', resources: { session: addressedSession } })
     async resolve(request: { sessionId: string }, signal?: AbortSignal): Promise<SourceSession> {
         try { return await this.gateway.resolve(request.sessionId, this.access, signal); } catch (error) { remoteError(error); }
     }
     @Remote({ name: 'changes', mode: 'stream', resources: { session: addressedSession } })
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStream<SourceChanges> {
-        try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error); }
+        try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error, true); }
     }
     @Remote({ name: 'operate', resources: { session: addressedSession } })
     async operate(request: SourceOperation): Promise<SourceReceipt> { try { return await this.gateway.operate(request, this.access); } catch (error) { remoteError(error); } }
@@ -83,7 +84,7 @@ export function installSources(ctx: Context, sources: readonly DirectSourceConfi
         const cache = join(directory, createHash('sha256').update(JSON.stringify([source.machineId, source.id, source.engine])).digest('hex'));
         return source.engine === 'dsh' ? new DirectDshAdapter(source, cache) : new DirectCodexAdapter(source, cache);
     });
-    const gateway = new SourceGateway(adapters, legacyHapi);
+    const gateway = new SourceGateway(adapters, legacyHapi, { refreshMs: 15_000 });
     new HhpiSourceService(ctx, gateway, directory);
     // The official index belongs to the owner. Non-owner clients adopt their
     // invocation-derived scope from catalog before any retained write can run.

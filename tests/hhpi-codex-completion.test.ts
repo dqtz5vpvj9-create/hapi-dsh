@@ -61,7 +61,10 @@ async function fixture(t: TestContext, older: NativeTurn[]) {
     t.after(async () => { release.resolve(); await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     const read = () => adapter.read({ sessionId: session.id, limit: 100 });
-    await read();
+    const head = await read();
+    const reader = new AbortController(), follow = adapter.changes({ sessionId: session.id, epoch: head.epoch, version: head.version }, reader.signal)[Symbol.asyncIterator]();
+    await follow.next();
+    t.after(async () => { reader.abort(); await follow.return?.(); });
     const completeBeforeHistory = () => {
         native = { ...native, status: { type: 'active' }, updatedAt: 3 };
         notify({ method: 'turn/started', params: { threadId: native.id, turn: { ...current, status: 'inProgress', completedAt: null } } });

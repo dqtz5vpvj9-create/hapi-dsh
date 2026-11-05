@@ -42,7 +42,11 @@ test('thread readers share bounded source reconnect backoff while cached history
         { rpc, readMetadata: nativeMetadataFixture(() => []), now: () => now, random: () => 1 });
     t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
     const sessions = await adapter.list();
-    for (const session of sessions) await adapter.read({ sessionId: session.id });
+    for (const session of sessions) {
+        const head = await adapter.read({ sessionId: session.id });
+        const reader = new AbortController(), follow = adapter.changes({ sessionId: session.id, epoch: head.epoch, version: head.version }, reader.signal)[Symbol.asyncIterator]();
+        await follow.next(); t.after(async () => { reader.abort(); await follow.return?.(); });
+    }
     const advance = async (ms: number): Promise<void> => { now += ms; t.mock.timers.tick(ms); await flush(); await flush(); };
 
     available = false; online = false; disconnected();

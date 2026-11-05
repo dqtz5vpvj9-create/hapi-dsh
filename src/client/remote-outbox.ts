@@ -1,6 +1,8 @@
 /** Clicked text submissions belong to the account/Host, not to a mounted Pane. */
+import { RemoteOperationLedger, type OperationTransactions } from './remote-operation-ledger.ts'
 import { operationSchema } from '../hhpi-api.ts'
 import type { SourceEntry, SourceOperation, SourceReceipt, SourceSession } from '../remote/protocol.ts'
+import { operationRefusal } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { SourceStorage } from './remote-storage.ts'
 
@@ -27,12 +29,12 @@ const prefixOf = (scope: string): string => `hhpi:outbox:v1:${scope}:`
 const fingerprint = (operation: SourceOperation): string => JSON.stringify([operation.sessionId, operation.operationId, operation.kind,
   operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
 
-function decode(value: string | null): StoredDelivery | undefined {
+function decode(value: string | null | undefined): StoredDelivery | undefined {
   if (!value) return undefined
   try {
     const candidate = JSON.parse(value) as StoredDelivery
     const operation = operationSchema.safeParse(candidate.operation)
-    if (candidate.version !== 1 || !operation.success || operation.data.kind !== 'send' || !operation.data.text?.trim()
+    if (candidate.version !== 1 || !operation.success || (['send', 'steer'].includes(operation.data.kind) && !operation.data.text?.trim())
       || !Number.isSafeInteger(candidate.createdAt) || candidate.createdAt < 0
       || !['queued', 'sending', 'confirming', 'accepted', 'rejected', 'owner-accepted'].includes(candidate.state)
       || typeof candidate.message !== 'string' || !Number.isSafeInteger(candidate.attempts) || candidate.attempts < 0
@@ -49,6 +51,7 @@ function decode(value: string | null): StoredDelivery | undefined {
  * an exact durable owner admission can transfer responsibility for its echo. */
 export class RemoteOutbox {
   private access: SourceStorage | undefined
+  private ledger: OperationTransactions | undefined
   private readonly entries = new Map<string, StoredDelivery>()
   private readonly sessions = new Map<string, SourceSession>()
   private readonly listeners = new Map<string, Set<() => void>>()
@@ -64,19 +67,38 @@ export class RemoteOutbox {
 
   constructor(private readonly send: (operation: SourceOperation) => Promise<SourceReceipt>,
     private readonly lookup?: (operation: SourceOperation) => Promise<SourceReceipt | null>,
-    private readonly readAccepted?: (operation: SourceOperation, receipt: SourceReceipt) => Promise<readonly SourceEntry[]>) {
+    private readonly readAccepted?: (operation: SourceOperation, receipt: SourceReceipt) => Promise<readonly SourceEntry[]>,
+    private readonly createLedger: (access: SourceStorage) => OperationTransactions = access => new RemoteOperationLedger(access)) {
     const wake = (): void => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       for (const [id, entry] of this.entries) if (entry.state === 'confirming' || entry.state === 'queued' || entry.state === 'accepted') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
       this.publish(); this.kick()
     }
+    const storageChanged = (): void => {
+      if (!this.access || this.disposed) return
+      try {
+        const current = new Map<string, StoredDelivery>(), prefix = prefixOf(this.access.scope)
+        for (let index = 0; index < this.access.storage.length; index++) {
+          const key = this.access.storage.key(index)
+          if (!key?.startsWith(prefix)) continue
+          const entry = decode(this.access.storage.getItem(key))
+          if (entry) current.set(entry.operation.operationId, entry)
+        }
+        for (const id of this.entries.keys()) if (!current.has(id)) { this.entries.delete(id); this.staged.delete(id) }
+        for (const [id, entry] of current) {
+          if (entry.operation.kind !== 'send' && entry.attempts === 0 && !this.entries.has(id)) this.staged.add(id)
+          this.entries.set(id, entry)
+        }
+        this.publish(); this.kick()
+      } catch { /* The canonical transaction remains the dispatch authority. */ }
+    }
     const pause = (): void => { if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined }
     if (typeof window === 'undefined') this.stopWake = () => {}
     else {
-      window.addEventListener('online', wake); window.addEventListener('offline', pause); window.addEventListener('pageshow', wake)
+      window.addEventListener('storage', storageChanged); window.addEventListener('online', wake); window.addEventListener('offline', pause); window.addEventListener('pageshow', wake)
       document.addEventListener('visibilitychange', wake)
       this.stopWake = () => {
-        window.removeEventListener('online', wake); window.removeEventListener('offline', pause); window.removeEventListener('pageshow', wake)
+        window.removeEventListener('storage', storageChanged); window.removeEventListener('online', wake); window.removeEventListener('offline', pause); window.removeEventListener('pageshow', wake)
         document.removeEventListener('visibilitychange', wake)
       }
     }
@@ -86,7 +108,7 @@ export class RemoteOutbox {
     if (access?.scope === this.access?.scope && access?.storage === this.access?.storage) return
     ++this.generation; this.ready = false; this.sending.clear()
     if (this.timer !== undefined) clearTimeout(this.timer)
-    this.timer = undefined; this.entries.clear(); this.staged.clear(); this.sessions.clear(); this.access = access
+    this.timer = undefined; this.entries.clear(); this.staged.clear(); this.sessions.clear(); this.access = access; this.ledger = access ? this.createLedger(access) : undefined
     if (access) {
       const prefix = prefixOf(access.scope)
       try {
@@ -99,6 +121,7 @@ export class RemoteOutbox {
         }
       } catch { /* Reads remain available; a new submission still requires a successful durable write. */ }
     }
+    for (const entry of this.entries.values()) if (entry.operation.kind !== 'send' && entry.attempts === 0) this.staged.add(entry.operation.operationId)
     this.publish()
   }
 
@@ -133,7 +156,7 @@ export class RemoteOutbox {
   /** Must finish before the official input commits its draft. No network work occurs here. */
   enqueue(operation: SourceOperation): SourceDelivery {
     if (this.disposed || !this.access) throw new Error('This message could not be saved on this device. Your draft has been kept.')
-    if (operation.kind !== 'send' || !operation.text?.trim() || !operationSchema.safeParse(operation).success) throw new Error('Only a nonempty text message can be queued for this source.')
+    if ((['send', 'steer'].includes(operation.kind) && !operation.text?.trim()) || !operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
     const existing = this.entries.get(operation.operationId)
     if (existing) {
       if (fingerprint(existing.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')
@@ -151,10 +174,37 @@ export class RemoteOutbox {
     this.entries.set(operation.operationId, entry); this.staged.add(operation.operationId); this.publish()
     return entry
   }
+  /** Explicit operations share the same durable evidence as queued text. */
+  submit(operation: SourceOperation): Promise<SourceReceipt> {
+    this.enqueue(operation)
+    const saved = this.get(operation.operationId)
+    if (saved?.receipt && saved.receipt.status !== 'indeterminate' && saved.receipt.retryable !== true) return Promise.resolve(saved.receipt)
+    return new Promise((resolve, reject) => {
+      const view = this.view(operation.sessionId)
+      const check = (): void => {
+        const entry = this.get(operation.operationId)
+        if (entry && fingerprint(entry.operation) !== fingerprint(operation)) { stop(); reject(new Error('The original operation identity already belongs to different arguments.')); return }
+        if (entry?.receipt) { stop(); resolve(entry.receipt) }
+        else if (!entry) { stop(); reject(new Error('The saved operation is no longer available.')) }
+        else if (entry.state === 'confirming') {
+          stop(); resolve({ operationId: operation.operationId, sessionId: operation.sessionId,
+            status: 'indeterminate', message: entry.message })
+        }
+      }
+      const stop = view.subscribe(check)
+      this.start(operation.operationId); check()
+    })
+  }
   start(operationId: string): void {
     if (!this.entries.has(operationId)) throw new Error('The saved submission is no longer available.')
     this.staged.delete(operationId)
     this.kick()
+  }
+  retry(operationId: string): void {
+    const entry = this.entries.get(operationId)
+    if (!entry || entry.state === 'rejected' || entry.state === 'owner-accepted') return
+    this.entries.set(operationId, Object.freeze({ ...entry, retryAt: 0 }))
+    this.start(operationId)
   }
   /** Explicitly abandoning preparation may only remove work that has never left this device. */
   abandon(operationId: string): void {
@@ -194,6 +244,8 @@ export class RemoteOutbox {
   private remove(id: string, observed: boolean, revoked = false): void {
     if (!this.entries.has(id)) return
     try { this.access?.storage.removeItem(this.key(id)) } catch { if (!revoked) return }
+    const access = this.access, key = access ? this.key(id) : undefined
+    void this.ledger?.transition(id, () => null, () => { if (access && key) access.storage.removeItem(key) }).catch(() => {})
     this.entries.delete(id); this.staged.delete(id); this.publish()
     for (const listener of this.retireListeners) listener(id, observed)
   }
@@ -239,7 +291,7 @@ export class RemoteOutbox {
   }
   private maySend(entry: StoredDelivery): boolean {
     const current = this.sessions.get(entry.operation.sessionId)
-    return this.ready && current !== undefined && !sourceIsOffline(current) && current.capabilities.send
+    return this.ready && operationRefusal(current, entry.operation) === undefined
   }
   private kick(): void {
     if (!this.ready || !this.access || this.disposed || typeof navigator !== 'undefined' && navigator.onLine === false) return
@@ -251,21 +303,23 @@ export class RemoteOutbox {
       const session = this.sessions.get(sessionId)
       if (!session) continue
       const entry = (rows.find(value => value.state !== 'accepted' && value.state !== 'rejected' && value.state !== 'owner-accepted')
-        ?? (this.readAccepted ? rows.find(value => value.state === 'accepted' && value.retryAt <= Date.now()) : undefined)) as StoredDelivery | undefined
-      if (!entry && this.readAccepted) for (const value of rows) if (value.state === 'accepted') next = Math.min(next, value.retryAt)
+        ?? (this.readAccepted ? rows.find(value => ['send', 'steer'].includes(value.operation.kind) && value.state === 'accepted' && value.retryAt <= Date.now()) : undefined)) as StoredDelivery | undefined
+      if (!entry && this.readAccepted) for (const value of rows) if (['send', 'steer'].includes(value.operation.kind) && value.state === 'accepted') next = Math.min(next, value.retryAt)
       if (!entry) continue
       if (this.staged.has(entry.operation.operationId)) continue
       // Native execution can be offline while the Host still serves its local
       // receipt/history. Only new writes require that execution connection.
       if (sourceIsOffline(session) && entry.attempts === 0) continue
-      if (!session.capabilities.send && entry.state === 'queued' && entry.attempts === 0) {
+      if (!this.maySend(entry) && entry.state === 'queued' && entry.attempts === 0) {
         this.write({ ...entry, state: 'rejected', message: 'This source no longer permits sending. The saved message is retained.' })
         continue
       }
       if (entry.retryAt > Date.now()) { next = Math.min(next, entry.retryAt); continue }
       const generation = this.generation
       this.sending.add(sessionId)
-      void this.dispatch(entry, generation).finally(() => {
+      void this.dispatch(entry, generation).catch(() => {
+        if (this.owns(entry, generation)) this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, retryAt: Date.now() + 5000 }))
+      }).finally(() => {
         if (generation !== this.generation) return
         this.sending.delete(sessionId); this.kick()
       })
@@ -273,22 +327,39 @@ export class RemoteOutbox {
     if (Number.isFinite(next)) this.timer = setTimeout(() => { this.timer = undefined; this.kick() }, Math.max(50, next - Date.now()))
   }
   private async dispatch(entry: StoredDelivery, generation: number): Promise<void> {
-    const attempt = entry.attempts + 1
-    // A durable marker precedes the RPC. Reload must query this exact identity.
-    if (!this.write({ ...entry, state: entry.state === 'accepted' ? 'accepted' : entry.attempts > 0 ? 'confirming' : 'sending', attempts: attempt,
-      message: entry.state === 'accepted' ? entry.message : entry.attempts > 0 ? 'Confirming the saved message.' : 'Sending the saved message.' })) {
-      this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, retryAt: Date.now() + 5000, message: 'Waiting for device storage before sending.' }))
-      this.publish(); return
+    const ledger = this.ledger!, access = this.access!, key = this.key(entry.operation.operationId)
+    let attempt = entry.attempts + 1, firstDispatch = false, conflicting = false
+    let claimed = entry
+    try {
+      // Import the synchronous admission journal and claim dispatch in one
+      // transaction. Other tabs may only reconcile an existing attempt.
+      const saved = await ledger.transition(entry.operation.operationId, (value, terminal) => {
+        if (terminal) return null
+        const current = decode(value) ?? entry
+        if (fingerprint(current.operation) !== fingerprint(entry.operation)) { conflicting = true; return JSON.stringify(current) }
+        firstDispatch = current.attempts === 0; claimed = current; attempt = current.attempts + 1
+        return JSON.stringify({ ...current, state: ['accepted', 'owner-accepted', 'rejected'].includes(current.state) ? current.state : firstDispatch ? 'sending' : 'confirming',
+          attempts: attempt, message: ['accepted', 'owner-accepted', 'rejected'].includes(current.state) ? current.message : firstDispatch ? 'Sending the saved operation.' : 'Confirming the saved operation.' })
+      }, value => { if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value) })
+      if (generation !== this.generation || this.disposed || !this.entries.has(entry.operation.operationId)) return
+      if (!saved) { this.entries.delete(entry.operation.operationId); this.publish(); return }
+      entry = claimed
+      this.entries.set(entry.operation.operationId, decode(saved)!); this.publish()
+      if (conflicting || claimed.state === 'owner-accepted' || claimed.state === 'rejected') return
+    } catch {
+      if (this.owns(entry, generation)) {
+        this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, retryAt: Date.now() + 5000,
+          message: 'Waiting for device storage before sending.' })); this.publish()
+      }
+      return
     }
     let state: DeliveryState, message: string, receipt: SourceReceipt | undefined = entry.receipt
     let phase: 'write' | 'lookup' | 'history' = 'lookup'
     try {
       if (!this.owns(entry, generation)) return
-      if (entry.attempts > 0 && this.lookup) {
+      if (!firstDispatch && this.lookup) {
         receipt = await this.lookup(entry.operation) ?? (entry.state === 'accepted' ? entry.receipt : undefined)
-      } else if (entry.state !== 'accepted' && this.maySend(entry)) { phase = 'write'; receipt = await this.send(entry.operation) }
-      if (!this.owns(entry, generation)) return
-      if (!receipt && entry.state !== 'accepted' && this.maySend(entry)) { phase = 'write'; receipt = await this.send(entry.operation) }
+      } else if (firstDispatch && entry.state !== 'accepted' && this.maySend(entry)) { phase = 'write'; receipt = await this.send(entry.operation) }
       if (!this.owns(entry, generation)) return
       if (!receipt) {
         state = 'confirming'; message = 'Waiting for a readable receipt. No new native operation was dispatched.'
@@ -300,10 +371,12 @@ export class RemoteOutbox {
         state = receipt.status === 'indeterminate' || receipt.retryable === true ? 'confirming' : receipt.status
         message = receipt.message
         if (receipt.status === 'accepted' && receipt.ownerAdmission?.localId === entry.operation.operationId) {
-          if (!this.handoff({ ...entry, attempts: attempt }, receipt)) throw new Error('The owner acknowledgement could not be saved on this device.')
+          const acknowledged: StoredDelivery = { ...entry, attempts: attempt, receipt, state: 'owner-accepted', retryAt: 0 }
+          const durable = await ledger.transition(entry.operation.operationId, (_, terminal) => terminal ? null : JSON.stringify(acknowledged), value => { if (value === null) access.storage.removeItem(key); else this.handoff(acknowledged, receipt!) })
+          if (!durable || !this.owns(entry, generation)) return
           return
         }
-        if (receipt.status === 'accepted' && this.readAccepted) {
+        if (receipt.status === 'accepted' && ['send', 'steer'].includes(entry.operation.kind) && this.readAccepted) {
           phase = 'history'
           const entries = await this.readAccepted(entry.operation, receipt)
           if (this.owns(entry, generation)) this.observe(entry.operation.sessionId, entries)
@@ -326,9 +399,24 @@ export class RemoteOutbox {
     const retryAt = state === 'confirming' || state === 'accepted' ? Date.now() + Math.min(30_000, 1000 * 2 ** Math.min(attempt - 1, 5)) + Math.floor(Math.random() * 250) : 0
     // If storage filled after dispatch, keep the original durable uncertainty
     // marker. A later retry/reload reconciles it; no new identity is invented.
-    if (!this.write({ ...entry, attempts: attempt, state, message, retryAt, ...(receipt ? { receipt } : {}) })) {
-      this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, attempts: attempt, state: 'confirming', message: 'Delivery is waiting for confirmation; device storage is full.', retryAt: Date.now() + 5000 }))
+    try {
+      const saved = await ledger.transition(entry.operation.operationId, (value, terminal) => {
+        if (terminal) return null
+        const prior = decode(value)
+        if (prior && (prior.state === 'owner-accepted' || prior.receipt?.status === 'accepted' && receipt?.status !== 'accepted')) return JSON.stringify(prior)
+        return JSON.stringify({ ...entry, attempts: Math.max(attempt, prior?.attempts ?? 0), state, message, retryAt, ...(receipt ? { receipt } : {}) })
+      }, value => {
+        if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value)
+      })
+      if (!this.owns(entry, generation)) return
+      if (saved) this.entries.set(entry.operation.operationId, decode(saved)!)
+      else this.entries.delete(entry.operation.operationId)
       this.publish()
+    } catch {
+      if (this.owns(entry, generation)) {
+        this.entries.set(entry.operation.operationId, Object.freeze({ ...entry, attempts: attempt, state: 'confirming',
+          message: 'Delivery is waiting for confirmation; device storage is full.', retryAt: Date.now() + 5000 })); this.publish()
+      }
     }
   }
 }

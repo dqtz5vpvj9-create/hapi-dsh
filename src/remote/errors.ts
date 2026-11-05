@@ -3,6 +3,10 @@ export class SourceError extends Error {
     override readonly name = 'SourceError';
     constructor(readonly code: SourceErrorCode, message: string, readonly delivery?: 'not-dispatched') { super(message); }
 }
+/** Internal distinction carried over the existing authenticated denial error. */
+export class SourceAccessDenied extends SourceError {
+    constructor() { super('UNSUPPORTED', 'Access to this source resource was not granted.'); }
+}
 export function abortError(): DOMException { return new DOMException('The source read was cancelled.', 'AbortError'); }
 /** A cancelled reader cannot cancel another reader's shared source work. */
 export function waitFor<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {

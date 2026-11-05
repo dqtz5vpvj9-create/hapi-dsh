@@ -142,7 +142,7 @@ test('a genuinely oversized page still fails admission without altering accepted
 })
 
 test('a resident history larger than the replay target still publishes its latest revision', { timeout: 5000 }, async t => {
-  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire)
+  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire, { events: 20_000, bytes: 64 * 1024 * 1024 })
   t.after(() => owner.dispose())
   wire.entries = wire.entries.map(value => entry(value.event.seq, 'x'.repeat(24 * 1024)))
   const feed = await owner.openView('large-history', budget)
@@ -212,4 +212,20 @@ test('a released Pane cannot accept a late page and another Pane keeps its live 
   first.release(); gate.release(); await rejected
   assert.equal(second.initial.entries.length, 160)
   assert.equal((await older(second, second.initial)).entries.length, 320)
+})
+
+test('source pressure trims only a proposed window and cannot evict another Pane', async t => {
+  const wire = new Wire(), owner = new RemoteSourceHistory(session.id, wire, { events: 160, bytes: 1024 * 1024 })
+  t.after(() => owner.dispose())
+  const first = await owner.openView('first', budget), second = await owner.openView('second', budget)
+  first.publication!.accept(first.initial.version); second.publication!.accept(second.initial.version)
+  await assert.rejects(older(first, first.initial), { code: 'CAPACITY_EXCEEDED' })
+  assert.equal(first.publication!.published?.snapshot, first.initial)
+  assert.equal(second.publication!.published?.snapshot, second.initial)
+  second.release()
+  const next = await older(first, first.initial)
+  assert.equal(next.entries.length, 160)
+  assert.ok(next.hasAfter, 'pressure exposes a real forward gap after retaining the requested earlier page')
+  first.publication!.accept(next.version)
+  assert.ok(owner.retainedEvents <= 160, 'accepting the trim releases the old candidate and reclaims its entries')
 })

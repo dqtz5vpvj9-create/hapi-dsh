@@ -1,6 +1,9 @@
 /** Shared accepted source entries and independent, transactionally published Pane windows. */
 import type { Budget, HistoryDeltaV1, HistoryFeedV1, HistoryReadV1, HistorySnapshotV1, SessionEventChange, SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SourceChanges, SourceChangesRequest, SourceEntry, SourcePage, SourceReadRequest, SourceSession } from '../remote/protocol.ts'
+import { sourceRetentionPlan } from './source-window-retention.ts'
+import { RemoteRecovery } from './remote-recovery.ts'
+import { RemoteSessionState } from './remote-session-state.ts'
 import { HistoryPublication, type PublishedWindow } from './history-publication.ts'
 import { boundedSourceRead, recoverableSourceRead, revokedSourceRead, sourceReadFailureCode, waitForSourceReadRecovery } from './remote-read-recovery.ts'
 import type { SourceReadingCache, SourceReadingCheckpoint } from './remote-reading-cache.ts'
@@ -52,6 +55,7 @@ interface PendingPage { promise: Promise<SourcePage>; abort: AbortController; us
 interface WindowMetadata { epoch: string; navigation: number; context: readonly number[]; budget: Budget }
 
 export class RemoteSourceHistory {
+  private readonly accepted = new RemoteSessionState()
   private epoch: string | undefined
   private version = 0
   private generation = 0
@@ -66,6 +70,7 @@ export class RemoteSourceHistory {
   private readonly versionObservers = new Set<() => void>()
   private readonly lifetime = new AbortController()
   private connection: AbortController | undefined
+  private releaseTimer: ReturnType<typeof setTimeout> | undefined
   private clock = 0
   private connectionError: unknown
   private lastSession: SourceSession | undefined
@@ -109,15 +114,22 @@ export class RemoteSourceHistory {
   get retainedEvents(): number { return this.entries.size }
   /** An inactive warm reader owns no live subscription or native execution. */
   suspend(): void {
-    if (this.windows.size !== 0) return
-    this.connection?.abort(); this.connection = undefined
+    if (this.windows.size !== 0 || this.releaseTimer !== undefined) return
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = undefined
+      if (this.windows.size === 0) { this.connection?.abort(); this.connection = undefined }
+    }, 300)
+    this.releaseTimer.unref?.()
   }
+  get recoveryTarget(): string { return JSON.stringify([this.epoch, this.generation]) }
+  reconcilePages(pages: readonly SourcePage[]): SourcePage { return this.accepted.merge(pages, this.sourceEpoch, this.version, this.lastSession ?? pages.at(-1)!.session) }
   get metadataFromCache(): boolean { return this.restoredMetadata }
   prepare(signal?: AbortSignal): Promise<SourcePage> { return this.initialize(signal) }
   async openView(viewId: string, budget: Budget, signal?: AbortSignal, cacheId = viewId): Promise<HistoryFeedV1> {
     this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted()
     const existing = this.windows.get(viewId)
     if (existing) return existing
+    if (this.releaseTimer !== undefined) { clearTimeout(this.releaseTimer); this.releaseTimer = undefined }
     const baseline = await this.initialize(signal)
     this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted()
     const current = this.windows.get(viewId)
@@ -257,6 +269,7 @@ export class RemoteSourceHistory {
                 // Keep its body mounted until authoritative pages of the same range commit.
                 if (replaced) this.cache?.remove(this.sessionId)
                 ++this.generation
+                this.accepted.reset()
                 this.epoch = change.epoch; this.version = change.version; this.metadataVersion = -1
                 if (replaced) this.entries.clear()
                 this.pages.clear(); this.removed.clear(); this.cachedOpening = undefined; this.cachedWindows.clear()
@@ -276,6 +289,7 @@ export class RemoteSourceHistory {
                 this.entries.set(entry.event.seq, { entry: accepted, version: change.version, used: ++this.clock })
                 return accepted
               })
+              this.accepted.record(change)
               this.version = change.version; this.acceptSession(change.session, change.version)
               this.notifyEntries(acceptedUpserts)
               if (this.cachedOpening?.epoch === change.epoch && this.cachedOpening.version <= change.version) {
@@ -375,13 +389,32 @@ export class RemoteSourceHistory {
     return seqs.flatMap(seq => { const value = this.entries.get(seq); if (!value) return []; value.used = ++this.clock; return [value.entry] })
   }
   entriesAfter(seq: number): SourceEntry[] { return [...this.entries.values()].filter(value => value.version <= this.version).map(value => value.entry).filter(entry => entry.event.seq > seq).sort((a, b) => a.event.seq - b.event.seq) }
+  /** Pressure is source-wide; page admission remains a separate contract. */
+  admitWindow(window: RemoteHistoryWindow, entries: readonly SessionEventLikeEntry[], context: ReadonlySet<number>,
+    requested: readonly SessionEventLikeEntry[], direction: 'older' | 'newer'): SessionEventLikeEntry[] {
+    const other = new Set([...this.windows.values()].filter(value => value !== window).flatMap(value => value.sequences()))
+    const present = new Set(entries.map(entry => entry.event.seq))
+    const outside = [...other].filter(seq => !present.has(seq))
+    const events = this.limits.events - outside.length
+    const availableBytes = this.limits.bytes - outside.reduce((total, seq) => total + (this.entries.has(seq) ? size(this.entries.get(seq)!.entry) : 0), 0)
+    if (entries.length <= events && windowBytes(entries) <= availableBytes) return [...entries]
+    // Explicit dependency rows and the requested body must survive together.
+    // Official windowCommit still validates every visible reader before trim.
+    const required = new Set([...context, ...[...other].filter(seq => present.has(seq)), ...requested.map(entry => entry.event.seq)])
+    // Keep source groups intact, then verify all explicit dependencies survived.
+    const plan = sourceRetentionPlan(entries, [], direction, { events, bytes: availableBytes, size })
+    const retained = entries.slice(plan.first, plan.last), retainedSeqs = new Set(retained.map(entry => entry.event.seq))
+    if (!plan.fits || retained.length > events || windowBytes(retained) > availableBytes
+      || entries.some(entry => required.has(entry.event.seq) && !retainedSeqs.has(entry.event.seq))) {
+      throw new RemoteHistoryError('CAPACITY_EXCEEDED', 'The requested history and protected readers exceed this source cache budget. Existing history is unchanged.')
+    }
+    return retained
+  }
   trimCache(): void {
     let used = [...this.entries.values()].reduce((total, value) => total + size(value.entry), 0)
     if (used <= this.limits.bytes && this.entries.size <= this.limits.events) return
+    this.cachedOpening = undefined; this.cachedWindows.clear()
     const pinned = new Set([...this.windows.values()].flatMap(window => window.sequences()))
-    if (this.cache) for (const page of [this.cachedOpening, ...this.cachedWindows.values()]) {
-      for (const entry of page?.entries ?? []) pinned.add(entry.event.seq)
-    }
     const candidates = [...this.entries].filter(([seq]) => !pinned.has(seq)).sort((a, b) => a[1].used - b[1].used)
     for (const [seq, value] of candidates) {
       if (used <= this.limits.bytes && this.entries.size <= this.limits.events) break
@@ -399,7 +432,7 @@ export class RemoteSourceHistory {
     }
     this.windows.delete(window.viewId); this.trimCache()
     if (this.windows.size === 0) {
-      this.connection?.abort(); this.connection = undefined
+      this.suspend()
       // A durable retain may restore this checkpoint; memory-only callers
       // still obtain a fresh baseline before opening another live view.
       if (!this.cache) {
@@ -409,6 +442,7 @@ export class RemoteSourceHistory {
     }
   }
   dispose(): void {
+    if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer)
     ++this.generation; this.lifetime.abort(); this.connection?.abort(); this.connection = undefined
     for (const window of [...this.windows.values()]) window.release()
     this.entries.clear(); this.pages.clear(); this.removed.clear(); this.observers.clear(); this.entryObservers.clear(); this.notifyVersion()
@@ -433,7 +467,8 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   private readonly pending = new Map<string, PendingRead>()
   private error: unknown
   private navigation = 0
-  private recovery: Promise<void> | undefined
+  private readonly recoveryTask = new RemoteRecovery()
+  private get recovery(): Promise<void> | undefined { return this.recoveryTask.pending }
   constructor(private readonly owner: RemoteSourceHistory, readonly viewId: string, page: SourcePage, private budget: Budget, readonly cacheId: string) {
     this.stateEpoch = page.epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.initial = this.state
@@ -518,7 +553,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (page.entries.length > budget.events || windowBytes(page.entries) > budget.bytes) {
       throw new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source page and its dependencies exceed the reading admission budget.')
     }
-    const entries = entriesBySeq(extending ? [...this.owner.currentEntries(this.seqs), ...page.entries] : page.entries)
+    let entries = entriesBySeq(extending ? [...this.owner.currentEntries(this.seqs), ...page.entries] : page.entries)
     const nextContext = new Set(extending ? [...this.context, ...page.context] : page.context)
     for (const entry of page.entries) if (!page.context.includes(entry.event.seq)) nextContext.delete(entry.event.seq)
     let hasBefore = request.kind === 'after' ? this.state.hasBefore : page.hasBefore
@@ -533,6 +568,14 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
       const prior = parseCursor(this.state.after, epoch)
       if (after === null || prior >= after) { after = prior; hasAfter = this.state.hasAfter }
     }
+    let admitted: SessionEventLikeEntry[]
+    try { admitted = this.owner.admitWindow(this, entries, nextContext, page.entries, request.kind === 'before' ? 'older' : 'newer') }
+    catch (error) { this.owner.trimCache(); throw error }
+    if (admitted.length !== entries.length) {
+      if (admitted[0] !== entries[0]) { before = admitted.find(entry => !nextContext.has(entry.event.seq))?.event.seq ?? null; hasBefore = true }
+      if (admitted.at(-1) !== entries.at(-1)) { after = admitted.filter(entry => !nextContext.has(entry.event.seq)).at(-1)?.event.seq ?? null; hasAfter = true }
+      entries = admitted
+    }
     this.budget = budget; this.stateEpoch = epoch; this.context = nextContext; this.seqs = entries.map(entry => entry.event.seq); this.error = undefined
     this.state = this.snapshot(entries, before, after, hasBefore, hasAfter); this.stage(); this.owner.trimCache()
     return this.state
@@ -546,7 +589,10 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (updates.length > this.budget.events || windowBytes(updates) > this.budget.bytes) {
       this.fail(new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source revision exceeds the reading admission budget.')); return
     }
-    const entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
+    let entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
+    try { entries = this.owner.admitWindow(this, entries, this.context, updates, 'newer') }
+    catch (error) { this.fail(error); return }
+    const trimmedBefore = entries[0] !== previous.entries[0]
     const hasAfter = previous.hasAfter
     const changed = entries.length !== previous.entries.length || entries.some((entry, index) => entry !== previous.entries[index])
     if (!changed && !headChanged) {
@@ -557,9 +603,9 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     }
     this.seqs = entries.map(entry => entry.event.seq)
     const appended = updates.some(entry => entry.event.seq > tail)
-    const before = previous.before ? parseCursor(previous.before, this.stateEpoch) : null
+    const before = trimmedBefore ? entries.find(entry => !this.context.has(entry.event.seq))?.event.seq ?? null : previous.before ? parseCursor(previous.before, this.stateEpoch) : null
     const after = !previous.hasAfter && appended ? entries.filter(entry => !this.context.has(entry.event.seq)).at(-1)?.event.seq ?? null : previous.after ? parseCursor(previous.after, this.stateEpoch) : null
-    this.state = this.snapshot(entries, before, after, previous.hasBefore, hasAfter); this.stage()
+    this.state = this.snapshot(entries, before, after, previous.hasBefore || trimmedBefore, hasAfter); this.stage()
     let changes: SessionEventChange[] = []
     if (changed) changes = updates.every(entry => entry.event.seq > tail) && removed.size === 0 ? [{ kind: 'append', entries: updates }] : [{ kind: 'replace', entries }]
     this.record({ base: previous.version, version: this.state.version, changes, headChanged, snapshot: this.state })
@@ -579,30 +625,34 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     return this.read(target ? { kind: 'around', target: { key: String(target.event.seq), seq: target.event.seq as never } } : { kind: 'latest' }, budget, signal)
   }
   recover(): Promise<void> {
-    if (this.recovery) return this.recovery
-    const work = this.performRecovery()
-    this.recovery = work
-    void work.finally(() => { if (this.recovery === work) this.recovery = undefined }).catch(() => {})
-    return work
+    return this.recoveryTask.request(this.owner.recoveryTarget, async current => {
+      try { await this.performRecovery(current) }
+      catch (error) {
+        if (!current() || sourceReadFailureCode(error) !== 'STALE_VERSION') throw error
+        await this.performRecovery(current)
+      }
+    })
   }
-  private async performRecovery(): Promise<void> {
+  private async performRecovery(current: () => boolean): Promise<void> {
     const prior = this.state, navigation = ++this.navigation, epoch = this.owner.sourceEpoch
     const body = (this.publication.published?.snapshot ?? prior).entries.filter(entry => !this.context.has(entry.event.seq))
     const first = body[0]?.event.seq, last = body.at(-1)?.event.seq
     let page: SourcePage
+    const pages: SourcePage[] = []
     if (this.stateEpoch === epoch && first !== undefined && last !== undefined) {
       // A journal gap invalidates cached revisions, not the reader's range.
       // Revalidate the complete retained interval before its atomic replacement.
       page = await this.owner.reconcilePage(first > 0 ? { after: first - 1, limit: 500 } : { around: first, limit: 500 }, this.abort.signal)
+      pages.push(page)
       while (page.hasAfter && page.after !== null && page.after < last) {
         const next = await this.owner.reconcilePage({ after: page.after, limit: 500 }, this.abort.signal)
         if (next.after === null || next.after <= page.after) throw new RemoteHistoryError('INVALID_REQUEST', 'The source recovery cursor did not advance.')
-        page = { ...next, before: page.before, hasBefore: page.hasBefore,
-          entries: entriesBySeq([...page.entries, ...next.entries]) as SourceEntry[], context: [...new Set([...page.context, ...next.context])] }
+        pages.push(next); page = next
       }
-    } else page = await this.owner.reconcilePage(first === undefined ? {} : { around: first }, this.abort.signal)
+    } else { page = await this.owner.reconcilePage(first === undefined ? {} : { around: first }, this.abort.signal); pages.push(page) }
     this.abort.signal.throwIfAborted()
-    if (navigation !== this.navigation || epoch !== this.owner.sourceEpoch) return
+    if (!current() || navigation !== this.navigation || epoch !== this.owner.sourceEpoch) return
+    page = this.owner.reconcilePages(pages)
     this.owner.discardReconciledEntries(this.seqs, page)
     this.error = undefined; this.stateEpoch = epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.stage()

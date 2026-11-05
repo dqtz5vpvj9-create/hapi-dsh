@@ -36,6 +36,7 @@ function metadata(nativeId = 'thread', send = false): SourceSession {
 
 async function fixture(t: TestContext, initial = metadata()) {
   const peer = metadata('other-thread', true), ctx = new Context(), index = new SourceEventIndex(':memory:', initial)
+  const sent = Promise.withResolvers<void>()
   const writes: SourceOperation[] = [], references: SessionReference[] = []
   const pendingCatalogs = new Set<ReturnType<typeof Promise.withResolvers<Awaited<ReturnType<HhpiRemoteApi['catalog']>>>>>()
   let advertised = [initial, peer], nextCatalog: Promise<Awaited<ReturnType<HhpiRemoteApi['catalog']>>> | undefined
@@ -44,7 +45,7 @@ async function fixture(t: TestContext, initial = metadata()) {
     catalog: () => { const pending = nextCatalog; nextCatalog = undefined; return pending ?? Promise.resolve(catalog(advertised)) },
     read: async request => ({ ok: true, value: index.read(request) }),
     changes: (request, signal) => index.changes(request, signal),
-    operate: async operation => { writes.push(operation); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Synthetic source accepted.' } } },
+    operate: async operation => { writes.push(operation); sent.resolve(); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Synthetic source accepted.' } } },
     create: async () => { throw new Error('Creation is outside this capability regression') },
     resource: async () => { throw new Error('Resource reads are outside this capability regression') },
   }
@@ -81,7 +82,7 @@ async function fixture(t: TestContext, initial = metadata()) {
     const stop = face.metadata.subscribe(() => { if (face.metadata.getSnapshot().title === value.title) accepted.resolve() })
     try { index.edit(value, () => {}); await accepted.promise } finally { stop() }
   }
-  return { sessions, face, reference, peer, writes, row, retain, holdCatalog, accept,
+  return { sessions, face, reference, peer, writes, sent: sent.promise, row, retain, holdCatalog, accept,
     observe: async (operationId: string) => {
       const retired = Promise.withResolvers<void>(), stop = face.subscribe(() => { if (!face.getSnapshot().pendingSubmissions.length) retired.resolve() })
       try {
@@ -105,6 +106,7 @@ test('a late catalog cannot revoke a newer accepted send capability or replace i
   assert.equal(f.row(f.peer.id).capabilities.send, false, 'an unrelated source still accepts this catalog response')
   const pendingSend = f.face.beginSubmission({ mode: 'queue', text: 'hello', attachments: [] })
   assert.equal((await f.face.prompt([{ type: 'text', text: 'hello' }], 'queue', undefined, pendingSend.requestId)).ok, true)
+  await f.sent
   assert.equal(f.writes.length, 1)
   assert.equal(f.writes[0]!.operationId, pendingSend.requestId)
   assert.equal(f.face.getSnapshot().pendingSubmissions.length, 1, 'the receipt cannot retire an echo before its native user message is observed')
@@ -138,18 +140,19 @@ test('a late catalog cannot restore permission revoked by the accepted source', 
   assert.equal(f.writes.length, 0)
 })
 
-test('a catalog requested after an accepted source update may change its capabilities at the same timestamp', { timeout: 5000 }, async t => {
+test('a subsequent catalog may narrow capability without replacing accepted native facts', { timeout: 5000 }, async t => {
   const initial = metadata(), f = await fixture(t, initial)
   const current = { ...initial, title: 'Newly loaded native owner', capabilities: { ...initial.capabilities, send: true } }
   await f.accept(current)
   assert.deepEqual(f.row(), current, 'accepted history metadata must publish to the canonical catalog without a poll')
   const revoked = { ...current, title: 'Owner no longer loaded', capabilities: { ...current.capabilities, send: false } }
   f.advertise([revoked, f.peer]); await f.sessions.refresh()
-  assert.deepEqual(f.face.metadata.getSnapshot(), revoked)
-  assert.deepEqual(f.row(), revoked)
+  const narrowed = { ...current, capabilities: revoked.capabilities }
+  assert.deepEqual(f.face.metadata.getSnapshot(), narrowed)
+  assert.deepEqual(f.row(), narrowed)
   f.reference.release()
   const reopened = f.retain(); await reopened.ready
   assert.equal((reopened.binding.session as RemoteSourceSession).metadata.getSnapshot().capabilities.send, false, 'cached history replay cannot replace a subsequent catalog on a newly retained face')
-  assert.deepEqual(f.row(), revoked)
+  assert.deepEqual(f.row(), narrowed)
   assert.equal(f.writes.length, 0)
 })

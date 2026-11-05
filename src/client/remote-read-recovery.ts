@@ -20,6 +20,7 @@ export function recoverableSourceRead(error: unknown): boolean {
 /** Explicit authorization failures invalidate durable source content, not just a retry attempt. */
 export function revokedSourceRead(error: unknown): boolean {
   const code = sourceReadFailureCode(error)
+  // Legacy Hosts encoded ACL denial as UNSUPPORTED; retain fail-closed handling.
   if (code === 'UNSUPPORTED' || code === 'remote-access/denied') return true
   return code === 'gateway/internal' && error instanceof Error
     && /^client api: hhpi\/(?:read|changes) failed: /.test(error.message) && /HTTP (?:401|403)\b/.test(error.message)

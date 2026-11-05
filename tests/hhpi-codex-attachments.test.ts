@@ -121,6 +121,9 @@ test('a refresh started before a same-timestamp rewrite cannot readmit the old i
     });
     const [image] = images(await preparedPage(f)); assert.ok(image);
     const path = `attachment:${image.attachment.attachmentId}`;
+    const head = await f.read(), reader = new AbortController();
+    const follow = f.adapter.changes({ sessionId: f.session.id, epoch: head.epoch, version: head.version }, reader.signal)[Symbol.asyncIterator]();
+    await follow.next(); t.after(async () => { reader.abort(); await follow.return?.(); });
     pause = true;
     f.notify({ method: 'thread/status/changed', params: { threadId: f.session.nativeId, status: { type: 'active' } } });
     t.mock.timers.tick(60_000); await reading.promise;

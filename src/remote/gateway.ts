@@ -1,5 +1,6 @@
 /** Source registry and exact-scope router. Authentication remains with the official DSH carrier. */
-import { SourceError, waitFor } from './errors.ts';
+import { SourceAccessDenied, SourceError, waitFor } from './errors.ts';
+import { SourceRegistry } from './source-registry.ts';
 import { sourceOffline } from '../shared/source-connectivity.ts';
 import { parseSourceSessionId, sourceSessionId, type SourceAdapter, type SourceCatalog, type SourceChanges, type SourceChangesRequest,
     type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest,
@@ -7,13 +8,10 @@ import { parseSourceSessionId, sourceSessionId, type SourceAdapter, type SourceC
 
 export type SourcePermission = { kind: 'source'; id: string } | { kind: 'session'; id: string };
 export type SourceAccess = (resource: SourcePermission) => boolean;
-interface CatalogOptions { initialWaitMs?: number; sourceTimeoutMs?: number }
+interface CatalogOptions { initialWaitMs?: number; sourceTimeoutMs?: number; refreshMs?: number }
 export class SourceGateway {
     private readonly adapters = new Map<string, SourceAdapter>();
-    private readonly catalogs = new Map<string, SourceSession[]>();
-    private readonly catalogReads = new Map<string, Promise<void>>();
-    private readonly catalogOnline = new Map<string, boolean>();
-    private readonly catalogErrors = new Map<string, SourceError>();
+    private readonly registry = new SourceRegistry();
     private readonly lifetime = new AbortController();
     private disposed = false;
     constructor(adapters: readonly SourceAdapter[], private readonly legacyHapi: boolean, private readonly catalogOptions: CatalogOptions = {}) {
@@ -24,7 +22,7 @@ export class SourceGateway {
     }
     private assertLive(): void { if (this.disposed) throw new SourceError('DISPOSED', 'The source gateway is closed.'); }
     private assertAllowed(access: SourceAccess, resource: SourcePermission): void {
-        if (!access(resource)) throw new SourceError('UNSUPPORTED', 'Access to this source resource was not granted.');
+        if (!access(resource)) throw new SourceAccessDenied();
     }
     private adapterFor(sessionId: string, access: SourceAccess): SourceAdapter {
         this.assertLive();
@@ -42,8 +40,9 @@ export class SourceGateway {
         }
     }
     private refreshCatalog(adapter: SourceAdapter): Promise<void> {
-        const pending = this.catalogReads.get(adapter.id);
-        if (pending) return pending;
+        const state = this.registry.entry(adapter.id);
+        if (state.pending) return state.pending;
+        if (state.nextRefresh > Date.now()) return Promise.resolve();
         const deadline = new AbortController();
         const timer = setTimeout(() => deadline.abort(new SourceError('TARGET_UNAVAILABLE', 'The source catalog is still unavailable.')), this.catalogOptions.sourceTimeoutMs ?? 30_000);
         timer.unref();
@@ -54,29 +53,29 @@ export class SourceGateway {
         }).then(sessions => {
             signal.throwIfAborted();
             for (const session of sessions) this.checkSession(adapter, session);
-            this.catalogs.set(adapter.id, sessions);
-            this.catalogOnline.set(adapter.id, true);
-            this.catalogErrors.delete(adapter.id);
+            state.sessions = sessions;
+            state.online = true;
+            delete state.error;
         }).catch((error: unknown) => {
             if (this.disposed) return;
-            this.catalogOnline.set(adapter.id, false);
-            if (error instanceof SourceError && error.code === 'UNSUPPORTED') this.catalogs.delete(adapter.id);
+            state.online = false;
+            if (error instanceof SourceError && error.code === 'UNSUPPORTED') delete state.sessions;
             if (error instanceof SourceError && error.code === 'INVALID_REQUEST') {
-                this.catalogs.delete(adapter.id);
-                this.catalogErrors.set(adapter.id, error);
+                delete state.sessions;
+                state.error = error;
             }
-            const known = this.catalogs.get(adapter.id);
-            if (known) this.catalogs.set(adapter.id, known.map(session => sourceOffline(session)));
+            const known = state.sessions;
+            if (known) state.sessions = known.map(session => sourceOffline(session));
         }).finally(() => {
             clearTimeout(timer);
-            if (this.catalogReads.get(adapter.id) === work) this.catalogReads.delete(adapter.id);
+            if (state.pending === work) { delete state.pending; state.nextRefresh = Date.now() + (this.catalogOptions.refreshMs ?? 0); }
         });
-        this.catalogReads.set(adapter.id, work);
+        state.pending = work;
         return work;
     }
     async catalog(access: SourceAccess, signal?: AbortSignal): Promise<SourceCatalog> {
         this.assertLive(); signal?.throwIfAborted();
-        const initial = this.catalogOnline.size === 0;
+        const initial = !this.registry.observed;
         const refreshing = Promise.all([...this.adapters.values()].map(adapter => this.refreshCatalog(adapter)));
         // Cached sources remain available while each adapter refreshes independently.
         // The first catalog gives quick sources a small admission budget; a slow
@@ -90,9 +89,9 @@ export class SourceGateway {
         this.assertLive(); signal?.throwIfAborted();
         const result: SourceCatalog = { protocol: 1, legacyHapi: this.legacyHapi, sessions: [], sources: [] };
         for (const adapter of this.adapters.values()) {
-            const online = this.catalogOnline.get(adapter.id) ?? false;
-            const sessions: SourceSession[] = online ? this.catalogs.get(adapter.id) ?? []
-                : (this.catalogs.get(adapter.id) ?? []).map(session => sourceOffline(session));
+            const state = this.registry.entry(adapter.id), online = state.online ?? false;
+            const sessions: SourceSession[] = online ? state.sessions ?? []
+                : (state.sessions ?? []).map(session => sourceOffline(session));
             result.sessions.push(...sessions.filter(session => access({ kind: 'session', id: session.id })));
             if (access({ kind: 'source', id: adapter.id })) result.sources.push({ id: adapter.id, machineId: adapter.machineId, engine: adapter.engine, online, create: typeof adapter.create === 'function' });
         }
@@ -139,6 +138,7 @@ export class SourceGateway {
         const adapter = this.adapters.get(request.sourceId);
         if (!adapter?.create) throw new SourceError('UNSUPPORTED', 'This source does not expose native thread creation.');
         const receipt = await adapter.create(request);
+        this.registry.entry(adapter.id).nextRefresh = 0;
         this.assertLive(); this.assertAllowed(access, { kind: 'source', id: request.sourceId });
         if (receipt.operationId !== request.operationId || receipt.sourceId !== request.sourceId) throw new SourceError('OUTCOME_UNKNOWN', 'The source creation acknowledgement belongs to another operation.');
         if (receipt.session) this.checkSession(adapter, receipt.session);
@@ -154,7 +154,7 @@ export class SourceGateway {
         if (this.disposed) return; this.disposed = true;
         this.lifetime.abort(new SourceError('DISPOSED', 'The source gateway is closed.'));
         const outcomes = await Promise.allSettled([...this.adapters.values()].map(async adapter => { await adapter.dispose(); }));
-        this.adapters.clear(); this.catalogs.clear(); this.catalogOnline.clear(); this.catalogErrors.clear(); this.catalogReads.clear();
+        this.adapters.clear(); this.registry.clear();
         const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
         if (failures.length) throw new AggregateError(failures.map(outcome => outcome.reason), 'Some HHPI source connections could not close.');
     }

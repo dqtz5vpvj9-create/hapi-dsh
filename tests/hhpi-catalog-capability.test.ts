@@ -78,7 +78,7 @@ test('the session list stays pending until the first HHPI catalog result publish
     assert.equal(remote.list.getSnapshot().phase, 'ready')
     assert.ok(remote.list.getSnapshot().ids.includes(source.id as never))
     const row = remote.list.getSnapshot().byId[source.id as never]
-    assert.deepEqual(Reflect.get(row, 'projectionValues'), { hhpiSource: source }, 'the advertised row must carry native machine/engine identity for workspace migration')
+    assert.deepEqual(Reflect.get(row, 'projectionValues'), { hhpiSource: source, hhpiDiscovery: 'advertised' }, 'the advertised row must carry native machine/engine identity for workspace migration')
     assert.ok(retained, 'a source row listener can retain the just-advertised source in the same publication')
     assert.deepEqual(remote.capabilities.getSnapshot(), { catalogReady: true, legacyHapi: false })
   } finally {

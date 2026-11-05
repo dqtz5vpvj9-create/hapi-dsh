@@ -1,3 +1,4 @@
+import { sourceControlOperationId } from '../src/shared/source-operation-policy.ts'
 /** Production outbox and public Session lifetime; only durable storage and RPC are controlled. */
 import assert from 'node:assert/strict'
 import { before, test, type TestContext } from 'node:test'
@@ -51,20 +52,21 @@ test('offline text is durably admitted before returning and survives reload with
 
 test('per-session FIFO blocks a second message until the first acknowledgement, including lost-ACK reload', { timeout: 3000 }, async t => {
   const storage = new BrowserStorage(), access = { storage, scope: 'account-host' }, calls: SourceOperation[] = []
-  const lost = Promise.withResolvers<SourceReceipt>()
-  const first = new RemoteOutbox(request => { calls.push(request); return lost.promise }); first.setStorage(access)
+  const lost = Promise.withResolvers<SourceReceipt>(), called = Promise.withResolvers<void>()
+  const first = new RemoteOutbox(request => { calls.push(request); called.resolve(); return lost.promise }); first.setStorage(access)
   first.enqueue(operation('first')); first.enqueue(operation('second')); first.start('first'); first.start('second'); first.acceptCatalog([metadata])
+  await called.promise
   assert.deepEqual(calls.map(value => value.operationId), ['first'])
   first.dispose()
   const confirmed = Promise.withResolvers<SourceReceipt>()
-  const next = new RemoteOutbox(request => { calls.push(request); return request.operationId === 'first' ? confirmed.promise : Promise.resolve(accepted(request)) })
+  const next = new RemoteOutbox(request => { calls.push(request); return Promise.resolve(accepted(request)) }, request => request.operationId === 'first' ? confirmed.promise : Promise.resolve(null))
   t.after(() => { next.dispose(); lost.resolve(accepted(operation('first'))) }); next.setStorage(access)
   next.acceptCatalog([metadata])
-  assert.deepEqual(calls.map(value => value.operationId), ['first', 'first'], 'reload queries the same operation; it cannot invent a replacement ID')
+  assert.deepEqual(calls.map(value => value.operationId), ['first'], 'reload queries the original receipt without dispatching again')
   confirmed.resolve(accepted(operation('first')))
   const view = next.view(metadata.id)
   await when(view, () => view.getSnapshot().every(value => value.state === 'accepted'))
-  assert.deepEqual(calls.map(value => value.operationId), ['first', 'first', 'second'])
+  assert.deepEqual(calls.map(value => value.operationId), ['first', 'second'])
   assert.equal(view.getSnapshot().length, 2, 'both echoes wait for their actual native user messages')
 })
 
@@ -102,7 +104,7 @@ test('the pinned HTTP authentication failure pauses recovery until a new authent
     calls++
     if (calls === 1) throw Object.assign(new Error('client api: hhpi/operate failed: request returned HTTP 401'), { code: 'gateway/internal' })
     return accepted(request)
-  })
+  }, async request => ({ ...accepted(request), status: 'rejected', retryable: true, message: 'The authenticated source confirms this operation was not dispatched.' }))
   t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'account-host' })
   outbox.enqueue(operation('auth-recovery')); outbox.start('auth-recovery'); outbox.acceptCatalog([metadata])
   const view = outbox.view(metadata.id)
@@ -276,4 +278,40 @@ test('read-only receipt permission denial cannot be mistaken for a rejection of 
   assert.equal(next.get('receipt-denied')?.state, 'confirming'); assert.equal(writes, 0); assert.equal(lookups, 1)
   next.start('receipt-denied'); assert.equal(lookups, 1, 'a denied read waits for a fresh authenticated catalog')
   assert.equal(storage.length, 1)
+})
+
+
+test('control identities remain session-scoped, bounded and durable for native target IDs shared by two sessions', async t => {
+  const storage = new BrowserStorage(), writes: SourceOperation[] = []
+  const outbox = new RemoteOutbox(async request => { writes.push(request); return accepted(request) })
+  t.after(() => outbox.dispose()); outbox.setStorage({ storage, scope: 'controls' })
+  const first = { ...metadata, status: 'running' as const, activeTurnId: 'same-turn', capabilities: { ...metadata.capabilities, cancel: true } }
+  const second = { ...first, id: 'hhpi:machine:source:codex:other-thread', nativeId: 'other-thread' }
+  outbox.acceptCatalog([first, second])
+  const ids = await Promise.all([first, second].map(session => sourceControlOperationId(session.id, 'cancel', 'same-turn')))
+  assert.notEqual(ids[0], ids[1])
+  assert.ok((await sourceControlOperationId('x'.repeat(2000), 'cancel', 't'.repeat(2000))).length <= 256)
+  assert.equal(ids[0], await sourceControlOperationId(first.id, 'cancel', 'same-turn'))
+  const receipts = await Promise.all([first, second].map((session, i) => outbox.submit({ sessionId: session.id,
+    operationId: ids[i]!, kind: 'cancel', turnId: 'same-turn' })))
+  assert.ok(receipts.every(receipt => receipt.status === 'accepted'))
+  assert.equal(writes.length, 2)
+})
+
+test('two contexts choosing different approval decisions cannot replace the first canonical intent', async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'conflicting-controls' }, calls: SourceOperation[] = []
+  const a = new RemoteOutbox(async request => { calls.push(request); return accepted(request) })
+  const b = new RemoteOutbox(async request => { calls.push(request); return accepted(request) })
+  t.after(() => { a.dispose(); b.dispose() }); a.setStorage(access); b.setStorage(access)
+  const session = { ...metadata, capabilities: { ...metadata.capabilities, approve: true },
+    pendingRequests: [{ id: 'approval', method: 'synthetic', params: {} }] }
+  const operationId = await sourceControlOperationId(session.id, 'approve', 'approval')
+  const original: SourceOperation = { sessionId: session.id, operationId, kind: 'approve', requestId: 'approval', decision: 'accept' }
+  const first = a.submit(original), second = b.submit({ ...original, decision: 'decline' })
+  const rejected = assert.rejects(second, /different arguments/)
+  a.acceptCatalog([session]); b.acceptCatalog([session])
+  await rejected
+  assert.equal((await first).status, 'accepted')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]!.decision, 'accept')
 })

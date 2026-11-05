@@ -8,7 +8,9 @@ import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
+import { operationRefusal, sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
+import { RemoteSessionState } from './remote-session-state.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
 import { RemotePaneViews } from './remote-reading-session.ts'
@@ -19,7 +21,7 @@ import { browserSourceStorage } from './remote-storage.ts'
 import { RemoteOutbox, type SourceDeliveryStore } from './remote-outbox.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
-declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession } }
+declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession; hhpiDiscovery: 'advertised' | 'last-known' } }
 class Value<T> {
   private readonly listeners = new Set<() => void>()
   constructor(private value: T) {}
@@ -92,12 +94,20 @@ export class RemoteSourceSession implements SessionFace {
   readonly subscribe = (listener: () => void): (() => void) => this.state.subscribe(listener)
   private syncDeliveries(): void {
     if (this.disposed) return
-    const deliveries = this.deliveries.getSnapshot().filter(entry => entry.state !== 'owner-accepted'), prior = this.durableIds
+    const deliveries = this.deliveries.getSnapshot().filter(entry => entry.state !== 'owner-accepted' && ['send', 'steer'].includes(entry.operation.kind)), prior = this.durableIds
     this.durableIds = new Set(deliveries.map(entry => entry.operation.operationId))
     const state = this.state.getSnapshot()
     this.state.set({ ...state, pendingSubmissions: [...state.pendingSubmissions.filter(entry => !prior.has(entry.requestId) && !this.durableIds.has(entry.requestId)),
-      ...deliveries.map(entry => ({ requestId: entry.operation.operationId as SessionRequestId, placement: 'transcript' as const,
+      ...deliveries.map(entry => ({ requestId: entry.operation.operationId as SessionRequestId, placement: entry.operation.kind === 'steer' ? 'steering' as const : 'transcript' as const,
         time: entry.createdAt, text: entry.operation.text ?? '', attachments: [] }))] })
+  }
+  retrySubmission(operationId: string): void {
+    const saved = this.outbox?.get(operationId)
+    if (!saved || saved.operation.sessionId !== this.sessionId) return
+    try {
+      if (saved.attempts === 0) this.assertOperationCurrent(saved.operation)
+      this.outbox?.retry(operationId)
+    } catch (cause) { this.controlStatus.set(cause instanceof Error ? cause.message : 'The original request cannot be resumed.') }
   }
   discardSubmission(operationId: string): void { this.outbox?.discard(operationId) }
   ownsSavedSubmission(operationId: string | undefined): boolean {
@@ -124,10 +134,14 @@ export class RemoteSourceSession implements SessionFace {
     if (this.disposed) throw sourceError('The source view was released.')
     if (input.attachments.length) throw sourceError('This source currently accepts text input. Your files and draft have been kept.')
     const requestId = crypto.randomUUID() as SessionRequestId
-    if (input.mode === 'queue' && this.outbox) {
+    if (this.outbox) {
       const metadata = this.metadata.getSnapshot()
-      if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
-      this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text: input.text })
+      const kind = input.mode === 'steer' ? 'steer' : 'send'
+      const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text: input.text,
+        ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) }
+      if (kind !== 'send') this.assertOperationCurrent(operation)
+      else if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+      this.outbox.enqueue(operation)
       this.submissions.set(requestId, input)
       return { requestId, admitted: true, abandon: () => { this.outbox?.abandon(requestId) } }
     }
@@ -145,7 +159,7 @@ export class RemoteSourceSession implements SessionFace {
   }
   async prompt(...[content, mode, signal, suppliedId]: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
     const requestId = suppliedId ?? crypto.randomUUID() as SessionRequestId
-    if (mode === 'queue' && this.outbox) {
+    if (this.outbox) {
       try {
         if (content.some(part => part.type !== 'text')) {
           this.outbox.abandon(requestId)
@@ -154,7 +168,7 @@ export class RemoteSourceSession implements SessionFace {
         const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
         const saved = this.outbox.get(requestId)
         if (!saved) signal?.throwIfAborted()
-        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text)) {
+        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
           this.outbox.abandon(requestId)
           throw sourceError('A saved submission cannot be changed after admission.')
         }
@@ -162,8 +176,12 @@ export class RemoteSourceSession implements SessionFace {
           if (this.disposed) throw sourceError('The source view was released.')
           signal?.throwIfAborted()
           const metadata = this.metadata.getSnapshot()
-          if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
-          this.outbox.enqueue({ sessionId: this.sessionId, operationId: requestId, kind: 'send', text })
+          if (mode !== 'steer' && !sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
+          const kind = mode === 'steer' ? 'steer' : 'send'
+          const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text,
+            ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) }
+          if (kind !== 'send') this.assertOperationCurrent(operation)
+          this.outbox.enqueue(operation)
         }
         this.outbox.start(requestId)
         if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
@@ -191,11 +209,10 @@ export class RemoteSourceSession implements SessionFace {
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text,
         ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) })
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
-      this.retire(requestId, { reason: 'observed', attachments: [] })
       return { ok: true, value: { accepted: true } }
     } catch (cause) {
       const error = cause instanceof RemoteError ? cause as RemoteError<'hhpi/source'> : sourceError(cause instanceof Error ? cause.message : 'The source did not acknowledge this operation.', true)
-      this.retire(requestId, { reason: 'failed' })
+      if (!(error.details as { outcome?: string } | undefined)?.outcome || (error.details as { outcome?: string }).outcome !== 'indeterminate') this.retire(requestId, { reason: 'failed' })
       if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
       return { ok: false, error }
     }
@@ -204,6 +221,11 @@ export class RemoteSourceSession implements SessionFace {
   operate(operation: SourceOperation): Promise<SourceReceipt> {
     if (this.disposed) return Promise.reject(sourceError('The source view was released.'))
     if (operation.sessionId !== this.sessionId) return Promise.reject(sourceError('An operation belongs to another source session.'))
+    if (this.outbox) {
+      const saved = this.outbox.get(operation.operationId)
+      if (!saved) this.assertOperationCurrent(operation)
+      return this.outbox.submit(operation)
+    }
     const fingerprint = JSON.stringify([operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
     const existing = this.operations.get(operation.operationId)
     if (existing && existing.fingerprint !== fingerprint) return Promise.reject(sourceError('An operation ID was reused with different arguments.'))
@@ -218,7 +240,8 @@ export class RemoteSourceSession implements SessionFace {
       // up an existing receipt cannot dispatch a control to a replacement turn.
       if (existing && this.api.receipt) {
         const prior = result(await this.api.receipt(request))
-        if (prior && prior.retryable !== true) return prior
+        if (!prior) return { operationId: request.operationId, sessionId: request.sessionId, status: 'indeterminate' as const, message: 'No receipt is available yet. The original operation was not resent.' }
+        if (prior.retryable !== true) return prior
       }
       this.assertOperationCurrent(request)
       return result(await this.api.operate(request))
@@ -234,11 +257,8 @@ export class RemoteSourceSession implements SessionFace {
   }
   private assertOperationCurrent(operation: SourceOperation): void {
     if (this.disposed) throw sourceError('The source view was released.')
-    const metadata = this.metadata.getSnapshot()
-    if (sourceIsOffline(metadata)) throw sourceError('Reconnect before controlling the original native operation.')
-    if (!metadata.capabilities[operation.kind]) throw sourceError(`The source does not support ${operation.kind}.`)
-    if ((operation.kind === 'steer' || operation.kind === 'cancel') && (!operation.turnId || metadata.activeTurnId !== operation.turnId)) throw sourceError('The original native turn is no longer active. No replacement turn was controlled.')
-    if (operation.kind === 'approve' && (!operation.requestId || !metadata.pendingRequests.some(request => request.id === operation.requestId))) throw sourceError('The original native approval is no longer available.')
+    const refusal = operationRefusal(this.metadata.getSnapshot(), operation)
+    if (refusal) throw sourceError(refusal)
   }
   async cancel(): ReturnType<SessionFace['cancel']> {
     const session = this.metadata.getSnapshot()
@@ -252,7 +272,7 @@ export class RemoteSourceSession implements SessionFace {
       return { ok: false, error: sourceError('There is no cancellable native turn.') }
     }
     try {
-      const receipt = await this.operate({ sessionId: this.sessionId, operationId: `cancel:${session.activeTurnId}`, kind: 'cancel', turnId: session.activeTurnId })
+      const receipt = await this.operate({ sessionId: this.sessionId, operationId: await sourceControlOperationId(this.sessionId, 'cancel', session.activeTurnId), kind: 'cancel', turnId: session.activeTurnId })
       this.controlStatus.set(receipt.message)
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
       return { ok: true, value: { accepted: true } }
@@ -297,11 +317,13 @@ export class RemoteSessions implements ISessions {
   readonly windowCommit?: NonNullable<ISessions['windowCommit']>
   private readonly metadata = new Map<string, SourceSession>()
   private readonly revokedReadingSources = new Set<string>()
+  private readonly acceptedState = new RemoteSessionState()
   private historyMetadataRevision = 0
   private readonly historyMetadataRevisions = new Map<string, number>()
   private readonly records = new Map<SessionId, RecordOwner>()
   private readonly readingViews = new RemotePaneViews()
   private readonly histories = new Map<SessionId, RemoteSourceHistory>()
+  private readonly releaseTimers = new Map<SessionId, ReturnType<typeof setTimeout>>()
   private readonly inactiveHistories = new Map<SessionId, true>()
   private readonly retainObservers = new Map<SessionId, Value<SessionRetainInfo>>()
   private readonly stopOriginal: () => void
@@ -317,6 +339,7 @@ export class RemoteSessions implements ISessions {
   private timer: ReturnType<typeof setInterval> | undefined
   private catalogChecked = false
   private catalogReceived = false
+  private advertised = new Set<string>()
   readonly capabilities: HhpiCatalogCapabilityStore
   private readonly capabilityState: Value<HhpiCatalogCapability>
   legacyHapi = false
@@ -382,7 +405,7 @@ export class RemoteSessions implements ISessions {
     const record = this.records.get(id as SessionId)
     if (record) { this.records.delete(id as SessionId); record.session.dispose(); void record.scope.fiber.dispose() }
     this.histories.get(id as SessionId)?.dispose(); this.histories.delete(id as SessionId)
-    this.readingCache?.remove(id); this.metadata.delete(id); this.historyMetadataRevisions.delete(id); this.retainObservers.delete(id as SessionId)
+    this.readingCache?.remove(id); this.metadata.delete(id); this.acceptedState.forget(id); this.historyMetadataRevisions.delete(id); this.retainObservers.delete(id as SessionId)
   }
   /** Called only for an explicit source removal/revocation, never a partial directory omission. */
   revokeReadingSource(id: string): void {
@@ -430,6 +453,7 @@ export class RemoteSessions implements ISessions {
       this.legacyHapi = catalog.legacyHapi
       this.catalogChecked = true
       const active = new Set(catalog.sessions.map(session => session.id))
+      this.advertised = active
       const unchanged = (id: string): boolean => (this.historyMetadataRevisions.get(id) ?? 0) <= startedAt
       for (const [id, old] of this.metadata) if (!active.has(id) && unchanged(id)) {
         // A source may return its prior successful directory while discovery
@@ -437,7 +461,8 @@ export class RemoteSessions implements ISessions {
         const offline = sourceOffline(old)
         this.metadata.set(id, offline); this.records.get(id as SessionId)?.session.update(offline)
       }
-      for (const session of catalog.sessions) if (!this.revokedReadingSources.has(session.id) && unchanged(session.id)) {
+      for (const advertised of catalog.sessions) if (!this.revokedReadingSources.has(advertised.id) && unchanged(advertised.id)) {
+        const session = this.acceptedState.hint(advertised)
         this.metadata.set(session.id, session); this.records.get(session.id as SessionId)?.session.update(session)
       }
       if (catalog.storageScope && catalog.storageScope === this.readingStorage?.scope) {
@@ -473,7 +498,13 @@ export class RemoteSessions implements ISessions {
     const history = this.histories.get(id)
     if (!history) return
     history.suspend()
-    if (!this.readingCache) { history.dispose(); this.histories.delete(id); return }
+    if (!this.readingCache) {
+      const timer = setTimeout(() => {
+        this.releaseTimers.delete(id)
+        if (!this.records.has(id) && this.histories.get(id) === history) { history.dispose(); this.histories.delete(id) }
+      }, 300)
+      timer.unref?.(); this.releaseTimers.set(id, timer); return
+    }
     this.inactiveHistories.delete(id); this.inactiveHistories.set(id, true)
     let bytes = [...this.histories.values()].reduce((total, value) => total + value.retainedBytes, 0)
     for (const candidate of this.inactiveHistories.keys()) {
@@ -491,7 +522,7 @@ export class RemoteSessions implements ISessions {
       const id = session.id as SessionId
       ids.push(id)
       byId[id] = { id, title: session.title, displayTitle: session.title, cwd: session.cwd, running: session.status === 'running' || session.status === 'waiting',
-        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt, projectionValues: { hhpiSource: session } }
+        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt, projectionValues: { hhpiSource: session, hhpiDiscovery: this.advertised.has(session.id) ? 'advertised' : 'last-known' } }
     }
     this.list.set(this.listSnapshot({ ...base, ids, byId }))
   }
@@ -507,6 +538,8 @@ export class RemoteSessions implements ISessions {
   }
   retain(target: SessionTarget, options: SessionRetainOptions): SessionReference {
     if (typeof target !== 'string' || !isSourceSessionId(target)) return this.original.retain(target, options)
+    const releaseTimer = this.releaseTimers.get(target)
+    if (releaseTimer !== undefined) { clearTimeout(releaseTimer); this.releaseTimers.delete(target) }
     this.inactiveHistories.delete(target)
     this.lifetime.signal.throwIfAborted(); options.signal?.throwIfAborted()
     if (!this.windowCommit) throw new Error('Direct HHPI sources require the pinned DSH history/window extension. Rebuild and install the source overlay.')
@@ -529,6 +562,7 @@ export class RemoteSessions implements ISessions {
         history.subscribeSession(session => {
           if (this.lifetime.signal.aborted || observedHistory.metadataFromCache) return
           const changed = JSON.stringify(this.metadata.get(target)) !== JSON.stringify(session)
+          this.acceptedState.observe(session)
           this.metadata.set(target, session)
           this.historyMetadataRevisions.set(target, ++this.historyMetadataRevision)
           this.records.get(target)?.session.update(session)
@@ -603,6 +637,8 @@ export class RemoteSessions implements ISessions {
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()
     this.readingCache?.dispose(); this.stopReadingMemory?.(); this.outbox.dispose()
-    this.records.clear(); this.histories.clear(); this.inactiveHistories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
+    for (const timer of this.releaseTimers.values()) clearTimeout(timer)
+    this.releaseTimers.clear()
+    this.records.clear(); this.histories.clear(); this.inactiveHistories.clear(); this.metadata.clear(); this.advertised.clear(); this.acceptedState.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
   }
 }
