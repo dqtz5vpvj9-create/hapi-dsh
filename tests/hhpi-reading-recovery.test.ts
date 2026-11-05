@@ -98,3 +98,65 @@ test('a version gap rebaselines the existing reader and keeps permanent failures
   t.after(() => unavailableOwner.dispose())
   await assert.rejects(unavailableOwner.prepare(), error => error === denied)
 })
+
+
+test('an unavailable foreground source exits its RPC budget and an explicit retry can open it', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let online = false
+  const owner = new RemoteSourceHistory(session.id, { read: async () => { if (!online) throw unavailable(); return page() }, changes: idle })
+  t.after(() => owner.dispose())
+  const failed = assert.rejects(owner.prepare(), { code: 'TARGET_UNAVAILABLE', message: /within 30 seconds/ })
+  await turn(); t.mock.timers.tick(30_000); await failed
+  online = true
+  assert.equal((await owner.openView('retry', budget)).initial.entries[0]?.event.seq, 1)
+})
+
+test('a source read that ignores cancellation cannot keep a foreground opener pending forever', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const stalled = Promise.withResolvers<SourcePage>()
+  const owner = new RemoteSourceHistory(session.id, { read: () => stalled.promise, changes: idle })
+  t.after(() => owner.dispose())
+  const failed = assert.rejects(owner.prepare(), { code: 'TARGET_UNAVAILABLE' })
+  await turn(); t.mock.timers.tick(30_000); await failed
+  stalled.resolve(page()); await turn()
+  assert.equal(owner.sourceVersion, 0, 'late timed-out transport results cannot become accepted history')
+})
+
+test('a returned page cannot wait forever for a disconnected source version stream', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let calls = 0
+  const owner = new RemoteSourceHistory(session.id, { read: async () => page(++calls), changes: idle })
+  t.after(() => owner.dispose())
+  const feed = await owner.openView('pane', budget)
+  const failed = assert.rejects(feed.read({ kind: 'around', target: { key: 'message-2', seq: 2 as never } }, budget, new AbortController().signal), { code: 'TARGET_UNAVAILABLE' })
+  await turn(); t.mock.timers.tick(30_000); await failed
+  assert.equal(feed.initial.entries[0]?.event.seq, 1, 'a stalled version catchup leaves the already accepted body mounted')
+})
+
+test('same-epoch replay expiry revalidates the whole retained interval without jumping to latest', async t => {
+  const reset = Promise.withResolvers<SourceChanges>(), revalidated = Promise.withResolvers<void>()
+  let version = 1, gap = false
+  const owner = new RemoteSourceHistory(session.id, {
+    read: async request => {
+      const start = request.after !== undefined ? request.after + 1 : request.before !== undefined ? request.before - 160 : 840
+      if (gap) revalidated.resolve()
+      const entries = Array.from({ length: request.limit ?? 160 }, (_, offset) => entry(start + offset)).filter(value => !gap || value.event.seq !== 700)
+      return { session, epoch: 'epoch', version, entries, before: start, after: entries.at(-1)!.event.seq, hasBefore: true, hasAfter: request.after !== undefined, context: [] }
+    },
+    async *changes(request, signal) { yield await reset.promise; yield* idle(request, signal) },
+  })
+  t.after(() => owner.dispose())
+  const feed = await owner.openView('pane', budget)
+  const older = await feed.read({ kind: 'before', cursor: feed.initial.before! }, budget, new AbortController().signal)
+  feed.publication!.accept(older.version)
+  version = 2; gap = true
+  const abort = new AbortController(), stream = feed.changes(older.version, abort.signal)[Symbol.asyncIterator](), next = stream.next()
+  reset.resolve({ session, epoch: 'epoch', base: 1, version: 2, reset: true, upserts: [], removed: [] })
+  await revalidated.promise
+  const restored = await next
+  const seqs = restored.value!.snapshot!.entries.map(value => value.event.seq)
+  assert.ok(seqs.includes(680)); assert.ok(seqs.includes(999))
+  assert.ok(!seqs.includes(700), 'authoritative deletion in a missed journal range is respected')
+  assert.ok(restored.value!.snapshot!.hasAfter, 'recovery remains in the historic interval')
+  abort.abort(); await stream.return?.()
+})

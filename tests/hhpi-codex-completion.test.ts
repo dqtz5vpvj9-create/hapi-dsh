@@ -1,9 +1,9 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Real DirectCodexAdapter, native history projection and persistent source index.
  * Only native RPC/notifications are controlled; virtual polling never sends a prompt. */
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc, NativeNotification } from '../src/remote/codex-rpc.ts';
@@ -16,13 +16,23 @@ const finalText = 'Final body accepted after native persistence catches up.';
 
 async function fixture(t: TestContext, older: NativeTurn[]) {
     t.mock.timers.enable({ apis: ['setInterval'] });
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-native-completion-'));
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-native-completion-'));
     let native: NativeThread = { id: 'original-thread', cwd: privateHome, createdAt: 1, updatedAt: 2,
         name: 'Synthetic completion source', status: { type: 'idle' } };
     let visibleTurns = older;
     let notify: (frame: NativeNotification) => void = () => {};
     const calls: string[] = [], started = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
     let holdNextTurnPage = false;
+    const itemsFor = (turnId: string): NativeItemEntry[] => turnId === current.id ? [
+                    { turnId, item: { id: 'question', type: 'userMessage', content: [{ type: 'text', text: 'Synthetic current prompt' }] }, startedAtMs: 3000 },
+                    { turnId, item: { id: 'answer', type: 'agentMessage', text: finalText }, startedAtMs: 3500, completedAtMs: 4000 },
+                ] : [{ turnId, item: { id: 'previous-answer', type: 'agentMessage', text: 'Earlier completed answer.' }, completedAtMs: 2000 }];
+    const metadata = nativeMetadataFixture(() => visibleTurns.map(turn => ({ turn, items: itemsFor(turn.id).map(entry => entry.item) })));
+    const readMetadata: typeof metadata = async request => {
+        const page = await metadata(request);
+        if (holdNextTurnPage) { holdNextTurnPage = false; started.resolve(); await release.promise; }
+        return page;
+    };
     const rpc = {
         online: true, currentGeneration: 1, supportsThreadWriterLock: true,
         connect: async () => ({}), dispose: async () => {},
@@ -41,16 +51,13 @@ async function fixture(t: TestContext, older: NativeTurn[]) {
             }
             if (method === 'thread/items/list') {
                 const turnId = String(params.turnId);
-                const data: NativeItemEntry[] = turnId === current.id ? [
-                    { turnId, item: { id: 'question', type: 'userMessage', content: [{ type: 'text', text: 'Synthetic current prompt' }] }, startedAtMs: 3000 },
-                    { turnId, item: { id: 'answer', type: 'agentMessage', text: finalText }, startedAtMs: 3500, completedAtMs: 4000 },
-                ] : [{ turnId, item: { id: 'previous-answer', type: 'agentMessage', text: 'Earlier completed answer.' }, completedAtMs: 2000 }];
-                return { data, nextCursor: null };
+                const data = itemsFor(turnId);
+                return sliceNativeEntries(data, params);
             }
             throw new Error(`Unexpected native completion operation: ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'synthetic-machine', engine: 'codex' }, join(privateHome, 'source'), { rpc });
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'synthetic-machine', engine: 'codex' }, join(privateHome, 'source'), { rpc, readMetadata });
     t.after(async () => { release.resolve(); await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     const read = () => adapter.read({ sessionId: session.id, limit: 100 });

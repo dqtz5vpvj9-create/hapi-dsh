@@ -1,0 +1,143 @@
+{
+  "sourceRevisionBeforeChanges": "827a73fd05dc167c8539aa981895acb522348d5a",
+  "sourceState": "implementation working tree validated before commit; see final release commit",
+  "scope": "continuous history reading, independent drafts and idle reconnection; native Codex source projection and official component lab; cold 2048-turn native SQLite via production adapter and SessionViewHost; synthetic item RPC and outer shell",
+  "status": "passed",
+  "browser": {
+    "engine": "chromium",
+    "version": "153.0.8010.12"
+  },
+  "geometryMocks": false,
+  "physicalPhone": "not-run",
+  "softKeyboard": "not-run",
+  "scenarios": [
+    {
+      "mode": "desktop",
+      "status": "passed",
+      "durationMs": 25776,
+      "budgetMs": 60000,
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 903
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 89
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 180
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 96
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 190,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1287
+      },
+      "steps": [
+        {
+          "name": "first usable official view",
+          "ms": 1609
+        },
+        {
+          "name": "idle update stream closes without failing the mounted readers",
+          "ms": 205
+        },
+        {
+          "name": "browser keyboard, composition and independent drafts",
+          "ms": 377
+        },
+        {
+          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
+          "ms": 16297
+        },
+        {
+          "name": "real viewport width change preserves the reading anchor",
+          "ms": 704
+        },
+        {
+          "name": "cached round trip and latest navigation",
+          "ms": 2080
+        },
+        {
+          "name": "synthetic native submission through official keyboard",
+          "ms": 100
+        }
+      ]
+    },
+    {
+      "mode": "mobile",
+      "status": "passed",
+      "durationMs": 54583,
+      "budgetMs": 60000,
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 969
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 216
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 189
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 84
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 146,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1474
+      },
+      "steps": [
+        {
+          "name": "first usable official view",
+          "ms": 1527
+        },
+        {
+          "name": "idle update stream closes without failing the mounted readers",
+          "ms": 178
+        },
+        {
+          "name": "browser keyboard, composition and independent drafts",
+          "ms": 520
+        },
+        {
+          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
+          "ms": 41156
+        },
+        {
+          "name": "real viewport width change preserves the reading anchor",
+          "ms": 660
+        },
+        {
+          "name": "cached round trip and latest navigation",
+          "ms": 5692
+        },
+        {
+          "name": "synthetic native submission through official keyboard",
+          "ms": 172
+        }
+      ]
+    }
+  ]
+}

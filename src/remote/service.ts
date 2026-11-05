@@ -12,7 +12,7 @@ import { DirectCodexAdapter } from './codex-adapter.ts';
 import { DirectDshAdapter } from './dsh-adapter.ts';
 import { SourceError } from './errors.ts';
 import type { DirectSourceConfig, SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt,
-    SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest } from './protocol.ts';
+    SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './protocol.ts';
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpi: HhpiSourceService } }
 declare module '@deepseek-ai/dsh-typert-protocol' { interface TypertResourceMap { hhpiSource: TypertResource<string> } }
@@ -59,6 +59,10 @@ export class HhpiSourceService extends TypertRemoteService {
     }
     @Remote({ name: 'read', resources: { session: addressedSession } })
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> { try { return await this.gateway.read(request, this.access, signal); } catch (error) { remoteError(error); } }
+    @Remote({ name: 'resolve', resources: { session: addressedSession } })
+    async resolve(request: { sessionId: string }, signal?: AbortSignal): Promise<SourceSession> {
+        try { return await this.gateway.resolve(request.sessionId, this.access, signal); } catch (error) { remoteError(error); }
+    }
     @Remote({ name: 'changes', mode: 'stream', resources: { session: addressedSession } })
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStream<SourceChanges> {
         try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error); }

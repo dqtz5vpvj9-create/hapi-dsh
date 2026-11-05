@@ -1,7 +1,7 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Production image ownership, adapter and index; only native RPC and file bytes are synthetic. */
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { type TestContext } from 'node:test';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
@@ -17,7 +17,7 @@ const item = (id: string, caption = id): NativeItem => ({ id, type: 'userMessage
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t: TestContext, initial: NativeItem[], readImage: (path: string, signal: AbortSignal) => Promise<unknown>) {
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-ownership-'));
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-image-ownership-'));
     const directory = join(privateHome, 'source');
     const native = { id: 'thread', cwd: '/synthetic', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const items = [...initial];
@@ -26,16 +26,16 @@ async function fixture(t: TestContext, initial: NativeItem[], readImage: (path: 
         online: true, currentGeneration: 1, connect: async () => ({}), dispose: async () => {},
         onNotification: (callback: typeof notification) => { notification = callback; return () => { notification = () => {}; }; },
         onRequest: () => () => {}, onDisconnect: () => () => {},
-        request: async (method: string): Promise<unknown> => {
+        request: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
             if (method === 'thread/loaded/list') return { data: ['thread'], nextCursor: null };
             if (method === 'thread/list') return { data: [native], nextCursor: null };
             if (method === 'thread/read') return { thread: native };
             if (method === 'thread/turns/list') return { data: [{ id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }], nextCursor: null };
-            if (method === 'thread/items/list') return { data: items.map(value => ({ turnId: 'turn', item: value })), nextCursor: null };
+            if (method === 'thread/items/list') return sliceNativeEntries(items.map(item => ({ turnId: 'turn', item })), params);
             throw new Error(`Unexpected method ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'fixture', engine: 'codex' }, directory, { rpc, readImage, pollMs: 60_000 });
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'fixture', engine: 'codex' }, directory, { rpc, readMetadata: nativeMetadataFixture(() => [{ turn: { id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }, items }]), readImage, pollMs: 60_000 });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     return { adapter, session,

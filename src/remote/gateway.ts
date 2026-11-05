@@ -88,7 +88,6 @@ export class SourceGateway {
             })]), signal);
         } finally { clearTimeout(timer); }
         this.assertLive(); signal?.throwIfAborted();
-        for (const error of this.catalogErrors.values()) throw error;
         const result: SourceCatalog = { protocol: 1, legacyHapi: this.legacyHapi, sessions: [], sources: [] };
         for (const adapter of this.adapters.values()) {
             const online = this.catalogOnline.get(adapter.id) ?? false;
@@ -103,6 +102,16 @@ export class SourceGateway {
     async read(request: SourceReadRequest, access: SourceAccess, signal?: AbortSignal): Promise<SourcePage> {
         const adapter = this.adapterFor(request.sessionId, access), page = await adapter.read(request, signal);
         signal?.throwIfAborted(); this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId }); this.checkSession(adapter, page.session, request.sessionId); return page;
+    }
+    async resolve(sessionId: string, access: SourceAccess, signal?: AbortSignal): Promise<SourceSession> {
+        const adapter = this.adapterFor(sessionId, access);
+        const session = adapter.resolve ? await adapter.resolve(sessionId, signal)
+            : (await adapter.list(signal)).find(value => value.id === sessionId);
+        signal?.throwIfAborted(); this.assertLive();
+        this.assertAllowed(access, { kind: 'session', id: sessionId });
+        if (!session) throw new SourceError('TARGET_UNAVAILABLE', 'The original source cannot resolve this session.');
+        this.checkSession(adapter, session, sessionId);
+        return session;
     }
     async *changes(request: SourceChangesRequest, access: SourceAccess, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const adapter = this.adapterFor(request.sessionId, access);

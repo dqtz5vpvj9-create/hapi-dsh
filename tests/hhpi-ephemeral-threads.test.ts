@@ -1,3 +1,4 @@
+import { nativeMetadataFixture } from './fixtures/hhpi-native-metadata.ts';
 /** Real adapter/gateway ownership; only the native RPC boundary is synthetic. */
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
@@ -41,7 +42,7 @@ async function fixture(t: TestContext, options: { unmaterialized?: boolean; late
             throw new Error(`Unexpected native operation: ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex', ownership: 'shared' }, directory, { rpc });
+    const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex', ownership: 'shared', writerLock: 'native' }, directory, { rpc, readMetadata: nativeMetadataFixture(() => options.unmaterialized ? [] : [{ turn: { id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }, items: [{ id: 'answer', type: 'agentMessage', text: 'Available ordinary history' }] }]) });
     const gateway = new SourceGateway([adapter], false);
     t.after(async () => { await gateway.dispose(); await rm(directory, { recursive: true, force: true }); });
     return { adapter, gateway, calls };
@@ -84,6 +85,6 @@ test('ordinary threads without their first user message remain valid empty conve
     assert.deepEqual(page.entries, []);
     assert.equal(page.session.status, 'idle');
     assert.equal(page.session.capabilities.send, true);
-    assert.equal(calls.filter(call => call.method === 'thread/turns/list').length, 1);
+    assert.equal(calls.filter(call => call.method === 'thread/turns/list').length, 0, 'empty native metadata does not trigger legacy full-turn traversal');
     assert.equal(calls.some(call => call.method === 'thread/items/list' || call.method === 'thread/resume'), false);
 });

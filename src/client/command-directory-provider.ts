@@ -1,6 +1,7 @@
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
+import { isSourceSessionId } from '../remote/protocol.ts'
 
 export const COMMAND_DIRECTORY_CONSUMER = '@deepseek-ai/dsh-client-ui-commands'
 export const COMMAND_DIRECTORY_REALM = 'hapi-dsh:command-directory'
@@ -95,7 +96,13 @@ export async function installCommandDirectoryProvider(ctx: Context): Promise<() 
       owner.effect(() => () => { reads.dispose() })
       const provider = owner.isolate(service, symbol).plugin({ name: 'hapi-command-directory', apply(scope: Context) {
         scope.reflect.provide(service, {
-          list: (id: Parameters<typeof original.list>[0]) => reads.read(id),
+          // HHPI sessions are owned by their source adapter, not the local DSH
+          // agent registry. HHPI does not expose a host-command directory yet;
+          // keep the official client-contributed actions available instead of
+          // sending a foreign session ID to commands.list.
+          list: (id: Parameters<typeof original.list>[0]) => isSourceSessionId(id)
+            ? Promise.resolve({ ok: true as const, value: [] })
+            : reads.read(id),
           execute: (...args: Parameters<typeof original.execute>) => original.execute(...args),
         } satisfies typeof original)
       } })

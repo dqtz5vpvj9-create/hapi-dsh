@@ -89,7 +89,9 @@ export class DshOwnerConnection {
   private readonly now: () => number
   private readonly knownOwners = new Map<string, KnownOwner>()
   private readonly readable = new Map<string, KnownOwner>()
+  private readonly invalidatedLocators = new Set<string>()
   private catalogRead: Promise<SourceSession[]> | undefined
+  private readonly identityReads = new Map<string, Promise<void>>()
   private disposed = false
 
   constructor(private readonly config: DirectDshConfig, options: DshOwnerConnectionOptions = {}) {
@@ -112,11 +114,15 @@ export class DshOwnerConnection {
     return this.catalogRead
   }
 
-  private revoke(): void { this.knownOwners.clear(); this.readable.clear() }
+  private revoke(): void {
+    for (const known of this.knownOwners.values()) this.invalidatedLocators.add(known.session.nativeId)
+    this.knownOwners.clear(); this.readable.clear()
+  }
 
   private forgetOwner(ownerId: string): void {
     const known = this.knownOwners.get(ownerId)
     this.knownOwners.delete(ownerId)
+    if (known) this.invalidatedLocators.add(known.session.nativeId)
     if (known && this.readable.get(known.session.nativeId)?.session.legacyOrigin?.sessionId === ownerId) this.readable.delete(known.session.nativeId)
   }
 
@@ -164,8 +170,55 @@ export class DshOwnerConnection {
       else byNativeId.set(nativeId, row.known)
     }
     this.readable.clear()
-    for (const [id, known] of byNativeId) if (!ambiguous.has(id)) this.readable.set(id, known)
+    for (const [id, known] of byNativeId) if (!ambiguous.has(id)) {
+      this.invalidatedLocators.delete(id)
+      this.readable.set(id, known)
+    }
     return [...this.readable.values()].map(value => value.session).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
+  }
+
+  /** Restore a locator, not an authorization lease; its exact owner must be checked online. */
+  restoreReadingSession(session: SourceSession): void {
+    if (this.disposed || this.invalidatedLocators.has(session.nativeId) || this.readable.has(session.nativeId)
+      || [...this.knownOwners.values()].some(known => known.session.nativeId === session.nativeId)) return
+    const origin = session.legacyOrigin
+    if (session.sourceId !== this.id || session.machineId !== this.machineId || session.engine !== this.engine
+      || origin?.hubId !== this.config.owner.hubId || !origin.sessionId || /[\0\r\n]/.test(origin.sessionId)) return
+    try {
+      if (session.id !== sourceSessionId({ sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId: session.nativeId })) return
+    } catch { return }
+    const known = { session, verifiedAt: -Infinity }
+    this.knownOwners.set(origin.sessionId, known)
+    this.readable.set(session.nativeId, known)
+  }
+
+  private async refreshReadingIdentity(nativeId: string, known: KnownOwner): Promise<void> {
+    const ownerId = known.session.legacyOrigin!.sessionId
+    try {
+      const original = await this.client.getSession(ownerId)
+      if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
+      if (original.id !== ownerId || !ownerMatches(original, this.machineId, nativeId)) {
+        this.forgetOwner(ownerId)
+        throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner no longer matches this native session.')
+      }
+      const session = toSourceSession(this.config, original, known.session, this.now())!
+      // Discovery may have revoked or made this identity ambiguous while its
+      // targeted check was in flight. A late response cannot restore that lease.
+      if (this.readable.get(nativeId) !== known) return
+      known.session = session
+      known.verifiedAt = this.now()
+    } catch (error) {
+      if (error instanceof HapiRequestError && (error.status === 401 || error.status === 403)) {
+        this.revoke()
+        throw new SourceError('UNSUPPORTED', 'The original DSH owner revoked access to its sessions.')
+      }
+      if (error instanceof HapiRequestError && error.status === 404) {
+        this.forgetOwner(ownerId)
+        throw new SourceError('TARGET_UNAVAILABLE', 'The original DSH owner no longer advertises this native session.')
+      }
+      else if (this.knownOwners.get(ownerId) === known) known.session = sourceOffline(known.session, this.now())
+      throw error
+    }
   }
 
   /** Existing history uses a previously verified native identity, never a guessed path. */
@@ -173,7 +226,17 @@ export class DshOwnerConnection {
     if (this.disposed) throw new SourceError('DISPOSED', 'The original DSH owner connection is closed.')
     signal?.throwIfAborted()
     let known = this.readable.get(nativeId)
-    if (!known || this.now() - known.verifiedAt >= READING_IDENTITY_LEASE_MS) {
+    if (known && this.now() - known.verifiedAt >= READING_IDENTITY_LEASE_MS) {
+      let pending = this.identityReads.get(nativeId)
+      if (!pending) {
+        const work = this.refreshReadingIdentity(nativeId, known).finally(() => {
+          if (this.identityReads.get(nativeId) === work) this.identityReads.delete(nativeId)
+        })
+        this.identityReads.set(nativeId, pending = work)
+      }
+      await waitFor(pending, signal)
+      known = this.readable.get(nativeId)
+    } else if (!known) {
       await waitFor(this.catalog(), signal)
       known = this.readable.get(nativeId)
     }

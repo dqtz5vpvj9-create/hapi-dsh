@@ -27,6 +27,20 @@ export interface NativeDshSnapshot {
     readonly dependencies: NativeEventDependencyIndex;
 }
 
+export interface NativeDshReadIndex {
+    readonly header: SessionPersistenceSnapshot['header'];
+    readonly revision: SessionPersistenceRevision;
+    readonly eventCount: number;
+    readonly generation: string;
+    readonly epoch: string;
+}
+interface IndexedPersistence {
+    prepareReadIndex?(id: ReturnType<typeof SessionId>, options?: { signal?: AbortSignal }): Promise<Omit<NativeDshReadIndex, 'epoch'>>;
+    readPage?(id: ReturnType<typeof SessionId>, request: Pick<SourceReadRequest, 'before' | 'after' | 'around' | 'limit'> & { maxEvents: number; maxBytes: number }, options?: { signal?: AbortSignal }): Promise<Omit<NativeDshReadIndex, 'epoch'> & {
+        events: readonly SessionEvent[]; context: readonly number[]; before: number | null; after: number | null; hasBefore: boolean; hasAfter: boolean;
+    }>;
+}
+
 export interface NativeEventDependencyIndex {
     readonly turns: ReadonlyMap<number, number>;
     readonly steps: ReadonlyMap<string, number>;
@@ -204,19 +218,33 @@ export function pageNativeEvents(session: SourceSession, snapshot: NativeDshSnap
  */
 export class DirectDshHistory {
     private readonly context = new Context();
+    private readonly lifetime = new AbortController();
     private readonly ready: Promise<void>;
     private readonly cache = new Map<string, CachedHistory>();
     private readonly loads = new Map<string, Promise<CachedHistory>>();
     private disposed = false;
 
     constructor(root: string) {
-        this.ready = applyJsonlPersistence(this.context, { root, compression: 'zstd' });
+        const config = { root, compression: 'zstd' as const, indexedReading: true };
+        this.ready = applyJsonlPersistence(this.context, config);
     }
 
     private async persistence(): Promise<Context['sessionPersistence']> {
         if (this.disposed) throw new SourceError('DISPOSED', 'The native DSH history reader has been disposed.');
         await this.ready;
+        this.lifetime.signal.throwIfAborted();
         return this.context.sessionPersistence;
+    }
+    private async indexed<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+        try { return await work(); }
+        catch (error) {
+            this.lifetime.signal.throwIfAborted();
+            signal?.throwIfAborted();
+            if (error instanceof SourceError) throw error;
+            if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'CAPACITY_EXCEEDED')
+                throw new SourceError('CAPACITY_EXCEEDED', 'One native history item and its required context exceed the page budget.');
+            throw new SourceError('HISTORY_UNAVAILABLE', 'The native DSH history index could not read this source. Inspect the source persistence diagnostics.');
+        }
     }
 
     /** Header-only snapshots from the official persistence catalog. */
@@ -249,9 +277,29 @@ export class DirectDshHistory {
 
     /** Read a SourcePage from a canonical DSH session identity, preserving native seq. */
     async read(session: SourceSession, request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
+        signal = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]);
         this.assertSource(session, request.sessionId);
-        const snapshot = await this.snapshot(session, signal);
-        return pageNativeEvents(session, snapshot, request);
+        const persistence = await this.persistence() as Context['sessionPersistence'] & IndexedPersistence;
+        if (!persistence.readPage) throw new SourceError('HISTORY_UNAVAILABLE', 'This source requires the approved indexed DSH persistence extension.');
+        const { before, after, around, limit } = request;
+        const page = await this.indexed(() => persistence.readPage!(SessionId(session.nativeId), {
+            ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }), ...(around === undefined ? {} : { around }),
+            limit: Math.min(limit ?? DSH_NATIVE_PAGE_EVENTS, DSH_NATIVE_PAGE_EVENTS), maxEvents: 5000, maxBytes: 8 * 1024 * 1024 }, signal ? { signal } : undefined), signal);
+        signal?.throwIfAborted();
+        const epoch = `${session.id}:${page.header.createdAt}:${page.generation}`;
+        if (request.epoch !== undefined && request.epoch !== epoch) throw new SourceError('STALE_VERSION', 'The native DSH source history changed.');
+        return { session, epoch, version: page.eventCount, entries: page.events.map(event => ({ type: 'event', event })),
+            before: page.before, after: page.after, hasBefore: page.hasBefore, hasAfter: page.hasAfter, context: [...page.context] };
+    }
+
+    async readIndex(session: SourceSession, signal?: AbortSignal): Promise<NativeDshReadIndex> {
+        signal = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]);
+        this.assertSource(session, session.id);
+        const persistence = await this.persistence() as Context['sessionPersistence'] & IndexedPersistence;
+        if (!persistence.prepareReadIndex) throw new SourceError('HISTORY_UNAVAILABLE', 'This source requires the approved indexed DSH persistence extension.');
+        const index = await this.indexed(() => persistence.prepareReadIndex!(SessionId(session.nativeId), signal ? { signal } : undefined), signal);
+        signal?.throwIfAborted();
+        return { ...index, epoch: `${session.id}:${index.header.createdAt}:${index.generation}` };
     }
 
     /** Return one revision-consistent native prefix for paging and change publication. */
@@ -268,20 +316,24 @@ export class DirectDshHistory {
      */
     async changes(session: SourceSession, request: SourceChangesRequest, signal?: AbortSignal): Promise<SourceChanges | undefined> {
         this.assertSource(session, request.sessionId);
-        const cached = await this.snapshot(session, signal), version = cached.version;
+        const cached = await this.readIndex(session, signal), version = cached.eventCount;
         if (request.epoch !== cached.epoch || request.version > version) {
             return { session, epoch: cached.epoch, base: request.version, version, reset: true, upserts: [], removed: [] };
         }
         if (request.version === version) return undefined;
+        if (version - request.version > DSH_NATIVE_PAGE_EVENTS)
+            return { session, epoch: cached.epoch, base: request.version, version, reset: true, upserts: [], removed: [] };
         return {
             session, epoch: cached.epoch, base: request.version, version, reset: false,
-            upserts: cached.events.slice(request.version).map(event => ({ type: 'event', event })), removed: [],
+            upserts: (await this.read(session, { sessionId: session.id, ...(request.version ? { after: request.version - 1 } : {}) }, signal)).entries
+                .filter(entry => entry.event.seq >= request.version && entry.event.seq < version), removed: [],
         };
     }
 
     async dispose(): Promise<void> {
         if (this.disposed) return;
         this.disposed = true;
+        this.lifetime.abort(new SourceError('DISPOSED', 'The native DSH history reader was disposed.'));
         await this.ready;
         await this.context.fiber.dispose();
         this.cache.clear(); this.loads.clear();

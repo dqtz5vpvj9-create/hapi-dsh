@@ -17,7 +17,7 @@ const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const parseSocketMessage = value => { try { return JSON.parse(value); } catch { return undefined; } };
 const sourceId = id => /^hapi-(?:codex|observed)-[0-9a-f]{32}(?:-r[1-9][0-9]*)?$/.test(id ?? '');
 const readMethods = new Set([
-  'hhpi/catalog', 'hhpi/read', 'hhpi/resource',
+  'hhpi/catalog', 'hhpi/resolve', 'hhpi/read', 'hhpi/resource',
   'hapi/catalog', 'hapi/workspaceGet', 'hapi/workspaceLegacy', 'hapi/sourceReadStates',
   'hapi/nativeLibrary', 'hapi/sourceSessionTools', 'hapi/sourceQueuedEdits', 'hapi/sourceQueuedEditRead',
   'hapi/sourceHistoryHead', 'hapi/sourceHistoryOutline', 'hapi/sourceHistoryOutlinePage',

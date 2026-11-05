@@ -50,6 +50,7 @@ import { installNotifySummaryDisplay } from './notify-summary-display.tsx'
 import { installSourceVoice } from './source-voice/index.tsx'
 import { installGeneratedMediaDisplay } from './generated-media-display.tsx'
 import { installToolProgressDisplay } from './tool-progress-display.tsx'
+import { installNativeToolDetails } from './native-tool-details.tsx'
 import { installCodexReviewDisplay } from './codex-review-display.tsx'
 import { installNativeActionDock } from './native-action-dock.tsx'
 import { installSourceUsage } from './source-usage.tsx'
@@ -254,6 +255,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installSourceVoice(ctx, api))
     disposers.push(installGeneratedMediaDisplay(ctx))
     disposers.push(installToolProgressDisplay(ctx))
+    disposers.push(installNativeToolDetails(ctx))
     disposers.push(installCodexReviewDisplay(ctx))
     disposers.push(installNativeActionDock(ctx, native, api))
     disposers.push(installSourceUsage(ctx))

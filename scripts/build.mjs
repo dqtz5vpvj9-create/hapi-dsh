@@ -16,6 +16,8 @@ await build({
 // SSH sources attach to an existing native socket with a portable single file.
 await build({ entryPoints: ['src/remote/native-stdio.ts'], outfile: 'dist/remote/native-stdio.cjs',
     bundle: true, platform: 'node', format: 'cjs', target: 'node24' });
+await build({ entryPoints: ['src/remote/codex-metadata-helper.mjs'], outfile: 'dist/remote/codex-metadata.mjs',
+    bundle: true, platform: 'node', format: 'esm', target: 'node24' });
 await buildClientBundle(buildIdentity);
 await buildSourceProvider(buildIdentity);
 // Host and Client have different Cordis service declarations; emit them in separate TS programs.

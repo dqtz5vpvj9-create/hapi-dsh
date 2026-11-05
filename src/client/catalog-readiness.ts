@@ -48,8 +48,17 @@ export function waitForCatalogSession(
         }, options.timeoutMs ?? 30_000)
         const refresh = async (): Promise<void> => {
             if (check()) return
-            try { await sessions.refresh() }
-            catch (error) { lastFailure = error }
+            const resolver = sessions as typeof sessions & { resolveSession?: (id: SessionId, signal: AbortSignal) => Promise<void> }
+            const direct = sessionId.startsWith('hhpi:') && resolver.resolveSession !== undefined
+            try {
+                if (direct) await resolver.resolveSession!(sessionId, signal)
+                else await sessions.refresh()
+            }
+            catch (error) {
+                if (direct) { settle(error); return }
+                lastFailure = error
+            }
+            if (direct && !check()) { settle(new Error('The original source did not resolve this conversation.')); return }
             if (!check()) retry = setTimeout(() => { void refresh() }, options.retryMs ?? 1_000)
         }
         signal.addEventListener('abort', abort, { once: true })

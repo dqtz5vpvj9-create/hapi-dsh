@@ -194,9 +194,11 @@ test('verified reading survives a temporary owner outage without extending its a
     await assert.rejects(owner.operate('native-dsh-session', operation('send')))
     assert.equal(fixture.calls.some(call => call.path.endsWith('/messages')), false, 'a read lease never authorizes a native write')
     now += 15 * 60_000
+    fixture.detailFailures.set('legacy-hapi-session', 503)
     await assert.rejects(owner.readingSession('native-dsh-session'))
     assert.throws(() => owner.assertReadingSession('native-dsh-session'), /no longer authorizes/)
     fixture.listFailure = undefined
+    fixture.detailFailures.delete('legacy-hapi-session')
     assert.equal((await owner.readingSession('native-dsh-session')).nativeId, 'native-dsh-session')
   } finally { await owner.dispose() }
 })
@@ -337,4 +339,81 @@ test('owner admission revalidates exact ownership and cannot use a cached readin
     assert.equal(fixture.calls.length, beforeInvalid)
   } finally { await owner.dispose() }
   await assert.rejects(owner.readAdmission('native-dsh-session', request), { code: 'DISPOSED' })
+})
+
+test('an expired known reading lease checks only its exact original owner even when the catalog is unavailable', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession())
+  fixture.sessions.set('unrelated', makeSession({ id: 'unrelated', nativeId: 'unrelated-native' }))
+  let now = 100
+  const owner = fixture.connection(() => now)
+  try {
+    await owner.catalog()
+    fixture.calls.length = 0
+    fixture.listFailure = 503
+    fixture.detailFailures.set('unrelated', 503)
+    now += 15 * 60_000
+    const rows = await Promise.all([owner.readingSession('native-dsh-session'), owner.readingSession('native-dsh-session')])
+    assert.equal(rows[0]?.nativeId, 'native-dsh-session')
+    assert.equal(rows[1], rows[0])
+    assert.deepEqual(fixture.calls.map(call => call.path), ['/api/sessions/legacy-hapi-session'])
+  } finally { await owner.dispose() }
+})
+
+test('a restarted reader revalidates its saved exact locator without reading unrelated owner details', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession())
+  const first = fixture.connection()
+  const [saved] = await first.catalog()
+  await first.dispose()
+  fixture.calls.length = 0
+  fixture.listFailure = 503
+  const restarted = fixture.connection()
+  try {
+    restarted.restoreReadingSession(JSON.parse(JSON.stringify(saved!)))
+    assert.throws(() => restarted.assertReadingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' }, 'persisted identity cannot renew authorization')
+    assert.equal((await restarted.readingSession('native-dsh-session')).legacyOrigin?.sessionId, 'legacy-hapi-session')
+    assert.deepEqual(fixture.calls.filter(call => call.method === 'GET').map(call => call.path), ['/api/sessions/legacy-hapi-session'])
+  } finally { await restarted.dispose() }
+})
+
+test('targeted owner deletion, remapping and revocation cannot be restored from persisted metadata', async () => {
+  for (const failure of [404, 401, 403, 'remapped', 'wrong-machine'] as const) {
+    const fixture = new OwnerFixture()
+    fixture.sessions.set('legacy-hapi-session', makeSession())
+    let now = 100
+    const owner = fixture.connection(() => now)
+    try {
+      const [saved] = await owner.catalog()
+      now += 15 * 60_000
+      if (typeof failure === 'number') fixture.detailFailures.set('legacy-hapi-session', failure)
+      else fixture.sessions.set('legacy-hapi-session', makeSession(failure === 'remapped' ? { nativeId: 'replacement' } : { machineId: 'another-machine' }))
+      await assert.rejects(owner.readingSession('native-dsh-session'))
+      owner.restoreReadingSession(saved!)
+      assert.throws(() => owner.assertReadingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+      fixture.listFailure = 503
+      fixture.calls.length = 0
+      await assert.rejects(owner.readingSession('native-dsh-session'))
+      assert.equal(fixture.calls.some(call => call.path === '/api/sessions/legacy-hapi-session'), false, 'invalidated mapping stays revoked until authoritative discovery succeeds')
+    } finally { await owner.dispose() }
+  }
+})
+
+
+test('persisted locators cannot bypass source membership or a catalog-confirmed ambiguous native identity', async () => {
+  const fixture = new OwnerFixture()
+  fixture.sessions.set('legacy-hapi-session', makeSession())
+  const initial = fixture.connection()
+  const [saved] = await initial.catalog()
+  await initial.dispose()
+  const owner = fixture.connection()
+  try {
+    owner.restoreReadingSession({ ...saved!, machineId: 'another-machine' })
+    assert.throws(() => owner.assertReadingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+    owner.restoreReadingSession({ ...saved!, legacyOrigin: { hubId: 'another-hub', sessionId: 'legacy-hapi-session' } })
+    fixture.sessions.set('duplicate', makeSession({ id: 'duplicate' }))
+    assert.deepEqual(await owner.catalog(), [])
+    owner.restoreReadingSession(saved!)
+    await assert.rejects(owner.readingSession('native-dsh-session'), { code: 'TARGET_UNAVAILABLE' })
+  } finally { await owner.dispose() }
 })

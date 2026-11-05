@@ -131,16 +131,16 @@ async function packRealExt(releaseDirectory, stagingExt, stageRoot) {
     for (const item of release.licenses ?? []) {
         const from = join(releaseDirectory, item);
         const to = `LICENSES/dsh-ext/${basename(item)}`;
-        await mkdir(dirname(join(stagingExt, '..', to)), { recursive: true });
-        await copyFile(from, join(releaseDirectory, '..', to));
+        await mkdir(dirname(join(stageRoot, to)), { recursive: true });
+        await copyFile(from, join(stageRoot, to));
         licenses.push(to);
     }
     const sourceOfferFiles = [];
     for (const item of release.sourceOffer ?? []) {
         const from = join(releaseDirectory, item);
         const to = `SOURCE-OFFER/dsh-ext/${basename(item)}`;
-        await mkdir(dirname(join(releaseDirectory, '..', to)), { recursive: true });
-        await copyFile(from, join(releaseDirectory, '..', to));
+        await mkdir(dirname(join(stageRoot, to)), { recursive: true });
+        await copyFile(from, join(stageRoot, to));
         sourceOfferFiles.push(to);
     }
     return { release, packages, sourceOfferFiles, licenses };
@@ -183,7 +183,9 @@ async function stageLicenses(stageRoot, extLicenses) {
     for (const name of await readdir(licenseDirectory).catch(() => [])) {
         if (name.endsWith('.txt')) await copy(join(licenseDirectory, name), name);
     }
-    for (const relative of extLicenses) await copy(join(repositoryRoot, relative), basename(relative));
+    for (const relative of extLicenses) {
+        index.push({ file: relative.slice(`${BUNDLE_LAYOUT.licenses}/`.length), source: 'dsh-ext release' });
+    }
     await writeFile(join(directory, 'INDEX.json'), `${JSON.stringify({ upstreamVersion: PINNED_UPSTREAM_VERSION, hapiDshLicense: 'AGPL-3.0-only', files: index }, null, 2)}\n`);
     return index.map((entry) => `${BUNDLE_LAYOUT.licenses}/${entry.file}`).concat(`${BUNDLE_LAYOUT.licenses}/INDEX.json`);
 }

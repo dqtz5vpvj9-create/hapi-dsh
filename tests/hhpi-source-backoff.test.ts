@@ -1,8 +1,8 @@
+import { nativeMetadataFixture } from './fixtures/hhpi-native-metadata.ts';
 /** Real source adapter and persistent history; only the native transport and clock are controlled. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
@@ -13,7 +13,7 @@ const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 test('thread readers share bounded source reconnect backoff while cached history stays readable', async t => {
     t.mock.timers.enable({ apis: ['setInterval'] });
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-source-backoff-'));
+    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-source-backoff-'));
     let now = 10_000, online = true, available = true, attempts = 0, disconnected = (): void => {};
     const threads: NativeThread[] = ['one', 'two'].map(id => ({ id, cwd: directory, createdAt: 1, updatedAt: 1,
         name: `Synthetic ${id}`, status: { type: 'idle' } }));
@@ -21,7 +21,7 @@ test('thread readers share bounded source reconnect backoff while cached history
     const rpc = {
         get online() { return online; }, currentGeneration: 1, supportsThreadWriterLock: true,
         connect: async () => {
-            attempts++;
+            if (!online) attempts++;
             if (!available) throw new SourceError('TARGET_UNAVAILABLE', 'Synthetic source outage');
             online = true;
             return {};
@@ -39,7 +39,7 @@ test('thread readers share bounded source reconnect backoff while cached history
         },
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory,
-        { rpc, now: () => now, random: () => 1 });
+        { rpc, readMetadata: nativeMetadataFixture(() => []), now: () => now, random: () => 1 });
     t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
     const sessions = await adapter.list();
     for (const session of sessions) await adapter.read({ sessionId: session.id });

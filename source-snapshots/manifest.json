@@ -110,6 +110,45 @@
         "packages/client/ui-conversation/src/client/conversation/history-view.ts",
         "packages/client/ui-conversation/src/client/index.ts",
         "packages/client/ui-conversation/tests/history-source.client.spec.ts"
+      ],
+      "increments": [
+        {
+          "name": "native-persistence-indexed-reading",
+          "baseCommit": "847e4f7221931171616672932f5bb2d613ce3410",
+          "patch": "dsh-ext/native-persistence.patch",
+          "approvedPackages": [
+            "@deepseek-ai/dsh-session-persistence",
+            "@deepseek-ai/dsh-session-persistence-jsonl",
+            "@deepseek-ai/dsh-session-format-v3-to-v4"
+          ],
+          "changedPaths": [
+            "ext/adr/0008.md",
+            "ext/upstream-pr/0008.md",
+            "packages/session/session-format-v3-to-v4/README.md",
+            "packages/session/session-format-v3-to-v4/README.zh.md",
+            "packages/session/session-format-v3-to-v4/src/codec.ts",
+            "packages/session/session-format-v3-to-v4/src/index.ts",
+            "packages/session/session-format-v3-to-v4/src/relationships.ts",
+            "packages/session/session-format-v3-to-v4/src/validation.ts",
+            "packages/session/session-format-v3-to-v4/tests/stream-validation.spec.ts",
+            "packages/session/session-persistence-jsonl/README.md",
+            "packages/session/session-persistence-jsonl/README.zh.md",
+            "packages/session/session-persistence-jsonl/package.json",
+            "packages/session/session-persistence-jsonl/src/index.ts",
+            "packages/session/session-persistence-jsonl/src/read-index-worker.ts",
+            "packages/session/session-persistence-jsonl/src/read-index.ts",
+            "packages/session/session-persistence-jsonl/tests/read-index.spec.ts",
+            "packages/session/session-persistence-jsonl/tsdown.config.ts",
+            "packages/session/session-persistence/README.md",
+            "packages/session/session-persistence/README.zh.md",
+            "packages/session/session-persistence/src/index.ts",
+            "packages/session/session-persistence/src/read-page.ts"
+          ],
+          "adr": "ext/adr/0008.md",
+          "upstreamPrDraft": "ext/upstream-pr/0008.md",
+          "publication": "not published upstream",
+          "reconstruction": "Apply existing dsh-ext/source.patch to upstream base, then this incremental patch against workspaceHead. Native package source archive is included in the release source offer."
+        }
       ]
     },
     {

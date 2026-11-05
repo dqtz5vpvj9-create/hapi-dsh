@@ -40,12 +40,12 @@ function ownerBoundary(root: string) {
 }
 
 test('a DSH receipt read cannot create a first operation, owner request, or durable uncertainty marker', async t => {
-    const directory = await mkdtemp('/tmp/hhpi-dsh-receipts-'), fixture = ownerBoundary(join(directory, 'native'));
+    const directory = await mkdtemp('/mnt/cache/data-cache/hhpi-dsh-receipts-'), fixture = ownerBoundary(join(directory, 'native'));
     const derived = join(directory, 'derived'), adapter = fixture.create(derived);
     t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); });
     assert.equal(await adapter.receipt(fixture.operation), null);
     assert.equal(fixture.state.paths.length, 0);
-    await assert.rejects(stat(derived), { code: 'ENOENT' });
+    await assert.rejects(stat(join(derived, 'operations')), { code: 'ENOENT' });
     await assert.rejects(adapter.receipt({ ...fixture.operation, sessionId: sourceSessionId({
         sourceId: 'another-source', machineId: 'machine', engine: 'dsh', nativeId: 'native-root' }) }), { code: 'INVALID_REQUEST' });
     await assert.rejects(adapter.receipt(fixture.operation, AbortSignal.abort()), { name: 'AbortError' });

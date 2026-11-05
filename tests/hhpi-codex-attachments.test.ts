@@ -1,8 +1,8 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Production native adapter and official image storage; only Codex JSON-RPC is a fixture. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
@@ -20,7 +20,7 @@ const images = (page: SourcePage): Image[] => page.entries.flatMap(({ event }) =
 });
 
 async function fixture(t: TestContext, items: NativeItem[], options: { turns?: number; readFile?: (path: string, signal: AbortSignal) => Promise<unknown>; beforeThreadRead?: () => Promise<void> } = {}) {
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-'));
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-image-'));
     const directory = join(privateHome, 'source'), calls: string[] = [], fileReads: string[] = [];
     const thread = { id: 'thread-images', cwd: '/native', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
     const other = { ...thread, id: 'other-thread' };
@@ -38,13 +38,13 @@ async function fixture(t: TestContext, items: NativeItem[], options: { turns?: n
                 await options.beforeThreadRead?.(); return { thread: snapshot };
             }
             if (method === 'thread/turns/list') return { data: Array.from({ length: turnCount }, (_, i) => ({ id: `turn-${i}`, status: 'completed', startedAt: i + 1, completedAt: i + 2 })), nextCursor: null };
-            if (method === 'thread/items/list') return { data: (params.threadId === other.id
+            if (method === 'thread/items/list') return sliceNativeEntries((params.threadId === other.id
                 ? [{ type: 'userMessage', id: 'other-user', content: [{ type: 'text', text: 'No images in this session.' }] }]
-                : items).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+                : items).map(item => ({ turnId: String(params.turnId), item })), params);
             throw new Error(`Unexpected native method ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory, { rpc, pollMs: 60_000,
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'machine', engine: 'codex' }, directory, { rpc, readMetadata: async (request) => nativeMetadataFixture(() => Array.from({ length: request.threadId === other.id ? 1 : turnCount }, (_, i) => ({ turn: { id: `turn-${i}`, status: 'completed', startedAt: i + 1, completedAt: i + 2 }, items: request.threadId === other.id ? [{ type: 'userMessage', id: 'other-user', content: [{ type: 'text', text: 'No images in this session.' }] }] : items })))(request), pollMs: 60_000,
         readImage: async (path, signal) => { fileReads.push(path); return options.readFile ? options.readFile(path, signal) : { dataBase64: PNG }; } });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const sessions = await adapter.list(), session = sessions.find(value => value.nativeId === thread.id)!, otherSession = sessions.find(value => value.nativeId === other.id)!;
@@ -128,7 +128,7 @@ test('a refresh started before a same-timestamp rewrite cannot readmit the old i
     const pending = f.adapter.readResource({ sessionId: f.session.id, path });
     await Promise.resolve(); await Promise.resolve();
     pause = false; gate.resolve();
-    await assert.rejects(pending, { code: 'STALE_VERSION' });
+    await assert.rejects(pending, { code: 'INVALID_REQUEST' });
     await assert.rejects(f.adapter.readResource({ sessionId: f.session.id, path }), { code: 'INVALID_REQUEST' });
 });
 

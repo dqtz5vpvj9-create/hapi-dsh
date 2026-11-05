@@ -98,7 +98,7 @@ export function canonicalHhpiSessionId(value) {
 export function hhpiRequestPolicy(method, body, targetId) {
   const args = body?.payload?.args ?? {};
   if (method === 'hhpi/catalog') return requestPolicy(method, body) === 'read' && args.request === undefined ? 'read' : 'block';
-  if (method === 'hhpi/read' || method === 'hhpi/resource') {
+  if (method === 'hhpi/resolve' || method === 'hhpi/read' || method === 'hhpi/resource') {
     return requestPolicy(method, body) === 'read' && args.request?.sessionId === targetId ? 'read' : 'block';
   }
   if (method.startsWith('hapi/sourceHistory') || method === 'hapi/sourceWindowFollow') return 'block';

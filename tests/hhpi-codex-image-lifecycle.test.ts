@@ -1,8 +1,8 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Real native adapter, display index and image storage; only native RPC/file IO are fixtures. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
@@ -19,7 +19,7 @@ const imageMessages = (entries: readonly SourceEntry[]): string[] => entries.fla
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 async function fixture(t: TestContext, initialItems: NativeItem[], readImage: (path: string, signal: AbortSignal) => Promise<unknown>, active = true) {
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-lifecycle-')), directory = join(privateHome, 'source');
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-image-lifecycle-')), directory = join(privateHome, 'source');
     const native = { id: 'thread', cwd: '/synthetic', createdAt: 1, updatedAt: 2, status: { type: active ? 'active' : 'idle' } };
     const items = [...initialItems], fileReads: string[] = [], calls: string[] = [];
     let notify: (frame: NativeNotification) => void = () => {};
@@ -34,11 +34,11 @@ async function fixture(t: TestContext, initialItems: NativeItem[], readImage: (p
             if (method === 'thread/read') return { thread: native };
             if (method === 'thread/turns/list') return { data: [{ id: 'turn', status: active ? 'inProgress' : 'completed', startedAt: 1,
                 ...(active ? {} : { completedAt: 2 }) }], nextCursor: null };
-            if (method === 'thread/items/list') return { data: items.map(item => ({ turnId: 'turn', item })), nextCursor: null };
+            if (method === 'thread/items/list') return sliceNativeEntries(items.map(item => ({ turnId: 'turn', item })), params);
             throw new Error(`Unexpected native method ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'synthetic-machine', engine: 'codex' }, directory, { rpc, readImage: readFile });
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'synthetic-machine', engine: 'codex' }, directory, { rpc, readMetadata: nativeMetadataFixture(() => [{ turn: { id: 'turn', status: active ? 'inProgress' : 'completed', startedAt: 1, ...(active ? {} : { completedAt: 2 }) }, items }]), readImage: readFile });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     const [session] = await adapter.list(); assert.ok(session);
     return { adapter, session, fileReads, calls, directory,
@@ -94,7 +94,7 @@ test('pending image preparation never blocks later accepted text from the change
     const next = changes.next().then(value => { delivered = value.value; return value; }); void next.catch(() => {});
     await started.promise;
     f.append({ id: 'later-answer', type: 'agentMessage', text: 'Text accepted while the image is pending' });
-    await flush();
+    await next;
     assert.match(JSON.stringify(delivered), /Text accepted while the image is pending/, 'the source must deliver the next text update before unrelated image IO finishes');
     await next;
 });

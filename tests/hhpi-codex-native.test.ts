@@ -194,7 +194,7 @@ test('shared Codex source resumes the original persisted thread only after its n
         const open = (name: string, ownership: DirectCodexConfig['ownership']) => {
             const config: DirectCodexConfig = { id: 'persisted', machineId: 'fixture-machine', engine: 'codex',
                 command: script ? process.execPath : command!, args: script ? [script, 'app-server'] : ['app-server'],
-                codexHome: root, cwd: root, ...(ownership ? { ownership } : {}) };
+                codexHome: root, cwd: root, writerLock: 'native', ...(ownership ? { ownership } : {}) };
             const rpc = new RecordedNativeRpc(config);
             const notifications: string[] = [];
             rpc.onNotification(value => { notifications.push(value.method); });

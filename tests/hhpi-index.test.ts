@@ -82,3 +82,22 @@ test('foreign identities and failed source transactions leave accepted history u
         assert.deepEqual(index.read({ sessionId: session.id }), baseline);
     } finally { index.dispose(); }
 });
+
+test('page byte budget includes complete shared dependency context before choosing body cursors', () => {
+    const index = new SourceEventIndex(':memory:', session);
+    try {
+        const large = 'x'.repeat(3 * 1024 * 1024);
+        index.edit(session, () => {
+            index.put('context', user(1, large));
+            index.put('earlier-body', user(2, large), ['context']);
+            index.put('later-body', user(3, large), ['context']);
+            index.put('tail', user(4));
+        });
+        const page = index.read({ sessionId: session.id, limit: 3 });
+        assert.equal(page.before, index.sequence('later-body'), 'an oversized closure trims the earlier body and keeps contiguous latest content');
+        assert.equal(page.after, index.sequence('tail'));
+        assert.deepEqual(page.context, [index.sequence('context')]);
+        assert.ok(Buffer.byteLength(JSON.stringify(page.entries)) <= 8 * 1024 * 1024, 'dependencies cannot silently exceed the page budget');
+        assert.equal(index.count, 4, 'page trimming never deletes accepted source history');
+    } finally { index.dispose(); }
+});

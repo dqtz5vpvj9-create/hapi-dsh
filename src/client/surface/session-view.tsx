@@ -12,8 +12,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { installSharedMountedChatConsumer, resolveMountedChatForPane } from '../mounted-chat-control.ts'
 import { Component, createContext, memo, useContext, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import type { SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { ComposerBlock, ConversationViewsProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ConversationViewsProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatConversationViewNode, ChatNode, ChatSnapshot, ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsRenderFactories, PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -389,32 +389,14 @@ export class WindowPreparationCoordinator {
 }
 
 
-/** Official input availability, independent of the measuring wrapper's CSS.
- * A real public restriction keeps its reason; a missing/busy editor waits for
- * the existing bounded admission rather than being made editable here. */
-export function initialComposerReady(target: HTMLElement, snapshot: SessionSnapshot, block?: ComposerBlock): boolean {
-    const inputs = target.querySelectorAll<HTMLElement>('[data-composer-card] [data-composer-input]')
-    const input = inputs.length === 1 ? inputs[0] : undefined
-    if (block !== undefined) throw new Error(block.reason)
-    if (snapshot.removed) throw new Error('The conversation was removed.')
-    if (snapshot.subagent?.address.mode === 'continuable' && snapshot.subagent.parentAvailable === false)
-        throw new Error('The parent session is offline.')
-    if (!input || input.getClientRects().length === 0) return false
-    const box = input.getBoundingClientRect()
-    return box.width > 0 && box.height > 0 && input.getAttribute('contenteditable') === 'true'
-        && input.getAttribute('aria-disabled') !== 'true' && !input.hasAttribute('disabled')
-        && input.closest('[inert], [hidden], [aria-hidden="true"]') === null
-}
-
-/** One owner prepares the visible window after source readiness. Additional
- * history is read only if the actual viewport needs it, never to meet an
- * arbitrary turn count. */
+/** Reveal only the first committed, positioned official reading window.
+ * Composer permissions belong to the official composer, not to history
+ * admission. Optional older pages must never delay already readable content. */
 export async function prepareInitialViewport(
     target: HTMLElement,
     reference: SessionReference,
     navigation: WorkspacePaneNavigation,
     live: () => boolean,
-    composerBlock: () => ComposerBlock | undefined = () => undefined,
     signal?: AbortSignal,
 ): Promise<boolean> {
     const document = target.ownerDocument, frame = document.defaultView
@@ -448,13 +430,10 @@ export async function prepareInitialViewport(
         return false
     }
     try {
-        let pages = 0
-        const pagePlan = new ViewportPagePlan()
         while (await nextActiveFrame()) {
             const port = target.querySelector<HTMLElement>('[data-conversation-scroll]')
             if (!port || port.clientHeight <= 0 || port.clientWidth <= 0) continue
-            const snapshot = reference.binding.session.getSnapshot()
-            if (!initialComposerReady(target, snapshot, composerBlock())) continue
+            if (reference.binding.session.getSnapshot().removed) throw new Error('The conversation was removed.')
             const reading = navigation.reading.getSnapshot()
             const readingState = target.getAttribute('data-hapi-reading')
             // Reload restoration can run without a new intent. Latest is also an
@@ -464,24 +443,7 @@ export async function prepareInitialViewport(
                 if (readingState === 'error') return false
                 if (readingState !== 'ready' && readingState !== 'reader') continue
             }
-            if (snapshot.loadingOlder) continue
-            if (!snapshot.hasMore || chatContentFillsViewport(port)) return true
-            if (pages++ >= 12) return false
-            const session = reference.binding.session as SessionReference['binding']['session'] & Partial<SourceViewportSession & RemotePaneSession>
-            const direct = session.readingView !== undefined
-            const before = direct ? session.readingView?.snapshot.getSnapshot().before : reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
-            if (direct) {
-                const control = resolveMountedChatForPane(target)
-                if (!control) return false
-                if (!await wait(control.loadOlder(stopped))) return false
-            } else if (!await wait(session.loadViewportPage ? session.loadViewportPage(pagePlan.next(port)) : session.loadOlder())) return false
-            if (!await nextActiveFrame()) return false
-            const after = direct ? session.readingView?.snapshot.getSnapshot().before : reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
-            // A page can contain only folded steps and add no visible height.
-            // Continue while its leading event advances, within the same bounded
-            // page/visible-time budget. A live append is not older-history progress.
-            if (before === after && reference.binding.session.getSnapshot().hasMore
-                && !chatContentFillsViewport(port)) return false
+            return true
         }
         return false
     } finally { budget.dispose() }
@@ -800,18 +762,16 @@ export function installSessionViewHost(ctx: Context): {
             })
             void Promise.all([mounted, options.reference.ready]).then(async () => {
                 if (!live || disposed || entry.phase === 'error') return
-                const block = ctx.get('conversation')?.blocks.storeFor(options.reference.sessionId)
                 const alive = (): boolean => live && !disposed && entries.get(identity)?.key === entry.key
                 const lifetime = AbortSignal.any([preparationAbort.signal, hostAbort.signal])
-                // Admission already waits through editor assembly and zero-sized
-                // layouts, pausing while the pane or document is hidden. One
-                // occurrence gets one foreground budget; failure never restarts it.
+                // Source readiness includes the official first-window commit.
+                // Only its positioned geometry gates reveal; the official
+                // composer owns write availability and its live block reason.
                 const admit = async (): Promise<void> => {
-                    const ok = await prepareInitialViewport(options.target, options.reference, entry.navigation, alive,
-                        () => block?.getSnapshot(), lifetime)
+                    const ok = await prepareInitialViewport(options.target, options.reference, entry.navigation, alive, lifetime)
                     if (!live || disposed || lifetime.aborted) return
                     if (!ok) {
-                        const error = new Error('The source conversation could not open its usable editor and first history viewport')
+                        const error = new Error('The source conversation could not position its first history viewport')
                         // Keep the original editor and reading owner. Only an
                         // explicit user retry starts another admission budget;
                         // source/renderer failures still use the terminal path.

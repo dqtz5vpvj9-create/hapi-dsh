@@ -54,3 +54,21 @@ export function waitForSourceReadRecovery(attempt: number, signal: AbortSignal):
     if (signal.aborted) stop()
   })
 }
+
+/** Match the unary RPC budget; an unavailable source must not own a foreground spinner forever. */
+export const SOURCE_READ_TIMEOUT_MS = 30_000
+export async function boundedSourceRead<T>(work: (signal: AbortSignal) => Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted()
+  const controller = new AbortController(), lifetime = AbortSignal.any([signal, controller.signal])
+  const failure = Object.assign(new Error('The source did not finish this history read within 30 seconds. Retry when its connection is available.'), { code: 'TARGET_UNAVAILABLE' })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const stop = (): void => reject(lifetime.reason)
+      lifetime.addEventListener('abort', stop, { once: true })
+      timer = setTimeout(() => controller.abort(failure), SOURCE_READ_TIMEOUT_MS)
+      timer.unref?.()
+      Promise.resolve().then(() => work(lifetime)).then(resolve, reject).finally(() => lifetime.removeEventListener('abort', stop))
+    })
+  } finally { if (timer !== undefined) clearTimeout(timer) }
+}

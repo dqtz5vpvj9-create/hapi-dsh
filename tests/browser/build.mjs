@@ -87,6 +87,6 @@ export async function buildLab() {
   const sheets = Object.keys(result.metafile.outputs).filter(path => path.endsWith('.css')).map(path => '/' + path.slice(path.lastIndexOf('/') + 1))
   await writeFile(join(output, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="icon" href="data:,"><title>HHPI official component lab</title>${sheets.map(path => `<link rel="stylesheet" href="${path}">`).join('')}<link rel="stylesheet" href="/shell.css"></head><body><div id="root"></div><script type="module" src="/lab.js"></script></body></html>`)
   await copyFile(join(root, 'tests/browser/shell.css'), join(output, 'shell.css'))
-  const report = { ...identity, artifacts, officialModules, staticModules, buildMs: Math.round(performance.now() - start), geometryMocks: false, shell: 'two-pane component fixture', sourceTransport: 'synthetic loopback SourceEventIndex' }
+  const report = { ...identity, artifacts, officialModules, staticModules, buildMs: Math.round(performance.now() - start), geometryMocks: false, shell: 'two-pane component fixture', sourceTransport: 'synthetic loopback SourceEventIndex, plus cold native SQLite via production DirectCodexAdapter' }
   await writeFile(join(output, 'identity.json'), JSON.stringify(report, null, 2)); return report
 }

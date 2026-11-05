@@ -5,24 +5,28 @@ import { SourceError, waitFor } from './errors.ts';
 import { sourceIsOffline, sourceOffline, sourceOnlineConnection } from '../shared/source-connectivity.ts';
 import { CodexRpc, CodexRpcError, type NativeNotification, type NativeRequest } from './codex-rpc.ts';
 import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION } from './codex-history.ts';
-import { migrateLegacyCodexHistory } from './codex-history-migration.ts';
+import { retainSelectedLegacyImages } from './codex-legacy-images.ts';
+import { NativeMetadataReader } from './codex-metadata.ts';
+import type { NativeMetadataRequest, NativeMetadataPage } from './codex-metadata-core.mjs';
 import { CodexAttachments } from './codex-attachments.ts';
+import { CodexToolDetails } from './codex-tool-details.ts';
 import { CodexImageReader } from './codex-image-reader.ts';
 import { SourceEventIndex } from './event-index.ts';
 import { OperationLedger, CreationLedger } from './operation-ledger.ts';
-import { isRecord, itemListSchema, loadedListSchema, nativeItemSchema, nativeThreadSchema, nativeTurnSchema, threadListSchema, threadResponseSchema, turnListSchema, type NativeItemEntry, type NativeThread, type NativeTurn } from './codex-native.ts';
+import { isRecord, itemListSchema, loadedListSchema, nativeItemSchema, nativeThreadSchema, nativeTurnSchema, threadListSchema, threadResponseSchema, type NativeItemEntry, type NativeThread } from './codex-native.ts';
 import { parseSourceSessionId, sourceSessionId, type DirectCodexConfig, type SourceAdapter, type SourceChanges, type SourceChangesRequest, type SourceCreateRequest, type SourceCreationReceipt, type SourceOperation, type SourcePage, type SourceReadRequest, type SourceReceipt, type SourceResource, type SourceResourceRequest, type SourceSession } from './protocol.ts';
 
 interface ThreadOwner {
-    native: NativeThread; session: SourceSession; history?: CodexHistory; attachments?: CodexAttachments;
+    native: NativeThread; session: SourceSession; history?: CodexHistory; attachments?: CodexAttachments; details?: CodexToolDetails;
+    preparation?: { controller: AbortController; waiters: number; settled: boolean };
     preparing?: Promise<void>; refreshing?: Promise<void>; dirty: boolean; full: boolean;
     /** Native completion can arrive before its terminal history page is readable. */
     pendingCompletions: Set<string>;
     /** Versions only cover accepted source snapshots; native delta strings are not reapplied over snapshots. */
-    pending: NativeNotification[]; pendingBytes: number; pendingOverflow: boolean; ready: boolean;
+    pending: NativeNotification[]; pendingBytes: number; pendingOverflow: boolean; ready: boolean; rewrite: boolean;
 }
 interface PendingApproval { request: NativeRequest; sessionId: string; acknowledged: Promise<void>; resolve(): void; submitted: boolean }
-interface Tail { last: string; previous: string | null }
+interface NativeSourceRange { first: number | null; last: number | null; hasBefore: boolean; hasAfter: boolean }
 interface NativeHistoryCheckpoint {
     version: 1;
     state: 'building' | 'complete';
@@ -32,6 +36,7 @@ interface NativeHistoryCheckpoint {
 interface AdapterOptions {
     rpc?: CodexRpc; pollMs?: number; readImage?: (path: string, signal: AbortSignal) => Promise<unknown>;
     now?: () => number; random?: () => number;
+    readMetadata?: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
 }
 const MAX_CATALOG = 10_000;
 const MAX_NATIVE_PAGES = 10_000;
@@ -49,6 +54,8 @@ export class DirectCodexAdapter implements SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine = 'codex';
     private readonly rpc: CodexRpc;
     private readonly imageReader: CodexImageReader;
+    private readonly metadataReader: NativeMetadataReader;
+    private readonly readMetadata: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
     private readonly readImage: (path: string, signal: AbortSignal) => Promise<unknown>;
     private readonly ledger: OperationLedger;
     private readonly creations: CreationLedger;
@@ -74,6 +81,9 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.random = options.random ?? Math.random;
         this.rpc = options.rpc ?? new CodexRpc(config);
         this.imageReader = new CodexImageReader(config);
+        this.metadataReader = new NativeMetadataReader(config);
+        this.readMetadata = options.readMetadata ?? ((request, signal) => this.metadataReader.read(request, signal));
+        if (!options.readMetadata) this.metadataReader.warm();
         this.readImage = options.readImage ?? ((path, signal) => this.imageReader.read(path, signal));
         this.ledger = new OperationLedger(join(directory, 'operations'));
         this.creations = new CreationLedger(join(directory, 'creations'), JSON.stringify([this.machineId, this.id, this.engine]));
@@ -130,7 +140,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const loaded = this.loaded.has(nativeId);
         // A stored thread can accept an explicit continuation without already
         // being loaded here. The native writer lock decides execution ownership.
-        const resumable = this.config.ownership === 'exclusive' || this.rpc.supportsThreadWriterLock;
+        const resumable = this.config.ownership === 'exclusive' || this.config.writerLock === 'native';
         return { id, sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId,
             title: thread.name || thread.preview || `Codex ${nativeId.slice(0, 12)}`, cwd: thread.cwd, updatedAt: thread.updatedAt * 1000,
             status: pendingRequests.length ? 'waiting' : running ? 'running' : 'idle',
@@ -142,7 +152,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         let owner = this.threads.get(thread.id);
         const session = this.descriptor(thread);
         if (owner) { owner.native = thread; this.metadata(owner, session); }
-        else { owner = { native: thread, session, dirty: false, full: true, pendingCompletions: new Set(), pending: [], pendingBytes: 0, pendingOverflow: false, ready: false }; this.threads.set(thread.id, owner); }
+        else { owner = { native: thread, session, dirty: false, full: true, pendingCompletions: new Set(), pending: [], pendingBytes: 0, pendingOverflow: false, ready: false, rewrite: false }; this.threads.set(thread.id, owner); }
         return owner;
     }
     private metadata(owner: ThreadOwner, session: SourceSession): void {
@@ -218,14 +228,43 @@ export class DirectCodexAdapter implements SourceAdapter {
     private async owner(sessionId: string, signal?: AbortSignal): Promise<ThreadOwner> {
         const nativeId = this.assertScope(sessionId);
         let owner = this.threads.get(nativeId);
-        if (!owner) { await this.list(signal); owner = this.threads.get(nativeId); }
-        if (!owner) throw new SourceError('TARGET_UNAVAILABLE', 'The native source did not advertise this session.');
+        if (!owner) {
+            // A saved, canonical source identity is already enough to route a
+            // read. Discovering every other thread must not gate this one.
+            await waitFor(this.connectForRead(), signal);
+            const response = threadResponseSchema.parse(await this.rpc.request('thread/read',
+                { threadId: nativeId, includeTurns: false }, { ...(signal ? { signal } : {}) }));
+            if (response.thread.id !== nativeId) throw new SourceError('INVALID_REQUEST', 'The native source returned another thread.');
+            owner = this.remember(response.thread);
+        }
         this.assertReadable(owner.native);
         return owner;
     }
-    private async prepare(owner: ThreadOwner): Promise<void> {
-        if (owner.preparing) return owner.preparing;
-        if (owner.history && owner.ready) return;
+    async resolve(sessionId: string, signal?: AbortSignal): Promise<SourceSession> {
+        return (await this.owner(sessionId, signal)).session;
+    }
+    private async prepare(owner: ThreadOwner, callerSignal?: AbortSignal): Promise<void> {
+        const signal = callerSignal ?? this.lifetime.signal;
+        signal.throwIfAborted();
+        if (owner.preparation?.controller.signal.aborted) {
+            // A new reader must not inherit the last reader's cancelled work.
+            await waitFor(owner.preparing!.catch(() => {}), signal);
+            return this.prepare(owner, signal);
+        }
+        if (owner.history && owner.ready && !owner.preparing) return;
+        if (!owner.preparing) this.startPreparation(owner);
+        const preparation = owner.preparation!;
+        preparation.waiters++;
+        try { await waitFor(owner.preparing!, signal); }
+        finally {
+            preparation.waiters--;
+            if (!preparation.waiters && !preparation.settled) preparation.controller.abort(new DOMException('All history preparation readers left.', 'AbortError'));
+        }
+    }
+    private startPreparation(owner: ThreadOwner): void {
+        const preparation = { controller: new AbortController(), waiters: 0, settled: false };
+        const signal = AbortSignal.any([this.lifetime.signal, preparation.controller.signal]);
+        owner.preparation = preparation;
         const work = (async () => {
             const hash = createHash('sha256').update(owner.session.id).digest('hex');
             let history = owner.history;
@@ -236,23 +275,23 @@ export class DirectCodexAdapter implements SourceAdapter {
                     if (current) owner.history!.acceptItem(owner.session, current.turnId, current.item, current.completed);
                 });
                 owner.attachments = attachments;
+                const details = owner.details = new CodexToolDetails(index);
                 history = new CodexHistory(index, { userContent: (turnId, item) => attachments.content(turnId, item),
-                    toolContent: (turnId, item) => attachments.content(turnId, item) });
+                    toolContent: (turnId, item) => attachments.content(turnId, item), nativeOrder: true, toolPresentation: (turnId, item, tool) => details.project(turnId, item, tool) });
             }
             owner.history = history;
             try {
-                await this.refresh(owner, true);
+                await this.refresh(owner, true, signal);
                 // Only whole native items are buffered. Delta strings trigger a source reread, never double-apply over the baseline.
                 const buffered = owner.pending.splice(0); owner.pendingBytes = 0;
                 if (owner.pendingOverflow) {
+                    // Notifications are an optimization over the authoritative
+                    // sparse snapshot. Overflow rereads the bounded tail; it
+                    // must not turn a readable archive into a capacity error.
                     owner.pendingOverflow = false; owner.full = true;
-                    this.setNativeHistoryCheckpoint(history, owner.session, {
-                        version: 1, state: 'building', updatedAt: owner.native.updatedAt,
-                        statusType: owner.native.status.type,
-                    });
-                    // No partially buffered tail is published as a continuous baseline.
-                    throw new SourceError('CAPACITY_EXCEEDED', 'Native initialization exceeded its notification budget. The source must be read again.');
+                    await this.refresh(owner, true, signal);
                 }
+                signal.throwIfAborted();
                 try { for (const frame of buffered) this.applyNotification(owner, frame); }
                 catch (error) {
                     this.setNativeHistoryCheckpoint(history, owner.session, {
@@ -263,16 +302,23 @@ export class DirectCodexAdapter implements SourceAdapter {
                 }
                 owner.ready = true;
             } catch (error) {
-                owner.ready = false; this.markOffline(owner); throw error;
+                owner.ready = false; if (!signal.aborted) this.markOffline(owner); throw error;
             }
-        })().finally(() => { if (owner.preparing === work) delete owner.preparing; });
+        })().finally(() => {
+            preparation.settled = true;
+            if (owner.preparing === work) { delete owner.preparing; delete owner.preparation; }
+        });
         owner.preparing = work;
-        return work;
     }
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
         const owner = await this.owner(request.sessionId, signal);
-        await waitFor(this.prepare(owner), signal); signal?.throwIfAborted();
-        const page = owner.history!.index.read(request);
+        await this.prepare(owner, signal); signal?.throwIfAborted();
+        let range = owner.history!.index.cached<NativeSourceRange>('native-source-tail');
+        if (request.before !== undefined || request.after !== undefined || request.around !== undefined || range === undefined) {
+            range = await this.readNativePage(owner, request, false, signal);
+        }
+        const page = owner.history!.index.read(request, { from: range.first ?? Number.MAX_SAFE_INTEGER, through: range.last ?? 0 });
+        page.hasBefore ||= range.hasBefore; page.hasAfter ||= range.hasAfter;
         owner.attachments?.schedule(page.entries);
         // The selected entries and subscription version describe one snapshot.
         // Image completion publishes a later revision independently of this reader.
@@ -280,7 +326,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges> {
         const owner = await this.owner(request.sessionId, signal);
-        await waitFor(this.prepare(owner), signal);
+        await this.prepare(owner, signal);
         signal?.throwIfAborted();
         const index = owner.history!.index;
         if (request.epoch === index.epoch && request.version === index.version) {
@@ -294,134 +340,129 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     async readResource(request: SourceResourceRequest, signal?: AbortSignal): Promise<SourceResource> {
         const owner = await this.owner(request.sessionId, signal);
-        await waitFor(this.prepare(owner), signal);
+        await this.prepare(owner, signal);
         if (owner.full) await waitFor(this.refresh(owner, true), signal);
         if (sourceIsOffline(owner.session)) throw new SourceError('TARGET_UNAVAILABLE', 'The native source is offline.');
-        return owner.attachments!.read(request.path, signal);
+        return request.path.startsWith('detail:') ? owner.details!.read(request.path) : owner.attachments!.read(request.path, signal);
     }
-    private refresh(owner: ThreadOwner, full: boolean): Promise<void> {
-        if (owner.refreshing) { owner.dirty = true; owner.full ||= full; return owner.refreshing; }
-        const work = this.connectForRead().then(() => this.refreshNative(owner, full)).then(() => { this.readRecovered(); }, (error: unknown) => {
-            this.readFailed(); throw error;
+    private refresh(owner: ThreadOwner, full: boolean, callerSignal?: AbortSignal): Promise<void> {
+        if (owner.refreshing) { owner.dirty = true; owner.full ||= full; return waitFor(owner.refreshing, callerSignal); }
+        const signal = callerSignal ? AbortSignal.any([this.lifetime.signal, callerSignal]) : this.lifetime.signal;
+        const work = waitFor(this.connectForRead(), signal).then(() => this.refreshNative(owner, full, signal)).then(() => { this.readRecovered(); }, (error: unknown) => {
+            if (!signal.aborted) this.readFailed(); throw error;
         }).finally(() => { if (owner.refreshing === work) delete owner.refreshing; });
         owner.refreshing = work;
         return work;
     }
-    private async refreshNative(owner: ThreadOwner, full: boolean): Promise<void> {
-        const signal = this.lifetime.signal, history = owner.history!;
-        const attachmentRevision = owner.attachments?.revisionToken;
+    private async refreshNative(owner: ThreadOwner, full: boolean, signal: AbortSignal): Promise<void> {
+        signal.throwIfAborted();
+        const history = owner.history!;
         owner.dirty = false; owner.full = false;
         const response = threadResponseSchema.parse(await this.rpc.request('thread/read', { threadId: owner.native.id, includeTurns: false }, { signal }));
         if (response.thread.id !== owner.native.id) throw new SourceError('INVALID_REQUEST', 'The native source returned another thread.');
-        const persistedSession = full ? history.index.session : undefined;
-        this.remember(response.thread);
-        this.assertReadable(response.thread);
-        if (full && !owner.attachments?.needsReconciliation && history.index.count === 0) {
-            const hash = createHash('sha256').update(owner.session.id).digest('hex');
-            for (const suffix of ['.v2.sqlite', '.sqlite']) {
-                if (migrateLegacyCodexHistory(join(this.directory, 'history', `${hash}${suffix}`), history, owner.session, response.thread)) break;
+        this.remember(response.thread); this.assertReadable(response.thread);
+        if (owner.rewrite) {
+            history.index.edit(owner.session, () => { history.index.removeFrom(0); history.index.forget(''); });
+            owner.rewrite = false;
+        }
+        // Coarse thread timestamps are not content revisions. Validate only
+        // the selected sparse tail on reentry; unchanged native item revisions
+        // reuse their accepted projection without any body RPC.
+        await this.readNativePage(owner, { sessionId: owner.session.id, limit: 160 }, false, signal);
+        this.setNativeHistoryCheckpoint(history, owner.session, { version: 1, state: owner.pendingCompletions.size ? 'building' : 'complete',
+            updatedAt: response.thread.updatedAt, statusType: response.thread.status.type });
+        owner.attachments?.acceptRevision(owner.attachments.revisionToken);
+    }
+    /** Fetch native metadata first, then only selected item bodies. History size
+     * never determines the work needed to show a page. Native ordinals admit
+     * older events before an existing window without changing any identity. */
+    private async readNativePage(owner: ThreadOwner, request: SourceReadRequest, userOnly = false, callerSignal?: AbortSignal): Promise<NativeSourceRange> {
+        const signal = callerSignal ? AbortSignal.any([this.lifetime.signal, callerSignal]) : this.lifetime.signal, history = owner.history!, index = history.index;
+        if (request.epoch !== undefined && request.epoch !== index.epoch) throw new SourceError('STALE_VERSION', 'The source replaced this history cursor.');
+        const initialized = await this.rpc.connect(signal);
+        const query: NativeMetadataRequest = { home: initialized.codexHome, threadId: owner.native.id, limit: Math.ceil((request.limit ?? 160) / 8), ...(userOnly ? { userOnly: true } : {}),
+            ...(request.before === undefined ? {} : { before: Math.floor((request.before - 1) / 8) }),
+            ...(request.after === undefined ? {} : { after: Math.floor(request.after / 8) }),
+            ...(request.around === undefined ? {} : { around: Math.floor(request.around / 8) }) };
+        const metadata = await this.readMetadata(query, signal);
+        signal.throwIfAborted();
+        const latestRead = !userOnly && request.before === undefined && request.after === undefined && request.around === undefined;
+        const sourceLast = Math.max(0, ...metadata.items.map(item => item.ordinal), ...metadata.turns.map(turn => turn.endOrdinal ?? turn.ordinal));
+        const previousLast = index.cached<number>('native-source-last');
+        if (latestRead && previousLast !== undefined && sourceLast < previousLast) {
+            index.edit(owner.session, () => { index.removeFrom(0); index.forget(''); });
+        }
+        const oldCoordinates = index.cached<string>('native-source-coordinates');
+        if (oldCoordinates !== undefined && oldCoordinates !== metadata.coordinates) {
+            index.edit(owner.session, () => { index.removeFrom(0); index.forget(''); });
+            if (request.epoch !== undefined) throw new SourceError('STALE_VERSION', 'The native execution history changed.');
+        }
+        // One item can emit only these eight schema-defined slots: turn start
+        // 0 at its own ordinal; item step start 0, message 1, call 2, result 3,
+        // step end 4; turn end 7 at its own native end ordinal. Slots 5/6 are
+        // unused. This is an injective encoding of real native positions, not
+        // speculative headroom, a loading-order allocator, or a browser offset.
+        index.edit(owner.session, () => {
+            index.cache('native-source-coordinates', metadata.coordinates);
+            if (latestRead) index.cache('native-source-last', sourceLast);
+            for (const turn of metadata.turns) {
+                index.cache(`source-turn:${turn.id}`, turn.ordinal);
+                if (turn.endOrdinal !== null) index.cache(`source-end:${turn.id}`, turn.endOrdinal);
             }
-        }
-        const rawCheckpoint = full ? history.index.cached<unknown>(NATIVE_HISTORY_CHECKPOINT) : undefined;
-        const checkpoint = this.nativeHistoryCheckpoint(rawCheckpoint);
-
-        // A completed native revision is already the source-owned read model.
-        // This also applies to an active thread when the native revision and
-        // status still match: the ordinary running poll below will read only
-        // its latest tail after this cache-first opening.
-        if (full && !owner.pendingCompletions.size && !owner.attachments?.needsReconciliation && checkpoint?.state === 'complete' && checkpoint.statusType === response.thread.status.type
-            && checkpoint.updatedAt === response.thread.updatedAt
-            && history.index.count > 0 && history.index.cached<string[]>('turn-order') !== undefined) {
-            if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
-            return;
-        }
-
-        const turns: NativeTurn[] = [], cursors = new Set<string>();
-        let cursor: string | null = null;
-        do {
-            let nativePage: unknown;
-            try { nativePage = await this.rpc.request('thread/turns/list', { threadId: owner.native.id, sortDirection: full ? 'asc' : 'desc', itemsView: 'notLoaded', limit: 100, ...(cursor ? { cursor } : {}) }, { signal }); }
-            catch (error) {
-                // Pinned native API explicitly reports an unmaterialized new thread before its first user message.
-                if (history.index.count === 0 && error instanceof CodexRpcError && error.code === -32600
-                    && error.message === `thread ${owner.native.id} is not materialized yet; thread/turns/list is unavailable before first user message`) break;
-                throw error;
+            for (const item of metadata.items) {
+                index.cache(`source-item:${item.turnId}:${item.itemId}`, item.ordinal);
+                index.cache(`source-declared-revision:${item.turnId}:${item.itemId}`, item.revision);
             }
-            const page = turnListSchema.parse(nativePage);
-            turns.push(...page.data);
-            // The first already-indexed terminal turn bounds an ordinary tail refresh.
-            if (!full && page.data.some(turn => turn.status !== 'inProgress' && history.turnState(turn.id)?.status === turn.status
-                && !owner.pendingCompletions.has(turn.id))) break;
-            cursor = page.nextCursor;
-            if (cursor && cursors.has(cursor)) throw new SourceError('TARGET_UNAVAILABLE', 'The native turn cursor did not progress.');
-            if (cursor) cursors.add(cursor);
-            if (cursors.size > MAX_NATIVE_PAGES) throw new SourceError('CAPACITY_EXCEEDED', 'The native history exceeded the page safety limit.');
-        } while (cursor);
-        if (!full) turns.reverse();
-        const known = history.index.cached<string[]>('turn-order') ?? [];
-        if (full && !owner.pendingCompletions.size && !owner.attachments?.needsReconciliation && rawCheckpoint === undefined && this.canAdoptLegacyIndex(history, persistedSession!, response.thread, turns, known)) {
-            // Older indexes have no explicit completion marker. Their final
-            // turn-order write was the old full-build commit point; verify the
-            // complete idle turn-header sequence before adopting that cache.
-            history.index.edit(owner.session, () => {
-                history.index.cache('turn-order', turns.map(turn => turn.id));
-                history.index.cache(NATIVE_HISTORY_CHECKPOINT, {
-                    version: 1, state: 'complete', updatedAt: response.thread.updatedAt,
-                    statusType: response.thread.status.type,
-                } satisfies NativeHistoryCheckpoint);
-            });
-            if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
-            return;
-        }
-        if (full) this.setNativeHistoryCheckpoint(history, owner.session, {
-            version: 1, state: 'building', updatedAt: response.thread.updatedAt,
-            statusType: response.thread.status.type,
         });
-        if (full) {
-            const next = turns.map(turn => turn.id);
-            let prefix = 0; while (prefix < known.length && prefix < next.length && known[prefix] === next[prefix]) prefix++;
-            if (prefix < known.length) history.invalidateSuffix(owner.session, known.slice(prefix));
-        }
-        for (const turn of turns) {
-            signal.throwIfAborted();
-            const previous = history.turnState(turn.id);
-            if (!full && previous && previous.status !== 'inProgress' && previous.status === turn.status && !owner.pendingCompletions.has(turn.id)) continue;
-            history.beginTurn(owner.session, turn);
-            let tail = full ? undefined : history.index.cached<Tail>(`tail:${turn.id}`);
-            let position: string | { type: 'item'; itemId: string } | null = tail?.previous ? { type: 'item', itemId: tail.previous } : null;
-            const itemCursors = new Set<string>(); let pageCount = 0;
-            do {
+        const accepted: Array<{ items: typeof metadata.items; entries: NativeItemEntry[]; terminal: boolean }> = [];
+        const ordered = [...metadata.items].sort((a, b) => a.ordinal - b.ordinal);
+        for (let offset = 0; offset < ordered.length;) {
+            const first = ordered[offset]!;
+            let end = offset + 1;
+            while (end < ordered.length && ordered[end]!.turnId === first.turnId
+                && ordered[end]!.predecessorId === ordered[end - 1]!.itemId) end++;
+            const selected = ordered.slice(offset, end);
+            const changed = selected.some(item => index.cached<number>(`source-revision:${item.turnId}:${item.itemId}`) !== item.revision);
+            if (changed) {
                 const page = itemListSchema.parse(await this.rpc.request('thread/items/list', {
-                    threadId: owner.native.id, turnId: turn.id, sortDirection: 'asc', limit: 200, ...(position ? { cursor: position } : {}),
+                    threadId: owner.native.id, turnId: first.turnId, sortDirection: 'asc', limit: selected.length,
+                    ...(first.predecessorId ? { cursor: { type: 'item', itemId: first.predecessorId } } : {}),
                 }, { signal }));
-                if (page.data.some(entry => entry.turnId !== turn.id)) throw new SourceError('INVALID_REQUEST', 'The native source returned items from another turn.');
-                // A full completion payload wins over an older in-flight incomplete snapshot.
-                const entries = page.data.map(entry => this.monotoneSnapshot(history, entry, turn.status !== 'inProgress')).filter((entry): entry is NativeItemEntry => entry !== undefined);
-                history.acceptItems(owner.session, entries, turn.status !== 'inProgress');
-                for (const entry of page.data) {
-                    if (tail?.last === entry.item.id || tail?.previous === entry.item.id) continue;
-                    tail = { last: entry.item.id, previous: tail?.last ?? null };
+                if (page.data.length !== selected.length || page.data.some((entry, i) => entry.turnId !== selected[i]!.turnId || entry.item.id !== selected[i]!.itemId)) {
+                    throw new SourceError('TARGET_UNAVAILABLE', 'The native item page changed while its metadata was being read.');
                 }
-                position = page.nextCursor;
-                if (position && itemCursors.has(position)) throw new SourceError('TARGET_UNAVAILABLE', 'The native item cursor did not progress.');
-                if (position) itemCursors.add(position);
-                if (++pageCount > MAX_NATIVE_PAGES) throw new SourceError('CAPACITY_EXCEEDED', 'The native history exceeded the page safety limit.');
-            } while (position);
-            history.acceptTurn(owner.session, turn);
-            if (turn.status !== 'inProgress') owner.pendingCompletions.delete(turn.id);
-            if (tail) history.index.edit(owner.session, () => { history.index.cache(`tail:${turn.id}`, tail); });
-            const order = history.index.cached<string[]>('turn-order') ?? [];
-            if (!order.includes(turn.id)) history.index.edit(owner.session, () => { history.index.cache('turn-order', [...order, turn.id]); });
-            if (turn.status === 'inProgress') this.metadata(owner, { ...owner.session, activeTurnId: turn.id, status: owner.session.pendingRequests.length ? 'waiting' : 'running' });
+                const terminal = metadata.turns.find(turn => turn.id === first.turnId)?.status !== 'inProgress';
+                accepted.push({ items: selected, entries: page.data, terminal });
+            }
+            offset = end;
         }
-        if (full) history.index.edit(owner.session, () => {
-            history.index.cache('turn-order', turns.map(turn => turn.id));
-            history.index.cache(NATIVE_HISTORY_CHECKPOINT, {
-                version: 1, state: owner.pendingCompletions.size ? 'building' : 'complete', updatedAt: response.thread.updatedAt,
-                statusType: response.thread.status.type,
-            } satisfies NativeHistoryCheckpoint);
+        signal.throwIfAborted();
+        // Remote IO is complete. One synchronous transaction publishes a
+        // complete selected page, not one fsync/journal frame per lifecycle.
+        const runningTurn = metadata.turns.find(turn => turn.status === 'inProgress');
+        if (runningTurn) this.metadata(owner, { ...owner.session, activeTurnId: runningTurn.id, status: owner.session.pendingRequests.length ? 'waiting' : 'running' });
+        index.batch(owner.session, () => {
+            for (const turn of metadata.turns) history.beginTurn(owner.session, { ...turn });
+            for (const group of accepted) {
+                const entries = group.entries.map(entry => this.monotoneSnapshot(history, entry, group.terminal)).filter((entry): entry is NativeItemEntry => entry !== undefined);
+                const hash = createHash('sha256').update(owner.session.id).digest('hex');
+                retainSelectedLegacyImages(['.v3.sqlite', '.v2.sqlite', '.sqlite'].map(suffix => join(this.directory, 'history', `${hash}${suffix}`)),
+                    index, owner.session, owner.native, entries);
+                history.acceptItems(owner.session, entries, group.terminal);
+                for (const item of group.items) index.cache(`source-revision:${item.turnId}:${item.itemId}`, item.revision);
+            }
+            for (const turn of metadata.turns) {
+                history.acceptTurn(owner.session, { ...turn });
+                if (turn.status !== 'inProgress') owner.pendingCompletions.delete(turn.id);
+            }
         });
-        if (attachmentRevision !== undefined) owner.attachments?.acceptRevision(attachmentRevision);
+        const positions = [...metadata.items.map(item => item.ordinal), ...metadata.turns.flatMap(turn => turn.endOrdinal === null ? [] : [turn.endOrdinal])];
+        const first = metadata.first === undefined ? (positions.length ? Math.min(...positions) : null) : metadata.first;
+        const last = metadata.last === undefined ? (positions.length ? Math.max(...positions) : null) : metadata.last;
+        const range: NativeSourceRange = { first: first === null ? null : first * 8, last: last === null ? null : last * 8 + 7,
+            hasBefore: metadata.hasBefore, hasAfter: metadata.hasAfter };
+        if (latestRead) index.edit(owner.session, () => index.cache('native-source-tail', range));
+        return range;
     }
     private nativeHistoryCheckpoint(value: unknown): NativeHistoryCheckpoint | undefined {
         if (!isRecord(value) || value.version !== 1 || (value.state !== 'building' && value.state !== 'complete')
@@ -431,20 +472,6 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     private setNativeHistoryCheckpoint(history: CodexHistory, session: SourceSession, value: NativeHistoryCheckpoint): void {
         history.index.edit(session, () => history.index.cache(NATIVE_HISTORY_CHECKPOINT, value));
-    }
-    private canAdoptLegacyIndex(history: CodexHistory, previousSession: SourceSession, thread: NativeThread,
-        turns: readonly NativeTurn[], known: readonly string[]): boolean {
-        if (thread.status.type !== 'idle' || previousSession.updatedAt !== thread.updatedAt * 1000
-            || history.index.count === 0 || history.index.cached<string[]>('turn-order') === undefined
-            || known.length !== turns.length) return false;
-        return turns.every((turn, index) => {
-            if (known[index] !== turn.id || turn.status === 'inProgress') return false;
-            const saved = history.turnState(turn.id);
-            if (!saved || saved.status !== turn.status || saved.startedAt !== turn.startedAt || saved.completedAt !== turn.completedAt
-                || JSON.stringify(saved.error ?? null) !== JSON.stringify(turn.error ?? null)) return false;
-            if (history.index.sequence(JSON.stringify(['turn', turn.id, 'start'])) === undefined) return false;
-            return history.index.sequence(JSON.stringify(['turn', turn.id, 'end'])) !== undefined;
-        });
     }
     private monotoneSnapshot(history: CodexHistory, entry: NativeItemEntry, terminal: boolean): NativeItemEntry | undefined {
         const previous = history.itemState(entry.turnId, entry.item.id);
@@ -479,7 +506,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const { method, params } = frame;
         owner.dirty = true;
         try {
-            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.pendingCompletions.clear(); owner.attachments?.revoke(true); owner.full = true; return; }
+            if (method === 'thread/reverted' || method === 'thread/compacted') { owner.pendingCompletions.clear(); owner.attachments?.revoke(true); owner.rewrite = true; owner.full = true; return; }
             if (method === 'thread/deleted' || method === 'thread/closed' || method === 'thread/archived') { this.markOffline(owner); this.catalogAt = 0; return; }
             if (method === 'serverRequest/resolved') {
                 const requestId = this.approvalId(params.requestId, this.rpc.currentGeneration), pending = this.approvals.get(requestId);
@@ -497,7 +524,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 owner.native.status = { type: method === 'turn/started' ? 'active' : 'idle' };
                 this.metadata(owner, { ...this.descriptor(owner.native), activeTurnId: method === 'turn/started' ? turn.id : null });
                 if (owner.history) {
-                    if (method === 'turn/started') owner.history.beginTurn(owner.session, turn);
+                    if (method === 'turn/started') owner.history.beginTurn(owner.session, { ...turn });
                     // An idle thread header can precede its persisted turn tail.
                     // Keep polling until terminal items are read before turn/end,
                     // and prevent a restart from adopting this incomplete cache.
@@ -550,7 +577,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const work = (async () => {
             const owner = await this.owner(operation.sessionId);
             await this.prepare(owner);
-            if (owner.history!.index.userMessageSequence(operation.operationId) === undefined) await this.refresh(owner, true);
+            if (owner.history!.index.userMessageSequence(operation.operationId) === undefined) await this.readNativePage(owner, { sessionId: operation.sessionId, limit: 160 }, true);
         })().catch(() => { /* The accepted receipt remains authoritative during a read outage. */ })
             .finally(() => { if (this.receiptReads.get(nativeId) === work) this.receiptReads.delete(nativeId); });
         this.receiptReads.set(nativeId, work);
@@ -561,7 +588,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         await this.prepare(owner);
         let seq = owner.history!.index.userMessageSequence(operation.operationId);
         if (seq === undefined) {
-            await waitFor(this.refresh(owner, owner.full), signal);
+            await waitFor(this.readNativePage(owner, { sessionId: operation.sessionId, limit: 160 }, true), signal);
             seq = owner.history!.index.userMessageSequence(operation.operationId);
         }
         if (seq === undefined) return undefined;
@@ -603,8 +630,8 @@ export class DirectCodexAdapter implements SourceAdapter {
             this.metadata(owner, this.descriptor(owner.native));
             if (!loaded.has(owner.native.id)) {
                 if (operation.kind !== 'send') throw new SourceError('UNSUPPORTED', 'This thread is not loaded by the connected native app-server. Steering and cancellation cannot resume it.');
-                if (this.config.ownership !== 'exclusive' && !this.rpc.supportsThreadWriterLock) {
-                    throw new SourceError('UNSUPPORTED', 'Continuing shared native history requires Codex 0.165.0 or newer with thread writer locking.');
+                if (this.config.ownership !== 'exclusive' && this.config.writerLock !== 'native') {
+                    throw new SourceError('UNSUPPORTED', 'Continuing shared native history requires verified native thread writer locking.');
                 }
                 // Default Local storage acquires its cross-process writer lock
                 // before starting the original thread. A live owner is never
@@ -659,7 +686,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (this.disposed) return;
         this.disposed = true; clearInterval(this.timer); this.lifetime.abort();
         for (const stop of this.stops) stop();
-        await Promise.all([this.rpc.dispose(), this.imageReader.dispose(), ...[...this.threads.values()].map(owner => owner.attachments?.dispose())]);
+        await Promise.all([this.rpc.dispose(), this.metadataReader.dispose(), this.imageReader.dispose(), ...[...this.threads.values()].map(owner => owner.attachments?.dispose())]);
         await Promise.allSettled([...this.receiptReads.values(), ...[...this.threads.values()].flatMap(owner => [owner.preparing, owner.refreshing].filter((work): work is Promise<void> => Boolean(work)))]);
         for (const owner of this.threads.values()) owner.history?.index.dispose();
         this.threads.clear(); this.approvals.clear();

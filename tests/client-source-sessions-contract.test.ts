@@ -29,7 +29,7 @@ import type { SessionId, SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { SourcePreparationReference, SourceSessionsApi, SourceViewportSession, SourceWindowPreparer } from '../src/client/source-sessions.ts'
 import { SOURCE_HISTORY_FRAME_CHUNK_SIZE } from '../src/source-window-types.ts'
 import type { SourceHistoryOutlineValue, SourceHistoryWindowRequest, SourceHistoryWindowValue } from '../src/source-window-types.ts'
-import { prepareInitialViewport } from '../src/client/surface/session-view.tsx'
+import { prepareInitialViewport, prepareCandidateViewport } from '../src/client/surface/session-view.tsx'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
@@ -600,7 +600,7 @@ test('cancelling a stalled older page clears loading state and ignores its late 
   } finally { reference.release(); facade.dispose() }
 })
 
-test('viewport admission measures its window while interactive paging delegates to the HAPI page policy', async () => {
+test('initial reveal preserves accepted history while candidate and interactive paging use the HAPI page policy', async () => {
   const h = harness({ id: sourceId(21), tail: [event(1_000)], tailHasMore: true })
   h.resolveReady()
   const requests: SourceHistoryWindowRequest[] = []
@@ -639,6 +639,8 @@ test('viewport admission measures its window while interactive paging delegates 
     const navigation = { reading: { getSnapshot: () => undefined },
       state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation
     assert.equal(await prepareInitialViewport(target, reference, navigation, () => true), true)
+    assert.equal(requests.length, 0, 'revealing accepted history must not wait for speculative older pages')
+    assert.equal(await prepareCandidateViewport(target, reference, new AbortController().signal, navigation.state), true)
     assert.equal(requests.length, 3, 'source progress alone cannot expose a viewport without actual scroll range')
     assert.deepEqual(requests.map(request => request.limit), [20, 50, 50])
     assert.equal(requests[0]!.fromOldest, true)

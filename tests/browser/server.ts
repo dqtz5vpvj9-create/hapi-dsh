@@ -5,10 +5,12 @@ import { resolve, extname, sep } from 'node:path'
 import { SourceEventIndex, type EventInput } from '../../src/remote/event-index.ts'
 import { sourceSessionId, type SourceSession, type SourceReadRequest, type SourceChangesRequest, type SourceOperation, type SourceResourceRequest } from '../../src/remote/protocol.ts'
 import { output } from './build.mjs'
+import { coldNativeFixture } from './cold-native-fixture.ts'
 import { seedCodexRendering, type CodexRenderingResources } from './codex-rendering-fixture.ts'
 
-export async function startLab(options: { codexRendering?: boolean } = {}) {
-  let codexRendering = options.codexRendering === true
+export async function startLab(options: { codexRendering?: boolean; nativeOpen?: boolean } = {}) {
+  let codexRendering = options.codexRendering === true, nativeOpen = options.nativeOpen === true
+  let native: Awaited<ReturnType<typeof coldNativeFixture>> | undefined
   const identity = { machineId: 'browser-fixture', sourceId: 'native-fixture', engine: 'codex', nativeId: 'synthetic-only' }
   const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Synthetic browser acceptance', cwd: '/synthetic', updatedAt: 1000, status: 'idle', activeTurnId: null,
     capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
@@ -33,9 +35,10 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
   const connections = new Set<AbortController>()
   async function reset(): Promise<void> {
     for (const abort of connections) abort.abort()
-    connections.clear(); await resources?.dispose(); resources = undefined; index?.dispose()
+    connections.clear(); await native?.dispose(); native = undefined; await resources?.dispose(); resources = undefined; index?.dispose()
     index = new SourceEventIndex(':memory:', metadata); reads = 0; writes = []; failNext = false
     readPages = []; eventAudit = new Map(); followRequests = []
+    if (nativeOpen) { native = await coldNativeFixture(); return }
     if (codexRendering) {
       resources = await seedCodexRendering(index, metadata)
       for (const { event } of index.read({ sessionId: metadata.id, limit: 160 }).entries) {
@@ -128,9 +131,14 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
       if (request.headers['x-hhpi-fixture'] !== '1') return json(response, { error: 'Fixture boundary required' }, 403)
       const body = await jsonBody(request)
       if (url.pathname === '/api/reset') {
-        const value = body as { codexRendering?: boolean }
+        const value = body as { codexRendering?: boolean; nativeOpen?: boolean }
         if (typeof value.codexRendering === 'boolean') codexRendering = value.codexRendering
+        nativeOpen = value.nativeOpen === true
         await reset(); return json(response, { ok: true })
+      }
+      if (url.pathname === '/api/native-writable' || url.pathname === '/api/native-readonly') {
+        if (!native) return json(response, { error: 'Native source not selected' }, 409)
+        await native.writable(url.pathname === '/api/native-writable'); return json(response, { ok: true })
       }
       if (url.pathname === '/api/interrupt-updates') {
         for (const abort of connections) abort.abort()
@@ -149,6 +157,7 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
         // Bounded IO latency makes the real pending/commit boundary observable.
         await new Promise(resolve => setTimeout(resolve, 40))
         if (failNext) { failNext = false; return json(response, { error: 'Synthetic read failure' }, 503) }
+        if (native) return json(response, { ok: true, value: await native.adapter.read(value) })
         const page = index.read(value)
         // Preserve the first body snapshot; prepared image revisions arrive on
         // the real SourceEventIndex change stream after the fixture IO gate.
@@ -198,8 +207,9 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
     if (url.pathname === '/api/catalog') return json(response, { ok: true, value: { protocol: 1, legacyHapi: false,
       // This loopback authority replaces only IO. Exercise the production
       // browser storage admission and keep the two synthetic datasets isolated.
-      storageScope: `browser-fixture-${codexRendering ? 'rendering' : 'history'}`, sessions: [metadata], sources: [] } })
+      storageScope: `browser-fixture-${native ? 'native-open' : codexRendering ? 'rendering' : 'history'}`, sessions: [native?.session ?? metadata], sources: [] } })
     if (url.pathname === '/api/stats') {
+      if (native) return json(response, { reads, followRequests, ...native.stats() })
       const userMessageIds = [...eventAudit.values()].flatMap(event => event.userMessageId ? [Number(event.userMessageId.slice('message-'.length))] : [])
       return json(response, {
         reads, writes, readPages, followRequests, sourceVersion: index.version, codexImages: resources?.snapshot(), userMessageCount: userMessageIds.length,
@@ -213,6 +223,11 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
       const abort = new AbortController(); connections.add(abort)
       response.on('close', () => { abort.abort(); connections.delete(abort) })
       response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' }); response.flushHeaders()
+      if (native) {
+        try { for await (const change of native.adapter.changes(value, abort.signal)) response.write(JSON.stringify(change) + '\n') }
+        finally { response.end(); connections.delete(abort) }
+        return
+      }
       if (value.epoch === index.epoch && value.version === index.version) {
         response.write(JSON.stringify({ session: index.session, epoch: index.epoch, base: index.version, version: index.version,
           reset: false, upserts: [], removed: [] }) + '\n')
@@ -239,6 +254,6 @@ export async function startLab(options: { codexRendering?: boolean } = {}) {
     for (const abort of connections) abort.abort()
     server.closeAllConnections()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
-    await resources?.dispose(); index.dispose()
+    await native?.dispose(); await resources?.dispose(); index.dispose()
   } }
 }

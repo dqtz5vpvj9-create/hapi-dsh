@@ -154,6 +154,25 @@ test('public Loader namespace isolation reaches ctx.remote.commands without chan
   } finally { await fixture.stop(); await fixture.ctx.fiber.dispose() }
 })
 
+test('HHPI command menu can load client actions without addressing a foreign session in the DSH Host', async () => {
+  const fixture = await graph()
+  try {
+    const source = 'hhpi:machine:source:codex:thread' as SessionId
+    const official = new CommandDirectory(async id => {
+      const response = await fixture.consumer.remote.commands.list(id as SessionId)
+      if (!response.ok) throw new Error('host command directory failed')
+      return response.value
+    })
+    official.warm(source)
+    await flush()
+    assert.equal(official.status(source), 'ready')
+    assert.deepEqual(fixture.received, [], 'HHPI identity must never reach the DSH command service')
+    const ordinary = 'ordinary-dsh-session' as SessionId
+    await fixture.consumer.remote.commands.list(ordinary)
+    assert.deepEqual(fixture.received, [ordinary], 'ordinary DSH commands still come from their Host')
+  } finally { await fixture.stop(); await fixture.ctx.fiber.dispose() }
+})
+
 test('official command consumer combines HHPI sessions with the isolated remote.commands namespace', async () => {
   const ctx = new Context(), received: string[] = [], consumerContexts: Context[] = []
   const originalSessions = { owner: 'original DSH sessions' }, facade = { owner: 'HHPI source sessions' }

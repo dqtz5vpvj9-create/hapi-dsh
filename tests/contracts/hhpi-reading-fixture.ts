@@ -68,7 +68,8 @@ const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), ti
   capabilities: { send: true, steer: true, cancel: true, approve: true, files: false }, pendingRequests: [] }
 const message = (id: number): EventInput => ({ type: 'user/message', time: id, surfaceOp: 'append', data: { id: `message-${id}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: `body-${id}` }] } } as EventInput)
 
-export async function fixture(t: TestContext, options: { preparedChatSource?: string | undefined; restrictedOwner?: boolean } = {}) {
+export async function fixture(t: TestContext, options: { preparedChatSource?: string | undefined; restrictedOwner?: boolean; send?: boolean } = {}) {
+  const sourceMetadata = options.send === undefined ? metadata : { ...metadata, capabilities: { ...metadata.capabilities, send: options.send } }
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', { url: 'https://synthetic.invalid/', pretendToBeVisual: true })
   // jsdom has no font loader. Composer layout observes this external boundary;
@@ -81,8 +82,8 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
     Object.defineProperty(globalThis, key, { configurable: true, value: Reflect.get(dom.window, key) })
     restored.push(() => { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) })
   }
-  const ctx = new Context(), index = new SourceEventIndex(':memory:', metadata), calls: unknown[] = [], writes: SourceOperation[] = []
-  index.edit(metadata, () => { for (let i = 1; i <= 1440; ++i) index.put(`item-${i}`, message(i)) })
+  const ctx = new Context(), index = new SourceEventIndex(':memory:', sourceMetadata), calls: unknown[] = [], writes: SourceOperation[] = []
+  index.edit(sourceMetadata, () => { for (let i = 1; i <= 1440; ++i) index.put(`item-${i}`, message(i)) })
   const { RemoteSessions, SourceSessions } = await facadeClasses()
   const controllerRoot = resolve(require.resolve('@deepseek-ai/dsh-api-session-controller/package.json'), '..')
   const { createWindowCommitFactory } = require(resolve(controllerRoot, 'lib/types/client/sessions/window-commit.js'))
@@ -99,7 +100,7 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
     await injectedOwner
   }
   const remote = new RemoteSessions(ownerContext, original, {
-    catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, storageScope: 'synthetic-reading', sessions: [metadata], sources: [] } }),
+    catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: false, storageScope: 'synthetic-reading', sessions: [sourceMetadata], sources: [] } }),
     read: async request => { calls.push(request); return { ok: true, value: index.read(request) } },
     changes: (request, signal) => index.changes(request, signal),
     operate: async operation => { writes.push(operation); return { ok: true, value: { sessionId: operation.sessionId, operationId: operation.operationId, status: 'accepted', message: 'Accepted at synthetic wire boundary' } } },
@@ -132,7 +133,7 @@ export async function fixture(t: TestContext, options: { preparedChatSource?: st
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-session'))
   await ctx.plugin(official('@deepseek-ai/dsh-client-ui-conversation'))
   await ctx.plugin(options.preparedChatSource ? await preparedChat(options.preparedChatSource) : official('@deepseek-ai/dsh-client-ui-chat'))
-  const canonical = sessions.retain(metadata.id as SessionBinding['sessionId'], { source: 'hapiWorkspace' }); references.push(canonical)
+  const canonical = sessions.retain(sourceMetadata.id as SessionBinding['sessionId'], { source: 'hapiWorkspace' }); references.push(canonical)
   await canonical.ready
   async function open(id: string, cacheId = id) {
     const reference = sessions.openReadingView(canonical, id)

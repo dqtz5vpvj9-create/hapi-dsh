@@ -167,7 +167,8 @@ test('DirectDshHistory reads original native events, pages them without resequen
     await t.test('a page containing a tool result carries its earlier assistant, call, turn, and step context', async () => {
         const snapshot = await reader.snapshot(source);
         assert.equal(snapshot.epoch, `${source.id}:${header.createdAt}`);
-        const page = await reader.read(source, { sessionId: source.id, before: 1005, limit: 160, epoch: snapshot.epoch });
+        const indexed = await reader.readIndex(source);
+        const page = await reader.read(source, { sessionId: source.id, before: 1005, limit: 160, epoch: indexed.epoch });
         assert.equal(page.before, 845);
         assert.equal(page.after, 1004);
         assert.deepEqual(page.context, [0, 1, 2, 3]);
@@ -184,6 +185,7 @@ test('DirectDshHistory reads original native events, pages them without resequen
 
     await t.test('a stable native revision shares its in-memory prefix, then publishes only new original seqs', async () => {
         const original = await reader.snapshot(source);
+        const originalIndex = await reader.readIndex(source);
         const cached = await reader.snapshot(source);
         assert.strictEqual(cached.events, original.events);
         assert.equal(cached.revision, original.revision);
@@ -197,11 +199,13 @@ test('DirectDshHistory reads original native events, pages them without resequen
         assert.notEqual(updated.revision, original.revision);
         assert.equal(updated.version, original.version + 1);
         assert.equal(updated.events.at(-1)?.seq, nextSeq);
-        const frame = await reader.changes(source, { sessionId: source.id, epoch: original.epoch, version: original.version });
+        const frame = await reader.changes(source, { sessionId: source.id, epoch: originalIndex.epoch, version: original.version });
         assert.ok(frame);
         assert.equal(frame.reset, false);
         assert.deepEqual(frame.upserts.map(entry => entry.event.seq), [nextSeq]);
-        const newest = await reader.read(source, { sessionId: source.id, limit: 1, epoch: updated.epoch });
+        const updatedIndex = await reader.readIndex(source);
+        assert.equal(updatedIndex.epoch, originalIndex.epoch, 'append preserves the indexed native generation');
+        const newest = await reader.read(source, { sessionId: source.id, limit: 1, epoch: updatedIndex.epoch });
         assert.equal(newest.entries.find(entry => !newest.context.includes(entry.event.seq))?.event.seq, nextSeq);
     });
 
@@ -222,9 +226,9 @@ test('DirectDshHistory reads original native events, pages them without resequen
     await t.test('canonical source identity and epoch are required for page and change reads', async () => {
         await assert.rejects(reader.read({ ...source, nativeId: 'other-session' }, { sessionId: source.id }), { code: 'INVALID_REQUEST' });
         await assert.rejects(reader.read(source, { sessionId: `${source.id}-other` }), { code: 'INVALID_REQUEST' });
-        const snapshot = await reader.snapshot(source);
+        const snapshot = await reader.readIndex(source);
         await assert.rejects(reader.read(source, { sessionId: source.id, epoch: `${snapshot.epoch}-old` }), { code: 'STALE_VERSION' });
-        const reset = await reader.changes(source, { sessionId: source.id, epoch: `${snapshot.epoch}-old`, version: snapshot.version });
+        const reset = await reader.changes(source, { sessionId: source.id, epoch: `${snapshot.epoch}-old`, version: snapshot.eventCount });
         assert.equal(reset?.reset, true);
     });
 });

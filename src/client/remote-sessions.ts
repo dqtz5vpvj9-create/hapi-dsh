@@ -296,6 +296,7 @@ export class RemoteSessions implements ISessions {
   private readonly records = new Map<SessionId, RecordOwner>()
   private readonly readingViews = new RemotePaneViews()
   private readonly histories = new Map<SessionId, RemoteSourceHistory>()
+  private readonly inactiveHistories = new Map<SessionId, true>()
   private readonly retainObservers = new Map<SessionId, Value<SessionRetainInfo>>()
   private readonly stopOriginal: () => void
   private readonly lifetime = new AbortController()
@@ -369,6 +370,7 @@ export class RemoteSessions implements ISessions {
     this.setReadingStorage(undefined, false)
   }
   private removeReadingSource(id: string): void {
+    this.inactiveHistories.delete(id as SessionId)
     this.histories.get(id as SessionId)?.revokeCachedReading()
     this.readingViews.releaseSession(id)
     const record = this.records.get(id as SessionId)
@@ -444,6 +446,38 @@ export class RemoteSessions implements ISessions {
     this.refreshRead = work
     return work
   }
+  /** A saved original identity can open before the full source directory is loaded. */
+  async resolveSession(id: SessionId, signal: AbortSignal): Promise<void> {
+    if (!isSourceSessionId(id)) return
+    if (this.storageRevoked || this.revokedReadingSources.has(id)) throw sourceError('Access to this source was revoked.')
+    if (this.metadata.has(id)) return
+    if (!this.api.resolve) { await this.refreshSources(); return }
+    const generation = this.storageGeneration
+    const session = result(await this.api.resolve({ sessionId: id }, signal))
+    signal.throwIfAborted(); this.lifetime.signal.throwIfAborted()
+    if (generation !== this.storageGeneration || this.storageRevoked || this.revokedReadingSources.has(id))
+      throw sourceError('The authenticated source scope changed while resolving this conversation.')
+    if (session.id !== id) throw sourceError('The source resolved a different conversation.')
+    this.metadata.set(id, session)
+    this.historyMetadataRevisions.set(id, ++this.historyMetadataRevision)
+    this.catalogChecked = true
+    this.publish()
+  }
+  private retainWarmHistory(id: SessionId): void {
+    const history = this.histories.get(id)
+    if (!history) return
+    history.suspend()
+    if (!this.readingCache) { history.dispose(); this.histories.delete(id); return }
+    this.inactiveHistories.delete(id); this.inactiveHistories.set(id, true)
+    let bytes = [...this.histories.values()].reduce((total, value) => total + value.retainedBytes, 0)
+    for (const candidate of this.inactiveHistories.keys()) {
+      if (this.inactiveHistories.size <= this.readingCache.maxSessions && bytes <= 32 * 1024 * 1024) break
+      const inactive = this.histories.get(candidate)
+      this.inactiveHistories.delete(candidate)
+      if (this.records.has(candidate)) continue
+      if (inactive) { bytes -= inactive.retainedBytes; inactive.dispose(); this.histories.delete(candidate) }
+    }
+  }
   private publish(): void {
     const base = this.original.list.getSnapshot()
     const ids = [...base.ids], byId = { ...base.byId }
@@ -467,6 +501,7 @@ export class RemoteSessions implements ISessions {
   }
   retain(target: SessionTarget, options: SessionRetainOptions): SessionReference {
     if (typeof target !== 'string' || !isSourceSessionId(target)) return this.original.retain(target, options)
+    this.inactiveHistories.delete(target)
     this.lifetime.signal.throwIfAborted(); options.signal?.throwIfAborted()
     if (!this.windowCommit) throw new Error('Direct HHPI sources require the pinned DSH history/window extension. Rebuild and install the source overlay.')
     let record = this.records.get(target)
@@ -518,7 +553,7 @@ export class RemoteSessions implements ISessions {
         this.records.delete(target); held.session.dispose(); void held.scope.fiber.dispose()
         // A durable checkpoint replaces an unbounded set of inactive in-memory
         // transcript owners. The next retain rebuilds from that accepted body.
-        if (this.readingCache) { this.histories.get(target)?.dispose(); this.histories.delete(target) }
+        this.retainWarmHistory(target)
       }
     }
     options.signal?.addEventListener('abort', release, { once: true })
@@ -562,6 +597,6 @@ export class RemoteSessions implements ISessions {
     for (const record of this.records.values()) { record.session.dispose(); void record.scope.fiber.dispose() }
     for (const history of this.histories.values()) history.dispose()
     this.readingCache?.dispose(); this.stopReadingMemory?.(); this.outbox.dispose()
-    this.records.clear(); this.histories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
+    this.records.clear(); this.histories.clear(); this.inactiveHistories.clear(); this.metadata.clear(); this.historyMetadataRevisions.clear(); this.revokedReadingSources.clear()
   }
 }

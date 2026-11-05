@@ -20,7 +20,7 @@ export interface SourceReadingCheckpoint {
   pages?: SourcePage[] | undefined
 }
 interface SavedReading extends SourceReadingCheckpoint { positions: Record<string, SavedPosition> }
-interface IndexEntry { id: string; used: number; bytes: number }
+interface IndexEntry { id: string; used: number; bytes: number; session?: SourceSession | undefined }
 export interface SourceReadingStorage { storage: Storage; scope: string }
 const MAX_SESSIONS = 8, MAX_BYTES = 4 * 1024 * 1024, MAX_SESSION_BYTES = 1024 * 1024, MAX_WINDOWS = 8
 const seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), key = z.string().min(1).max(2048)
@@ -31,7 +31,7 @@ const position = z.object({ anchorKey: key, anchorOwnerKey: key.optional(), anch
 const record = z.object({ session: sourceSessionSchema, epoch: key, version: seq, head: page,
   windows: z.array(z.object({ viewId: key, page })).max(MAX_WINDOWS),
   positions: z.record(key, z.object({ value: position.nullable(), seq: seq.optional() })).refine(value => Object.keys(value).length <= MAX_WINDOWS) }) satisfies z.ZodType<SavedReading>
-const index = z.array(z.object({ id: key, used: z.number().finite(), bytes: seq.max(MAX_SESSION_BYTES) })).max(MAX_SESSIONS)
+const index = z.array(z.object({ id: key, used: z.number().finite(), bytes: seq.max(MAX_SESSION_BYTES), session: sourceSessionSchema.optional() })).max(MAX_SESSIONS)
   .refine(values => values.reduce((sum, value) => sum + value.bytes, 0) <= MAX_BYTES)
 const encoder = new TextEncoder()
 const sequences = new WeakMap<SourcePage, Set<number>>()
@@ -51,18 +51,52 @@ function compact(page: SourcePage, pages: readonly SourcePage[], target = page.a
 /** Check the payload budget before concatenating potentially huge shared reader windows. */
 function bodyFits(saved: SavedReading): boolean {
   let bytes = 0
+  const seen = new Set<number>()
   for (const page of [saved.head, ...saved.windows.map(window => window.page)]) for (const entry of page.entries) {
+    if (seen.has(entry.event.seq)) continue
+    seen.add(entry.event.seq)
     let size = eventBytes.get(entry)
     if (size === undefined) { size = encoder.encode(JSON.stringify(entry)).byteLength + 1; eventBytes.set(entry, size) }
     if ((bytes += size) > MAX_SESSION_BYTES) return false
   }
   return true
 }
+/** Persist each accepted event once; independent Pane ranges reference its native sequence. */
+function serialize(saved: SavedReading): string {
+  const entries = new Map<number, SourceEntry>()
+  const reference = (page: SourcePage) => {
+    for (const entry of page.entries) entries.set(entry.event.seq, entry)
+    const { entries: _entries, session: _session, ...metadata } = page
+    return { ...metadata, seqs: page.entries.map(entry => entry.event.seq) }
+  }
+  const head = reference(saved.head), windows = saved.windows.map(window => ({ viewId: window.viewId, page: reference(window.page) }))
+  return JSON.stringify({ format: 2, session: saved.session, epoch: saved.epoch, version: saved.version,
+    head, windows, entries: [...entries.values()], positions: saved.positions })
+}
+const referencePage = page.omit({ entries: true, session: true }).extend({ seqs: z.array(seq).max(20_000) }).strict()
+const packed = z.object({ format: z.literal(2), session: sourceSessionSchema, epoch: key, version: seq,
+  head: referencePage, windows: z.array(z.object({ viewId: key, page: referencePage })).max(MAX_WINDOWS),
+  entries: z.array(event).max(20_000), positions: record.shape.positions })
+function deserialize(raw: string): SavedReading | undefined {
+  const value: unknown = JSON.parse(raw)
+  if (typeof value !== 'object' || value === null || !('format' in value)) return record.parse(value)
+  const saved = packed.parse(value), entries = new Map<number, SourceEntry>(saved.entries.map(entry => [entry.event.seq, entry]))
+  const materialize = (reference: z.infer<typeof referencePage>): SourcePage => {
+    const { seqs, ...metadata } = reference
+    return { ...metadata, session: saved.session, entries: seqs.map(seq => {
+      const entry = entries.get(seq)
+      if (!entry) throw new Error('An optional reading checkpoint is missing a referenced source entry.')
+      return entry
+    }) }
+  }
+  return { session: saved.session, epoch: saved.epoch, version: saved.version, positions: saved.positions,
+    head: materialize(saved.head), windows: saved.windows.map(window => ({ viewId: window.viewId, page: materialize(window.page) })) }
+}
 function boundedCheckpoint(saved: SavedReading): { saved: SavedReading; data: string } | undefined {
   try {
     const { pages = [], ...bounded } = saved
     bounded.positions = { ...saved.positions }
-    let data = bodyFits(bounded) ? JSON.stringify(bounded) : undefined
+    let data = bodyFits(bounded) ? serialize(bounded) : undefined
     if (data === undefined || encoder.encode(data).byteLength > MAX_SESSION_BYTES) {
       bounded.head = compact(saved.head, pages) ?? saved.head
       bounded.windows = saved.windows.flatMap(window => {
@@ -75,7 +109,7 @@ function boundedCheckpoint(saved: SavedReading): { saved: SavedReading; data: st
       data = undefined
     }
     for (;;) {
-      if (data === undefined && bodyFits(bounded)) data = JSON.stringify(bounded)
+      if (data === undefined && bodyFits(bounded)) data = serialize(bounded)
       if (data !== undefined && encoder.encode(data).byteLength <= MAX_SESSION_BYTES) return { saved: bounded, data }
       const discarded = bounded.windows.shift()
       if (!discarded) return undefined
@@ -91,6 +125,7 @@ export class SourceReadingCache {
   private readonly records = new Map<string, SavedReading>()
   private readonly dirty = new Set<string>()
   private timer: ReturnType<typeof setTimeout> | undefined
+  private idle: number | undefined
   private disposed = false
   private readonly window = typeof window === 'undefined' ? undefined : window
   private readonly hidden = (): void => { if (this.window?.document.visibilityState === 'hidden') this.flush() }
@@ -113,9 +148,16 @@ export class SourceReadingCache {
     this.window?.document.addEventListener('visibilitychange', this.hidden)
   }
   get scope(): string { return this.access.scope }
+  get maxSessions(): number { return MAX_SESSIONS }
+  get maxWindows(): number { return MAX_WINDOWS }
   private storageKey(id: string): string { return `${this.prefix}${id}` }
   read(id: string): SourceReadingCheckpoint | undefined { return this.load(id) }
-  sessions(): SourceSession[] { return [...this.entries.keys()].flatMap(id => { const saved = this.load(id); return saved ? [saved.session] : [] }) }
+  sessions(): SourceSession[] { return [...this.entries.values()].flatMap(entry => {
+    if (entry.session?.id === entry.id && sourceSessionId(entry.session) === entry.id) return [entry.session]
+    const saved = this.load(entry.id)
+    if (saved) entry.session = saved.session
+    return saved ? [saved.session] : []
+  }) }
   private load(id: string): SavedReading | undefined {
     const cached = this.records.get(id)
     if (cached) return cached
@@ -123,9 +165,8 @@ export class SourceReadingCache {
     try {
       const raw = this.access.storage.getItem(this.storageKey(id))
       if (!raw || encoder.encode(raw).byteLength > MAX_SESSION_BYTES) { this.remove(id); return undefined }
-      const parsed = record.safeParse(JSON.parse(raw))
-      if (!parsed.success) { this.remove(id); return undefined }
-      const value = parsed.data
+      const value = deserialize(raw)
+      if (!value) { this.remove(id); return undefined }
       if (value.session.id !== id || sourceSessionId(value.session) !== id
         || [value.head, ...value.windows.map(window => window.page)].some(page => page.session.id !== id || sourceSessionId(page.session) !== id || page.epoch !== value.epoch || page.version !== value.version)) {
         this.remove(id); return undefined
@@ -144,7 +185,7 @@ export class SourceReadingCache {
     const windows = new Map(prior?.epoch === checkpoint.epoch && prior.version === checkpoint.version ? prior.windows.map(window => [window.viewId, window]) : [])
     for (const window of checkpoint.windows) { windows.delete(window.viewId); windows.set(window.viewId, window) }
     this.records.set(checkpoint.session.id, { ...checkpoint, windows: [...windows.values()].slice(-MAX_WINDOWS), positions })
-    this.entries.set(checkpoint.session.id, { id: checkpoint.session.id, used: Date.now(), bytes: this.entries.get(checkpoint.session.id)?.bytes ?? 0 })
+    this.entries.set(checkpoint.session.id, { id: checkpoint.session.id, used: Date.now(), bytes: this.entries.get(checkpoint.session.id)?.bytes ?? 0, session: checkpoint.session })
     this.changed(checkpoint.session.id)
   }
   readPosition(id: string, viewId: string): SourceReadingPosition | null {
@@ -167,10 +208,19 @@ export class SourceReadingCache {
   }
   private changed(id: string): void {
     this.dirty.add(id)
-    if (this.timer !== undefined) return
-    this.timer = setTimeout(this.flush, 750); this.timer.unref?.()
+    if (this.timer !== undefined || this.idle !== undefined) return
+    this.timer = setTimeout(() => {
+      this.timer = undefined
+      // Durable snapshots are optional: serialize during idle time, rather than
+      // interrupting an active scroll gesture with a synchronous storage write.
+      if (this.window?.requestIdleCallback) this.idle = this.window.requestIdleCallback(() => { this.idle = undefined; this.flush() })
+      else this.flush()
+    }, 750)
+    this.timer.unref?.()
   }
   readonly flush = (): void => {
+    if (this.idle !== undefined) this.window?.cancelIdleCallback(this.idle)
+    this.idle = undefined
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     for (const id of this.dirty) {
@@ -186,7 +236,7 @@ export class SourceReadingCache {
       }
       const { data } = bounded
       this.records.set(id, bounded.saved)
-      this.entries.set(id, { id, used: Date.now(), bytes: encoder.encode(data).byteLength })
+      this.entries.set(id, { id, used: Date.now(), bytes: encoder.encode(data).byteLength, session: saved.session })
       this.evict(id)
       try { this.access.storage.setItem(this.storageKey(id), data) }
       catch {

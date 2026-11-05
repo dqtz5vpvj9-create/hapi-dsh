@@ -91,7 +91,7 @@ test('authenticated cached metadata opens a source while catalog is offline and 
   t.after(() => again.release())
   await again.ready
   assert.equal(reads, 0)
-  assert.notEqual((again.binding.session as RemoteSourceSession).history, firstHistory, 'inactive native transcript owners are released after their durable checkpoint is accepted')
+  assert.equal((again.binding.session as RemoteSourceSession).history, firstHistory, 'a recently used source retains its accepted body within the bounded warm cache')
   removed = true; await sessions.refresh()
   assert.ok(sessions.list.getSnapshot().byId[session.id as SessionId], 'a cached online directory may predate the accepted source body')
   sessions.revokeReadingSource(session.id)
@@ -414,4 +414,27 @@ test('oversized checkpoints use complete source dependency pages and preserve a 
     assert.equal(rewritten.read(session.id), undefined, 'a replaced epoch cannot use the oversized fallback to retain obsolete body')
     rewritten.dispose()
   } finally { cache.dispose() }
+})
+
+
+test('persistent Pane windows share one body table and sidebar bootstrap reads metadata only', () => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'owner-deduplicated' }, cache = new SourceReadingCache(access)
+  const head = page({ sessionId: session.id })
+  head.entries = [{ type: 'event', event: { type: 'tool/output', seq: 700, time: 1, data: { output: 'x'.repeat(600_000) } } }] as SourcePage['entries']
+  cache.write({ session, epoch: head.epoch, version: head.version, head, windows: [{ viewId: 'left', page: head }, { viewId: 'right', page: head }] })
+  cache.writePosition(session.id, 'left', { anchorKey: '700', anchorTop: 12, scrollTop: 600 }, 700)
+  cache.flush(); cache.dispose()
+  const bodyKey = [...storage.values.keys()].find(key => key.endsWith(session.id))!
+  const packed = JSON.parse(storage.values.get(bodyKey)!)
+  assert.equal(packed.entries.length, 1)
+  assert.ok(Buffer.byteLength(storage.values.get(bodyKey)!) < 650_000, 'multiple Pane references do not consume the body budget again')
+  const reads: string[] = [], get = storage.getItem.bind(storage)
+  storage.getItem = key => { reads.push(key); return get(key) }
+  const restored = new SourceReadingCache(access)
+  try {
+    assert.equal(restored.sessions()[0]?.id, session.id)
+    assert.ok(!reads.includes(bodyKey), 'sidebar startup must not parse all retained transcripts')
+    assert.equal(restored.read(session.id)?.windows.length, 2)
+    assert.equal(restored.readPosition(session.id, 'left')?.anchorTop, 12)
+  } finally { restored.dispose() }
 })

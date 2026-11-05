@@ -1,9 +1,9 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Production adapter, history and durable ledger; only the native RPC boundary is synthetic.
  * Cross-process writer exclusion is covered separately with the pinned native binary. */
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import { CodexRpcError, type CodexRpc, type NativeNotification, type NativeRequest } from '../src/remote/codex-rpc.ts';
@@ -30,7 +30,7 @@ const operation = (operationId: string, kind: SourceOperation['kind'] = 'send'):
 });
 
 async function fixture(t: TestContext, options: FixtureOptions = {}) {
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-codex-send-'));
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-codex-send-'));
     const directory = join(privateHome, 'source');
     const native: NativeThread = { id: identity.nativeId, cwd: privateHome, createdAt: 1, updatedAt: 2,
         name: 'Persisted original thread', status: { type: 'idle' } };
@@ -43,9 +43,15 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
     let requestApproval: (request: NativeRequest) => void = () => {};
     let responseAttempts = 0;
     const responses: Array<{ id: NativeRequest['id']; result: unknown }> = [];
+    const nativeItems = () => [{ turnId: 'historical-turn', item: {
+                id: 'historical-answer', type: 'agentMessage', text: 'Original persisted history',
+            } }, ...received.map((clientId, index) => ({ turnId: 'historical-turn', item: { id: `native-user-${index}`, type: 'userMessage', clientId,
+                content: [{ type: 'text', text: 'hello' }] } })), ...Array.from({ length: options.trailingMessages ?? 0 }, (_, index) => ({
+                    turnId: 'historical-turn', item: { id: `later-answer-${index}`, type: 'agentMessage', text: `Later persisted answer ${index}` },
+                }))];
+    const readMetadata = nativeMetadataFixture(() => [{ turn: { id: 'historical-turn', status: 'completed', startedAt: 1, completedAt: 2 }, items: nativeItems().map(entry => entry.item) }]);
     const rpc = {
         online: true, currentGeneration: 1,
-        supportsThreadWriterLock: options.writerLock ?? true,
         connect: async () => ({ userAgent: 'hhpi/0.165.0 (Linux 6.8; x86_64) unknown (hhpi; 1)', codexHome: privateHome, platformFamily: 'unix', platformOs: 'linux' }),
         dispose: async () => {},
         onNotification: (listener: typeof notify) => { notify = listener; return () => {}; },
@@ -66,12 +72,7 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
             if (method === 'thread/list') return { data: [native], nextCursor: null };
             if (method === 'thread/read') return { thread: native };
             if (method === 'thread/turns/list') return { data: [{ id: 'historical-turn', status: 'completed', startedAt: 1, completedAt: 2 }], nextCursor: null };
-            if (method === 'thread/items/list') return { data: [{ turnId: 'historical-turn', item: {
-                id: 'historical-answer', type: 'agentMessage', text: 'Original persisted history',
-            } }, ...received.map((clientId, index) => ({ turnId: 'historical-turn', item: { id: `native-user-${index}`, type: 'userMessage', clientId,
-                content: [{ type: 'text', text: 'hello' }] } })), ...Array.from({ length: options.trailingMessages ?? 0 }, (_, index) => ({
-                    turnId: 'historical-turn', item: { id: `later-answer-${index}`, type: 'agentMessage', text: `Later persisted answer ${index}` },
-                }))], nextCursor: null };
+            if (method === 'thread/items/list') return sliceNativeEntries(nativeItems(), params);
             if (method === 'thread/resume') {
                 if (options.resume === 'reject') throw new CodexRpcError(-32600,
                     `thread ${native.id} already has an active writer`);
@@ -88,14 +89,14 @@ async function fixture(t: TestContext, options: FixtureOptions = {}) {
         },
     } as unknown as CodexRpc;
     const config: DirectCodexConfig = { id: identity.sourceId, machineId: identity.machineId, engine: 'codex',
-        ownership: options.ownership ?? 'shared' };
-    let adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000, now: () => clock });
+        ownership: options.ownership ?? 'shared', ...(options.writerLock === false ? {} : { writerLock: 'native' }) };
+    let adapter = new DirectCodexAdapter(config, directory, { rpc, readMetadata, pollMs: 60_000, now: () => clock });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     return {
         get adapter() { return adapter; }, calls, responses, requestApproval: (request: NativeRequest) => requestApproval(request),
         writes: () => calls.filter(call => call.write),
         advanceRecovery() { clock += 60_000; },
-        async restart() { await adapter.dispose(); adapter = new DirectCodexAdapter(config, directory, { rpc, pollMs: 60_000, now: () => clock }); },
+        async restart() { await adapter.dispose(); adapter = new DirectCodexAdapter(config, directory, { rpc, readMetadata, pollMs: 60_000, now: () => clock }); },
     };
 }
 

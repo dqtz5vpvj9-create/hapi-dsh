@@ -13,6 +13,7 @@ import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/cli
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceChanges, SourceOperation } from '../../src/remote/protocol.ts'
 import { readingAnchor, anchorDrift, stableAnchorDrift, waitForOlderSourceCommit, observeReadingCommit } from './reading-probe.ts'
+import { installNativeToolDetails } from '../../src/client/native-tool-details.tsx'
 import { installSourceCommandViews } from '../../src/client/source-command-view.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface SlotMap { 'hhpi.lab.pane': { kind: 'single'; scope: 'session' } } }
@@ -56,7 +57,7 @@ await remote.refresh()
 ctx.reflect.provide('sessions', sessions)
 const { RemoteStream } = runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-api-gateway/client') as typeof import('@deepseek-ai/dsh-api-gateway/client')
 const generation = store({} as never)
-ctx.reflect.provide('remote', { $on: () => () => {}, $host: { home: '/synthetic' },
+ctx.reflect.provide('remote', { hhpi: api, $on: () => () => {}, $host: { home: '/synthetic' },
   $stream: options => new RemoteStream({ generation }, options) } as Context['remote'])
 ctx.reflect.provide('remote.session', {} as never)
 ctx.reflect.provide('remoteAccess', { source: () => store(true) } as unknown as Context['remoteAccess'])
@@ -79,14 +80,18 @@ if (new URLSearchParams(location.search).has('codex-rendering')) {
   await ctx.plugin(runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-client-ui-tool'))
   await ctx.plugin(runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-client-ui-attachment'))
   ctx.effect(() => installSourceCommandViews(ctx))
+  ctx.effect(() => installNativeToolDetails(ctx))
 }
-ctx.reflect.provide('mountedChatConsumer', { onMountedChat(control: MountedChatV1 | null, element: HTMLElement) {
+if (!new URLSearchParams(location.search).has('native-open')) ctx.reflect.provide('mountedChatConsumer', { onMountedChat(control: MountedChatV1 | null, element: HTMLElement) {
   const id = element.closest<HTMLElement>('[data-lab-pane]')?.dataset.labPane
   if (!id) throw new Error('Official reader lost its occurrence')
   if (control) controls.set(id, control); else controls.delete(id)
 } })
 const id = sessions.list.getSnapshot().ids[0]!
 const canonical = sessions.retain(id, { source: 'hapiWorkspace' })
+if (new URLSearchParams(location.search).has('native-open')) {
+  await (await import('./cold-open-client.tsx')).mountColdOpenLab(ctx, canonical, sessions, remote)
+} else {
 await canonical.ready
 async function open(viewId: string) {
   const reference = sessions.openReadingView(canonical, viewId)
@@ -164,4 +169,6 @@ runtime.__hhpi = {
   ready: true, snapshot,
   async latest(key: 'a' | 'b'): Promise<void> { const control = controls.get(key); if (!control) throw new Error('No mounted control'); await control.toLatest() },
   async dispose(): Promise<void> { collecting = false; cancelAnimationFrame(raf); stopPaging(); unmount(); panes.a.reference.release(); panes.b.reference.release(); canonical.release(); sessions.dispose(); remote.dispose(); await ctx.fiber.dispose() },
+}
+
 }

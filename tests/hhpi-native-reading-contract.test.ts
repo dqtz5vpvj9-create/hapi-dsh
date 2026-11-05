@@ -1,16 +1,20 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Native protocol boundary models slow rollout repair and oversized embedded turn bodies. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
 
-test('native reading uses the indexed catalog and body-free turn headers, then reuses accepted pages', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-native-reading-'));
+test('native reading uses bounded source metadata and reuses accepted page bodies', async () => {
+    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-native-reading-'));
     const methods: string[] = [];
     const thread = { id: 'existing-native-thread', cwd: directory, name: 'Synthetic long history', createdAt: 1, updatedAt: 2, status: { type: 'idle' } };
+    const items = Array.from({ length: 80 }, (_, i) => ({ turnId: 'turn', item: {
+                id: `body-${i}`, type: i % 2 ? 'agentMessage' : 'userMessage',
+                ...(i % 2 ? { text: `Earlier answer ${i}` } : { content: [{ type: 'text', text: `Earlier question ${i}` }] }),
+            } }));
     const rpc = {
         online: true, currentGeneration: 1,
         connect: async () => ({}), dispose: async () => {},
@@ -27,14 +31,11 @@ test('native reading uses the indexed catalog and body-free turn headers, then r
                 if (params.itemsView !== 'notLoaded') throw new Error('Embedded historical attachments exceed the native transport frame budget');
                 return { data: [{ id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }], nextCursor: null };
             }
-            if (method === 'thread/items/list') return { data: Array.from({ length: 80 }, (_, i) => ({ turnId: 'turn', item: {
-                id: `body-${i}`, type: i % 2 ? 'agentMessage' : 'userMessage',
-                ...(i % 2 ? { text: `Earlier answer ${i}` } : { content: [{ type: 'text', text: `Earlier question ${i}` }] }),
-            } })), nextCursor: null };
+            if (method === 'thread/items/list') return sliceNativeEntries(items, params);
             throw new Error(`Reading dispatched an unexpected native operation: ${method}`);
         },
     } as unknown as CodexRpc;
-    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'same-machine', engine: 'codex', ownership: 'shared' }, directory, { rpc });
+    const adapter = new DirectCodexAdapter({ id: 'native', machineId: 'same-machine', engine: 'codex', ownership: 'shared' }, directory, { rpc, readMetadata: nativeMetadataFixture(() => [{ turn: { id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }, items: items.map(entry => entry.item) }]) });
     try {
         const [session] = await adapter.list(); assert.ok(session);
         let page = await adapter.read({ sessionId: session.id, limit: 12 });
@@ -52,7 +53,11 @@ test('native reading uses the indexed catalog and body-free turn headers, then r
         assert.deepEqual(opened.value, { session: page.session, epoch: page.epoch, base: page.version, version: page.version,
             reset: false, upserts: [], removed: [] }, 'a quiet Codex source acknowledges the opened cursor without waiting for a message');
         signal.abort(); await follow.return?.();
-        assert.equal(methods.filter(method => method === 'thread/items/list').length, reads, 'accepted history pages do not reread native bodies');
+        assert.ok(methods.filter(method => method === 'thread/items/list').length <= reads + 6, 'each earlier read remains bounded rather than replaying all bodies');
+        const acceptedReads = methods.filter(method => method === 'thread/items/list').length;
+        await adapter.read({ sessionId: session.id, limit: 12 });
+        assert.equal(methods.filter(method => method === 'thread/items/list').length, acceptedReads, 'returning to accepted latest content does not reread its source bodies');
+        assert.equal(methods.includes('thread/turns/list'), false);
         assert.ok(!methods.includes('thread/resume'));
     } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
 });

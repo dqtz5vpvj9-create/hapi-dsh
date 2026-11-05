@@ -6,6 +6,7 @@
     "license": "MIT",
     "modified": true,
     "sourceSnapshot": "source-snapshots/dsh-ext/source.patch",
+    "additionalSourceSnapshots": ["source-snapshots/dsh-ext/native-persistence.patch"],
     "sourceSnapshotManifest": "source-snapshots/manifest.json"
   },
   "hapi": {
@@ -17,7 +18,6 @@
     "sourceSnapshotManifest": "source-snapshots/manifest.json"
   },
   "codex": {
-    "minimumVersion": "0.154.0",
     "validatedVersion": "0.165.0",
     "emptyPaginatedThread": "supported"
   }

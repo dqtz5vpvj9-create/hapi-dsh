@@ -6,7 +6,7 @@ Build HHPI as a distributable remote-agent-access plugin for DSH Web, supporting
 
 ## Constraints
 
-- **DSH 补丁授权（2026-10-26 用户决定，覆盖此前禁令）**：允许以 L2 源码补丁方式修改官方 DSH。只改需要的包；补丁必须是通用能力、默认路径不变、可独立关闭，并带 ADR、契约测试与上游 PR 草稿。禁止运行时拦截与对编译产物做字符串替换。每个上游 rc 一套补丁，全部存档；Host 与所有 Runner 必须使用同一套 ext 版本。详见 `dsh-ext` 仓库与 `docs/` 中的 ext 规格。
+- **DSH 扩展修改须先获用户首肯（2026-11-04）**：先列明具体包、契约和必要性，获得明确批准后再改源码；不得从 HHPI 修复任务推定授权。本次已批准 `session-persistence`、`session-persistence-jsonl` 的可选有界页面、依赖查询与稀疏索引，以及 `session-format-v3-to-v4` 的流式校验入口。其他 DSH 包仍需另行批准。批准后的补丁须为通用能力、默认路径不变、可独立关闭，并带 ADR、契约测试与上游 PR 草稿；禁止运行时拦截和修改编译产物。每个上游 rc 一套补丁并存档，Host 与所有 Runner 使用同一套 ext 版本。详见 `dsh-ext` 仓库与 `docs/` 中的 ext 规格。
 - 其余情况下优先使用受支持的插件注册、provider、slot 与 profile 配置；不得用补丁绕过认证、审批最终裁决、执行所有权、队列或数据格式。
 - Preserve native Codex thread identity, original execution ownership, native queue, final approval resolution, and reconnection semantics.
 - Closing a pane releases a view and must not terminate its native execution.
@@ -35,6 +35,7 @@ Build HHPI as a distributable remote-agent-access plugin for DSH Web, supporting
 
 - 打开目标以当前 HAPI 架构和用户本次真实长会话为基准，产品可用性语义见 `docs/dsh-repair-spec-2026-10-24.md`；验证方法和预算以本文件的 Testing and experience validation 为准。第一次目标画面就具备正文、输入、历史滚动、阅读导航和实时能力；正常补页/同步在同一会话中完成。
 - 打开只有完整可用这一个成功条件。先显示但无法操作、随后不可用、最后才完整的路径直接失败；首次正文、最终恢复、其他会话通过均不能代替本目标验收。现有观察器仍有漏判，新增断言实际执行前不得声称已覆盖。
+- 完整可用以来源实际声明的能力为准：合法只读会话必须可阅读和导航，不能因输入框禁止发送而拒绝正文。分别记录正文读取、位置恢复和写入能力的状态；写入错误、目录未齐或可选预取不得撤销已接纳的有效正文。
 
 ## Collaboration responsibilities
 

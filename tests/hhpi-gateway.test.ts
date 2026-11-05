@@ -166,3 +166,42 @@ test('catalog cancellation releases only its caller and gateway disposal cancels
     await rejected;
     await assert.rejects(gateway.catalog(allow), { code: 'DISPOSED' });
 });
+
+test('a saved source resolves directly while its complete directory remains pending', async () => {
+    const { adapter, calls } = fixture();
+    const directory = Promise.withResolvers<SourceSession[]>();
+    adapter.list = async () => directory.promise;
+    adapter.resolve = async id => { calls.push('resolve'); assert.equal(id, session.id); return session; };
+    const gateway = new SourceGateway([adapter], false);
+    try {
+        assert.deepEqual(await gateway.resolve(session.id, allow), session);
+        assert.deepEqual(calls, ['resolve']);
+        await assert.rejects(gateway.resolve(session.id, () => false), { code: 'UNSUPPORTED' });
+        assert.deepEqual(calls, ['resolve'], 'a denied caller cannot probe source identities');
+    } finally { directory.resolve([]); await gateway.dispose(); }
+});
+
+test('source resolution rechecks permission and canonical identity after IO', async () => {
+    const { adapter } = fixture(), gate = Promise.withResolvers<SourceSession>();
+    adapter.resolve = () => gate.promise;
+    const gateway = new SourceGateway([adapter], false); let granted = true;
+    try {
+        const pending = gateway.resolve(session.id, () => granted);
+        granted = false; gate.resolve(session);
+        await assert.rejects(pending, { code: 'UNSUPPORTED' });
+        adapter.resolve = async () => ({ ...session, nativeId: 'foreign' });
+        await assert.rejects(gateway.resolve(session.id, allow), { code: 'INVALID_REQUEST' });
+    } finally { await gateway.dispose(); }
+});
+
+test('a malformed source directory cannot hide a different healthy source', async () => {
+    const { adapter } = fixture();
+    const broken: SourceAdapter = { ...fixture().adapter, id: 'broken',
+        list: async () => [{ ...session, sourceId: 'wrong-source' }] };
+    const gateway = new SourceGateway([adapter, broken], false);
+    try {
+        const catalog = await gateway.catalog(allow);
+        assert.deepEqual(catalog.sessions, [session]);
+        assert.equal(catalog.sources.find(row => row.id === 'broken')?.online, false);
+    } finally { await gateway.dispose(); }
+});

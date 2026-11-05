@@ -5,14 +5,15 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session';
 import { validateSessionEventData, validateSurfaceMetadata } from '@deepseek-ai/dsh-session/surface';
+import { SOURCE_EVENT_MAX_BYTES, SOURCE_PAGE_MAX_BYTES } from '../shared/native-tool-detail.ts';
 import { SourceError } from './errors.ts';
 import type { SourceChanges, SourceChangesRequest, SourceEntry, SourcePage, SourceReadRequest, SourceSession } from './protocol.ts';
 
 interface EventRow { seq: number; source_key: string; event: string; dependencies: string }
 interface MetaRow { value: string }
 export type EventInput = Omit<SessionEvent, 'seq'>;
-const MAX_ENTRY_BYTES = 4 * 1024 * 1024;
-const PAGE_BYTES = 8 * 1024 * 1024;
+const MAX_ENTRY_BYTES = SOURCE_EVENT_MAX_BYTES;
+const PAGE_BYTES = SOURCE_PAGE_MAX_BYTES;
 const JOURNAL_BYTES = 16 * 1024 * 1024;
 const JOURNAL_VERSIONS = 256;
 
@@ -22,6 +23,7 @@ export class SourceEventIndex {
     private readonly listeners = new Set<() => void>();
     private readonly lifetime = new AbortController();
     private editing = false;
+    private batchDepth = 0;
     private readonly upserts = new Map<number, SourceEntry>();
     private readonly removed = new Set<number>();
     private reset = false;
@@ -39,6 +41,8 @@ export class SourceEventIndex {
                 kind TEXT NOT NULL, parent TEXT NOT NULL, native_key TEXT NOT NULL, ordinal INTEGER NOT NULL,
                 PRIMARY KEY(kind,parent,native_key), UNIQUE(kind,parent,ordinal));
             CREATE TABLE IF NOT EXISTS native_cache (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS source_details (id TEXT PRIMARY KEY, scope TEXT UNIQUE NOT NULL, epoch TEXT NOT NULL,
+                revision INTEGER NOT NULL, payload BLOB NOT NULL);
             CREATE TABLE IF NOT EXISTS journal (version INTEGER PRIMARY KEY, frame TEXT NOT NULL, bytes INTEGER NOT NULL);`);
         const prior = this.meta('session');
         if (prior && (JSON.parse(prior) as SourceSession).id !== session.id) {
@@ -54,29 +58,30 @@ export class SourceEventIndex {
         }
     }
     private meta(key: string): string | undefined { return (this.db.prepare('SELECT value FROM metadata WHERE key=?').get(key) as MetaRow | undefined)?.value; }
-    private setMeta(key: string, value: string): void { this.db.prepare('INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
+    private setMeta(key: string, value: string): void { this.db.prepare('INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE metadata.value<>excluded.value').run(key, value); }
     get epoch(): string { return this.meta('epoch')!; }
     get version(): number { return Number(this.meta('version')); }
     get session(): SourceSession { return JSON.parse(this.meta('session')!) as SourceSession; }
     get count(): number { return Number(this.db.prepare('SELECT COUNT(*) AS n FROM events').get()!.n); }
+    hasCached(key: string): boolean { return this.db.prepare('SELECT 1 FROM native_cache WHERE key=?').get(key) !== undefined; }
     cached<T>(key: string): T | undefined {
         const row = this.db.prepare('SELECT value FROM native_cache WHERE key=?').get(key) as MetaRow | undefined;
         return row ? JSON.parse(row.value) as T : undefined;
     }
     cache(key: string, value: unknown): void {
         this.assertEditing();
-        this.db.prepare('INSERT INTO native_cache VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, JSON.stringify(value));
+        this.db.prepare('INSERT INTO native_cache VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE native_cache.value<>excluded.value').run(key, JSON.stringify(value));
     }
     forget(prefix: string): void {
         this.assertEditing();
         this.db.prepare('DELETE FROM native_cache WHERE substr(key,1,?)=?').run(prefix.length, prefix);
     }
     /** Allocate once in source chronology; never an offset selected by a browser page. */
-    coordinate(kind: string, parent: string, nativeKey: string): number {
+    coordinate(kind: string, parent: string, nativeKey: string, nativeOrdinal?: number): number {
         this.assertEditing();
         const row = this.db.prepare('SELECT ordinal FROM coordinates WHERE kind=? AND parent=? AND native_key=?').get(kind, parent, nativeKey);
         if (row) return Number(row.ordinal);
-        const next = Number(this.db.prepare('SELECT COALESCE(MAX(ordinal),0)+1 AS n FROM coordinates WHERE kind=? AND parent=?').get(kind, parent)!.n);
+        const next = nativeOrdinal ?? Number(this.db.prepare('SELECT COALESCE(MAX(ordinal),0)+1 AS n FROM coordinates WHERE kind=? AND parent=?').get(kind, parent)!.n);
         this.db.prepare('INSERT INTO coordinates VALUES (?,?,?,?)').run(kind, parent, nativeKey, next);
         return next;
     }
@@ -88,6 +93,29 @@ export class SourceEventIndex {
         const row = this.db.prepare('SELECT event FROM events WHERE source_key=?').get(key);
         return row ? { type: 'event', event: JSON.parse(String(row.event)) as SessionEvent } : undefined;
     }
+    /** Source-owned immutable bytes; replacing a head creates a new opaque ref. */
+    putDetail(scope: string, revision: number, payload: Uint8Array): { ref: string; revision: number; bytes: number } {
+        this.assertEditing();
+        const same = this.db.prepare('SELECT id FROM source_details WHERE scope=? AND epoch=? AND revision=? AND payload=?')
+            .get(scope, this.epoch, revision, payload);
+        if (same) return { ref: String(same.id), revision, bytes: payload.byteLength };
+        const ref = randomUUID();
+        this.db.prepare(`INSERT INTO source_details VALUES(?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET
+            id=excluded.id,epoch=excluded.epoch,revision=excluded.revision,payload=excluded.payload`).run(ref, scope, this.epoch, revision, payload);
+        return { ref, revision, bytes: payload.byteLength };
+    }
+    clearDetail(scope: string): void { this.assertEditing(); this.db.prepare('DELETE FROM source_details WHERE scope=?').run(scope); }
+    readDetail(ref: string, revision: number, offset: number, length: number): { bytes: Uint8Array; total: number; scope: string } {
+        this.lifetime.signal.throwIfAborted();
+        const record = this.db.prepare('SELECT scope,epoch,revision,length(payload) AS total FROM source_details WHERE id=?').get(ref);
+        if (!record) throw new SourceError('INVALID_REQUEST', 'This source did not grant the requested tool detail.');
+        if (record.epoch !== this.epoch || Number(record.revision) !== revision) throw new SourceError('STALE_VERSION', 'This tool detail belongs to another accepted revision.');
+        const total = Number(record.total);
+        if (!Number.isSafeInteger(offset) || offset < 0 || offset > total || !Number.isSafeInteger(length) || length < 1) throw new SourceError('INVALID_REQUEST', 'Invalid tool detail range.');
+        const row = this.db.prepare('SELECT substr(payload,?,?) AS bytes FROM source_details WHERE id=?').get(offset + 1, length, ref)!;
+        return { bytes: row.bytes as Uint8Array, total, scope: String(record.scope) };
+    }
+
     /** Exact native client identity only; matching text or turn status is never delivery evidence. */
     userMessageSequence(rpcId: string): number | undefined {
         const row = this.db.prepare("SELECT seq FROM events WHERE json_extract(event,'$.type')='user/message' AND json_extract(event,'$.data.source.rpcId')=? ORDER BY seq LIMIT 1").get(rpcId);
@@ -95,11 +123,23 @@ export class SourceEventIndex {
     }
     private assertEditing(): void { if (!this.editing) throw new Error('Source index changes require an atomic edit'); }
 
+    /** Group synchronous projector edits into one durable page publication.
+     * Native IO must finish before entering this transaction. */
+    batch(session: SourceSession, update: () => void): void {
+        this.edit(session, () => {
+            this.batchDepth++;
+            try { update(); } finally { this.batchDepth--; }
+        });
+    }
+
     /** Atomically publish one accepted source revision, including metadata and the replay journal. */
     edit(session: SourceSession, update: () => void): void {
         this.lifetime.signal.throwIfAborted();
         if (session.id !== this.session.id) throw new SourceError('INVALID_REQUEST', 'Source metadata crossed session scope.');
-        if (this.editing) throw new Error('Source index edits cannot nest');
+        if (this.editing) {
+            if (this.batchDepth === 0) throw new Error('Source index edits cannot nest');
+            update(); return;
+        }
         this.db.exec('BEGIN IMMEDIATE'); this.editing = true; this.reset = false;
         this.upserts.clear(); this.removed.clear();
         let published = false;
@@ -130,10 +170,10 @@ export class SourceEventIndex {
         if (published) for (const listener of [...this.listeners]) listener();
     }
 
-    put(key: string, input: EventInput, dependencyKeys: readonly string[] = []): number {
+    put(key: string, input: EventInput, dependencyKeys: readonly string[] = [], nativeSequence?: number): number {
         this.assertEditing();
         const old = this.db.prepare('SELECT seq,event,dependencies FROM events WHERE source_key=?').get(key) as EventRow | undefined;
-        const seq = old?.seq ?? Number(this.db.prepare('SELECT COALESCE(MAX(seq),0)+1 AS n FROM sqlite_sequence WHERE name=\'events\'').get()?.n ?? 1);
+        const seq = old?.seq ?? nativeSequence ?? Number(this.db.prepare('SELECT COALESCE(MAX(seq),0)+1 AS n FROM sqlite_sequence WHERE name=\'events\'').get()?.n ?? 1);
         // Validate against the pinned public DSH vocabulary at the source boundary.
         const event = { ...input, seq: SessionSeq(seq) } as SessionEvent;
         validateSessionEventData(event, 'HHPI source event'); validateSurfaceMetadata(event);
@@ -159,44 +199,74 @@ export class SourceEventIndex {
         if (!rows.length) return;
         for (const row of rows) { const id = Number(row.seq); this.removed.add(id); this.upserts.delete(id); }
         this.db.prepare('DELETE FROM events WHERE seq>=?').run(seq);
-        this.setMeta('epoch', randomUUID()); this.reset = true;
+        this.setMeta('epoch', randomUUID()); this.db.prepare('DELETE FROM source_details').run(); this.reset = true;
     }
 
-    read(request: SourceReadRequest): SourcePage {
+    read(request: SourceReadRequest, range?: { from: number; through: number }): SourcePage {
         this.lifetime.signal.throwIfAborted();
         const session = this.session, epoch = this.epoch;
         if (request.sessionId !== session.id) throw new SourceError('INVALID_REQUEST', 'A history request belongs to another source.');
         if (request.epoch !== undefined && request.epoch !== epoch) throw new SourceError('STALE_VERSION', 'The source replaced this history cursor.');
         const limit = request.limit ?? 160;
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new SourceError('INVALID_REQUEST', 'History page limit must be between 1 and 500.');
+        // Sparse native histories carry the turn start as dependency context;
+        // treating it as a body boundary would skip the not-yet-read middle of
+        // a giant turn on the very next up-scroll.
+        let body = this.cached('native-source-coordinates') === undefined ? '1' : "json_extract(event,'$.type') <> 'turn/start'";
+        if (range) {
+            if (!Number.isSafeInteger(range.from) || !Number.isSafeInteger(range.through)) throw new SourceError('INVALID_REQUEST', 'Invalid source-native page bounds.');
+            body += ` AND seq>=${range.from} AND seq<=${range.through}`;
+        }
         let selected: EventRow[];
         if (request.around !== undefined) {
-            const left = this.db.prepare('SELECT * FROM events WHERE seq<? ORDER BY seq DESC LIMIT ?').all(request.around, Math.floor(limit / 2)) as unknown as EventRow[];
-            const right = this.db.prepare('SELECT * FROM events WHERE seq>=? ORDER BY seq LIMIT ?').all(request.around, limit - left.length) as unknown as EventRow[];
+            const left = this.db.prepare(`SELECT * FROM events WHERE ${body} AND seq<? ORDER BY seq DESC LIMIT ?`).all(request.around, Math.floor(limit / 2)) as unknown as EventRow[];
+            const right = this.db.prepare(`SELECT * FROM events WHERE ${body} AND seq>=? ORDER BY seq LIMIT ?`).all(request.around, limit - left.length) as unknown as EventRow[];
             selected = [...left.reverse(), ...right];
-        } else if (request.after !== undefined) selected = this.db.prepare('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT ?').all(request.after, limit) as unknown as EventRow[];
+        } else if (request.after !== undefined) selected = this.db.prepare(`SELECT * FROM events WHERE ${body} AND seq>? ORDER BY seq LIMIT ?`).all(request.after, limit) as unknown as EventRow[];
         else selected = (request.before === undefined
-            ? this.db.prepare('SELECT * FROM events ORDER BY seq DESC LIMIT ?').all(limit)
-            : this.db.prepare('SELECT * FROM events WHERE seq<? ORDER BY seq DESC LIMIT ?').all(request.before, limit)) as unknown as EventRow[];
+            ? this.db.prepare(`SELECT * FROM events WHERE ${body} ORDER BY seq DESC LIMIT ?`).all(limit)
+            : this.db.prepare(`SELECT * FROM events WHERE ${body} AND seq<? ORDER BY seq DESC LIMIT ?`).all(request.before, limit)) as unknown as EventRow[];
         if (request.after === undefined && request.around === undefined) selected.reverse();
-        // Trim only the returned candidate, in the requested direction. Accepted browser windows are untouched.
-        let byteCount = selected.reduce((sum, row) => sum + Buffer.byteLength(row.event), 0);
-        while (byteCount > PAGE_BYTES && selected.length > 1) {
-            const removed = request.after !== undefined ? selected.pop()! : selected.shift()!;
-            byteCount -= Buffer.byteLength(removed.event);
-        }
-        const entries = new Map(selected.map(row => [row.seq, row])), context = new Set<number>();
-        const addDependency = (seq: number): void => {
-            if (entries.has(seq)) return;
-            const row = this.db.prepare('SELECT * FROM events WHERE seq=?').get(seq) as unknown as EventRow | undefined;
-            if (!row) throw new SourceError('STALE_VERSION', 'A source dependency was removed; this window needs recovery.');
-            entries.set(seq, row); context.add(seq);
-            for (const dependency of JSON.parse(row.dependencies) as number[]) addDependency(dependency);
+        // A page budget covers the complete renderable closure, rather than
+        // just body rows. Tool calls and lifecycle context can be larger than
+        // the result that selected them. Keep body boundaries contiguous while
+        // shrinking in the requested direction; context never moves cursors.
+        const rows = new Map<number, EventRow>(selected.map(row => [row.seq, row]));
+        const sizes = new Map<number, number>();
+        const dependencies = (row: EventRow): number[] => JSON.parse(row.dependencies) as number[];
+        const rowFor = (seq: number): EventRow => {
+            let row = rows.get(seq);
+            if (!row) {
+                row = this.db.prepare('SELECT * FROM events WHERE seq=?').get(seq) as unknown as EventRow | undefined;
+                if (!row) throw new SourceError('STALE_VERSION', 'A source dependency was removed; this window needs recovery.');
+                rows.set(seq, row);
+            }
+            return row;
         };
-        for (const row of selected) for (const dependency of JSON.parse(row.dependencies) as number[]) addDependency(dependency);
+        let entries = new Map<number, EventRow>(), context = new Set<number>();
+        while (selected.length) {
+            entries = new Map(selected.map(row => [row.seq, row])); context = new Set();
+            const queue = selected.flatMap(dependencies);
+            for (let offset = 0; offset < queue.length; offset++) {
+                const seq = queue[offset]!;
+                if (entries.has(seq)) continue;
+                const row = rowFor(seq);
+                entries.set(seq, row); context.add(seq);
+                queue.push(...dependencies(row));
+            }
+            let bytes = 0;
+            for (const row of entries.values()) {
+                let size = sizes.get(row.seq);
+                if (size === undefined) { size = Buffer.byteLength(row.event); sizes.set(row.seq, size); }
+                bytes += size;
+            }
+            if (bytes <= PAGE_BYTES) break;
+            if (selected.length === 1) throw new SourceError('CAPACITY_EXCEEDED', 'This source item and its required display context exceed the page byte budget. Existing history is unchanged.');
+            if (request.after !== undefined) selected.pop(); else selected.shift();
+        }
         const before = selected[0]?.seq ?? null, after = selected.at(-1)?.seq ?? null;
-        const hasBefore = before !== null && Boolean(this.db.prepare('SELECT 1 FROM events WHERE seq<? LIMIT 1').get(before));
-        const hasAfter = after !== null && Boolean(this.db.prepare('SELECT 1 FROM events WHERE seq>? LIMIT 1').get(after));
+        const hasBefore = before !== null && Boolean(this.db.prepare(`SELECT 1 FROM events WHERE ${body} AND seq<? LIMIT 1`).get(before));
+        const hasAfter = after !== null && Boolean(this.db.prepare(`SELECT 1 FROM events WHERE ${body} AND seq>? LIMIT 1`).get(after));
         return { session, epoch, version: this.version, entries: [...entries.values()].sort((a, b) => a.seq - b.seq).map(row => ({ type: 'event', event: JSON.parse(row.event) as SessionEvent })),
             before, after, hasBefore, hasAfter, context: [...context].sort((a, b) => a - b) };
     }

@@ -3,14 +3,17 @@ import { freezeMessage, MessageId, ToolCallId, type ContentBlock } from '@deepse
 import type { SessionEventMap, SessionEventType, TurnEndReason } from '@deepseek-ai/dsh-session';
 import { SourceEventIndex, type EventInput } from './event-index.ts';
 import { isRecord, nativeText, type NativeItem, type NativeItemEntry, type NativeTurn } from './codex-native.ts';
-import { nativeOtherContent, nativeToolPresentation, nativeUserContent } from './codex-presentation.ts';
+import { nativeOtherContent, nativeToolPresentation, nativeUserContent, type NativeToolPresentation } from './codex-presentation.ts';
 import type { SourceSession } from './protocol.ts';
 
 /** Reproject accepted native records so cached function output uses the pinned content-block contract. */
-export const CODEX_HISTORY_PROJECTION_VERSION = 3;
+export const CODEX_HISTORY_PROJECTION_VERSION = 4;
 export interface CodexHistoryOptions {
     userContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
     toolContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
+    /** Source-native ordinals, persisted before projection; never browser offsets. */
+    nativeOrder?: boolean;
+    toolPresentation?: (turnId: string, item: NativeItem, tool: NativeToolPresentation) => NativeToolPresentation;
 }
 interface ItemState { item: NativeItem; turnId: string; time: number; completed: boolean; completedAtMs?: number; presentationContent?: ContentBlock[] }
 interface TurnState { turn: NativeTurn; time: number }
@@ -28,11 +31,13 @@ export class CodexHistory {
         return { type, data, time, ...(['user/message', 'assistant/message', 'tool/result'].includes(type) ? { surfaceOp: 'append' as const } : {}) } as EventInput;
     }
     private ensureTurn(turnId: string, time: number): { turn: number; start: string } {
-        const turn = this.index.coordinate('turn', '', turnId), start = key('turn', turnId, 'start');
-        if (this.index.sequence(start) === undefined) this.index.put(start, this.event('turn/start', { turn }, time));
+        const ordinal = this.options.nativeOrder ? this.index.cached<number>(`source-turn:${turnId}`) : undefined;
+        const turn = this.index.coordinate('turn', '', turnId, ordinal), start = key('turn', turnId, 'start');
+        if (this.index.sequence(start) === undefined) this.index.put(start, this.event('turn/start', { turn }, time), [], ordinal === undefined ? undefined : ordinal * 8);
         return { turn, start };
     }
     beginTurn(session: SourceSession, turn: NativeTurn): void {
+        if (this.options.nativeOrder && this.index.cached<number>(`source-turn:${turn.id}`) === undefined) return;
         this.index.edit(session, () => {
             const previous = this.index.cached<TurnState>(turnKey(turn.id));
             const time = previous?.time ?? (turn.startedAt == null ? session.updatedAt : turn.startedAt * 1000);
@@ -55,18 +60,19 @@ export class CodexHistory {
         });
     }
     acceptTurn(session: SourceSession, turn: NativeTurn, includeItems = false): void {
+        if (this.options.nativeOrder && this.index.cached<number>(`source-turn:${turn.id}`) === undefined) return;
         this.index.edit(session, () => {
             const previous = this.index.cached<TurnState>(turnKey(turn.id));
             const time = previous?.time ?? (turn.startedAt == null ? session.updatedAt : turn.startedAt * 1000);
             this.ensureTurn(turn.id, time);
             this.index.cache(turnKey(turn.id), { turn, time } satisfies TurnState);
             if (includeItems) for (const item of turn.items ?? []) this.acceptItemInEdit(session, { turnId: turn.id, item }, turn.status !== 'inProgress');
-            if (turn.status !== 'inProgress') {
-                const numericTurn = this.index.coordinate('turn', '', turn.id);
+            if (turn.status !== 'inProgress' && (!this.options.nativeOrder || this.index.cached<number>(`source-end:${turn.id}`) !== undefined)) {
+                const numericTurn = this.index.coordinate('turn', '', turn.id, this.options.nativeOrder ? this.index.cached<number>(`source-turn:${turn.id}`) : undefined);
                 const reason: TurnEndReason = turn.status === 'completed' ? { kind: 'completed' }
                     : turn.status === 'interrupted' ? { kind: 'aborted', reason: { kind: 'user' } }
                         : { kind: 'error', error: { code: 'CODEX_NATIVE_TURN_FAILED', message: isRecord(turn.error) ? nativeText(turn.error.message) || 'The source turn failed.' : 'The source turn failed.' } };
-                this.index.put(key('turn', turn.id, 'end'), this.event('turn/end', { turn: numericTurn, reason }, turn.completedAt == null ? time : turn.completedAt * 1000), [key('turn', turn.id, 'start')]);
+                this.index.put(key('turn', turn.id, 'end'), this.event('turn/end', { turn: numericTurn, reason }, turn.completedAt == null ? time : turn.completedAt * 1000), [key('turn', turn.id, 'start')], this.options.nativeOrder ? this.index.cached<number>(`source-end:${turn.id}`)! * 8 + 7 : undefined);
             }
         });
     }
@@ -78,6 +84,9 @@ export class CodexHistory {
     }
     private acceptItemInEdit(session: SourceSession, entry: NativeItemEntry, completed: boolean): void {
         const { turnId, item } = entry, nativeKey = itemKey(turnId, item.id);
+        const ordinal = this.options.nativeOrder ? this.index.cached<number>(`source-item:${turnId}:${item.id}`) : undefined;
+        if (this.options.nativeOrder && ordinal === undefined) return; // Live snapshots wait for their authoritative native position.
+        const position = (slot: number): number | undefined => ordinal === undefined ? undefined : ordinal * 8 + slot;
         const prior = this.index.cached<ItemState>(nativeKey);
         // A replayed started event cannot downgrade an already completed item.
         if (prior?.completed && !completed) return;
@@ -94,18 +103,19 @@ export class CodexHistory {
             const content = presentationContent ?? nativeUserContent(item);
             const message = freezeMessage({ id: MessageId(identity), role: 'user', content,
                 source: { kind: 'user', ...(typeof item.clientId === 'string' ? { rpcId: item.clientId } : {}) } });
-            this.index.put(key(nativeKey, 'message'), this.event('user/message', message, time), [turnStart]);
+            this.index.put(key(nativeKey, 'message'), this.event('user/message', message, time), [turnStart], position(1));
         } else {
-            const step = this.index.coordinate('step', turnId, item.id);
+            const step = this.index.coordinate('step', turnId, item.id, ordinal);
             const stepStart = key(nativeKey, 'step/start');
-            if (this.index.sequence(stepStart) === undefined) this.index.put(stepStart, this.event('step/start', { turn, step }, time), [turnStart]);
+            if (this.index.sequence(stepStart) === undefined) this.index.put(stepStart, this.event('step/start', { turn, step }, time), [turnStart], position(0));
             const dependencies = [turnStart, stepStart];
             const message = (content: ContentBlock[]) => freezeMessage({ id: MessageId(identity), role: 'assistant', content,
                 source: { kind: 'model', provider: 'codex', model: 'native' } });
             const putMessage = (content: ContentBlock[]): void => {
-                this.index.put(key(nativeKey, 'message'), this.event('assistant/message', { turn, step, message: message(content), stream: [] }, time), dependencies);
+                this.index.put(key(nativeKey, 'message'), this.event('assistant/message', { turn, step, message: message(content), stream: [] }, time), dependencies, position(1));
             };
-            const tool = nativeToolPresentation(item);
+            const nativeTool = nativeToolPresentation(item);
+            const tool = nativeTool && (this.options.toolPresentation?.(turnId, item, nativeTool) ?? nativeTool);
             if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: nativeText(item.text) }]);
             else if (item.type === 'reasoning') {
                 const summary = Array.isArray(item.summary) ? item.summary.filter((v): v is string => typeof v === 'string') : [];
@@ -116,19 +126,19 @@ export class CodexHistory {
                 const argumentsText = JSON.stringify(tool.input);
                 putMessage([{ type: 'tool-call', id: callId, name, arguments: argumentsText }]);
                 const callKey = key(nativeKey, 'tool/call');
-                this.index.put(callKey, this.event('tool/call', { turn, step, callId, name, arguments: argumentsText }, time), [...dependencies, key(nativeKey, 'message')]);
+                this.index.put(callKey, this.event('tool/call', { turn, step, callId, name, arguments: argumentsText }, time), [...dependencies, key(nativeKey, 'message')], position(2));
                 if (state.completed) {
                     this.index.put(key(nativeKey, 'tool/result'), this.event('tool/result', { turn, step, message: freezeMessage({
                         id: MessageId(`${identity}:result`), role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId,
-                        content: presentationContent ?? tool.content,
+                        content: tool.content !== nativeTool!.content ? tool.content : presentationContent ?? tool.content,
                         ...(tool.isError ? { isError: true } : {}),
-                    }), ...(item.type === 'imageView' && typeof item.path === 'string' ? { meta: { path: item.path } } : {}) }, time), [...dependencies, key(nativeKey, 'message'), callKey]);
+                    }), ...(item.type === 'imageView' && typeof item.path === 'string' ? { meta: { path: item.path } } : {}) }, time), [...dependencies, key(nativeKey, 'message'), callKey], position(3));
                 }
             } else {
                 // Unknown native capabilities remain visible and do not masquerade as an executable DSH tool.
                 putMessage(nativeOtherContent(item));
             }
-            if (state.completed) this.index.put(key(nativeKey, 'step/end'), this.event('step/end', { turn, step }, state.completedAtMs ?? time), dependencies);
+            if (state.completed) this.index.put(key(nativeKey, 'step/end'), this.event('step/end', { turn, step }, state.completedAtMs ?? time), dependencies, position(4));
         }
         this.index.cache(nativeKey, state);
     }

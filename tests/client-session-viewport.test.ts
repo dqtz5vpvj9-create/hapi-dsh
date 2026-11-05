@@ -9,7 +9,6 @@ import { createElement, type ComponentType } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { ComposerBlock } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatConversationViewNode, ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
 import { pinSourceViewport, sourceRetentionPlan } from '../src/client/source-window-retention.ts'
@@ -40,7 +39,6 @@ function fixture() {
         getBoundingClientRect() { return { width: this.width, height: this.height } },
     }
     const state = { hasMore: true, loadingOlder: false, removed: false, subagent: null as SessionSnapshot['subagent'] }
-    let block: ComposerBlock | undefined
     let first = 1_000, revision = 0, pages = 0, frames = 0, live = true, visible = true, time = 0
     let frameId = 0, suspended = false
     const pendingFrames = new Map<number, FrameRequestCallback>()
@@ -89,7 +87,7 @@ function fixture() {
     } }, reading: { getSnapshot: () => reading } } as unknown as WorkspacePaneNavigation
     return {
         port, state, spacer, composer, editor, target, reference,
-        run: (signal?: AbortSignal) => prepareInitialViewport(target, reference, navigation, () => live, () => block, signal),
+        run: (signal?: AbortSignal) => prepareInitialViewport(target, reference, navigation, () => live, signal),
         candidate: (signal = new AbortController().signal) => prepareCandidateViewport(target, reference, signal, navigation.state),
         pages: () => pages, limits,
         frames: () => frames,
@@ -99,7 +97,6 @@ function fixture() {
         onFrame: (next: () => void) => { frame = next },
         intent: (target: PaneReadingIntent['target']) => { reading = { revision: 1, sessionId: 'fixture', target } },
         readingState: (value: string | null) => { readingState = value },
-        block: (value: ComposerBlock | undefined) => { block = value },
         visible(value: boolean) { visible = value; for (const listener of paneListeners) listener() },
         documentVisible(value: boolean) {
             document.visibilityState = value ? 'visible' : 'hidden'
@@ -121,31 +118,14 @@ test('a usable initial viewport needs no speculative older pages', async () => {
     assert.equal(f.pages(), 0)
 })
 
-for (const unavailable of ['missing', 'duplicate', 'disabled', 'inert', 'hidden', 'empty-layout'] as const) {
-    test(`initial admission waits for the official composer to leave ${unavailable}`, async () => {
-        const f = fixture()
-        f.port.scrollHeight = 900
-        if (unavailable === 'missing') f.editor.present = false
-        if (unavailable === 'duplicate') f.editor.copies = 2
-        if (unavailable === 'disabled') { f.editor.editable = false; f.editor.disabled = true }
-        if (unavailable === 'inert') f.editor.inert = true
-        if (unavailable === 'hidden') f.editor.hidden = true
-        if (unavailable === 'empty-layout') f.editor.height = 0
-        f.onFrame(() => {
-            if (f.frames() !== 3) return
-            Object.assign(f.editor, { present: true, copies: 1, editable: true, disabled: false, inert: false, hidden: false, height: 36 })
-        })
-        assert.equal(await f.run(), true)
-        assert.equal(f.frames(), 3)
-        assert.equal(f.pages(), 0, 'editor assembly must not manufacture history requests')
-    })
-}
-
-test('measuring CSS keeps a real enabled composer eligible without enabling any DOM control', async () => {
-    const f = fixture(); f.port.scrollHeight = 900
+test('reading admission does not depend on composer assembly or change disabled controls', async () => {
+    const f = fixture()
+    f.editor.present = false; f.editor.editable = false; f.editor.disabled = true
     assert.equal(await f.run(), true)
     assert.equal(f.frames(), 1)
-    assert.equal(f.editor.editable, true)
+    assert.equal(f.editor.editable, false)
+    assert.equal(f.editor.disabled, true)
+    assert.equal(f.pages(), 0, 'an already accepted page needs no speculative older RPC')
 })
 
 test('a removed session never qualifies even with stale enabled editor DOM', async () => {
@@ -154,35 +134,12 @@ test('a removed session never qualifies even with stale enabled editor DOM', asy
     assert.equal(f.pages(), 0)
 })
 
-test('an explicit official composer block preserves its exact reason without forcing editability', async () => {
-    const f = fixture(); f.port.scrollHeight = 900
+test('an offline parent affects writing without denying accepted child history', async () => {
+    const f = fixture()
+    f.state.subagent = { address: { mode: 'continuable' }, parentAvailable: false } as unknown as SessionSnapshot['subagent']
     f.editor.editable = false; f.editor.disabled = true
-    f.block({ reason: 'The source engine currently owns input.' })
-    await assert.rejects(f.run(), { message: 'The source engine currently owns input.' })
-    assert.equal(f.editor.editable, false)
-    assert.equal(f.editor.disabled, true)
-    assert.equal(f.pages(), 0)
-})
-
-test('unresolved parent availability is pending, while an explicit offline parent keeps its reason', async () => {
-    const f = fixture(); f.port.scrollHeight = 900
-    f.state.subagent = { address: { mode: 'continuable' } } as unknown as SessionSnapshot['subagent']
-    f.editor.editable = false; f.editor.disabled = true
-    f.onFrame(() => {
-        if (f.frames() !== 3) return
-        f.state.subagent = { ...f.state.subagent!, parentAvailable: true }
-        f.editor.editable = true; f.editor.disabled = false
-    })
     assert.equal(await f.run(), true)
-    assert.equal(f.frames(), 3)
-    f.state.subagent = { ...f.state.subagent!, parentAvailable: false }
-    await assert.rejects(f.run(), { message: 'The parent session is offline.' })
-})
-
-test('an editor that never becomes editable cannot qualify on a filled history viewport', async () => {
-    const f = fixture(); f.port.scrollHeight = 900; f.editor.editable = false
-    f.onFrame(() => { if (f.frames() === 4) f.close() })
-    assert.equal(await f.run(), false)
+    assert.equal(f.editor.disabled, true)
     assert.equal(f.pages(), 0)
 })
 
@@ -259,96 +216,37 @@ for (const preparation of ['initial', 'candidate'] as const) {
     })
 }
 
-test('a page completing while its initial pane is hidden cannot fail on the parked zero-size viewport', async () => {
-    const f = fixture(), read = deferred(), started = deferred()
-    f.onLoad(() => {
-        f.visible(false); f.port.clientHeight = 0; f.suspendFrames()
-        started.resolve()
-        return read.promise
-    })
-    const ready = f.run()
-    await started.promise
-    f.advance(60_000); read.resolve(); await tick()
-    assert.equal(f.pages(), 1)
-    f.port.clientHeight = 600; f.port.scrollHeight = 900
-    f.visible(true); f.resumeFrames()
-    assert.equal(await ready, true, 'the real post-page content qualifies only after visible layout returns')
-    assert.equal(f.listeners(), 0)
-})
-
-test('folded pages may advance history without height growth until the viewport fills', async () => {
-    const f = fixture()
-    f.onLoad(() => {
-        f.older()
-        if (f.pages() === 4) f.port.scrollHeight = 900
-    })
-    assert.equal(await f.run(), true)
-    assert.equal(f.pages(), 4)
-    assert.equal(f.state.hasMore, true, 'filling the viewport must not drain the remaining archive')
-})
-
-test('the first visible window cannot qualify on synthetic tail spacer and composer height', async () => {
+test('short or folded initial content reveals without draining earlier history', async () => {
     const f = fixture()
     f.port.scrollHeight = 1_000
-    f.spacer.offsetHeight = 700
-    f.composer.offsetHeight = 150
-    f.onLoad(() => {
-        f.older()
-        if (f.pages() === 2) f.port.scrollHeight = 1_400
-    })
+    f.spacer.offsetHeight = 700; f.composer.offsetHeight = 150
+    f.onLoad(() => { throw new Error('Initial reveal must not issue an older read') })
     assert.equal(await f.run(), true)
-    assert.equal(f.pages(), 2, 'the initial reveal must use the same real-content requirement as atomic latest')
-    assert.equal(f.state.hasMore, true)
+    assert.equal(f.pages(), 0)
+    assert.equal(f.state.hasMore, true, 'the same official reader can continue fetching after reveal')
 })
 
-test('a genuinely short conversation is ready only once older history is exhausted', async () => {
+test('candidate preparation batches folded source items without repeating small-page layout cycles', async () => {
     const f = fixture()
-    f.onLoad(() => {
-        f.older()
-        if (f.pages() === 3) f.state.hasMore = false
+    f.port.scrollHeight = 200
+    let read = 0
+    f.onLoad(limit => {
+        read += limit; f.older()
+        if (read >= 120) f.port.scrollHeight = 900
     })
-    assert.equal(await f.run(), true)
-    assert.equal(f.pages(), 3)
+    assert.equal(await f.candidate(), true)
+    assert.deepEqual(f.limits, [20, 50, 50])
+    assert.equal(f.frames(), 7)
 })
 
-test('live revisions cannot disguise an older page that made no cursor progress', async () => {
+test('candidate preparation uses measured content gain to request only the remaining viewport', async () => {
     const f = fixture()
-    f.onLoad(() => f.append())
-    assert.equal(await f.run(), false)
-    assert.equal(f.pages(), 1)
+    f.port.scrollHeight = 100
+    f.onLoad(limit => { f.older(); f.port.scrollHeight += limit * 10 })
+    assert.equal(await f.candidate(), true)
+    assert.deepEqual(f.limits, [20, 31])
+    assert.equal(f.port.scrollHeight, 610)
 })
-
-test('folded history is bounded and is never exposed as usable merely for exhausting the page budget', async () => {
-    const f = fixture()
-    f.onLoad(() => f.older())
-    assert.equal(await f.run(), false)
-    assert.equal(f.pages(), 12)
-})
-
-for (const preparation of ['initial', 'candidate'] as const) {
-    test(`${preparation} batches folded source items without repeating small-page layout cycles`, async () => {
-        const f = fixture()
-        f.port.scrollHeight = 200
-        let read = 0
-        f.onLoad(limit => {
-            read += limit; f.older()
-            // The previous readable answer lies behind 120 folded source items.
-            if (read >= 120) f.port.scrollHeight = 900
-        })
-        assert.equal(await (preparation === 'initial' ? f.run() : f.candidate()), true)
-        assert.deepEqual(f.limits, [20, 50, 50])
-        assert.equal(f.frames(), 7, 'two commit frames per page, without a third redundant frame')
-    })
-
-    test(`${preparation} uses measured content gain to request only the remaining viewport`, async () => {
-        const f = fixture()
-        f.port.scrollHeight = 100
-        f.onLoad(limit => { f.older(); f.port.scrollHeight += limit * 10 })
-        assert.equal(await (preparation === 'initial' ? f.run() : f.candidate()), true)
-        assert.deepEqual(f.limits, [20, 31])
-        assert.equal(f.port.scrollHeight, 610)
-    })
-}
 
 for (const mode of ['latest', 'restoration'] as const) {
     test(`initial ${mode} must finish before exposing an otherwise scrollable viewport`, async () => {
@@ -378,13 +276,14 @@ test('closing a pane during its next frame prevents an older-history request', a
     assert.equal(f.pages(), 0)
 })
 
-test('an in-flight history load must finish before a scrollable viewport is ready', async () => {
+test('an unrelated older-history request cannot hide an already committed initial viewport', async () => {
     const f = fixture()
     f.port.scrollHeight = 900
     f.state.loadingOlder = true
     f.onFrame(() => { if (f.frames() === 3) f.state.loadingOlder = false })
     assert.equal(await f.run(), true)
-    assert.equal(f.frames(), 3)
+    assert.equal(f.frames(), 1)
+    assert.equal(f.state.loadingOlder, true)
     assert.equal(f.pages(), 0)
 })
 
@@ -890,7 +789,7 @@ test('a reused source can select its new measuring preparer before latest readin
     } finally { await root.fiber.dispose() }
 })
 
-test('composer admission errors use the existing error channel and unregister measuring preparation', async t => {
+test('a removed source uses the existing error channel and unregisters measuring preparation', async t => {
     const { root, host } = await viewHostFixture(t)
     const preparers = new Set<SourceWindowPreparer>(), errors: unknown[] = []
     let ready = 0

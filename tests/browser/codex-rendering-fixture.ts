@@ -1,5 +1,6 @@
 /** Native item shapes cross the production source adapter before official rendering. */
 import { CodexHistory } from '../../src/remote/codex-history.ts'
+import { CodexToolDetails } from '../../src/remote/codex-tool-details.ts'
 import { CodexAttachments } from '../../src/remote/codex-attachments.ts'
 import type { SourceEventIndex } from '../../src/remote/event-index.ts'
 import type { SourceSession, SourceResource, SourceEntry } from '../../src/remote/protocol.ts'
@@ -11,7 +12,7 @@ import { join } from 'node:path'
 export interface CodexRenderingResources {
   schedule(entries: readonly SourceEntry[]): void
   releaseImages(): void
-  snapshot(): { fileReads: number; pendingFileReads: number; imagesReleased: boolean; imageRevisions: number }
+  snapshot(): { fileReads: number; pendingFileReads: number; imagesReleased: boolean; imageRevisions: number; detailReads: string[] }
   read(path: string, signal?: AbortSignal): Promise<SourceResource>
   dispose(): Promise<void>
 }
@@ -33,7 +34,9 @@ export async function seedCodexRendering(index: SourceEventIndex, metadata: Sour
     const state = history.itemState(turnId, itemId)
     if (state) { history.acceptItem(metadata, state.turnId, state.item, state.completed); imageRevisions++ }
   })
+  const details = new CodexToolDetails(index), detailReads: string[] = []
   const history = new CodexHistory(index, {
+    toolPresentation: (turnId, item, tool) => details.project(turnId, item, tool),
     userContent: (turnId, item) => attachments.content(turnId, item),
     toolContent: (turnId, item) => attachments.content(turnId, item),
   })
@@ -63,14 +66,16 @@ export async function seedCodexRendering(index: SourceEventIndex, metadata: Sour
         { type: 'input_audio', audio_url: 'data:audio/wav;base64,SYNTHETIC_AUDIO_TRANSPORT' },
         { type: 'encrypted_content', encrypted_content: 'SYNTHETIC_ENCRYPTED_TRANSPORT' },
       ] },
+      { id: 'pretty-large-output', type: 'commandExecution', status: 'completed',
+        command: 'synthetic large output', cwd: '/synthetic', aggregatedOutput: 'native-detail-'.repeat(50000), exitCode: 0 },
       { id: 'pretty-result', type: 'agentMessage', text: 'Synthetic Codex rendering completed.' },
     ],
   }, true)
   return {
     schedule: entries => attachments.schedule(entries),
     releaseImages(): void { imagesReleased = true; release() },
-    snapshot: () => ({ fileReads, pendingFileReads, imagesReleased, imageRevisions }),
-    read: (path, signal) => attachments.read(path, signal),
+    snapshot: () => ({ fileReads, pendingFileReads, imagesReleased, imageRevisions, detailReads: [...detailReads] }),
+    read: async (path, signal) => { if (path.startsWith('detail:')) { signal?.throwIfAborted(); detailReads.push(path); return details.read(path) }; return attachments.read(path, signal) },
     async dispose(): Promise<void> { lifetime.abort(); await attachments.dispose(); await rm(directory, { recursive: true, force: true }) },
   }
 }

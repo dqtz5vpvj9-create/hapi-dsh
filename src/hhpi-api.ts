@@ -6,6 +6,7 @@ import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRe
 
 export interface HhpiRemoteApi {
     catalog(signal?: AbortSignal): Promise<RemoteResult<SourceCatalog>>;
+    resolve?(request: { sessionId: string }, signal?: AbortSignal): Promise<RemoteResult<SourceSession>>;
     read(request: SourceReadRequest, signal?: AbortSignal): Promise<RemoteResult<SourcePage>>;
     changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStreamHandle<SourceChanges, never>;
     operate(request: SourceOperation): Promise<RemoteResult<SourceReceipt>>;
@@ -17,6 +18,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap { hhpi: HhpiRemoteApi }
     interface TypertRemoteMap {
         'hhpi/catalog': HhpiRemoteApi['catalog']; 'hhpi/read': HhpiRemoteApi['read']; 'hhpi/changes': HhpiRemoteApi['changes'];
+        'hhpi/resolve': NonNullable<HhpiRemoteApi['resolve']>;
         'hhpi/operate': HhpiRemoteApi['operate']; 'hhpi/receipt': NonNullable<HhpiRemoteApi['receipt']>; 'hhpi/create': HhpiRemoteApi['create']; 'hhpi/resource': HhpiRemoteApi['resource'];
     }
 }
@@ -45,10 +47,10 @@ const changes = z.strictObject({ session, epoch: id, base: seq, version: seq, re
 const receipt = z.strictObject({ operationId: id, sessionId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), turnId: id.optional(),
     retryable: z.literal(true).optional(), observed: z.strictObject({ epoch: id, seq }).optional(),
     ownerAdmission: z.strictObject({ localId: id, state: z.enum(['queued', 'dispatching', 'indeterminate', 'consumed']) }).optional() });
-const inputs = { read: readSchema, changes: z.strictObject({ sessionId: id, epoch: id, version: seq }), operate: operationSchema, receipt: operationSchema,
+const inputs = { resolve: z.strictObject({ sessionId: id }), read: readSchema, changes: z.strictObject({ sessionId: id, epoch: id, version: seq }), operate: operationSchema, receipt: operationSchema,
     create: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
 const outputs = { catalog: z.strictObject({ protocol: z.literal(1), legacyHapi: z.boolean(), storageScope: id.optional(), sessions: z.array(session), sources: z.array(z.strictObject({ id, machineId: id, engine: z.string(), online: z.boolean(), create: z.boolean() })) }),
-    read: page, changes, operate: receipt, receipt: receipt.nullable(),
+    resolve: session, read: page, changes, operate: receipt, receipt: receipt.nullable(),
     create: z.strictObject({ sourceId: id, operationId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), session: session.optional() }), resource: z.strictObject({ encoding: z.literal('base64'), content: z.string(), mimeType: z.string(), attachment: sourceImageAttachmentRefSchema.optional() }) };
 const codec = (name: string, schema: z.ZodType) => ({ mode: 'strict' as const, typeSymbol: `hapi-dsh#hhpi/${name}`, create: () => schema });
 export const HHPI_REMOTE: TypertRemoteContribution = {

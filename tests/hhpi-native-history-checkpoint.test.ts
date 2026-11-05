@@ -1,308 +1,146 @@
-/** Completed source-owned native indexes are reused only at a matching idle revision. */
+/** Persistent sparse projection reuse against real source-native metadata.
+ * Native item bodies and connection are RPC fixtures; no catalog/full-log path is allowed. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
-import { CODEX_HISTORY_PROJECTION_VERSION, CodexHistory } from '../src/remote/codex-history.ts';
+import { CODEX_HISTORY_PROJECTION_VERSION } from '../src/remote/codex-history.ts';
 import { SourceEventIndex } from '../src/remote/event-index.ts';
-import type { NativeTurn } from '../src/remote/codex-native.ts';
-import { sourceSessionId, type DirectCodexConfig, type SourceSession } from '../src/remote/protocol.ts';
+import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts';
 
-const checkpointKey = 'native-history-checkpoint:v1';
 const source = { sourceId: 'native', machineId: 'same-machine', engine: 'codex', nativeId: 'existing-thread' } as const;
 const sourceId = sourceSessionId(source);
-const thread = (directory: string, updatedAt: number, statusType: string) => ({ id: source.nativeId, cwd: directory, name: 'Synthetic history',
-    createdAt: 1, updatedAt, status: { type: statusType } });
-const turns: NativeTurn[] = [
-    { id: 'turn-1', status: 'completed' as const, startedAt: 1, completedAt: 2 },
-    { id: 'turn-2', status: 'completed' as const, startedAt: 3, completedAt: 4 },
-];
-const entriesFor = (turnId: string, answer: string) => [
-    { turnId, startedAtMs: 1000, item: { id: `${turnId}-user`, type: 'userMessage', content: [{ type: 'text', text: `Question ${turnId}` }] } },
-    { turnId, startedAtMs: 2000, completedAtMs: 3000, item: { id: `${turnId}-assistant`, type: 'agentMessage', text: answer } },
-];
+const checkpointKey = 'native-history-checkpoint:v1';
 
-interface NativeFixture {
-    directory: string;
-    updatedAt: number;
-    statusType: string;
-    turns: NativeTurn[];
-    answers: Map<string, string>;
-}
-
-function makeRpc(fixture: NativeFixture, calls: Array<{ method: string; params: Record<string, unknown> }>): CodexRpc {
-    const nativeThread = (): ReturnType<typeof thread> => thread(fixture.directory, fixture.updatedAt, fixture.statusType);
-    return {
-        online: true, currentGeneration: 1,
-        connect: async () => ({}), dispose: async () => {},
-        onNotification: () => () => {}, onRequest: () => () => {}, onDisconnect: () => () => {},
-        request: async (method: string, params: Record<string, unknown>) => {
-            calls.push({ method, params });
-            if (method === 'thread/loaded/list') return { data: [source.nativeId], nextCursor: null };
-            if (method === 'thread/list') {
-                assert.equal(params.useStateDbOnly, true);
-                return { data: [nativeThread()], nextCursor: null };
-            }
-            if (method === 'thread/read') { assert.equal(params.includeTurns, false); return { thread: nativeThread() }; }
-            if (method === 'thread/turns/list') {
-                assert.equal(params.itemsView, 'notLoaded');
-                return { data: fixture.turns, nextCursor: null };
-            }
-            if (method === 'thread/items/list') {
-                const turnId = String(params.turnId);
-                return { data: entriesFor(turnId, fixture.answers.get(turnId) ?? `Answer ${turnId}`), nextCursor: null };
-            }
-            throw new Error(`Unexpected native read operation: ${method}`);
-        },
-    } as unknown as CodexRpc;
-}
-
-function adapterFor(directory: string, fixture: NativeFixture, calls: Array<{ method: string; params: Record<string, unknown> }>): DirectCodexAdapter {
-    const config: DirectCodexConfig = { id: source.sourceId, machineId: source.machineId, engine: source.engine, ownership: 'shared' };
-    return new DirectCodexAdapter(config, directory, { rpc: makeRpc(fixture, calls) });
-}
-
-async function readOnce(adapter: DirectCodexAdapter): Promise<{ session: SourceSession; text: string }> {
-    const [session] = await adapter.list();
-    assert.ok(session);
-    const page = await adapter.read({ sessionId: session.id, limit: 100 });
-    return { session, text: JSON.stringify(page.entries) };
-}
-
-function databasePath(directory: string): string {
-    const hash = createHash('sha256').update(sourceId).digest('hex');
-    return join(directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`);
-}
-
-async function removeCheckpoint(directory: string, session: SourceSession): Promise<void> {
-    const index = new SourceEventIndex(databasePath(directory), session);
-    try { index.edit(session, () => index.forget(checkpointKey)); }
-    finally { index.dispose(); }
-}
-
-function fixture(directory: string, updatedAt = 10, statusType = 'idle', nativeTurns: NativeTurn[] = [...turns]): NativeFixture {
-    return { directory, updatedAt, statusType, turns: nativeTurns, answers: new Map() };
-}
-
-test('a complete idle native index reopens without turn or item scans at the same revision', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-checkpoint-'));
-    const native = fixture(directory), initialCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, initialCalls);
-    try {
-        const first = await readOnce(adapter);
-        assert.match(first.text, /Answer turn-1/);
-        assert.equal(initialCalls.filter(call => call.method === 'thread/items/list').length, turns.length);
-        await adapter.dispose();
-
-        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, reopenedCalls);
-        const reopened = await readOnce(adapter);
-        assert.equal(reopened.text, first.text);
-        assert.deepEqual(reopenedCalls.map(call => call.method).filter(method => method === 'thread/read'), ['thread/read']);
-        assert.equal(reopenedCalls.some(call => call.method === 'thread/turns/list' || call.method === 'thread/items/list'), false,
-            'a verified checkpoint serves the persistent DSH event page directly');
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
-});
-
-test('a previous display projection upgrades from accepted native records without rereading bodies', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-presentation-upgrade-'));
-    const native = fixture(directory), session: SourceSession = { ...source, id: sourceId, title: 'Synthetic history', cwd: directory,
-        updatedAt: native.updatedAt * 1000, status: 'idle', activeTurnId: null,
-        capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] };
-    const hash = createHash('sha256').update(sourceId).digest('hex');
-    const previous = new SourceEventIndex(join(directory, 'history', `${hash}.sqlite`), session);
-    const oldHistory = new CodexHistory(previous);
-    try {
-        for (const turn of turns) {
-            oldHistory.beginTurn(session, turn);
-            oldHistory.acceptItems(session, entriesFor(turn.id, `Answer ${turn.id}`), true);
-            oldHistory.acceptTurn(session, turn);
-        }
-        previous.edit(session, () => {
-            // Simulate the previous broken display while preserving its accepted
-            // native item cache, exactly the material available during upgrade.
-            for (const turn of turns) {
-                const itemKey = JSON.stringify(['item', turn.id, `${turn.id}-assistant`]);
-                const messageKey = JSON.stringify([itemKey, 'message']);
-                const entry = previous.entry(messageKey)!;
-                if (entry.event.type !== 'assistant/message') throw new Error('Expected the previous assistant display');
-                const { seq: _seq, ...event } = entry.event;
-                previous.put(messageKey, { ...event, data: { ...event.data, message: { ...event.data.message,
-                    content: [{ type: 'text', text: 'Legacy display placeholder' }] } } },
-                [JSON.stringify(['turn', turn.id, 'start']), JSON.stringify([itemKey, 'step/start'])]);
-            }
-            previous.cache('turn-order', turns.map(turn => turn.id));
-            previous.cache(checkpointKey, { version: 1, state: 'complete', updatedAt: native.updatedAt, statusType: 'idle' });
-        });
-    } finally { previous.dispose(); }
+async function fixture(turns = 200, active = false) {
+    const home = await mkdtemp('/mnt/cache/data-cache/hhpi-history-checkpoint-');
+    const db = new DatabaseSync(join(home, 'thread_history_1.sqlite'));
+    db.exec(`CREATE TABLE thread_turns(thread_id TEXT,turn_id TEXT,status TEXT,started_at INTEGER,completed_at INTEGER,rollout_ordinal INTEGER,rollout_end_ordinal INTEGER,error_json TEXT);
+        CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,rollout_ordinal INTEGER,created_at_ms INTEGER,started_at_ms INTEGER,completed_at_ms INTEGER,updated_at_ordinal INTEGER,item_type TEXT);
+        CREATE INDEX item_order ON thread_items(thread_id,rollout_ordinal); CREATE INDEX turn_order ON thread_turns(thread_id,rollout_end_ordinal); BEGIN`);
+    for (let i = 0; i < turns; i++) {
+        const start = i * 4 + 1, status = active && i === turns - 1 ? 'inProgress' : 'completed';
+        db.prepare('INSERT INTO thread_turns VALUES(?,?,?,?,?,?,?,?)').run(source.nativeId, `turn-${i}`, status, i + 1,
+            status === 'inProgress' ? null : i + 2, start, status === 'inProgress' ? null : start + 3, null);
+        for (let item = 0; item < 2; item++) db.prepare('INSERT INTO thread_items VALUES(?,?,?,?,?,?,?,?,?)')
+            .run(source.nativeId, `turn-${i}`, `item-${item}`, start + item + 1, 1000, 1000, 2000, start + item + 1, 'agentMessage');
+    }
+    db.exec('COMMIT');
+    const native = { id: source.nativeId, cwd: home, createdAt: 1, updatedAt: 2, status: { type: active ? 'active' : 'idle' } };
     const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, calls);
+    const answers = new Map<string, string>();
+    let rejectedTurn: string | undefined;
+    const make = () => {
+        const rpc = { online: true, currentGeneration: 1, connect: async () => ({ codexHome: home }), dispose: async () => {},
+            onNotification: () => () => {}, onRequest: () => () => {}, onDisconnect: () => () => {},
+            request: async (method: string, params: Record<string, unknown>) => {
+                calls.push({ method, params });
+                if (method === 'thread/read') { assert.equal(params.includeTurns, false); return { thread: native }; }
+                if (method === 'thread/loaded/list' || method === 'thread/list' || method === 'thread/turns/list')
+                    throw new Error('An exact saved source must not scan a catalog or all turn headers');
+                if (method !== 'thread/items/list') throw new Error(`Unexpected native operation: ${method}`);
+                const turn = String(params.turnId);
+                if (turn === rejectedTurn) throw new Error('Synthetic selected body unavailable');
+                const cursor = params.cursor as { itemId: string } | undefined;
+                const first = cursor ? Number(cursor.itemId.slice(5)) + 1 : 0;
+                return { data: Array.from({ length: Math.min(Number(params.limit), 2 - first) }, (_, offset) => ({ turnId: turn,
+                    item: { id: `item-${first + offset}`, type: 'agentMessage', text: answers.get(turn) ?? `Answer ${turn} item-${first + offset}` } })), nextCursor: null };
+            },
+        } as unknown as CodexRpc;
+        return new DirectCodexAdapter({ id: source.sourceId, machineId: source.machineId, engine: source.engine }, join(home, 'projection'), { rpc, pollMs: 60_000 });
+    };
+    return { home, db, native, calls, make, answers, bodyCalls: () => calls.filter(call => call.method === 'thread/items/list'),
+        rejectTurn: (turn: string | undefined) => { rejectedTurn = turn; },
+        dispose: async () => { db.close(); await rm(home, { recursive: true, force: true }); } };
+}
+const read = (adapter: DirectCodexAdapter) => adapter.read({ sessionId: sourceId, limit: 160 });
+const databasePath = (home: string, version = CODEX_HISTORY_PROJECTION_VERSION) =>
+    join(home, 'projection', 'history', `${createHash('sha256').update(sourceId).digest('hex')}.v${version}.sqlite`);
+
+for (const active of [false, true]) {
+    test(`an unchanged ${active ? 'active' : 'idle'} native source reopens its persisted first page without source body reads`, async () => {
+        const f = await fixture(200, active);
+        let adapter = f.make();
+        try {
+            const initial = await read(adapter);
+            assert.match(JSON.stringify(initial.entries), /Answer turn-199/);
+            assert.equal(initial.hasBefore, true);
+            assert.ok(f.bodyCalls().length <= 7, 'cold work is bounded by the selected tail instead of all 200 turns');
+            await adapter.dispose();
+            f.calls.length = 0;
+            adapter = f.make();
+            const reopened = await read(adapter);
+            assert.deepEqual(reopened.entries, initial.entries);
+            assert.equal(f.bodyCalls().length, 0, 'Host reentry must reuse the accepted source revision');
+            assert.ok(f.calls.every(call => call.method === 'thread/read'));
+        } finally { await adapter.dispose(); await f.dispose(); }
+    });
+}
+
+test('changed native metadata revises only the selected changed turn while preserving source sequence identities', async () => {
+    const f = await fixture();
+    let adapter = f.make();
     try {
-        const upgraded = await readOnce(adapter);
-        assert.equal(upgraded.text.includes('Legacy display placeholder'), false);
-        assert.match(upgraded.text, /Answer turn-1/);
-        assert.equal(calls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false,
-            'complete unchanged native records upgrade locally without a long native history replay');
+        const initial = await read(adapter);
         await adapter.dispose();
-        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, reopenedCalls);
-        assert.equal((await readOnce(adapter)).text, upgraded.text);
-        assert.equal(reopenedCalls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false);
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
+        f.native.updatedAt++;
+        f.answers.set('turn-199', 'Revised latest answer');
+        f.db.prepare('UPDATE thread_items SET updated_at_ordinal = updated_at_ordinal + 10000 WHERE thread_id = ? AND turn_id = ?')
+            .run(source.nativeId, 'turn-199');
+        f.calls.length = 0;
+        adapter = f.make();
+        const revised = await read(adapter);
+        assert.match(JSON.stringify(revised.entries), /Revised latest answer/);
+        assert.equal(f.bodyCalls().length, 1);
+        assert.equal(f.bodyCalls()[0]!.params.turnId, 'turn-199', 'unchanged source turn bodies are not reread');
+        assert.deepEqual(revised.entries.map(entry => [entry.key, entry.event.seq]), initial.entries.map(entry => [entry.key, entry.event.seq]));
+    } finally { await adapter.dispose(); await f.dispose(); }
 });
 
-test('an idle v2 function output cache upgrades its display without rereading bodies or mutating the old database', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-v2-output-'));
-    const native = fixture(directory), session: SourceSession = { ...source, id: sourceId, title: 'Synthetic history', cwd: directory,
-        updatedAt: native.updatedAt * 1000, status: 'idle', activeTurnId: null,
-        capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] };
-    const previousPath = join(directory, 'history', `${createHash('sha256').update(sourceId).digest('hex')}.v2.sqlite`);
-    const previous = new SourceEventIndex(previousPath, session), oldHistory = new CodexHistory(previous);
-    const turn = turns[0]!;
-    const output = [{ type: 'input_text', text: 'Recovered native result' },
-        { type: 'input_audio', audio_url: 'data:audio/wav;base64,SYNTHETIC_AUDIO_TRANSPORT' }];
+test('an interrupted first-page build is retried without claiming a complete checkpoint or traversing the archive', async () => {
+    const f = await fixture();
+    let adapter = f.make();
     try {
-        oldHistory.beginTurn(session, turn);
-        oldHistory.acceptItem(session, turn.id, { id: 'function-output', type: 'functionCallOutput', name: 'lookup', namespace: null, output }, true);
-        oldHistory.acceptTurn(session, turn);
-        previous.edit(session, () => {
-            const itemKey = JSON.stringify(['item', turn.id, 'function-output']);
-            const resultKey = JSON.stringify([itemKey, 'tool/result']);
-            const entry = previous.entry(resultKey)!;
-            if (entry.event.type !== 'tool/result') throw new Error('Expected the previous function output');
-            const { seq: _seq, ...event } = entry.event;
-            previous.put(resultKey, { ...event, data: { ...event.data, message: { ...event.data.message,
-                content: output.map(part => ({ type: 'text' as const, text: JSON.stringify(part, null, 2) })) } } },
-            [JSON.stringify(['turn', turn.id, 'start']), JSON.stringify([itemKey, 'step/start']),
-                JSON.stringify([itemKey, 'message']), JSON.stringify([itemKey, 'tool/call'])]);
-            previous.cache('turn-order', [turn.id]);
-            previous.cache(`tail:${turn.id}`, { last: 'function-output', previous: null });
-            previous.cache(checkpointKey, { version: 1, state: 'complete', updatedAt: native.updatedAt, statusType: 'idle' });
-        });
-    } finally { previous.dispose(); }
-    const originalBytes = await readFile(previousPath);
-    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, calls);
-    try {
-        const upgraded = await adapter.read({ sessionId: sourceId, limit: 100 });
-        const result = upgraded.entries.find(value => value.event.type === 'tool/result')!;
-        if (result.event.type !== 'tool/result') throw new Error('Expected the upgraded native function result');
-        assert.deepEqual(result.event.data.message.content, [{ type: 'text', text: 'Recovered native result' }, { type: 'text', text: 'Audio output' }]);
-        assert.doesNotMatch(JSON.stringify(upgraded.entries), /SYNTHETIC_AUDIO_TRANSPORT/);
-        assert.equal(calls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false,
-            'matching v2 native records must reproject locally even when the source is idle');
-        assert.deepEqual(await readFile(previousPath), originalBytes);
+        f.rejectTurn('turn-199');
+        await assert.rejects(read(adapter), /Synthetic selected body unavailable/);
         await adapter.dispose();
-        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, reopenedCalls);
-        const reopened = await adapter.read({ sessionId: sourceId, limit: 100 });
-        assert.deepEqual(reopened.entries, upgraded.entries);
-        assert.equal(reopenedCalls.some(call => call.method === 'thread/items/list' || call.method === 'thread/turns/list'), false);
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
+        f.rejectTurn(undefined);
+        f.calls.length = 0;
+        adapter = f.make();
+        const page = await read(adapter);
+        assert.match(JSON.stringify(page.entries), /Answer turn-199/);
+        assert.ok(f.bodyCalls().length > 0 && f.bodyCalls().length <= 7);
+        assert.ok(f.bodyCalls().every(call => Number(String(call.params.turnId).slice(5)) >= 193));
+        await adapter.dispose();
+        f.calls.length = 0;
+        adapter = f.make();
+        assert.deepEqual((await read(adapter)).entries, page.entries);
+        assert.equal(f.bodyCalls().length, 0, 'a successful bounded retry is durably reusable');
+    } finally { await adapter.dispose(); await f.dispose(); }
 });
 
-test('a complete active snapshot reopens from cache and leaves new tail work to the running refresh', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-active-'));
-    const activeTurns: NativeTurn[] = [turns[0]!, { id: 'turn-active', status: 'inProgress', startedAt: 5 }];
-    const native = fixture(directory, 10, 'active', activeTurns), initialCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, initialCalls);
+test('pre-native-order display databases remain untouched and cannot force a full-history migration before first paint', async () => {
+    const f = await fixture();
+    let adapter = f.make();
     try {
-        await readOnce(adapter);
-        assert.equal(initialCalls.filter(call => call.method === 'thread/items/list').length, activeTurns.length);
+        const session: SourceSession = { ...source, id: sourceId, title: 'Legacy cache', cwd: f.home, updatedAt: 2000, status: 'idle', activeTurnId: null,
+            capabilities: { send: false, steer: false, cancel: false, approve: false, files: false }, pendingRequests: [] };
+        const path = databasePath(f.home, 2), previous = new SourceEventIndex(path, session);
+        previous.edit(session, () => { previous.cache('legacy-source', 'Old accepted cache remains recoverable'); previous.cache(checkpointKey, { state: 'complete' }); });
+        previous.dispose();
+        const bytes = await readFile(path);
+        const page = await read(adapter);
+        assert.match(JSON.stringify(page.entries), /Answer turn-199/);
+        assert.ok(f.bodyCalls().length <= 7, 'native source tail replaces loading-order projection without replaying the archive');
+        assert.deepEqual(await readFile(path), bytes, 'upgrading the read projection cannot mutate the previous version');
         await adapter.dispose();
-
-        const reopenedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, reopenedCalls);
-        await readOnce(adapter);
-        assert.equal(reopenedCalls.some(call => call.method === 'thread/turns/list' || call.method === 'thread/items/list'), false,
-            'an unchanged active revision reuses its completed checkpoint instead of rescanning hundreds of turns');
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
-});
-
-test('a legacy complete index adopts a checkpoint after matching idle turn headers without rereading bodies', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-legacy-'));
-    const native = fixture(directory), firstCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, firstCalls);
-    try {
-        const first = await readOnce(adapter);
-        await adapter.dispose();
-        await removeCheckpoint(directory, first.session);
-
-        const adoptionCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, adoptionCalls);
-        const adopted = await readOnce(adapter);
-        assert.equal(adopted.text, first.text);
-        assert.equal(adoptionCalls.filter(call => call.method === 'thread/turns/list').length, 1,
-            'a legacy index is validated against lightweight native turn headers once');
-        assert.equal(adoptionCalls.some(call => call.method === 'thread/items/list'), false,
-            'matching complete legacy history upgrades without the 50-second item replay');
-        await adapter.dispose();
-
-        const reuseCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, reuseCalls);
-        await readOnce(adapter);
-        assert.equal(reuseCalls.some(call => call.method === 'thread/turns/list' || call.method === 'thread/items/list'), false,
-            'the adopted checkpoint is durable for later Host starts');
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
-});
-
-test('a changed native revision invalidates the checkpoint and refreshes event content', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-revision-'));
-    const native = fixture(directory), firstCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, firstCalls);
-    try {
-        await readOnce(adapter);
-        await adapter.dispose();
-        native.updatedAt++;
-        native.answers.set('turn-1', 'Revised answer');
-        const changedCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, changedCalls);
-        const changed = await readOnce(adapter);
-        assert.match(changed.text, /Revised answer/);
-        assert.equal(changedCalls.filter(call => call.method === 'thread/items/list').length, turns.length);
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
-});
-
-test('an interrupted full build is marked incomplete and must finish before it can be reused', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-incomplete-'));
-    const native = fixture(directory), session: SourceSession = { ...source, id: sourceId, title: 'Synthetic history', cwd: directory,
-        updatedAt: native.updatedAt * 1000, status: 'idle', activeTurnId: null,
-        capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] };
-    const index = new SourceEventIndex(databasePath(directory), session), history = new CodexHistory(index);
-    try {
-        index.edit(session, () => index.cache(checkpointKey, { version: 1, state: 'building', updatedAt: native.updatedAt, statusType: 'idle' }));
-        history.beginTurn(session, turns[0]!);
-        history.acceptItem(session, turns[0]!.id, { id: 'partial-item', type: 'userMessage', content: [{ type: 'text', text: 'Partial build' }] }, true);
-    } finally { index.dispose(); }
-
-    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    const adapter = adapterFor(directory, native, calls);
-    try {
-        const result = await readOnce(adapter);
-        assert.match(result.text, /Answer turn-2/);
-        assert.equal(calls.filter(call => call.method === 'thread/items/list').length, turns.length,
-            'building state never claims that a partial index is complete');
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
-});
-
-test('a legacy index with a missing turn header falls back to full reconciliation', async () => {
-    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-history-legacy-partial-'));
-    const native = fixture(directory), firstCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
-    let adapter = adapterFor(directory, native, firstCalls);
-    try {
-        const first = await readOnce(adapter);
-        await adapter.dispose();
-        const index = new SourceEventIndex(databasePath(directory), first.session);
-        try { index.edit(first.session, () => { index.forget(checkpointKey); index.cache('turn-order', ['turn-1']); }); }
-        finally { index.dispose(); }
-
-        const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-        adapter = adapterFor(directory, native, calls);
-        await readOnce(adapter);
-        assert.equal(calls.filter(call => call.method === 'thread/items/list').length, turns.length,
-            'header mismatch is treated as an incomplete legacy cache');
-    } finally { await adapter.dispose(); await rm(directory, { recursive: true, force: true }); }
+        f.calls.length = 0;
+        adapter = f.make();
+        assert.deepEqual((await read(adapter)).entries, page.entries);
+        assert.equal(f.bodyCalls().length, 0);
+    } finally { await adapter.dispose(); await f.dispose(); }
 });

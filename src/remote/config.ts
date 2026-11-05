@@ -7,7 +7,8 @@ const nonempty = z.string().min(1).max(8192).refine(value => !value.includes('\0
 const codex = z.strictObject({
     id: label, machineId: label, engine: z.literal('codex'),
     endpoint: nonempty.optional(), command: nonempty.optional(), args: z.array(z.string().max(8192).refine(value => !value.includes('\0'))).max(64).optional(),
-    cwd: nonempty.optional(), codexHome: nonempty.optional(), ownership: z.enum(['shared', 'exclusive']).optional(),
+    cwd: nonempty.optional(), codexHome: nonempty.optional(), ownership: z.enum(['shared', 'exclusive']).optional(), writerLock: z.literal('native').optional(),
+    historyMetadata: z.strictObject({ command: nonempty, args: z.array(nonempty).max(64).optional() }).optional(),
 });
 const dsh = z.strictObject({
     id: label, machineId: label, engine: z.literal('dsh'), root: nonempty,

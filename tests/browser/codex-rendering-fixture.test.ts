@@ -32,6 +32,7 @@ test('Codex browser images publish in their private attachment home without chan
   try {
     resources = await seedCodexRendering(index, session)
     const page = index.read({ sessionId: session.id, limit: 160 })
+    assert.match(JSON.stringify(page.entries.filter(entry => entry.event.type === 'tool/result')), /hhpi-tool-detail/, 'large native tool output must remain offloaded when image enrichment hooks are installed')
     assert.equal(images(page.entries).length, 0, 'the body starts before image bytes are admitted')
     changes = index.changes({ sessionId: session.id, epoch: page.epoch, version: page.version },
       AbortSignal.any([lifetime.signal, AbortSignal.timeout(4000)]))[Symbol.asyncIterator]()

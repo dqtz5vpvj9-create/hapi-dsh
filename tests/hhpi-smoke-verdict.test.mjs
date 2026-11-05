@@ -59,6 +59,8 @@ test('HHPI smoke admission accepts only canonical IDs and exact-target read/reso
   assert.equal(hhpiRequestPolicy('hhpi/catalog', { payload: { args: {} } }, target), 'read');
   assert.equal(hhpiRequestPolicy('hhpi/catalog', body({ sessionId: target }), target), 'block');
   assert.equal(hhpiRequestPolicy('hhpi/read', body({ sessionId: target }), target), 'read');
+  assert.equal(hhpiRequestPolicy('hhpi/resolve', body({ sessionId: target }), target), 'read');
+  assert.equal(hhpiRequestPolicy('hhpi/resolve', body({ sessionId: 'hhpi:other:source:codex:thread' }), target), 'block');
   assert.equal(hhpiRequestPolicy('hhpi/resource', body({ sessionId: target, path: 'asset' }), target), 'read');
   assert.equal(hhpiRequestPolicy('hhpi/read', body({ sessionId: 'hhpi:other:source:codex:thread' }), target), 'block');
   for (const method of ['hhpi/operate', 'hhpi/create', 'session/prompt', 'session/cancel', 'hapi/nativeCancel']) {

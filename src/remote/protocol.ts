@@ -70,6 +70,8 @@ export interface SourceCatalog { protocol: 1; legacyHapi: boolean; storageScope?
 export interface SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine: string;
     list(signal?: AbortSignal): Promise<SourceSession[]>;
+    /** Resolve an authorized original identity without waiting for the complete directory. */
+    resolve?(sessionId: string, signal?: AbortSignal): Promise<SourceSession>;
     read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage>;
     changes(request: SourceChangesRequest, signal?: AbortSignal): AsyncIterable<SourceChanges>;
     operate(request: SourceOperation): Promise<SourceReceipt>;
@@ -82,11 +84,15 @@ export interface SourceAdapter {
 export interface DirectCodexConfig {
     id: string; machineId: string; engine: 'codex'; endpoint?: string;
     command?: string; args?: string[]; cwd?: string; codexHome?: string;
-    /** shared/default: explicit sends may resume the same persisted thread on
-     * native releases with cross-process writer locking; a live owner rejects it.
+    /** shared/default: explicit sends may resume the same persisted thread when
+     * the operator verified that all writers use the native cross-process lock.
      * exclusive: the operator assigns this Codex home to this app-server and
      * also permits explicit resume on older runtimes. Reads never resume. */
     ownership?: 'shared' | 'exclusive';
+    /** Operator-verified source capability; never inferred from a version string. */
+    writerLock?: 'native';
+    /** Source-local, read-only native metadata helper for a forwarded app-server. */
+    historyMetadata?: { command: string; args?: string[] };
 }
 /** Native DSH body stays in its official persistence; the existing owner retains all writes. */
 export interface DirectDshConfig {

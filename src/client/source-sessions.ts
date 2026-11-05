@@ -1722,6 +1722,12 @@ export class SourceSessions implements ISessions {
     }, preparationReady)
   }
 
+  async resolveSession(id: SessionId, signal: AbortSignal): Promise<void> {
+    const source = this.original as ISessions & { resolveSession?: (id: SessionId, signal: AbortSignal) => Promise<void> }
+    if (source.resolveSession) await source.resolveSession(id, signal)
+    else await source.refresh()
+  }
+
   async using<T>(target: SessionTarget, options: SessionRetainOptions, operation: (reference: SessionReference) => T | Promise<T>): Promise<T> {
     if (typeof target !== 'string' || !isSourceDisplayId(target)) return this.original.using(target, options, operation)
     const reference = this.retain(target, options)

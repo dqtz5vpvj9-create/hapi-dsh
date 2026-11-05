@@ -148,3 +148,35 @@ test('the bundle installer documents its commands and reports an uninstalled hom
         await rm(root, { recursive: true, force: true })
     }
 })
+
+
+test('real ext packaging retains corresponding source and licenses inside the archive', async () => {
+    const root = await mkdtemp(join(scratchRoot(), 'hapi-dsh-bundle-source-offer-'))
+    try {
+        const hapiPayload = await makeHapiPayload(root)
+        const ext = join(root, 'ext')
+        await mkdir(ext)
+        const fixture = JSON.parse(await readFile(join(repositoryRoot, 'scripts/bundle/fixtures/ext-release/release.json'), 'utf8'))
+        const packages = []
+        for (const item of fixture.packages) {
+            const tarball = `${item.source.split('/').at(-1)}-${item.version}.tgz`
+            await writeFile(join(ext, tarball), await tar.createTgzFromDirectory(join(repositoryRoot, 'scripts/bundle/fixtures/ext-release', item.source), { prefix: 'package' }))
+            packages.push({ name: item.name, version: item.version, tarball })
+        }
+        await writeFile(join(ext, 'native.patch'), 'corresponding source patch\n')
+        await writeFile(join(ext, 'upstream-license.txt'), 'upstream license\n')
+        await writeFile(join(ext, 'release.json'), JSON.stringify({ ...fixture, fixture: false, packages, sourceOffer: ['native.patch'], licenses: ['upstream-license.txt'] }))
+        const { stdout } = await run(process.execPath, [packScript, '--ext-release', ext, '--hapi-dsh-tgz', hapiPayload, '--out', join(root, 'out'), '--tmp', join(root, 'scratch'), '--json'])
+        const summary = JSON.parse(stdout)
+        const extracted = join(root, 'extracted')
+        await tar.extractTgz(await readFile(summary.bundle), extracted)
+        const bundleRoot = join(extracted, 'package')
+        const verified = await release.verifyBundleRoot(bundleRoot)
+        assert.equal(await readFile(join(bundleRoot, 'SOURCE-OFFER/dsh-ext/native.patch'), 'utf8'), 'corresponding source patch\n')
+        assert.equal(await readFile(join(bundleRoot, 'LICENSES/dsh-ext/upstream-license.txt'), 'utf8'), 'upstream license\n')
+        assert.ok(verified.manifest.sourceOffer.includes('SOURCE-OFFER/dsh-ext/native.patch'))
+        assert.ok(verified.manifest.licenses.includes('LICENSES/dsh-ext/upstream-license.txt'))
+    } finally {
+        await rm(root, { recursive: true, force: true })
+    }
+})

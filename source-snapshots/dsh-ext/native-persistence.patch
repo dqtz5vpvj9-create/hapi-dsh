@@ -1,0 +1,1231 @@
+diff --git a/packages/session/session-format-v3-to-v4/README.md b/packages/session/session-format-v3-to-v4/README.md
+index c5b33a53..42530ecb 100644
+--- a/packages/session/session-format-v3-to-v4/README.md
++++ b/packages/session/session-format-v3-to-v4/README.md
+@@ -348,3 +348,7 @@ The edge preserves the recorded request prefix. Provider cache availability and
+ None.
+ 
+ </details>
++
++## Incremental native validation
++
++`V4SessionStreamValidator` applies the same native lifecycle and ownership checks used by full V4 restoration to an append-only sequence. Its checkpoint retains surface coordinates and unresolved lifecycle metadata, with source-owned lookup for earlier header/title references. `finish()` validates the observed prefix without requiring open native turns or steps to end. Fork inheritance, delivery/catalog exemptions and orphan compaction markers retain their released behavior. Checkpoints are derived reader metadata and do not alter the committed Session format.
+diff --git a/packages/session/session-format-v3-to-v4/README.zh.md b/packages/session/session-format-v3-to-v4/README.zh.md
+index 87f5256f..4c25e7b4 100644
+--- a/packages/session/session-format-v3-to-v4/README.zh.md
++++ b/packages/session/session-format-v3-to-v4/README.zh.md
+@@ -348,3 +348,7 @@ Fork 种子构造归核心 Session 所有，不属于此迁移。原生 V4 接
+ 无。
+ 
+ </details>
++
++## 增量原生验证
++
++`V4SessionStreamValidator` 对仅追加的事件序列执行完整 V4 恢复所用的原生生命周期与归属检查。检查点只保留展示坐标和尚未结束的生命周期元数据；对更早请求头或标题引用的验证仍读取源端原始记录。`finish()` 验证已观察到的前缀，不要求仍在执行的 Turn 或 Step 结束。分支继承、投递与目录豁免，以及孤立压缩标记都保留已发布版本的语义。检查点属于派生读取元数据，不改变已提交的 Session 格式。
+diff --git a/packages/session/session-format-v3-to-v4/src/codec.ts b/packages/session/session-format-v3-to-v4/src/codec.ts
+index b7cf4e7a..2b60a2b4 100644
+--- a/packages/session/session-format-v3-to-v4/src/codec.ts
++++ b/packages/session/session-format-v3-to-v4/src/codec.ts
+@@ -73,3 +73,41 @@ export function assertV4RowAdmission(row: unknown, knownEventTypes?: ReadonlySet
+   assertV4ToolResultMessage(event)
+   assertV4ForkResult(event)
+ }
++
++/**
++ * Decode one independently addressed current physical row after its prefix has
++ * established dense sequence order. Sparse persistence readers validate that
++ * order with V4SessionStreamValidator rather than replaying synthetic events.
++ * @param value - one parsed V4 physical event row.
++ * @returns the same logical event accepted by the released physical codec.
++ */
++export function decodeV4IndexedEvent(value: unknown): SessionFormatEvent {
++  if (!isSessionFormatJsonObject(value)) throw new SessionFormatError('format v4 event row must be an object')
++  const required = ['type', 'seq', 'time', 'data']
++  const allowed = new Set([...required, 'ignorable', 'sourceEventSeqs', 'surfaceOp'])
++  if (required.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => !allowed.has(key))) {
++    throw new SessionFormatError('format v4 event row has invalid fields')
++  }
++  const seq = value['seq']
++  if (!Number.isSafeInteger(seq) || (seq as number) < 0 || !Number.isSafeInteger(value['time']) || typeof value['type'] !== 'string'
++    || value['ignorable'] !== undefined && value['ignorable'] !== true) throw new SessionFormatError('format v4 event row has an invalid envelope')
++  assertV4RowAdmission(value)
++  if (value['sourceEventSeqs'] === undefined) return value as unknown as SessionFormatEvent
++  const encoded = value['sourceEventSeqs']
++  if (!Array.isArray(encoded)) throw new SessionFormatError('sourceEventSeqs must be an array')
++  const sources: number[] = [], seen = new Set<number>()
++  let ranged = false
++  for (const member of encoded) {
++    const range = Array.isArray(member) ? member : [member, member]
++    if (range.length !== 2 || !range.every(coordinate => Number.isSafeInteger(coordinate) && (coordinate as number) >= 0)
++      || (range[0] as number) > (range[1] as number) || (range[1] as number) >= (seq as number)
++      || (range[1] as number) - (range[0] as number) + 1 > (seq as number) - sources.length) throw new SessionFormatError('sourceEventSeqs range exceeds its event seq')
++    if (Array.isArray(member)) ranged = true
++    for (let current = range[0] as number; current <= (range[1] as number); ++current) {
++      if (seen.has(current)) throw new SessionFormatError('sourceEventSeqs ranges must contain unique earlier seqs')
++      sources.push(current); seen.add(current)
++    }
++  }
++  if (ranged && sources.some((source, index) => index > 0 && source <= sources[index - 1]!)) throw new SessionFormatError('sourceEventSeqs ranges must be strictly increasing')
++  return { ...value, sourceEventSeqs: sources } as unknown as SessionFormatEvent
++}
+diff --git a/packages/session/session-format-v3-to-v4/src/index.ts b/packages/session/session-format-v3-to-v4/src/index.ts
+index 25254a32..5c8f2e11 100644
+--- a/packages/session/session-format-v3-to-v4/src/index.ts
++++ b/packages/session/session-format-v3-to-v4/src/index.ts
+@@ -3,6 +3,6 @@
+ export { releasedV3SessionFormatCodec } from '@deepseek-ai/dsh-session-format-v2-to-v3'
+ export * from './codec.ts'
+ export * from './migration.ts'
+-export { assertReleasedV4Header, assertReleasedV4Relationships, restoreReleasedV4Artifact } from './validation.ts'
++export { assertReleasedV4Header, assertReleasedV4Relationships, restoreReleasedV4Artifact, V4SessionStreamValidator, type V4StreamCheckpoint } from './validation.ts'
+ export { historicalChildCatalogSource } from './facts.ts'
+ export { RELEASED_V3_EVENT_TYPES } from './extension-identities.ts'
+diff --git a/packages/session/session-format-v3-to-v4/src/relationships.ts b/packages/session/session-format-v3-to-v4/src/relationships.ts
+index aa50b3f3..7759557c 100644
+--- a/packages/session/session-format-v3-to-v4/src/relationships.ts
++++ b/packages/session/session-format-v3-to-v4/src/relationships.ts
+@@ -48,8 +48,26 @@ interface Compaction {
+   summarized: boolean
+ }
+ 
+-/** One native artifact's lifecycle state; no state survives between reads. */
+-class Relationships {
++/** Metadata retained between native V4 append batches; it contains no message bodies. */
++export interface V4LifecycleCheckpoint {
++  readonly turn: number | null
++  readonly step: number | null
++  readonly nextTurn: number
++  readonly nextStep: number
++  readonly provider?: SessionFormatJsonValue
++  readonly surface: number[]
++  readonly protectedHead?: number
++  readonly compaction?: Compaction
++  readonly tools: Array<[string, ToolState]>
++  readonly dispatches: Array<[string, { data: SessionFormatJsonObject; settled: boolean }]>
++  readonly retries: SessionFormatJsonObject[]
++  readonly startedRetries: string[]
++  readonly commands: string[]
++  readonly pendingCompactionCrossing?: string
++}
++
++/** Incremental lifecycle validation with source-owned lookup for earlier referenced records. */
++export class V4LifecycleValidator {
+   turn: number | null = null
+   step: number | null = null
+   nextTurn = 1
+@@ -63,19 +81,41 @@ class Relationships {
+   readonly retries: SessionFormatJsonObject[] = []
+   readonly startedRetries = new Set<string>()
+   readonly commands = new Set<string>()
+-  readonly orphanCompactions = new Set<number>()
++  private pendingCompactionCrossing: string | undefined
+ 
+-  constructor(readonly artifact: SessionFormatArtifact, readonly knownEventTypes: ReadonlySet<string>) {
+-    let start: number | undefined
+-    for (const event of artifact.events) {
+-      if (!knownEventTypes.has(event.type)) continue
+-      if (event.type === 'compaction/start') start = event.seq
+-      if (event.type === 'compaction/end') start = undefined
+-      if (event.type === 'session/end-seed') {
+-        if (start !== undefined) this.orphanCompactions.add(start)
+-        start = undefined
+-      }
+-    }
++  /**
++   * @param eventAt - original earlier event, resolved by its native sequence.
++   * @param knownEventTypes - vocabulary interpreted by this reader.
++   * @param checkpoint - a checkpoint produced by this same validation version.
++   */
++  constructor(readonly eventAt: (seq: number) => SessionFormatEvent | undefined, readonly knownEventTypes: ReadonlySet<string>, checkpoint?: V4LifecycleCheckpoint) {
++    if (!checkpoint) return
++    this.turn = checkpoint.turn; this.step = checkpoint.step; this.nextTurn = checkpoint.nextTurn; this.nextStep = checkpoint.nextStep
++    this.provider = checkpoint.provider; this.surface = [...checkpoint.surface]; this.protectedHead = checkpoint.protectedHead
++    this.compaction = checkpoint.compaction && { ...checkpoint.compaction }
++    for (const [key, value] of checkpoint.tools) this.tools.set(key, { ...value })
++    for (const [key, value] of checkpoint.dispatches) this.dispatches.set(key, { ...value })
++    this.retries.push(...checkpoint.retries)
++    for (const key of checkpoint.startedRetries) this.startedRetries.add(key)
++    for (const key of checkpoint.commands) this.commands.add(key)
++    this.pendingCompactionCrossing = checkpoint.pendingCompactionCrossing
++  }
++
++  /** Return detached metadata after all accepted events of one prefix. */
++  checkpoint(): V4LifecycleCheckpoint {
++    return { turn: this.turn, step: this.step, nextTurn: this.nextTurn, nextStep: this.nextStep,
++      ...this.provider === undefined ? {} : { provider: this.provider }, surface: [...this.surface],
++      ...this.protectedHead === undefined ? {} : { protectedHead: this.protectedHead },
++      ...this.compaction === undefined ? {} : { compaction: { ...this.compaction } },
++      tools: [...this.tools].map(([id, state]) => [id, { ...state }]),
++      dispatches: [...this.dispatches].map(([id, state]) => [id, { ...state }]),
++      retries: [...this.retries], startedRetries: [...this.startedRetries], commands: [...this.commands],
++      ...this.pendingCompactionCrossing === undefined ? {} : { pendingCompactionCrossing: this.pendingCompactionCrossing } }
++  }
++
++  /** Refuse an invalid current prefix while retaining open legitimate transactions. */
++  finish(): void {
++    if (this.pendingCompactionCrossing) throw new SessionFormatError(this.pendingCompactionCrossing)
+   }
+ 
+   requireTurn(type: string): void {
+@@ -96,7 +136,7 @@ class Relationships {
+   developer(event: SessionFormatEvent, data: SessionFormatJsonObject): void {
+     if (data['headerSeq'] === undefined) return
+     const headerSeq = earlier(data['headerSeq'], event.seq, 'developer/message headerSeq')
+-    const headerEvent = this.artifact.events[headerSeq]
++    const headerEvent = this.eventAt(headerSeq)
+     if (headerEvent?.type !== 'request/header') {
+       throw new SessionFormatError('developer/message headerSeq must reference an earlier request/header')
+     }
+@@ -267,9 +307,8 @@ class Relationships {
+     if (!this.knownEventTypes.has(event.type) || !RELATIONSHIP_TYPES.has(event.type)) return
+     const data = record(event.data, event.type)
+     if (STEP_EVENT_TYPES.has(event.type)) this.requireStep(event, data)
+-    if (event.type.startsWith('turn/') && this.compaction !== undefined && !this.orphanCompactions.has(this.compaction.seq)) {
+-      throw new SessionFormatError(`${event.type} crosses an open compaction`)
+-    }
++    if (event.type.startsWith('turn/') && this.compaction !== undefined) this.pendingCompactionCrossing ??= `${event.type} crosses an open compaction`
++    if (event.type === 'compaction/end' && this.pendingCompactionCrossing) throw new SessionFormatError(this.pendingCompactionCrossing)
+     this.foldSurface(event)
+     switch (event.type) {
+       case 'turn/start':
+@@ -303,7 +342,7 @@ class Relationships {
+       case 'request/context': this.requireTurn(event.type); break
+       case 'tool/ptc-dispatch-start': case 'tool/ptc-dispatch': this.dispatch(event, data); break
+       case 'llm/retry': case 'llm/retry-started': this.retry(event, data); break
+-      case 'session/title': case 'session/title-llm-request': titleSources(this.artifact.events, event, data, this.knownEventTypes); break
++      case 'session/title': case 'session/title-llm-request': titleSources(this.eventAt, event, data, this.knownEventTypes); break
+       case 'command/run': {
+         const id = text(data['commandId'], 'commandId')
+         if (this.commands.has(id)) throw new SessionFormatError(`command/run repeats commandId ${id}`)
+@@ -313,7 +352,7 @@ class Relationships {
+       case 'command/done': {
+         if (!this.commands.has(text(data['commandId'], 'commandId'))) throw new SessionFormatError('command/done has no prior command/run')
+         if (data['sourceEventSeq'] !== undefined) {
+-          const source = this.artifact.events[earlier(data['sourceEventSeq'], event.seq, 'command sourceEventSeq')]
++          const source = this.eventAt(earlier(data['sourceEventSeq'], event.seq, 'command sourceEventSeq'))
+           if (data['kind'] !== 'success' || source?.type === 'command/run' || source?.type === 'command/done') throw new SessionFormatError('command/done has invalid sourceEventSeq')
+         }
+         break
+@@ -324,7 +363,7 @@ class Relationships {
+         if (event['surfaceOp'] !== 'append' && source['kind'] === 'compact-checkpoint') this.compactionOwner(source, 'compaction checkpoint')
+         break
+       }
+-      case 'session/end-seed': this.compaction = undefined; break
++      case 'session/end-seed': this.compaction = undefined; this.pendingCompactionCrossing = undefined; break
+     }
+   }
+ }
+@@ -347,7 +386,7 @@ function notStartedRepair(
+ }
+ 
+ function titleSources(
+-  events: readonly SessionFormatEvent[], event: SessionFormatEvent, data: SessionFormatJsonObject, knownEventTypes: ReadonlySet<string>,
++  eventAt: (seq: number) => SessionFormatEvent | undefined, event: SessionFormatEvent, data: SessionFormatJsonObject, knownEventTypes: ReadonlySet<string>,
+ ): void {
+   const references = array(data['messageSeqs'], 'title messageSeqs')
+   if (event.type === 'session/title' && (references.length === 0) !== (record(data['source'], 'title source')['kind'] === 'user')) {
+@@ -356,7 +395,7 @@ function titleSources(
+   const seen = new Set<number>()
+   for (const value of references) {
+     const seq = earlier(value, event.seq, 'title messageSeqs')
+-    const source = events[seq]
++    const source = eventAt(seq)
+     if (seen.has(seq) || source?.type !== 'user/message' || !knownEventTypes.has(source.type) || record(record(source.data, 'title input')['source'], 'title input source')['kind'] !== 'user') {
+       throw new SessionFormatError(`${event.type} messageSeqs must cite distinct earlier human user/message events`)
+     }
+@@ -380,6 +419,7 @@ function titleSources(
+  * @param knownEventTypes - installed event types whose payloads this reader interprets.
+  */
+ export function assertV4LifecycleRelationships(artifact: SessionFormatArtifact, knownEventTypes: ReadonlySet<string>): void {
+-  const state = new Relationships(artifact, knownEventTypes)
++  const state = new V4LifecycleValidator(seq => artifact.events[seq], knownEventTypes)
+   for (const event of artifact.events) state.accept(event)
++  state.finish()
+ }
+diff --git a/packages/session/session-format-v3-to-v4/src/validation.ts b/packages/session/session-format-v3-to-v4/src/validation.ts
+index 8c0e74d6..7ce84b29 100644
+--- a/packages/session/session-format-v3-to-v4/src/validation.ts
++++ b/packages/session/session-format-v3-to-v4/src/validation.ts
+@@ -4,7 +4,7 @@ import { isAbsolute } from 'node:path'
+ import { SessionFormatError, SessionFormatUnsupportedMigrationError, isSessionFormatJsonObject, sessionFormatCount } from '@deepseek-ai/dsh-session-format'
+ import type { SessionFormatArtifact, SessionFormatEvent } from '@deepseek-ai/dsh-session-format'
+ import { assertV4DeveloperData } from './developer.ts'
+-import { assertV4LifecycleRelationships } from './relationships.ts'
++import { V4LifecycleValidator, type V4LifecycleCheckpoint } from './relationships.ts'
+ import { assertV4MessageSources } from './message-sources.ts'
+ import { catalogFact } from './facts.ts'
+ import { assertV4RetiredSyntax } from './retired-syntax.ts'
+@@ -109,6 +109,7 @@ export function validateDeliveryAccepted(event: SessionFormatEvent, currentVersi
+  */
+ export function assertReleasedV4Relationships(artifact: SessionFormatArtifact, knownEventTypes: ReadonlySet<string>): void {
+   const ids = new Set<string>()
++  const lifecycle = new V4LifecycleValidator(seq => artifact.events[seq], knownEventTypes)
+   for (const event of artifact.events) {
+     if (!knownEventTypes.has(event.type)) continue
+     assertV4DeveloperData(event)
+@@ -116,15 +117,101 @@ export function assertReleasedV4Relationships(artifact: SessionFormatArtifact, k
+     const deliveryId = validateDeliveryAccepted(event, 4)
+     if (deliveryId !== undefined
+       && !(artifact.header.parentSession !== undefined && event.seq < artifact.inheritedEventCount)
+-      && deliveryId !== artifact.header.id) {
+-      throw new SessionFormatError('current-generation delivery marker names the wrong Session')
+-    }
++      && deliveryId !== artifact.header.id) throw new SessionFormatError('current-generation delivery marker names the wrong Session')
+     if (event.type === 'subagent/catalog' && event.seq >= artifact.inheritedEventCount) {
+-      const fact = catalogFact(event.data)
+-      const id = fact['childId'] as string
++      const id = catalogFact(event.data)['childId'] as string
+       if (ids.has(id)) throw new SessionFormatError(`duplicate catalog child ${id}`)
+       ids.add(id)
+     }
++    lifecycle.accept(event)
++  }
++  lifecycle.finish()
++}
++
++/** Serializable native V4 validation state; no closed message payloads are retained. */
++export interface V4StreamCheckpoint {
++  readonly format: 1
++  readonly sessionId: string
++  readonly nextSeq: number
++  readonly inheritedEventCount?: number
++  readonly catalogIds: string[]
++  readonly catalogDuplicate?: string
++  readonly deliveryMismatch?: string
++  readonly lifecycle: V4LifecycleCheckpoint
++}
++
++/** The same V4 relationship checks for full restoration and append-only sparse readers. */
++export class V4SessionStreamValidator {
++  private nextSeq = 0
++  private inheritedEventCount: number | undefined
++  private readonly ids = new Set<string>()
++  private catalogDuplicate: string | undefined
++  private deliveryMismatch: string | undefined
++  private readonly lifecycle: V4LifecycleValidator
++
++  /**
++   * @param header - immutable native V4 Session header.
++   * @param knownEventTypes - vocabulary admitted by the installed Session reader.
++   * @param eventAt - source lookup for earlier referenced events.
++   * @param checkpoint - metadata produced by this version for this same Session.
++   */
++  constructor(private readonly header: SessionFormatArtifact['header'], private readonly knownEventTypes: ReadonlySet<string>,
++    eventAt: (seq: number) => SessionFormatEvent | undefined, checkpoint?: V4StreamCheckpoint) {
++    assertReleasedV4Header(header)
++    if (checkpoint) {
++      if (checkpoint.format !== 1 || checkpoint.sessionId !== header.id) throw new SessionFormatError('V4 validation checkpoint belongs to another format or Session')
++      this.nextSeq = sessionFormatCount(checkpoint.nextSeq, 'V4 checkpoint next sequence')
++      this.inheritedEventCount = checkpoint.inheritedEventCount
++      for (const id of checkpoint.catalogIds) this.ids.add(id)
++      this.catalogDuplicate = checkpoint.catalogDuplicate; this.deliveryMismatch = checkpoint.deliveryMismatch
++    }
++    this.lifecycle = new V4LifecycleValidator(eventAt, knownEventTypes, checkpoint?.lifecycle)
++  }
++
++  /** Validate one original event; an error invalidates this candidate validator. */
++  accept(event: SessionFormatEvent): void {
++    if (event.seq !== this.nextSeq) throw new SessionFormatError(`format v4 event ${this.nextSeq} is not dense`)
++    if (!this.knownEventTypes.has(event.type) && event['ignorable'] !== true) {
++      throw new SessionFormatUnsupportedMigrationError(`format v4 contains unknown event type ${JSON.stringify(event.type)} at seq ${this.nextSeq}`)
++    }
++    this.nextSeq += 1
++    if (!this.knownEventTypes.has(event.type)) return
++    assertV4RetiredSyntax(event); assertV4SystemMessageFields(event); assertV4ToolResultMessage(event); assertV4ForkResult(event)
++    assertV4DeveloperData(event); assertV4MessageSources(event)
++    const deliveryId = validateDeliveryAccepted(event, 4)
++    if (deliveryId !== undefined && deliveryId !== this.header.id) {
++      if (this.header.parentSession === undefined) throw new SessionFormatError('current-generation delivery marker names the wrong Session')
++      this.deliveryMismatch ??= 'current-generation delivery marker names the wrong Session'
++    }
++    if (event.type === 'subagent/catalog') {
++      const id = catalogFact(event.data)['childId'] as string
++      if (this.ids.has(id)) this.catalogDuplicate ??= `duplicate catalog child ${id}`
++      this.ids.add(id)
++    }
++    if (event.type === 'session/end-seed' && isSessionFormatJsonObject(event.data) && event.data['inherited'] === true) {
++      this.inheritedEventCount = event.seq
++      this.ids.clear(); this.catalogDuplicate = undefined
++      if (this.header.parentSession !== undefined) this.deliveryMismatch = undefined
++    }
++    this.lifecycle.accept(event)
++  }
++
++  /** Return the exact inherited cut after validating the complete observed prefix. */
++  finish(): number {
++    if (this.header.isSeeded && this.inheritedEventCount === undefined) throw new SessionFormatError('format v4 seeded header disagrees with its last inherited end-seed marker')
++    if (!this.header.isSeeded && this.inheritedEventCount !== undefined) throw new SessionFormatError('format v4 unseeded Session contains an inherited end-seed marker')
++    if (this.deliveryMismatch) throw new SessionFormatError(this.deliveryMismatch)
++    if (this.catalogDuplicate) throw new SessionFormatError(this.catalogDuplicate)
++    this.lifecycle.finish()
++    return this.inheritedEventCount ?? 0
++  }
++
++  /** Return metadata only after the current prefix passes all native checks. */
++  checkpoint(validatePrefix = true): V4StreamCheckpoint {
++    if (validatePrefix) this.finish()
++    return { format: 1, sessionId: this.header.id, nextSeq: this.nextSeq, catalogIds: [...this.ids], lifecycle: this.lifecycle.checkpoint(),
++      ...this.inheritedEventCount === undefined ? {} : { inheritedEventCount: this.inheritedEventCount },
++      ...this.catalogDuplicate === undefined ? {} : { catalogDuplicate: this.catalogDuplicate },
++      ...this.deliveryMismatch === undefined ? {} : { deliveryMismatch: this.deliveryMismatch } }
+   }
+-  assertV4LifecycleRelationships(artifact, knownEventTypes)
+ }
+diff --git a/packages/session/session-persistence-jsonl/README.md b/packages/session/session-persistence-jsonl/README.md
+index 5782c614..82e28dd3 100644
+--- a/packages/session/session-persistence-jsonl/README.md
++++ b/packages/session/session-persistence-jsonl/README.md
+@@ -179,3 +179,9 @@ These limits define when this backend is a poor fit or needs special operational
+ None.
+ 
+ </details>
++
++## Optional source read index
++
++`indexedReading: true` enables optional `readPage` and `prepareReadIndex` capabilities. The default is disabled. A derived SQLite sidecar stores original event coordinates, physical row/frame offsets and native validation metadata; it does not duplicate transcript bodies. Preparing a previously unindexed archive scans it once in a cancellable source worker. Subsequent append-only updates validate the new suffix, and page reads decode selected original rows or Zstandard frames plus their complete native dependencies. Source replacement, truncation or a same-size revision rebuilds the index. No committed generation, write lease or execution owner changes.
++
++A compressed frame is indivisible. An old single-frame archive can require that complete frame to be decoded even for a small logical page. Index preparation is not evidence of browser responsiveness or production acceptance.
+diff --git a/packages/session/session-persistence-jsonl/README.zh.md b/packages/session/session-persistence-jsonl/README.zh.md
+index dbd602af..7130bb2e 100644
+--- a/packages/session/session-persistence-jsonl/README.zh.md
++++ b/packages/session/session-persistence-jsonl/README.zh.md
+@@ -179,3 +179,9 @@ JSONL 存储不修改实时请求前缀。只有重建历史、当前 envelope 
+ 无。
+ 
+ </details>
++
++## 可选的源端读取索引
++
++配置 `indexedReading: true` 后，提供方才公开可选的 `readPage` 和 `prepareReadIndex` 能力，默认关闭。派生 SQLite 文件保存原生事件坐标、物理行或压缩帧的偏移以及验证元数据，不复制会话正文。首次准备未索引日志时，源端可取消的 Worker 执行一次扫描；追加更新只验证新增后缀，分页只解码选中的原始行或压缩帧及其完整依赖。来源替换、截断或相同大小的修订会重建索引。已提交代际、写入租约与执行归属均不改变。
++
++压缩帧无法继续拆分。旧日志若只包含一个大帧，即使逻辑页很小，也可能需要解码整帧。索引准备完成不代表浏览器流畅度或生产验收已经通过。
+diff --git a/packages/session/session-persistence-jsonl/package.json b/packages/session/session-persistence-jsonl/package.json
+index 9bbc3f18..8aba3ca3 100644
+--- a/packages/session/session-persistence-jsonl/package.json
++++ b/packages/session/session-persistence-jsonl/package.json
+@@ -26,6 +26,7 @@
+     "locale/*.json",
+     "lib/index.js",
+     "lib/worker.cjs",
++    "lib/read-index-worker.mjs",
+     "lib/types/**/*.d.ts"
+   ],
+   "license": "MIT",
+diff --git a/packages/session/session-persistence-jsonl/src/index.ts b/packages/session/session-persistence-jsonl/src/index.ts
+index 3c3c1358..0c00b05f 100644
+--- a/packages/session/session-persistence-jsonl/src/index.ts
++++ b/packages/session/session-persistence-jsonl/src/index.ts
+@@ -22,7 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
+ import pLimit, { type LimitFunction } from 'p-limit'
+ import {
+   SessionPersistence, SessionPersistenceRevision, SessionFormatUnsupportedError,
+-  SessionPersistenceCorruptionError,
++  SessionPersistenceCorruptionError, SessionPageCapacityError, assertSessionPageRequest,
+   SessionAlreadyExistsError, SessionPersistenceNotFoundError,
+   assertStoredId, materializeCreateHeader, sessionFormatVersionRefusal, validateStoredEvents,
+   type SessionAccess, type SessionHandle,
+@@ -32,6 +32,7 @@ import {
+   type SessionPersistenceSnapshot, type SessionPersistenceStatOptions,
+   type SessionPersistenceRevision as PersistenceRevision,
+ } from '@deepseek-ai/dsh-session-persistence'
++import { readIndexedSession } from './read-index.ts'
+ import { JsonlBackendTracker, JsonlSessionHandle, type StorageHandleState } from './storage.ts'
+ import { SessionWriteLease } from './lease.ts'
+ import { SESSION_FORMAT_VERSION, SessionId as makeSessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+@@ -108,6 +109,8 @@ export interface Config {
+    * fingerprints). Defaults to 3.
+    */
+   listConcurrency?: number
++  /** Opt in to source-side sparse page reads; native execution and default full-log reads stay unchanged. */
++  indexedReading?: boolean
+ }
+ 
+ /** Logical header paired with the catalog's selected physical-generation classification. */
+@@ -313,8 +316,49 @@ class JsonlSessionPersistence extends SessionPersistence {
+   /** One joinable decode/migration operation per selected historical Session file revision. */
+   private readonly migrationPreparations = new Map<SessionId, MigrationPreparation>()
+ 
++  override readonly readPage: SessionPersistence['readPage'] = undefined
++  override readonly prepareReadIndex: SessionPersistence['prepareReadIndex'] = undefined
++
+   constructor(ctx: Context, public config: Config, private readonly tracker: JsonlBackendTracker) {
+     super(ctx)
++    if (config.indexedReading) {
++      const lifetime = new AbortController()
++      ctx.effect(function* () { yield () => { lifetime.abort(new Error('Native Session page provider disposed')) } })
++      const resolve = async (id: SessionId, signal?: AbortSignal): Promise<string> => {
++        signal?.throwIfAborted()
++        await this.ensureRootEncoding()
++        const selected = await this.findLog(id, signal)
++        if (!selected) throw new SessionPersistenceNotFoundError(id)
++        if (selected.sourceVersion !== SESSION_FORMAT_VERSION) throw new SessionFormatUnsupportedError('Sparse reads require an explicitly migrated current Session generation')
++        if (!await this.readGenerationHeader(selected, id, signal)) throw new SessionPersistenceNotFoundError(id)
++        return selected.sourcePath
++      }
++      const pendingIndex = (id: SessionId): import('@deepseek-ai/dsh-session-persistence').SessionReadIndex | undefined => {
++        const pending = this.tracker.pendingOf(id)
++        return pending && !pending.header.isSeeded ? { generation: `pending:${id}:${pending.header.createdAt}`, header: pending.header,
++          inheritedEventCount: pending.inheritedEventCount, revision: pending.revision, eventCount: 0 } : undefined
++      }
++      this.readPage = async (id, page, options) => {
++        assertSessionPageRequest(page)
++        const signal = options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal
++        signal.throwIfAborted()
++        const pending = pendingIndex(id)
++        if (pending) {
++          const result = { ...pending, events: [], context: [], before: null, after: null, hasBefore: false, hasAfter: false }
++          if (Buffer.byteLength(JSON.stringify(result)) > page.maxBytes) throw new SessionPageCapacityError('bytes', page.maxBytes)
++          return result
++        }
++        return readIndexedSession({ path: await resolve(id, signal), id, compression: this.compression, page }, signal) as Promise<import('@deepseek-ai/dsh-session-persistence').SessionPageResult>
++      }
++      this.prepareReadIndex = async (id, options) => {
++        const signal = options?.signal ? AbortSignal.any([options.signal, lifetime.signal]) : lifetime.signal
++        signal.throwIfAborted()
++        const pending = pendingIndex(id)
++        if (pending) return pending
++        return readIndexedSession({ path: await resolve(id, signal), id, compression: this.compression }, signal)
++      }
++    }
++
+     /* v8 ignore next 5 -- generated catalog and Session source share one build-time version owner. */
+     if (sessionFormatCatalog.currentVersion !== SESSION_FORMAT_VERSION) {
+       throw new Error(
+@@ -1809,6 +1853,7 @@ export const Config: z<Config> = z.object({
+   root: z.string().required(),
+   compression: JsonlCompressionSchema,
+   listConcurrency: z.natural().min(1).default(DEFAULT_LIST_CONCURRENCY),
++  indexedReading: z.boolean().default(false),
+ })
+ 
+ /**
+diff --git a/packages/session/session-persistence-jsonl/tsdown.config.ts b/packages/session/session-persistence-jsonl/tsdown.config.ts
+index 1cca7059..aa6ba726 100644
+--- a/packages/session/session-persistence-jsonl/tsdown.config.ts
++++ b/packages/session/session-persistence-jsonl/tsdown.config.ts
+@@ -1,4 +1,5 @@
+ import { defineConfig } from 'tsdown'
++import ts from 'typescript'
+ 
+ /** Build the backend and its path-loaded verifier as separate bundles. */
+ export default defineConfig(({ env }) => env?.DSH_BUILD_FACE === 'client' ? [] : [
+@@ -14,9 +15,20 @@ export default defineConfig(({ env }) => env?.DSH_BUILD_FACE === 'client' ? [] :
+   },
+   {
+     entry: ['lib/types/worker.js'],
+-    // Fresh verifiers need no host singleton identity. Inline their JavaScript
+-    // closure to avoid resolving and compiling workspace packages on every open.
++    // Verifiers stay self-contained when moved beside a raw source generation;
++    // their inlined plugin dependencies receive the normal decorator lowering.
+     deps: { alwaysBundle: [/^@deepseek-ai\/(?!node-addon-system)/] },
++    plugins: [{
++      name: 'worker-standard-decorators',
++      transform(code, id) {
++        if (!/^\s*@/m.test(code)) return
++        // Match the standard Typert build's TypeScript decorator lowering.
++        // This verifier also inlines emitted JavaScript dependencies.
++        return { code: ts.transpileModule(code, { fileName: `${id}.ts`, compilerOptions: {
++          target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.ESNext,
++        } }).outputText }
++      },
++    }],
+     outDir: 'lib',
+     format: ['cjs'],
+     platform: 'node',
+@@ -25,4 +37,16 @@ export default defineConfig(({ env }) => env?.DSH_BUILD_FACE === 'client' ? [] :
+     dts: false,
+     clean: false,
+   },
++  {
++    entry: ['lib/types/read-index-worker.js'],
++    outDir: 'lib',
++    format: ['esm'],
++    platform: 'node',
++    target: 'es2024',
++    // Native Session/Persistence packages use their installed official bundles;
++    // inlining their plugin graphs would bypass the standard decorator build.
++    fixedExtension: true,
++    dts: false,
++    clean: false,
++  },
+ ])
+diff --git a/packages/session/session-persistence/README.md b/packages/session/session-persistence/README.md
+index 80f3ec71..23e8b9e6 100644
+--- a/packages/session/session-persistence/README.md
++++ b/packages/session/session-persistence/README.md
+@@ -163,3 +163,7 @@ These limits define where the seam's guarantees stop. They are current package c
+ None.
+ 
+ </details>
++
++## Optional indexed reads
++
++`readPage` and `prepareReadIndex` are optional source-side capabilities. A consumer checks their presence rather than opening a complete log on a cache miss. Page cursors describe only the contiguous body; `context` identifies additional original native dependency events. Caller-provided event and byte budgets cover the complete result. `SessionPageCapacityError` reports `CAPACITY_EXCEEDED` only when one native item and its dependencies cannot fit. Existing handles and execution ownership are unchanged.
+diff --git a/packages/session/session-persistence/README.zh.md b/packages/session/session-persistence/README.zh.md
+index ae8547aa..5058d195 100644
+--- a/packages/session/session-persistence/README.zh.md
++++ b/packages/session/session-persistence/README.zh.md
+@@ -163,3 +163,7 @@ seam 不添加提示词或 schema。恢复会将已存储的表层事件还原
+ 无。
+ 
+ </details>
++
++## 可选的索引读取
++
++`readPage` 和 `prepareReadIndex` 是可选的源端能力。消费者先检查能力是否存在，不因缓存缺失而自动打开完整日志。页游标只描述连续正文；`context` 标记解释正文所需的原生依赖事件。调用者指定的事件数和字节预算覆盖完整结果。只有单条原生记录及其依赖仍无法容纳时，`SessionPageCapacityError` 才报告 `CAPACITY_EXCEEDED`。已有句柄与执行归属保持不变。
+diff --git a/packages/session/session-persistence/src/index.ts b/packages/session/session-persistence/src/index.ts
+index f257ca0e..f3e9618d 100644
+--- a/packages/session/session-persistence/src/index.ts
++++ b/packages/session/session-persistence/src/index.ts
+@@ -10,10 +10,13 @@ import { Context, Service } from '@deepseek-ai/cordis'
+ import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
+ import type { SessionHandle, SessionAccess } from './handle.ts'
+ import type { SessionPersistenceRevision } from './revision.ts'
++import type { SessionPageReader, SessionReadIndexPreparer } from './read-page.ts'
+ 
+ // Re-export the metadata vocabulary so Consumers import it from the Service Definition.
+ export type { SessionHeader } from '@deepseek-ai/dsh-session'
+ export { SessionPersistenceRevision } from './revision.ts'
++export { SessionPageCapacityError, assertSessionPageRequest } from './read-page.ts'
++export type { SessionPageRequest, SessionPageOptions, SessionReadIndex, SessionPageResult, SessionPageReader, SessionReadIndexPreparer } from './read-page.ts'
+ export type {
+   SessionAccess,
+   SessionHandle,
+@@ -138,6 +141,11 @@ export abstract class SessionPersistence extends Service {
+   /** Process-local instance identity, stable through Context proxies and distinct after service replacement. */
+   readonly identity: symbol = Symbol('sessionPersistence')
+ 
++  /** Optional source-side page reader. Its absence never implies a full-log fallback. */
++  declare readonly readPage?: SessionPageReader | undefined
++  /** Explicitly prepare the provider's optional native read index without opening a Session runtime. */
++  declare readonly prepareReadIndex?: SessionReadIndexPreparer | undefined
++
+   constructor(ctx: Context) {
+     super(ctx, 'sessionPersistence')
+   }
+diff --git a/ext/adr/0008.md b/ext/adr/0008.md
+new file mode 100644
+index 00000000..8225c601
+--- /dev/null
++++ b/ext/adr/0008.md
+@@ -0,0 +1,17 @@
++# ADR 0008: Source-side indexed native Session pages
++
++## Decision
++
++The approved persistence extension adds optional `SessionPersistence.readPage` and `prepareReadIndex` capabilities. JSONL exposes them only with `indexedReading: true`; ordinary `open`, `read`, mutation, migration and execution ownership keep their existing behavior. A page contains an original contiguous body interval and its native turn, step, tool-call, assistant and request-header dependencies. Dependencies have separate coordinates and do not advance pagination. Admission covers the entire response after dependency closure. The reader reduces the body in the requested direction until that complete response fits; one indivisible item that cannot fit raises `SessionPageCapacityError` with `CAPACITY_EXCEEDED`.
++
++The source owns a derived SQLite sidecar containing native event coordinates, physical row/frame offsets and validation metadata. It does not store a second transcript. A worker streams the existing artifact once, preserving the installed vocabulary, physical framing and complete V4 relationship checks. It resumes the same validation state when the append-only source grows. A fixed physical prefix observed at operation start permits concurrent append without repeatedly waiting for the source to become idle. A source replacement, truncation or same-size revision rebuilds the derived index and assigns a new opaque generation UUID. Appends and process restarts retain that generation; native paths and inode metadata stay private to the sidecar. Each page holds a consistent SQLite read snapshot and limits dependency lookups to the accepted native prefix. SQLite transactions prevent publication of a partly indexed candidate; cancellation terminates the worker and leaves the prior committed index intact.
++
++Native V4 full restoration and incremental indexing share the same lifecycle validator. Its checkpoint retains surface sequence numbers, reference coordinates and unresolved execution metadata, rather than closed message bodies. Inherited delivery/catalog exemptions and orphan-compaction handling retain their released semantics. The original earlier event remains the authority for developer request headers and title references. No format version, committed generation or write lease is changed.
++
++## Cold and warm IO
++
++Operators may prepare indexes before enabling source reads with `prepareReadIndex`. An existing unindexed archive needs one source-side metadata/validation scan. That work remains explicit and cancellable and does not transfer the complete log into the display Host. Later page reads decode only their selected original rows or compressed frames and dependencies; appends index their new suffix. A Zstandard frame remains the smallest independently decodable physical unit. An old archive written as one very large frame therefore still requires that frame to be decoded for a page; this extension does not claim byte work proportional to the requested event count in that case.
++
++## Verification
++
++The native worker tests exercise actual plaintext and Zstandard files, dependency closure, complete-result admission, source prefix growth, torn-tail repair, required-vocabulary refusal and cancellation. IO observations assert that a warmed tail page does not scan the older source and that an append validates only newly added events. The V4 suites exercise the same release validation with checkpointed native tool lifecycles and inherited markers. Browser scroll, physical devices, installation and production acceptance remain separate checks owned by the consuming HHPI release.
+diff --git a/ext/upstream-pr/0008.md b/ext/upstream-pr/0008.md
+new file mode 100644
+index 00000000..7fc3443d
+--- /dev/null
++++ b/ext/upstream-pr/0008.md
+@@ -0,0 +1,9 @@
++# Upstream PR draft: optional source-side native Session page reads
++
++A read-only remote client currently opens and decodes the complete JSONL Session before selecting its first page. Large logs consequently delay the first usable conversation even when only a bounded tail is required.
++
++Add optional `SessionPersistence.readPage` and `prepareReadIndex` capabilities. The JSONL provider enables them with `indexedReading: true`, streams native coordinates and physical offsets into a derived SQLite index, and returns original events with their dependency closure. Native sequence identity, append ownership and durable generations remain unchanged. A fixed observed prefix permits ongoing native append; cancellation leaves the previous SQLite transaction available. Complete-result admission can reduce a body page while retaining all dependencies, and reports an explicit capacity error if one atomic item cannot fit.
++
++Reuse a checkpointable V4 lifecycle validator for both complete restoration and indexed suffix validation. Preserve open tool, compaction, inheritance, delivery, title and request-header rules. Index preparation remains an explicit source-side scan for preexisting archives. Warm IO is bounded by selected source rows or Zstandard frames, and an indivisible historical frame can exceed the logical page's physical cost.
++
++Tests use actual source files and isolated workers and compare retained native lifecycles across checkpoints. They cover dependency closure, append-only suffix validation, quota admission, torn physical tails, unknown required vocabulary and cancellation. The extension is disabled by default. This draft has not been submitted upstream.
+diff --git a/packages/session/session-format-v3-to-v4/tests/stream-validation.spec.ts b/packages/session/session-format-v3-to-v4/tests/stream-validation.spec.ts
+new file mode 100644
+index 00000000..64ed5119
+--- /dev/null
++++ b/packages/session/session-format-v3-to-v4/tests/stream-validation.spec.ts
+@@ -0,0 +1,51 @@
++/** Native full and sparse validation share one lifecycle implementation and retain open transactions. */
++import { expect, it } from 'vitest'
++import type { SessionFormatEvent, SessionFormatHeader } from '@deepseek-ai/dsh-session-format'
++import { V4SessionStreamValidator, decodeV4IndexedEvent, releasedV4SessionFormatCodec, restoreReleasedV4Artifact } from '../src/index.ts'
++const header: SessionFormatHeader = { version: 4, id: 'stream', createdAt: 1, isSeeded: false, delegationDepth: 0 }
++const known = new Set(['turn/start', 'step/start', 'assistant/message', 'tool/call', 'tool/result', 'step/end', 'turn/end', 'feedback/record', 'session/end-seed', 'session-log-deepseek/delivery-accepted', 'subagent/catalog'])
++const events: SessionFormatEvent[] = [
++  { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
++  { type: 'step/start', seq: 1, time: 1, data: { turn: 1, step: 1 } },
++  { type: 'assistant/message', seq: 2, time: 1, surfaceOp: 'append', data: { turn: 1, step: 1, message: { id: 'assistant', role: 'assistant', source: { kind: 'model', provider: 'mock', model: 'mock' }, content: [{ type: 'tool-call', id: 'call', name: 'bash', arguments: '{}' }] } } },
++  { type: 'tool/call', seq: 3, time: 1, data: { turn: 1, step: 1, callId: 'call', name: 'bash', arguments: '{}' } },
++  { type: 'tool/result', seq: 4, time: 1, surfaceOp: 'append', data: { turn: 1, step: 1, message: { id: 'result', role: 'tool', source: { kind: 'tool', callId: 'call' }, toolCallId: 'call', isError: false, content: [{ type: 'text', text: 'ok' }] } } },
++  { type: 'step/end', seq: 5, time: 1, data: { turn: 1, step: 1 } },
++  { type: 'turn/end', seq: 6, time: 1, data: { turn: 1, reason: { kind: 'completed' } } },
++]
++it('resumes each native tool lifecycle checkpoint without retaining closed transcript bodies', () => {
++  restoreReleasedV4Artifact({ header, events, inheritedEventCount: 0 }, known)
++  for (let split = 1; split < events.length; ++split) {
++    const first = new V4SessionStreamValidator(header, known, seq => events[seq])
++    for (const event of events.slice(0, split)) first.accept(event)
++    const checkpoint = JSON.parse(JSON.stringify(first.checkpoint()))
++    const second = new V4SessionStreamValidator(header, known, seq => events[seq], checkpoint)
++    for (const event of events.slice(split)) second.accept(event)
++    expect(second.finish()).toBe(0)
++    expect(JSON.stringify(second.checkpoint())).not.toContain('assistant')
++  }
++  const first = new V4SessionStreamValidator(header, known, seq => events[seq])
++  for (const event of events.slice(0, 3)) first.accept(event)
++  const resumed = new V4SessionStreamValidator(header, known, seq => events[seq], first.checkpoint())
++  expect(() => resumed.accept({ ...events[3]!, data: { ...events[3]!.data as object, name: 'wrong-tool' } })).toThrow('advertised')
++})
++it('keeps inherited delivery and catalog exemptions until the last inherited marker', () => {
++  const h = { ...header, isSeeded: true, parentSession: 'parent' }
++  const inherited: SessionFormatEvent[] = [
++    { type: 'feedback/record', seq: 0, time: 1, data: { text: 'seed' } },
++    { type: 'session-log-deepseek/delivery-accepted', seq: 1, time: 1, data: { sessionId: 'parent', throughSeq: 0, sessionFormatVersion: 4 } },
++    { type: 'session/end-seed', seq: 2, time: 1, data: { inherited: true } },
++  ]
++  const first = new V4SessionStreamValidator(h, known, seq => inherited[seq])
++  first.accept(inherited[0]!); first.accept(inherited[1]!)
++  const resumed = new V4SessionStreamValidator(h, known, seq => inherited[seq], JSON.parse(JSON.stringify(first.checkpoint(false))))
++  resumed.accept(inherited[2]!); expect(resumed.finish()).toBe(2)
++  const ownBad = { ...inherited[1]!, seq: 3, data: { sessionId: 'another', throughSeq: 0, sessionFormatVersion: 4 } }
++  resumed.accept(ownBad); expect(() => resumed.finish()).toThrow('wrong Session')
++})
++it('independently addressed physical rows preserve native compressed provenance ranges', () => {
++  const event: SessionFormatEvent = { type: 'feedback/record', seq: 5, time: 1, data: { text: 'reference' }, sourceEventSeqs: [0, 1, 2, 4] }
++  expect(decodeV4IndexedEvent(releasedV4SessionFormatCodec.encodeEvent(event))).toEqual(event)
++  expect(() => decodeV4IndexedEvent({ ...event, sourceEventSeqs: [[0, 6]] })).toThrow('range')
++  expect(() => decodeV4IndexedEvent({ ...event, sourceEventSeqs: [[0, 2], 2] })).toThrow('unique')
++})
+diff --git a/packages/session/session-persistence-jsonl/src/read-index-worker.ts b/packages/session/session-persistence-jsonl/src/read-index-worker.ts
+new file mode 100644
+index 00000000..4d52dcfc
+--- /dev/null
++++ b/packages/session/session-persistence-jsonl/src/read-index-worker.ts
+@@ -0,0 +1,234 @@
++/** Isolated sparse native log indexing and bounded original-frame reads. */
++import { randomUUID } from 'node:crypto'
++import { parentPort, workerData } from 'node:worker_threads'
++import { openSync, closeSync, readSync, fstatSync, type BigIntStats } from 'node:fs'
++import { DatabaseSync } from 'node:sqlite'
++import { constants, zstdDecompressSync } from 'node:zlib'
++import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session'
++import type { SessionEvent, SessionHeader, SessionLogOffset } from '@deepseek-ai/dsh-session'
++import { validateStoredEvents, SessionPersistenceRevision, SessionPageCapacityError, assertSessionPageRequest } from '@deepseek-ai/dsh-session-persistence'
++import type { SessionPageRequest, SessionPageResult, SessionReadIndex } from '@deepseek-ai/dsh-session-persistence'
++import { releasedV4SessionFormatCodec, decodeV4IndexedEvent, V4SessionStreamValidator, assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
++import type { V4StreamCheckpoint } from '@deepseek-ai/dsh-session-format-v3-to-v4'
++import type { SessionFormatEvent, SessionFormatHeader } from '@deepseek-ai/dsh-session-format'
++import { decompressZstdPrefix } from './zstd.ts'
++import type { ReadIndexRequest } from './read-index.ts'
++
++interface EntryRow { seq: number; start: number; end: number; lineStart: number; lineEnd: number; torn: number; type: string; turn: number | null; step: number | null; callId: string | null; calls: string; headerSeq: number | null }
++interface Metadata { format: 2; generation: string; identity: string; dev: string; ino: string; size: number; scanned: number; count: number; header: SessionHeader; state: V4StreamCheckpoint; safeState: V4StreamCheckpoint; safeCount: number }
++const request = workerData as ReadIndexRequest
++const fd = openSync(request.path, 'r')
++const db = new DatabaseSync(`${request.path}.read-index.sqlite`)
++db.exec('PRAGMA busy_timeout=30000; CREATE TABLE IF NOT EXISTS metadata(id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS entries(seq INTEGER PRIMARY KEY,start INTEGER NOT NULL,end INTEGER NOT NULL,lineStart INTEGER NOT NULL,lineEnd INTEGER NOT NULL,torn INTEGER NOT NULL,type TEXT NOT NULL,turn INTEGER,step INTEGER,callId TEXT,calls TEXT NOT NULL,headerSeq INTEGER); CREATE INDEX IF NOT EXISTS entry_types ON entries(type,turn,step,seq); CREATE INDEX IF NOT EXISTS entry_calls ON entries(callId,type);')
++const get = db.prepare('SELECT * FROM entries WHERE seq=?')
++const put = db.prepare('INSERT OR REPLACE INTO entries VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
++let header: SessionHeader
++let sourceBytesRead = 0, indexedEvents = 0
++function identity(stat: BigIntStats): string { return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':') }
++function read(start: number, end: number): Buffer {
++  const buffer = Buffer.alloc(end - start)
++  sourceBytesRead += buffer.length
++  let offset = 0
++  while (offset < buffer.length) { const n = readSync(fd, buffer, offset, buffer.length - offset, start + offset); if (!n) throw new Error('Native Session source shrank during its fixed-prefix read'); offset += n }
++  return buffer
++}
++let frameCache: { start: number; end: number; plain: Buffer } | undefined
++function original(row: EntryRow): SessionEvent {
++  if (!frameCache || frameCache.start !== row.start || frameCache.end !== row.end) {
++    const bytes = read(row.start, row.end)
++    const plain = request.compression === 'none' ? bytes : row.torn ? zstdDecompressSync(bytes, { finishFlush: constants.ZSTD_e_flush }) : zstdDecompressSync(bytes)
++    frameCache = { start: row.start, end: row.end, plain }
++  }
++  const plain = frameCache.plain
++  const event = decodeV4IndexedEvent(JSON.parse(plain.subarray(row.lineStart, row.lineEnd).toString('utf8')))
++  return validateStoredEvents(header, [event as unknown as SessionEvent])[0]!
++}
++function eventAt(seq: number): SessionFormatEvent | undefined { const row = get.get(seq) as unknown as EntryRow | undefined; return row && original(row) as unknown as SessionFormatEvent }
++function number(data: Record<string, unknown>, key: string): number | null { const value = data[key]; return typeof value === 'number' && Number.isSafeInteger(value) ? value : null }
++function remember(event: SessionEvent, start: number, end: number, lineStart: number, lineEnd: number, torn: boolean): void {
++  const data = event.data as unknown as Record<string, unknown>, message = data['message'] as Record<string, unknown> | undefined
++  const calls = event.type === 'assistant/message' && Array.isArray(message?.['content']) ? message['content'].flatMap((block: unknown) => {
++    if (typeof block !== 'object' || block === null) return []
++    const value = block as Record<string, unknown>
++    return value['type'] === 'tool-call' && typeof value['id'] === 'string' ? [value['id']] : []
++  }) : []
++  const callId = event.type === 'tool/result' ? message?.['toolCallId'] : event.type === 'tool/call' ? data['callId'] : undefined
++  put.run(event.seq, start, end, lineStart, lineEnd, torn ? 1 : 0, event.type, number(data, 'turn'), number(data, 'step'), typeof callId === 'string' ? callId : null, JSON.stringify(calls), number(data, 'headerSeq'))
++}
++
++/** Locate one frame from structural headers without repeatedly copying or reading its payload. */
++function frameEnd(start: number, end: number): number | undefined {
++  let offset = start
++  if (end - offset < 5) return undefined
++  const header = read(offset, offset + 5)
++  if (header.readUInt32LE(0) !== 0xFD2FB528) throw new Error('Native Session has invalid Zstandard frame magic')
++  const descriptor = header[4]!
++  if (descriptor & 0x18) throw new Error('Native Session has reserved Zstandard header bits')
++  const flag = descriptor >>> 6, single = (descriptor & 0x20) !== 0, dictionary = descriptor & 3
++  offset += 5 + (single ? 0 : 1) + (dictionary === 3 ? 4 : dictionary) + (flag === 0 ? single ? 1 : 0 : 1 << flag)
++  if (offset > end) return undefined
++  for (;;) {
++    if (end - offset < 3) return undefined
++    const block = read(offset, offset + 3).readUIntLE(0, 3), type = (block >>> 1) & 3
++    if (type === 3) throw new Error('Native Session has reserved Zstandard block type')
++    offset += 3 + (type === 1 ? 1 : block >>> 3)
++    if (offset > end) return undefined
++    if (block & 1) break
++  }
++  if (descriptor & 4) offset += 4
++  return offset <= end ? offset : undefined
++}
++
++async function ensureIndex(): Promise<Metadata> {
++  const stat = fstatSync(fd, { bigint: true }), revision = identity(stat), sourceSize = Number(stat.size)
++  const row = db.prepare('SELECT value FROM metadata WHERE id=1').get()
++  let prior = row ? JSON.parse(String(row.value)) as Metadata : undefined
++  if (prior?.format === 2 && prior.identity === revision && prior.header.id === request.id) { header = prior.header; return prior }
++  if (prior && (prior.format !== 2 || prior.dev !== String(stat.dev) || prior.ino !== String(stat.ino) || prior.size >= sourceSize || prior.header.id !== request.id)) prior = undefined
++  let offset = prior?.scanned ?? 0, count = prior?.safeCount ?? 0
++  let validator: V4SessionStreamValidator | undefined
++  if (prior) { header = prior.header; validator = new V4SessionStreamValidator(header as unknown as SessionFormatHeader, KNOWN_SESSION_EVENT_TYPES, eventAt, prior.safeState) }
++  db.exec('BEGIN IMMEDIATE')
++  try {
++    if (!prior) db.exec('DELETE FROM entries')
++    else db.prepare('DELETE FROM entries WHERE seq>=?').run(count)
++    let scanned = offset, issueStart: number | undefined
++    let issue: Error | undefined
++    const replayUntil = count
++    const consume = (plain: Buffer, frameStart: number, frameEnd: number, torn: boolean): void => {
++      let start = 0
++      for (let newline = plain.indexOf(10); newline !== -1; newline = plain.indexOf(10, start)) {
++        const raw = plain.subarray(start, newline)
++        const at = start; start = newline + 1
++        if (!validator) {
++          const physical = JSON.parse(raw.toString('utf8')) as unknown
++          const decoded = releasedV4SessionFormatCodec.decodeHeader(physical)
++          if (decoded.id !== request.id) throw new Error('Native Session index source identity mismatch')
++          if (request.compression === 'zstd' && start !== plain.length) throw new Error('The first Zstandard frame must contain exactly one Session header')
++          header = decoded as unknown as SessionHeader
++          validator = new V4SessionStreamValidator(decoded, KNOWN_SESSION_EVENT_TYPES, eventAt)
++          continue
++        }
++        let parsed: unknown
++        try { parsed = JSON.parse(raw.toString('utf8')) } catch (error) { issueStart ??= frameStart; issue ??= error instanceof Error ? error : new Error(String(error)); continue }
++        assertV4RowAdmission(parsed, KNOWN_SESSION_EVENT_TYPES)
++        let event: SessionEvent
++        try { event = validateStoredEvents(header, [decodeV4IndexedEvent(parsed) as unknown as SessionEvent])[0]! }
++        catch (error) { if (error instanceof Error && error.name === 'SessionFormatUnsupportedError') throw error; issueStart ??= frameStart; issue ??= error instanceof Error ? error : new Error(String(error)); if ((parsed as { type?: unknown }).type === 'turn/end') throw issue; continue }
++        if (issue) { if (event.type === 'turn/end') throw issue; continue }
++        if (prior && frameStart === prior.scanned && event.seq < replayUntil) { remember(event, frameStart, frameEnd, at, newline, torn); continue }
++        if (event.seq !== count) { issueStart ??= frameStart; issue = new Error(`Native Session event sequence gap: expected ${count}, got ${event.seq}`); if (event.type === 'turn/end') throw issue; continue }
++        // Insert before lifecycle checks so referenced earlier records share one lookup.
++        remember(event, frameStart, frameEnd, at, newline, torn)
++        validator.accept(event as unknown as SessionFormatEvent)
++        ++count; ++indexedEvents
++      }
++      if (!torn && start !== plain.length) throw new Error('A complete compressed Session frame contains a torn JSONL record')
++    }
++    if (request.compression === 'none') {
++      let fragments: Buffer[] = [], fragmentBytes = 0, lineStart = offset
++      while (offset < sourceSize) {
++        const end = Math.min(sourceSize, offset + 64 * 1024), part = read(offset, end)
++        let from = 0
++        for (let newline = part.indexOf(10); newline !== -1; newline = part.indexOf(10, from)) {
++          const slice = part.subarray(from, newline + 1)
++          const line = fragments.length ? Buffer.concat([...fragments, slice], fragmentBytes + slice.length) : slice
++          const lineEnd = offset + newline + 1
++          consume(line, lineStart, lineEnd, false)
++          fragments = []; fragmentBytes = 0; lineStart = lineEnd; from = newline + 1
++          if (!issue) scanned = lineEnd
++        }
++        if (from < part.length) { const fragment = part.subarray(from); fragments.push(fragment); fragmentBytes += fragment.length }
++        offset = end
++      }
++    } else {
++      while (offset < sourceSize) {
++        const end = frameEnd(offset, sourceSize)
++        if (end === undefined) {
++          let prefix: Buffer = Buffer.alloc(0)
++          try { prefix = await decompressZstdPrefix(read(offset, sourceSize)) } catch { /* An incomplete frame header contains no completed rows. */ }
++          if (validator) consume(prefix, offset, sourceSize, true)
++          break
++        }
++        consume(zstdDecompressSync(read(offset, end)), offset, end, false)
++        offset = end
++        if (!issue) scanned = offset
++      }
++    }
++    if (!validator) throw new Error('Native Session has no complete current header')
++    const inherited = validator.finish(), state = validator.checkpoint(), safeState = state, safeCount = count
++    if (issueStart !== undefined) scanned = issueStart
++    const metadata: Metadata = { format: 2, generation: prior?.generation ?? randomUUID(), identity: revision, dev: String(stat.dev), ino: String(stat.ino), size: sourceSize, scanned,
++      count, header, state, safeState, safeCount }
++    if (inherited > count) throw new Error('Native Session inherited count exceeds its indexed prefix')
++    db.prepare('INSERT OR REPLACE INTO metadata VALUES(1,?)').run(JSON.stringify(metadata))
++    db.exec('COMMIT')
++    return metadata
++  } catch (error) { db.exec('ROLLBACK'); throw error }
++}
++
++function page(metadata: Metadata, input: SessionPageRequest): SessionPageResult {
++  assertSessionPageRequest(input)
++  const count = metadata.count, limit = Math.min(input.limit, input.maxEvents)
++  const start = input.around !== undefined ? Math.max(0, Math.min(count, input.around) - Math.floor(limit / 2))
++    : input.after !== undefined ? Math.min(count, input.after + 1) : Math.max(0, Math.min(count, input.before ?? count) - input.limit)
++  const end = input.after !== undefined || input.around !== undefined ? Math.min(count, start + limit) : Math.min(count, input.before ?? count)
++  const body = db.prepare('SELECT * FROM entries WHERE seq>=? AND seq<? ORDER BY seq').all(start, end) as unknown as EntryRow[]
++  for (;;) {
++  const selected = new Map<number, EntryRow>(body.map(row => [row.seq, row])), context = new Set<number>(), pending = [...body]
++  const add = (row: EntryRow | undefined): void => { if (!row || selected.has(row.seq)) return; selected.set(row.seq, row); context.add(row.seq); pending.push(row) }
++  const byType = db.prepare('SELECT * FROM entries WHERE type=? AND turn=? AND (? IS NULL OR step=?) AND seq<? ORDER BY seq LIMIT 1')
++  const call = db.prepare("SELECT * FROM entries WHERE type='tool/call' AND callId=? AND (? IS NULL OR turn=?) AND (? IS NULL OR step=?) AND seq<? ORDER BY seq DESC LIMIT 1")
++  const findCall = (id: string, row: EntryRow): EntryRow | undefined => call.get(id, row.turn, row.turn, row.step, row.step, count) as unknown as EntryRow | undefined
++  while (pending.length) {
++    const row = pending.pop()!
++    if (row.turn !== null) add(byType.get('turn/start', row.turn, null, null, count) as unknown as EntryRow | undefined)
++    if (row.turn !== null && row.step !== null) add(byType.get('step/start', row.turn, row.step, row.step, count) as unknown as EntryRow | undefined)
++    if (row.type === 'tool/result' && row.callId) add(findCall(row.callId, row))
++    if ((row.type === 'tool/call' || row.type === 'tool/result') && row.turn !== null && row.step !== null) {
++      for (const assistant of db.prepare("SELECT * FROM entries WHERE type='assistant/message' AND turn=? AND step=? AND seq<?").all(row.turn, row.step, count)) add(assistant as unknown as EntryRow)
++    }
++    for (const id of JSON.parse(row.calls) as string[]) add(findCall(id, row))
++    if (row.headerSeq !== null) add(get.get(row.headerSeq) as unknown as EntryRow | undefined)
++    if (selected.size > input.maxEvents) break
++  }
++  const dimension = selected.size > input.maxEvents ? 'events' : 'bytes'
++  if (dimension !== 'events') {
++    const events = [...selected.values()].sort((a, b) => a.seq - b.seq).map(original)
++    const first = body[0]?.seq, last = body.at(-1)?.seq
++    const result: SessionPageResult = { ...snapshot(metadata), events, context: [...context].sort((a, b) => a - b),
++      before: first ?? null, after: last ?? null, hasBefore: first === undefined ? start > 0 : first > 0, hasAfter: last === undefined ? end < count : last + 1 < count }
++    if (Buffer.byteLength(JSON.stringify(result)) <= input.maxBytes) return result
++  }
++  if (body.length <= 1) throw new SessionPageCapacityError(dimension, dimension === 'events' ? input.maxEvents : input.maxBytes)
++  if (input.after !== undefined) body.pop()
++  else if (input.around === undefined) body.shift()
++  else {
++    const first = body[0]!.seq, last = body.at(-1)!.seq
++    if (input.around - first > last - input.around) body.shift()
++    else body.pop()
++  }
++  }
++}
++
++function snapshot(metadata: Metadata): SessionReadIndex {
++  return { generation: metadata.generation, header: metadata.header, inheritedEventCount: (metadata.state.inheritedEventCount ?? 0) as SessionLogOffset,
++    revision: SessionPersistenceRevision(metadata.identity), eventCount: metadata.count }
++}
++async function run(): Promise<void> {
++  try {
++    const metadata = await ensureIndex()
++    db.exec('BEGIN')
++    let result: SessionPageResult | SessionReadIndex
++    try {
++      const current = JSON.parse(String(db.prepare('SELECT value FROM metadata WHERE id=1').get()!.value)) as Metadata
++      if (current.generation !== metadata.generation) throw new Error('The native source generation changed before its page read.')
++      result = request.page ? page(metadata, request.page) : snapshot(metadata)
++      db.exec('COMMIT')
++    } catch (error) { db.exec('ROLLBACK'); throw error }
++    parentPort!.postMessage({ ok: true, result, diagnostics: { sourceBytesRead, indexedEvents } })
++  } catch (error) { const failure = error instanceof Error ? error : new Error(String(error)); parentPort!.postMessage({ ok: false, name: failure.name, message: failure.message,
++    ...failure instanceof SessionPageCapacityError ? { dimension: failure.dimension, maximum: failure.maximum } : {} }) }
++  finally { db.close(); closeSync(fd); parentPort!.close() }
++}
++void run()
+diff --git a/packages/session/session-persistence-jsonl/src/read-index.ts b/packages/session/session-persistence-jsonl/src/read-index.ts
+new file mode 100644
+index 00000000..77153dc9
+--- /dev/null
++++ b/packages/session/session-persistence-jsonl/src/read-index.ts
+@@ -0,0 +1,52 @@
++/** Optional native page IO; full validation and sparse metadata live in an isolated worker. */
++import { Worker } from 'node:worker_threads'
++import { SessionPageCapacityError } from '@deepseek-ai/dsh-session-persistence'
++import type { SessionPageRequest, SessionPageResult, SessionReadIndex } from '@deepseek-ai/dsh-session-persistence'
++import type { JsonlCompression } from './format.ts'
++
++/** One worker request for an immutable source prefix. */
++export interface ReadIndexDiagnostics { readonly sourceBytesRead: number; readonly indexedEvents: number }
++
++/** One worker request for an immutable source prefix. */
++export interface ReadIndexRequest { readonly path: string; readonly id: string; readonly compression: JsonlCompression; readonly page?: SessionPageRequest }
++
++/**
++ * Prepare or query a native index without transferring the complete log to Host.
++ * @param request - original source path, identity, and optional bounded page.
++ * @param signal - cancellation for the entire worker operation.
++ * @param observe - optional source IO observations for bounded-read validation.
++ * @returns the accepted prefix metadata or one dependency-complete page.
++ */
++export function readIndexedSession(request: ReadIndexRequest, signal?: AbortSignal, observe?: (diagnostics: ReadIndexDiagnostics) => void): Promise<SessionPageResult | SessionReadIndex> {
++  signal?.throwIfAborted()
++  const source = import.meta.url.endsWith('.ts')
++  const bootstrap = source ? [
++    `import { register as registerEsm } from ${JSON.stringify(import.meta.resolve('tsx/esm/api'))}`,
++    `import { register as registerCjs } from ${JSON.stringify(import.meta.resolve('tsx/cjs/api'))}`,
++    'registerCjs()', 'registerEsm()',
++    `await import(${JSON.stringify(new URL('./read-index-worker.ts', import.meta.url).href)})`,
++  ].join('\n') : undefined
++  const worker = new Worker(bootstrap ? new URL(`data:text/javascript,${encodeURIComponent(bootstrap)}`) : new URL('./read-index-worker.mjs', import.meta.url),
++    { workerData: request, execArgv: [] })
++  return new Promise((resolve, reject) => {
++    let result: SessionPageResult | SessionReadIndex | undefined, failure: Error | undefined
++    const abort = (): void => { failure = signal?.reason instanceof Error ? signal.reason : new Error('Native page read cancelled'); void worker.terminate() }
++    worker.once('message', (message: { ok: boolean; result?: SessionPageResult | SessionReadIndex; message?: string; name?: string; dimension?: 'events' | 'bytes'; maximum?: number; diagnostics?: ReadIndexDiagnostics }) => {
++      if (message.ok) { result = message.result; if (message.diagnostics) observe?.(message.diagnostics) }
++      else {
++        failure = message.name === 'SessionPageCapacityError' && message.dimension && message.maximum !== undefined
++          ? new SessionPageCapacityError(message.dimension, message.maximum) : new Error(message.message)
++        failure.name = message.name ?? 'Error'
++      }
++    })
++    worker.once('error', error => { failure = error })
++    worker.once('exit', code => {
++      signal?.removeEventListener('abort', abort)
++      if (failure) reject(failure)
++      else if (code !== 0 || result === undefined) reject(new Error(`Native page index worker exited without a result (${code})`))
++      else resolve(result)
++    })
++    signal?.addEventListener('abort', abort, { once: true })
++    if (signal?.aborted) abort()
++  })
++}
+diff --git a/packages/session/session-persistence-jsonl/tests/read-index.spec.ts b/packages/session/session-persistence-jsonl/tests/read-index.spec.ts
+new file mode 100644
+index 00000000..94ff35f3
+--- /dev/null
++++ b/packages/session/session-persistence-jsonl/tests/read-index.spec.ts
+@@ -0,0 +1,155 @@
++/** Native files and actual worker/index IO; no Session runtime or display projection is substituted. */
++import { afterEach, expect, it } from 'vitest'
++import { mkdtemp, rm, writeFile, appendFile } from 'node:fs/promises'
++import { join } from 'node:path'
++import { DatabaseSync } from 'node:sqlite'
++import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
++import { meta, oneTurnLog } from '../../session-persistence/tests/contract.ts'
++import { readIndexedSession } from '../src/read-index.ts'
++import { eventLines, toHeaderLine } from '../src/format.ts'
++import { compressZstdFrame } from '../src/zstd.ts'
++import type { SessionPageResult } from '@deepseek-ai/dsh-session-persistence'
++const roots: string[] = []
++afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
++const request = { limit: 2, maxEvents: 100, maxBytes: 1024 * 1024 }
++async function fixture(compression: 'none' | 'zstd', events = oneTurnLog()) {
++  const root = await mkdtemp('/mnt/cache/data-cache/dsh-read-index-'); roots.push(root)
++  const header = meta('indexed-session'), path = join(root, compression === 'none' ? 'log.v4.jsonl' : 'log.v4.jsonl.zstd')
++  const first = JSON.stringify(toHeaderLine(header)) + '\n', body = eventLines(events) + '\n'
++  await writeFile(path, compression === 'none' ? first + body : Buffer.concat([await compressZstdFrame(first), await compressZstdFrame(body)]))
++  return { path, id: header.id, compression }
++}
++it.each(['none', 'zstd'] as const)('reads exact native dependency context and extends only the appended %s prefix', async compression => {
++  const source = await fixture(compression)
++  const first = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(first.eventCount).toBe(6)
++  expect(first.events.map(event => event.seq)).toEqual([0, 2, 4, 5])
++  expect(first.context).toEqual([0, 2]); expect(first.before).toBe(4); expect(first.after).toBe(5)
++  const next = oneTurnLog().map(event => ({ ...event, seq: SessionSeq(event.seq + 6), data: event.type === 'turn/start' || event.type === 'turn/end' ? { ...event.data, turn: 2 }
++    : event.type.startsWith('step/') || event.type === 'assistant/message' ? { ...event.data, turn: 2 } : event.data })) as SessionEvent[]
++  const body = eventLines(next) + '\n'
++  await appendFile(source.path, compression === 'none' ? body : await compressZstdFrame(body))
++  const second = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(second.generation).toBe(first.generation)
++  expect(second.eventCount).toBe(12); expect(second.events.map(event => event.seq)).toEqual([6, 8, 10, 11])
++  const db = new DatabaseSync(`${source.path}.read-index.sqlite`)
++  try { expect(db.prepare('SELECT count(*) AS n FROM entries').get()?.n).toBe(12); expect(db.prepare('PRAGMA table_info(entries)').all().some(row => row.name === 'data')).toBe(false) }
++  finally { db.close() }
++})
++it('keeps a valid raw prefix before a torn row and refuses a complete invalid lifecycle', async () => {
++  const source = await fixture('none')
++  await appendFile(source.path, '{"type":"turn/start"')
++  expect((await readIndexedSession({ ...source, page: request })).eventCount).toBe(6)
++  const bad = [...oneTurnLog(), { type: 'step/start', seq: SessionSeq(6), time: 7, data: { turn: 2, step: 1 } }] as SessionEvent[]
++  await writeFile(source.path, JSON.stringify(toHeaderLine(meta(source.id))) + '\n' + eventLines(bad) + '\n')
++  await expect(readIndexedSession({ ...source, page: request })).rejects.toThrow('step/start')
++})
++it('cancellation stops source-side work without creating a Session or claiming its native writer', async () => {
++  const source = await fixture('zstd'), abort = new AbortController()
++  const work = readIndexedSession({ ...source, page: request }, abort.signal)
++  abort.abort(new Error('Pane released'))
++  await expect(work).rejects.toThrow('Pane released')
++  expect((await readIndexedSession({ ...source, page: request })).eventCount).toBe(6)
++})
++it('admits budgets only after adding dependencies and complete response metadata', async () => {
++  const source = await fixture('none')
++  const reduced = await readIndexedSession({ ...source, page: { ...request, maxEvents: 2 } }) as SessionPageResult
++  expect(reduced.events.map(event => event.seq)).toEqual([0, 5]); expect(reduced.before).toBe(5)
++  await expect(readIndexedSession({ ...source, page: { ...request, maxEvents: 1 } })).rejects.toMatchObject({ code: 'CAPACITY_EXCEEDED', dimension: 'events' })
++  await expect(readIndexedSession({ ...source, page: { ...request, maxBytes: 20 } })).rejects.toThrow('maxBytes')
++})
++
++it('an already indexed cold reader touches only selected original frames and indexes only a new append', async () => {
++  const source = await fixture('zstd')
++  for (let turn = 2; turn <= 80; ++turn) {
++    const events = oneTurnLog().map(event => ({ ...event, seq: SessionSeq(event.seq + (turn - 1) * 6),
++      data: event.type === 'turn/start' || event.type === 'turn/end' || event.type.startsWith('step/') || event.type === 'assistant/message' ? { ...event.data, turn } : event.data })) as SessionEvent[]
++    await appendFile(source.path, await compressZstdFrame(eventLines(events) + '\n'))
++  }
++  await readIndexedSession(source)
++  let io: { sourceBytesRead: number; indexedEvents: number } | undefined
++  const warmed = await readIndexedSession({ ...source, page: request }, undefined, value => { io = value }) as SessionPageResult
++  expect(warmed.eventCount).toBe(480)
++  expect(io?.indexedEvents).toBe(0)
++  expect(io!.sourceBytesRead).toBeLessThan(2000)
++  const events = oneTurnLog().map(event => ({ ...event, seq: SessionSeq(event.seq + 480),
++    data: event.type === 'turn/start' || event.type === 'turn/end' || event.type.startsWith('step/') || event.type === 'assistant/message' ? { ...event.data, turn: 81 } : event.data })) as SessionEvent[]
++  await appendFile(source.path, await compressZstdFrame(eventLines(events) + '\n'))
++  await readIndexedSession({ ...source, page: request }, undefined, value => { io = value })
++  expect(io?.indexedEvents).toBe(6)
++  expect(io!.sourceBytesRead).toBeLessThan(3000)
++})
++
++it('retains the complete native tool dependency closure and refuses oversized dependencies as one page', async () => {
++  const base = oneTurnLog(), assistant = base[3]!, data = assistant.data as unknown as Record<string, unknown>
++  const message = data['message'] as Record<string, unknown>, argumentsText = 'x'.repeat(200_000)
++  const events = [...base.slice(0, 3), { ...assistant, data: { ...data, stream: [], message: { ...message, content: [{ type: 'tool-call', id: 'call', name: 'bash', arguments: argumentsText }] } } },
++    { type: 'tool/call', seq: SessionSeq(4), time: 4, data: { turn: 1, step: 1, callId: 'call', name: 'bash', arguments: argumentsText } },
++    { type: 'tool/result', seq: SessionSeq(5), time: 5, surfaceOp: 'append', data: { turn: 1, step: 1,
++      message: { id: 'tool-result', role: 'tool', source: { kind: 'tool', callId: 'call' }, toolCallId: 'call', isError: false, content: [{ type: 'text', text: 'result' }] } } },
++    ...base.slice(4).map(event => ({ ...event, seq: SessionSeq(event.seq + 2) })),
++  ] as unknown as SessionEvent[]
++  const source = await fixture('zstd', events)
++  const result = await readIndexedSession({ ...source, page: { ...request, around: 5, limit: 1 } }) as SessionPageResult
++  expect(result.events.map(event => event.seq)).toEqual([0, 2, 3, 4, 5])
++  expect(result.context).toEqual([0, 2, 3, 4]); expect(result.before).toBe(5); expect(result.after).toBe(5)
++  await expect(readIndexedSession({ ...source, page: { ...request, around: 5, limit: 1, maxBytes: 100_000 } })).rejects.toThrow('maxBytes')
++})
++it('a torn compressed frame preserves complete events and repaired physical offsets without rereading old frames', async () => {
++  const source = await fixture('zstd')
++  const events = oneTurnLog().map(event => ({ ...event, seq: SessionSeq(event.seq + 6),
++    data: event.type === 'turn/start' || event.type === 'turn/end' || event.type.startsWith('step/') || event.type === 'assistant/message' ? { ...event.data, turn: 2 } : event.data })) as SessionEvent[]
++  const frame = await compressZstdFrame(eventLines(events) + '\n')
++  const original = await (await import('node:fs/promises')).readFile(source.path)
++  await appendFile(source.path, frame.subarray(0, frame.length - 2))
++  const torn = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(torn.eventCount).toBe(12)
++  await writeFile(source.path, Buffer.concat([original, frame]))
++  const repaired = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(repaired.events).toEqual(torn.events)
++  const db = new DatabaseSync(`${source.path}.read-index.sqlite`)
++  try { expect(db.prepare('SELECT count(*) AS n FROM entries WHERE torn=1').get()?.n).toBe(0) }
++  finally { db.close() }
++})
++it('native required vocabulary refusals cannot be hidden in an indexed unclosed tail', async () => {
++  const source = await fixture('none')
++  await readIndexedSession(source)
++  await appendFile(source.path, JSON.stringify({ type: 'unknown/required', seq: 6, time: 7, data: {} }) + '\n')
++  await expect(readIndexedSession({ ...source, page: request })).rejects.toThrow(/unknown|vocabulary/)
++})
++
++it('offers native page IO only when the installed persistence provider explicitly enables it', async () => {
++  const { Context } = await import('@deepseek-ai/cordis'), plugin = await import('../src/index.ts')
++  const root = await mkdtemp('/mnt/cache/data-cache/dsh-read-provider-'); roots.push(root)
++  const plain = new Context(), indexed = new Context()
++  try {
++    await plain.plugin(plugin, { root, compression: 'none' })
++    expect(plain.sessionPersistence.readPage).toBeUndefined()
++    await plain.fiber.dispose()
++    await indexed.plugin(plugin, { root, compression: 'none', indexedReading: true })
++    const writer = await indexed.sessionPersistence.create(meta('native-capability'))
++    try {
++      expect((await indexed.sessionPersistence.readPage!(writer.id, request)).eventCount).toBe(0)
++      await writer.append(oneTurnLog())
++      const page = await indexed.sessionPersistence.readPage!(writer.id, request)
++      expect(page.events.map(event => event.seq)).toEqual([0, 2, 4, 5])
++      expect((await indexed.sessionPersistence.prepareReadIndex!(writer.id)).eventCount).toBe(6)
++    } finally { await writer.close() }
++  } finally { await plain.fiber.dispose(); await indexed.fiber.dispose() }
++})
++
++
++it('source replacement changes the opaque generation even with the same count and creation time', async () => {
++  const source = await fixture('none'), original = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(original.generation).toMatch(/^[0-9a-f-]{36}$/)
++  const fs = await import('node:fs/promises'), body = await fs.readFile(source.path, 'utf8')
++  await fs.writeFile(source.path, body.replace('"hi"', '"yo"'))
++  const rewritten = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(rewritten.eventCount).toBe(original.eventCount); expect(rewritten.header.createdAt).toBe(original.header.createdAt)
++  expect(rewritten.generation).not.toBe(original.generation)
++  const replacement = source.path + '.replacement'
++  await fs.writeFile(replacement, body)
++  await fs.rename(replacement, source.path)
++  const replaced = await readIndexedSession({ ...source, page: request }) as SessionPageResult
++  expect(replaced.generation).not.toBe(rewritten.generation)
++})
+diff --git a/packages/session/session-persistence/src/read-page.ts b/packages/session/session-persistence/src/read-page.ts
+new file mode 100644
+index 00000000..b4b0ae02
+--- /dev/null
++++ b/packages/session/session-persistence/src/read-page.ts
+@@ -0,0 +1,66 @@
++/** Optional bounded, dependency-complete access to an existing native Session log. */
++import type { SessionEvent, SessionHeader, SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
++import type { SessionPersistenceRevision } from './revision.ts'
++
++/** Body range and complete-result admission budgets; dependencies never advance body cursors. */
++export interface SessionPageRequest {
++  readonly before?: number
++  readonly after?: number
++  readonly around?: number
++  readonly limit: number
++  readonly maxEvents: number
++  readonly maxBytes: number
++}
++/** Cancellation for source-side indexing and page reads. */
++export interface SessionPageOptions { readonly signal?: AbortSignal }
++/** One validated, fixed native prefix; a concurrent append does not invalidate its earlier events. */
++export interface SessionReadIndex {
++  /** Append-stable source generation, changed when an existing prefix is replaced. */
++  readonly generation: string
++  readonly header: SessionHeader
++  readonly inheritedEventCount: SessionLogOffset
++  readonly revision: SessionPersistenceRevision
++  readonly eventCount: number
++}
++/** A contiguous native body range plus its exact display dependencies in native sequence order. */
++export interface SessionPageResult extends SessionReadIndex {
++  readonly events: readonly SessionEvent[]
++  readonly context: readonly number[]
++  readonly before: number | null
++  readonly after: number | null
++  readonly hasBefore: boolean
++  readonly hasAfter: boolean
++}
++/** Optional provider capability; never obtains execution or write ownership. */
++export type SessionPageReader = (id: SessionId, request: SessionPageRequest, options?: SessionPageOptions) => Promise<SessionPageResult>
++/** Explicit indexing preparation for operators and consumers that need bounded subsequent pages. */
++export type SessionReadIndexPreparer = (id: SessionId, options?: SessionPageOptions) => Promise<SessionReadIndex>
++
++/** One atomic native event and its dependencies exceed the caller's complete-page budget. */
++export class SessionPageCapacityError extends Error {
++  readonly code = 'CAPACITY_EXCEEDED' as const
++  /**
++   * @param dimension - complete result dimension that could not be admitted.
++   * @param maximum - caller-supplied maximum in events or UTF-8 bytes.
++   */
++  constructor(readonly dimension: 'events' | 'bytes', readonly maximum: number) {
++    super(`One native history item and its dependencies exceed ${dimension === 'events' ? 'maxEvents' : 'maxBytes'} (${maximum}).`)
++    this.name = 'SessionPageCapacityError'
++  }
++}
++
++/**
++ * Validate a native body range and complete-result budgets before source IO.
++ * @param request - source page selection and caller-supplied admission limits.
++ * @returns nothing after a valid single-cursor request.
++ */
++export function assertSessionPageRequest(request: SessionPageRequest): void {
++  for (const key of ['limit', 'maxEvents', 'maxBytes'] as const) {
++    if (!Number.isSafeInteger(request[key]) || request[key] < 1) throw new TypeError(`Invalid native page ${key}`)
++  }
++  for (const key of ['before', 'after', 'around'] as const) {
++    const value = request[key]
++    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) throw new TypeError(`Invalid native page ${key}`)
++  }
++  if ([request.before, request.after, request.around].filter(value => value !== undefined).length > 1) throw new TypeError('A native page accepts one cursor')
++}

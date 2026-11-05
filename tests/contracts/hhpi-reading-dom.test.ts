@@ -160,3 +160,80 @@ for (const profile of [{ name: 'desktop', width: 800, height: 600 }, { name: 'mo
     }
   })
 }
+
+test('Host reveals a read-only source with the real official Chat and composer, then recovers write capability in place', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { send: false }), geometry = installDomGeometry(f.dom.window, { width: 390, height: 844 })
+  const { installSessionViewHost } = await import('../../src/client/surface/session-view.tsx')
+  const id = f.canonical.sessionId
+  const state = <T,>(initial: T) => {
+    let value = initial
+    const listeners = new Set<() => void>()
+    return { getSnapshot: () => value, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      set(next: T) { value = next; for (const listener of listeners) listener() } }
+  }
+  const sourceSend = async (send: boolean): Promise<void> => {
+    const changed = Promise.withResolvers<void>()
+    const stop = f.remote.list.subscribe(() => {
+      if (f.remote.list.getSnapshot().byId[id]?.projectionValues?.hhpiSource?.capabilities.send === send) changed.resolve()
+    })
+    try {
+      await act(async () => {
+        const source = f.index.session
+        f.index.edit({ ...source, capabilities: { ...source.capabilities, send } }, () => {})
+        await changed.promise
+      })
+    } finally { stop() }
+  }
+  const stopAdmission = installNativeComposerAdmission(f.sessions, f.ctx.conversation.blocks,
+    { t: key => en[key], subscribe: () => () => {} })
+  let host!: ReturnType<typeof installSessionViewHost>
+  await f.ctx.plugin({ name: 'readonly-host-contract', inject: ['slots', 'sessions', 'uiConversation'], apply(ctx: Context) {
+    ctx.slots.provideRoot({ hooks: {
+      workspaces: state({ items: [], phase: 'ready' }), panelInfo: state({ activePanelId: null }),
+    } })
+    ctx.slots.register({ name: 'root', children: { main: { kind: 'keyed', scope: 'root' }, 'shell.overlay': { kind: 'list', scope: 'root' } } },
+      (props: PropsRenderSlots<'shell.overlay'>) => props.renderSlot('shell.overlay', {}))
+    host = installSessionViewHost(ctx)
+    return () => host.dispose()
+  } })
+  const target = f.dom.window.document.createElement('section')
+  f.dom.window.document.body.append(target)
+  const readerReady = Promise.withResolvers<void>(), failures: unknown[] = []
+  let unmount: (() => void) | undefined, view: ReturnType<typeof host.mount> | undefined
+  try {
+    await act(async () => {
+      unmount = f.ctx.uiRenderer.mount(f.dom.window.document.getElementById('root')!)
+      view = host.mount({ paneId: 'readonly-first-open', target, reference: f.canonical,
+        navigation: { hostId: 'local', paneId: 'readonly-first-open', state: state({ visible: true, focused: true }),
+          reading: state(undefined) } as unknown as import('../../src/client/pane-navigation.ts').WorkspacePaneNavigation,
+        onReady: () => readerReady.resolve(), onError: error => failures.push(error) })
+    })
+    await geometry.settled(readerReady.promise)
+    assert.deepEqual(failures, [], 'a source write refusal cannot fail its readable history')
+    const reveal = target.querySelector<HTMLElement>('[data-hapi-session-reveal]')!
+    assert.equal(reveal.style.visibility, 'visible')
+    assert.ok(target.textContent?.includes('body-'), 'the installed official Chat must show accepted source content')
+    assert.equal(target.querySelector('[data-hapi-session-loading]'), null)
+    const flow = target.querySelector('[data-chat-flow]')
+    const editor = target.querySelector<HTMLElement>('[data-composer-input]')
+    assert.ok(flow); assert.ok(editor)
+    const button = target.querySelector<HTMLButtonElement>('button[aria-label="input.send"]')!
+    assert.ok(button)
+    assert.equal(button.disabled, true, 'read readiness cannot grant source write ownership')
+    assert.equal(f.ctx.conversation.blocks.storeFor(id).getSnapshot()?.reason, en.sourceReadOnly)
+    await sourceSend(true)
+    assert.equal(target.querySelector('[data-chat-flow]'), flow)
+    assert.equal(target.querySelector('[data-composer-input]'), editor)
+    assert.equal(f.ctx.conversation.blocks.storeFor(id).getSnapshot(), undefined, 'official composer admission follows live source recovery')
+    assert.equal(target.querySelector<HTMLButtonElement>('button[aria-label="input.send"]')?.disabled, true, 'the empty editor still cannot submit an empty prompt')
+    assert.equal(f.writes.length, 0, 'capability recovery must not send anything automatically')
+    assert.deepEqual(failures, [])
+  } finally {
+    stopAdmission()
+    let disposing: Promise<void> | undefined
+    await act(async () => { disposing = view?.dispose() })
+    await disposing
+    await act(async () => { unmount?.() })
+    geometry.dispose()
+  }
+})

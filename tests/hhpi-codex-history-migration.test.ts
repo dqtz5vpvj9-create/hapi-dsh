@@ -1,9 +1,9 @@
+import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 /** Real source indexes and projector; the accepted native records are synthetic. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test, { type TestContext } from 'node:test';
@@ -12,7 +12,7 @@ import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import { CodexAttachments } from '../src/remote/codex-attachments.ts';
 import { CodexHistory } from '../src/remote/codex-history.ts';
 import { migrateLegacyCodexHistory } from '../src/remote/codex-history-migration.ts';
-import type { NativeThread } from '../src/remote/codex-native.ts';
+import type { NativeItem, NativeThread } from '../src/remote/codex-native.ts';
 import type { CodexRpc } from '../src/remote/codex-rpc.ts';
 import { SourceEventIndex } from '../src/remote/event-index.ts';
 import { sourceSessionId, type SourcePage, type SourceSession } from '../src/remote/protocol.ts';
@@ -26,7 +26,7 @@ const thread: NativeThread = { id: identity.nativeId, cwd: session.cwd, createdA
 const checkpoint = { version: 1, state: 'complete', updatedAt: 30, statusType: 'idle' };
 
 async function fixture(run: (path: string, destination: CodexHistory, oldEpoch: string) => void): Promise<void> {
-    const directory = await mkdtemp(join(tmpdir(), 'hhpi-codex-migration-')), path = join(directory, 'old.sqlite');
+    const directory = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-codex-migration-')), path = join(directory, 'old.sqlite');
     const old = new SourceEventIndex(path, session), oldHistory = new CodexHistory(old);
     const turn = { id: 'turn-z', status: 'completed' as const, startedAt: 1, completedAt: 12 };
     oldHistory.beginTurn(session, turn);
@@ -137,7 +137,7 @@ const pageImages = (page: SourcePage) => page.entries.flatMap(({ event }) => (ev
 
 /** Seed the actual v2 cache and official immutable storage before making the source file unavailable. */
 async function legacyImageFixture(t: TestContext, includeTool = false) {
-    const privateHome = await mkdtemp(join(tmpdir(), 'hhpi-image-upgrade-')), directory = join(privateHome, 'source');
+    const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-image-upgrade-')), directory = join(privateHome, 'source');
     const oldPath = join(directory, 'history', `${createHash('sha256').update(session.id).digest('hex')}.v2.sqlite`);
     const old = new SourceEventIndex(oldPath, session), lifetime = new AbortController();
     const ready = Promise.withResolvers<void>(); let published = 0;
@@ -149,9 +149,10 @@ async function legacyImageFixture(t: TestContext, includeTool = false) {
     const history = new CodexHistory(old, { userContent: (turnId, item) => attachments.content(turnId, item), toolContent: (turnId, item) => attachments.content(turnId, item) });
     const turn = { id: 'image-turn', status: 'completed' as const, startedAt: 1, completedAt: 12 };
     history.beginTurn(session, turn);
-    history.acceptItem(session, turn.id, { id: 'image-user', type: 'userMessage', content: [{ type: 'text', text: 'A previously saved screenshot.' },
-        { type: 'localImage', path: '/synthetic/removed-after-v2.png' }] }, true);
-    if (includeTool) history.acceptItem(session, turn.id, { id: 'image-tool', type: 'imageView', path: '/synthetic/removed-preview.png' }, true);
+    const nativeItems: NativeItem[] = [{ id: 'image-user', type: 'userMessage', content: [{ type: 'text', text: 'A previously saved screenshot.' },
+        { type: 'localImage', path: '/synthetic/removed-after-v2.png' }] },
+        ...(includeTool ? [{ id: 'image-tool', type: 'imageView', path: '/synthetic/removed-preview.png' } as NativeItem] : [])];
+    for (const item of nativeItems) history.acceptItem(session, turn.id, item, true);
     history.acceptTurn(session, turn);
     old.edit(session, () => { old.cache('turn-order', [turn.id]); old.cache(checkpointKey, checkpoint); });
     attachments.schedule(old.read({ sessionId: session.id, limit: 100 }).entries);
@@ -163,16 +164,17 @@ async function legacyImageFixture(t: TestContext, includeTool = false) {
     const rpc = {
         online: true, currentGeneration: 1, connect: async () => ({}), dispose: async () => {},
         onNotification: () => () => {}, onRequest: () => () => {}, onDisconnect: () => () => {},
-        request: async (method: string): Promise<unknown> => {
+        request: async (method: string, params: Record<string, unknown>): Promise<unknown> => {
             calls.push(method);
             if (method === 'thread/loaded/list') return { data: [thread.id], nextCursor: null };
             if (method === 'thread/list') return { data: [thread], nextCursor: null };
             if (method === 'thread/read') return { thread };
-            throw new Error(`A verified cache upgrade must not call ${method}`);
+            if (method === 'thread/items/list') return sliceNativeEntries(nativeItems.map(item => ({ turnId: turn.id, item })), params);
+            throw new Error(`A selected native cache upgrade must not call ${method}`);
         },
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex' }, directory, {
-        rpc, readImage: async () => { sourceImageReads++; throw new Error('The original native image was deleted after it was saved.'); },
+        rpc, readMetadata: nativeMetadataFixture(() => [{ turn, items: nativeItems }]), readImage: async () => { sourceImageReads++; throw new Error('The original native image was deleted after it was saved.'); },
     });
     t.after(async () => { await adapter.dispose(); await rm(privateHome, { recursive: true, force: true }); });
     return { adapter, oldPath, reference, oldEpoch, calls, sourceImageReads: () => sourceImageReads };
@@ -190,7 +192,8 @@ test('upgrading a v2 cache preserves saved user and tool images even after their
         assert.equal(`sha256:${createHash('sha256').update(bytes).digest('hex')}`, attachment.attachmentId);
     }
     assert.equal(f.sourceImageReads(), 0, 'upgrading must not reread a deleted source image whose accepted bytes were already saved');
-    assert.equal(f.calls.some(method => method === 'thread/items/list' || method === 'thread/turns/list' || method.startsWith('fs/')), false);
+    assert.equal(f.calls.filter(method => method === 'thread/items/list').length, 1, 'only current selected native bodies are read to validate their source identity');
+    assert.equal(f.calls.some(method => method === 'thread/turns/list' || method.startsWith('fs/')), false);
     assert.deepEqual(readFileSync(f.oldPath), originalBytes);
 });
 

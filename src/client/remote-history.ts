@@ -2,7 +2,7 @@
 import type { Budget, HistoryDeltaV1, HistoryFeedV1, HistoryReadV1, HistorySnapshotV1, SessionEventChange, SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SourceChanges, SourceChangesRequest, SourceEntry, SourcePage, SourceReadRequest, SourceSession } from '../remote/protocol.ts'
 import { HistoryPublication, type PublishedWindow } from './history-publication.ts'
-import { recoverableSourceRead, revokedSourceRead, sourceReadFailureCode, waitForSourceReadRecovery } from './remote-read-recovery.ts'
+import { boundedSourceRead, recoverableSourceRead, revokedSourceRead, sourceReadFailureCode, waitForSourceReadRecovery } from './remote-read-recovery.ts'
 import type { SourceReadingCache, SourceReadingCheckpoint } from './remote-reading-cache.ts'
 
 export interface RemoteHistoryTransport {
@@ -105,6 +105,13 @@ export class RemoteSourceHistory {
   }
   get sourceEpoch(): string { if (!this.epoch) throw new Error('Source baseline is not open'); return this.epoch }
   get sourceVersion(): number { return this.version }
+  get retainedBytes(): number { return [...this.entries.values()].reduce((total, value) => total + size(value.entry), 0) }
+  get retainedEvents(): number { return this.entries.size }
+  /** An inactive warm reader owns no live subscription or native execution. */
+  suspend(): void {
+    if (this.windows.size !== 0) return
+    this.connection?.abort(); this.connection = undefined
+  }
   get metadataFromCache(): boolean { return this.restoredMetadata }
   prepare(signal?: AbortSignal): Promise<SourcePage> { return this.initialize(signal) }
   async openView(viewId: string, budget: Budget, signal?: AbortSignal, cacheId = viewId): Promise<HistoryFeedV1> {
@@ -144,17 +151,25 @@ export class RemoteSourceHistory {
     await this.waitVersion(result.version, signal)
     return this.materializePage(result)
   }
+  /** A replay gap revalidates the retained range using authoritative source pages, not stale resident tails. */
+  async reconcilePage(request: Omit<SourceReadRequest, 'sessionId'>, signal: AbortSignal): Promise<SourcePage> {
+    const page = await this.fetchPage({ ...request, sessionId: this.sessionId, epoch: this.sourceEpoch, limit: request.limit ?? PAGE_EVENTS }, false, true, signal)
+    await this.waitVersion(page.version, signal)
+    return page
+  }
   private key(request: SourceReadRequest): string { return JSON.stringify([request.epoch ?? this.epoch ?? '', request.before ?? null, request.after ?? null, request.around ?? null, request.limit ?? PAGE_EVENTS]) }
   private async readAvailable(request: SourceReadRequest, signal: AbortSignal): Promise<SourcePage> {
-    for (let attempt = 0; ; ++attempt) {
-      signal.throwIfAborted()
-      try { return await this.transport.read(request, signal) }
-      catch (error) {
-        if (revokedSourceRead(error)) this.revokeCachedReading()
-        if (!recoverableSourceRead(error)) throw error
-        await waitForSourceReadRecovery(attempt, signal)
+    return boundedSourceRead(async lifetime => {
+      for (let attempt = 0; ; ++attempt) {
+        lifetime.throwIfAborted()
+        try { return await this.transport.read(request, lifetime) }
+        catch (error) {
+          if (revokedSourceRead(error)) this.revokeCachedReading()
+          if (!recoverableSourceRead(error)) throw error
+          await waitForSourceReadRecovery(attempt, lifetime)
+        }
       }
-    }
+    }, signal)
   }
   private sharePage(pending: PendingPage, signal: AbortSignal): Promise<SourcePage> {
     ++pending.users
@@ -180,10 +195,14 @@ export class RemoteSourceHistory {
         if (this.epoch && (page.epoch !== this.epoch || page.version !== this.version)) {
           if (page.epoch !== this.epoch) this.cache?.remove(this.sessionId)
           ++this.generation
-          this.pages.clear(); this.entries.clear(); this.removed.clear(); this.metadataVersion = -1; this.cachedOpening = undefined; this.cachedWindows.clear()
+          this.pages.clear(); if (page.epoch !== this.epoch) this.entries.clear(); this.removed.clear(); this.metadataVersion = -1; this.cachedOpening = undefined; this.cachedWindows.clear()
         }
         this.epoch = page.epoch; this.version = page.version; this.connectionError = undefined
       } else if (page.epoch !== this.epoch) throw new RemoteHistoryError('STALE_VERSION', 'The source history was replaced.')
+      if (baseline && !page.hasAfter && page.before !== null) {
+        const present = new Set<number>(page.entries.map(entry => entry.event.seq))
+        for (const seq of this.entries.keys()) if (seq >= page.before && !present.has(seq)) this.entries.delete(seq)
+      }
       for (const entry of page.entries) {
         if ((this.removed.get(entry.event.seq) ?? -1) >= page.version) continue
         const previous = this.entries.get(entry.event.seq)
@@ -233,10 +252,14 @@ export class RemoteSourceHistory {
               attempt = 0
               if (change.session.id !== this.sessionId) throw new RemoteHistoryError('INVALID_REQUEST', 'A source update crossed session scopes.')
               if (change.reset || change.epoch !== this.epoch) {
-                this.cache?.remove(this.sessionId)
+                const replaced = change.epoch !== this.epoch
+                // Journal expiry does not revoke the source identity or the accepted reader.
+                // Keep its body mounted until authoritative pages of the same range commit.
+                if (replaced) this.cache?.remove(this.sessionId)
                 ++this.generation
                 this.epoch = change.epoch; this.version = change.version; this.metadataVersion = -1
-                this.entries.clear(); this.pages.clear(); this.removed.clear(); this.cachedOpening = undefined; this.cachedWindows.clear()
+                if (replaced) this.entries.clear()
+                this.pages.clear(); this.removed.clear(); this.cachedOpening = undefined; this.cachedWindows.clear()
                 for (const entry of change.upserts) this.entries.set(entry.event.seq, { entry, version: change.version, used: ++this.clock })
                 this.acceptSession(change.session, change.version)
                 this.notifyEntries(change.upserts)
@@ -293,19 +316,19 @@ export class RemoteSourceHistory {
   private waitVersion(version: number, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted(); this.lifetime.signal.throwIfAborted()
     if (version <= this.version) return Promise.resolve()
-    return new Promise<void>((resolve, reject) => {
+    return boundedSourceRead(lifetime => new Promise<void>((resolve, reject) => {
       const cleanup = (): void => {
         this.versionObservers.delete(check)
-        signal.removeEventListener('abort', check); this.lifetime.signal.removeEventListener('abort', check)
+        lifetime.removeEventListener('abort', check); this.lifetime.signal.removeEventListener('abort', check)
       }
       const check = (): void => {
-        if (signal.aborted || this.lifetime.signal.aborted) { cleanup(); reject(signal.reason ?? this.lifetime.signal.reason ?? aborted()) }
+        if (lifetime.aborted || this.lifetime.signal.aborted) { cleanup(); reject(lifetime.reason ?? this.lifetime.signal.reason ?? aborted()) }
         else if (this.connectionError) { cleanup(); reject(this.connectionError) }
         else if (version <= this.version) { cleanup(); resolve() }
       }
       this.versionObservers.add(check)
-      signal.addEventListener('abort', check, { once: true }); this.lifetime.signal.addEventListener('abort', check, { once: true }); check()
-    })
+      lifetime.addEventListener('abort', check, { once: true }); this.lifetime.signal.addEventListener('abort', check, { once: true }); check()
+    }), signal)
   }
   private notifyVersion(): void { for (const observer of [...this.versionObservers]) observer() }
   private acceptSession(session: SourceSession, version: number): void {
@@ -338,6 +361,10 @@ export class RemoteSourceHistory {
   revokeCachedReading(): void {
     this.cacheRevoked = true; this.cache?.remove(this.sessionId); this.cachedOpening = undefined; this.cachedWindows.clear()
   }
+  discardReconciledEntries(previous: readonly number[], page: SourcePage): void {
+    const present = new Set<number>(page.entries.map(entry => entry.event.seq))
+    for (const seq of previous) if (!present.has(seq)) this.entries.delete(seq)
+  }
   currentEntries(seqs: readonly number[]): SessionEventLikeEntry[] {
     return seqs.flatMap(seq => { const value = this.entries.get(seq); if (!value) return []; value.used = ++this.clock; return [value.entry] })
   }
@@ -346,6 +373,9 @@ export class RemoteSourceHistory {
     let used = [...this.entries.values()].reduce((total, value) => total + size(value.entry), 0)
     if (used <= this.limits.bytes && this.entries.size <= this.limits.events) return
     const pinned = new Set([...this.windows.values()].flatMap(window => window.sequences()))
+    if (this.cache) for (const page of [this.cachedOpening, ...this.cachedWindows.values()]) {
+      for (const entry of page?.entries ?? []) pinned.add(entry.event.seq)
+    }
     const candidates = [...this.entries].filter(([seq]) => !pinned.has(seq)).sort((a, b) => a[1].used - b[1].used)
     for (const [seq, value] of candidates) {
       if (used <= this.limits.bytes && this.entries.size <= this.limits.events) break
@@ -356,13 +386,20 @@ export class RemoteSourceHistory {
   release(window: RemoteHistoryWindow): void {
     if (this.windows.get(window.viewId) !== window) return
     this.persist()
+    const accepted = this.lastSession && window.cachePage(this.lastSession)
+    if (this.cache && accepted) {
+      this.cachedWindows.delete(window.cacheId); this.cachedWindows.set(window.cacheId, accepted)
+      while (this.cachedWindows.size > this.cache.maxWindows) this.cachedWindows.delete(this.cachedWindows.keys().next().value!)
+    }
     this.windows.delete(window.viewId); this.trimCache()
     if (this.windows.size === 0) {
       this.connection?.abort(); this.connection = undefined
       // A durable retain may restore this checkpoint; memory-only callers
       // still obtain a fresh baseline before opening another live view.
-      this.cachedOpening = undefined
-      for (const [key, page] of this.pages) if (!page.page.hasAfter) this.pages.delete(key)
+      if (!this.cache) {
+        this.cachedOpening = undefined
+        for (const [key, page] of this.pages) if (!page.page.hasAfter) this.pages.delete(key)
+      }
     }
   }
   dispose(): void {
@@ -388,6 +425,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   private readonly pending = new Map<string, PendingRead>()
   private error: unknown
   private navigation = 0
+  private recovery: Promise<void> | undefined
   constructor(private readonly owner: RemoteSourceHistory, readonly viewId: string, page: SourcePage, private budget: Budget, readonly cacheId: string) {
     this.stateEpoch = page.epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.initial = this.state
@@ -431,6 +469,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   }
   read(request: HistoryReadV1, budget: Budget, signal: AbortSignal): Promise<HistorySnapshotV1> {
     this.abort.signal.throwIfAborted(); signal.throwIfAborted()
+    if (this.recovery) return waitFor(this.recovery, signal).then(() => this.read(request, budget, signal))
     const key = JSON.stringify(request)
     let pending = this.pending.get(key)
     if (!pending) {
@@ -508,7 +547,8 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     this.record({ base: previous.version, version: this.state.version, changes, headChanged: hasAfter && change.upserts.some(entry => entry.event.seq > tail), snapshot: this.state })
   }
   cachedHead(session: SourceSession | undefined): SourcePage | undefined {
-    if (!session || this.error || this.state.hasAfter || this.abort.signal.aborted || this.stateEpoch !== this.owner.sourceEpoch) return undefined
+    if (!session || this.error || this.state.hasAfter || this.abort.signal.aborted || this.stateEpoch !== this.owner.sourceEpoch
+      || JSON.parse(this.state.version)[1] !== this.owner.sourceVersion) return undefined
     return { session, epoch: this.owner.sourceEpoch, version: this.owner.sourceVersion, entries: this.owner.currentEntries(this.seqs) as SourceEntry[],
       before: this.state.before ? parseCursor(this.state.before, this.stateEpoch) : null, after: this.state.after ? parseCursor(this.state.after, this.stateEpoch) : null,
       hasBefore: this.state.hasBefore, hasAfter: false, context: [...this.context] }
@@ -520,7 +560,14 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     const body = snapshot.entries.filter(entry => !context.has(entry.event.seq)), target = body[Math.floor(body.length / 2)]
     return this.read(target ? { kind: 'around', target: { key: String(target.event.seq), seq: target.event.seq as never } } : { kind: 'latest' }, budget, signal)
   }
-  async recover(): Promise<void> {
+  recover(): Promise<void> {
+    if (this.recovery) return this.recovery
+    const work = this.performRecovery()
+    this.recovery = work
+    void work.finally(() => { if (this.recovery === work) this.recovery = undefined }).catch(() => {})
+    return work
+  }
+  private async performRecovery(): Promise<void> {
     const prior = this.state, navigation = ++this.navigation, epoch = this.owner.sourceEpoch
     const body = (this.publication.published?.snapshot ?? prior).entries.filter(entry => !this.context.has(entry.event.seq))
     const first = body[0]?.event.seq, last = body.at(-1)?.event.seq
@@ -528,16 +575,17 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (this.stateEpoch === epoch && first !== undefined && last !== undefined) {
       // A journal gap invalidates cached revisions, not the reader's range.
       // Revalidate the complete retained interval before its atomic replacement.
-      page = await this.owner.page(first > 0 ? { after: first - 1, limit: 500 } : { around: first, limit: 500 }, this.abort.signal)
+      page = await this.owner.reconcilePage(first > 0 ? { after: first - 1, limit: 500 } : { around: first, limit: 500 }, this.abort.signal)
       while (page.hasAfter && page.after !== null && page.after < last) {
-        const next = await this.owner.page({ after: page.after, limit: 500 }, this.abort.signal)
+        const next = await this.owner.reconcilePage({ after: page.after, limit: 500 }, this.abort.signal)
         if (next.after === null || next.after <= page.after) throw new RemoteHistoryError('INVALID_REQUEST', 'The source recovery cursor did not advance.')
         page = { ...next, before: page.before, hasBefore: page.hasBefore,
           entries: entriesBySeq([...page.entries, ...next.entries]) as SourceEntry[], context: [...new Set([...page.context, ...next.context])] }
       }
-    } else page = await this.owner.page(first === undefined ? {} : { around: first }, this.abort.signal)
+    } else page = await this.owner.reconcilePage(first === undefined ? {} : { around: first }, this.abort.signal)
     this.abort.signal.throwIfAborted()
     if (navigation !== this.navigation || epoch !== this.owner.sourceEpoch) return
+    this.owner.discardReconciledEntries(this.seqs, page)
     this.error = undefined; this.stateEpoch = epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.stage()
     this.record({ base: prior.version, version: this.state.version, changes: [{ kind: 'replace', entries: this.state.entries }], headChanged: page.hasAfter, snapshot: this.state })
