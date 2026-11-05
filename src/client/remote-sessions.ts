@@ -106,12 +106,18 @@ export class RemoteSourceSession implements SessionFace {
   update(session: SourceSession): void {
     if (this.disposed) return
     if (session.id !== this.sessionId) throw new Error('Source metadata crossed session identities')
-    this.metadata.set(session)
-    this.state.set({ ...this.state.getSnapshot(), running: session.status === 'offline'
-      ? this.state.getSnapshot().running : session.status === 'running' || session.status === 'waiting' })
+    // Page and stream replies can repeat the same metadata as fresh objects.
+    // Keep external-store snapshots stable so body updates do not invalidate
+    // every source-aware tool and the official conversation layout.
+    const previous = this.metadata.getSnapshot()
+    if (previous !== session && JSON.stringify(previous) === JSON.stringify(session)) session = previous
+    if (previous !== session) this.metadata.set(session)
+    const state = this.state.getSnapshot()
+    const running = session.status === 'offline' ? state.running : session.status === 'running' || session.status === 'waiting'
+    if (running !== state.running) this.state.set({ ...state, running })
     for (const [key, value] of [['title', session.title], ['hhpiSource', session]] as const) {
       let store = this.projectionValues.get(key)
-      if (!store) { store = new Value<unknown>(value); this.projectionValues.set(key, store) } else store.set(value)
+      if (!store) { store = new Value<unknown>(value); this.projectionValues.set(key, store) } else if (store.getSnapshot() !== value) store.set(value)
     }
   }
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {

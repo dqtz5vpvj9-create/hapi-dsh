@@ -1,130 +1,37 @@
 {
-  "sourceRevisionBeforeChanges": "298bd4849d8b80b6f2a5f1bb6190441b948e19ef",
-  "sourceState": "approved ui-chat layout implementation validated before release commit",
-  "scope": "continuous history reading, independent drafts and idle reconnection; native Codex source projection and official component lab; cold 2048-turn native SQLite via production adapter and SessionViewHost; synthetic item RPC and outer shell",
+  "schema": 1,
+  "commit": "3cbba26939072102bb2aef649e02a45e31d123d3",
+  "startedAt": "2026-11-05T09:24:16.961Z",
   "status": "passed",
-  "browser": {
-    "engine": "chromium",
-    "version": "153.0.8010.12"
-  },
+  "scope": "continuous history reading, independent drafts and idle reconnection; native Codex source projection and official component lab; cold 2048-turn native SQLite via production adapter and SessionViewHost; synthetic item RPC and outer shell",
   "geometryMocks": false,
+  "physicalKeyboard": "not-run",
   "physicalPhone": "not-run",
+  "operatingSystemIME": "not-run",
   "softKeyboard": "not-run",
-  "uiChatPatchSet": "f78b9d956c0f54ee9ba4ded9ca66e6ab81ef29fc48431b070f3495b8723f8df6",
+  "visualReview": "not-performed",
+  "productionDeployment": "not-run",
   "scenarios": [
     {
       "mode": "desktop",
       "status": "passed",
-      "durationMs": 27256,
       "budgetMs": 60000,
-      "nativeColdOpen": {
-        "status": "passed",
-        "steps": [
-          {
-            "name": "unprepared native archive opens read-only history without an all-archive scan",
-            "ms": 840
-          },
-          {
-            "name": "a second official Pane opens independently from the shared accepted source page",
-            "ms": 156
-          },
-          {
-            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
-            "ms": 357
-          },
-          {
-            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
-            "ms": 143
-          }
-        ],
-        "firstNativePaint": {
-          "ms": 166,
-          "nativeTurns": 2048,
-          "bodyReads": 7,
-          "readonlyBodyVisible": true
-        },
-        "durationMs": 1518
-      },
       "steps": [
         {
           "name": "first usable official view",
-          "ms": 1706
+          "ms": 1764
         },
         {
           "name": "idle update stream closes without failing the mounted readers",
-          "ms": 220
+          "ms": 173
         },
         {
           "name": "browser keyboard, composition and independent drafts",
-          "ms": 433
+          "ms": 446
         },
         {
           "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
-          "ms": 17080
-        },
-        {
-          "name": "real viewport width change preserves the reading anchor",
-          "ms": 686
-        },
-        {
-          "name": "cached round trip and latest navigation",
-          "ms": 2099
-        },
-        {
-          "name": "synthetic native submission through official keyboard",
-          "ms": 168
-        }
-      ]
-    },
-    {
-      "mode": "mobile",
-      "status": "passed",
-      "durationMs": 53561,
-      "budgetMs": 60000,
-      "nativeColdOpen": {
-        "status": "passed",
-        "steps": [
-          {
-            "name": "unprepared native archive opens read-only history without an all-archive scan",
-            "ms": 855
-          },
-          {
-            "name": "a second official Pane opens independently from the shared accepted source page",
-            "ms": 148
-          },
-          {
-            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
-            "ms": 199
-          },
-          {
-            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
-            "ms": 82
-          }
-        ],
-        "firstNativePaint": {
-          "ms": 150,
-          "nativeTurns": 2048,
-          "bodyReads": 7,
-          "readonlyBodyVisible": true
-        },
-        "durationMs": 1306
-      },
-      "steps": [
-        {
-          "name": "first usable official view",
-          "ms": 1390
-        },
-        {
-          "name": "idle update stream closes without failing the mounted readers",
-          "ms": 128
-        },
-        {
-          "name": "browser keyboard, composition and independent drafts",
-          "ms": 468
-        },
-        {
-          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
-          "ms": 40999
+          "ms": 16165
         },
         {
           "name": "real viewport width change preserves the reading anchor",
@@ -132,13 +39,1765 @@
         },
         {
           "name": "cached round trip and latest navigation",
-          "ms": 5676
+          "ms": 2056
         },
         {
           "name": "synthetic native submission through official keyboard",
-          "ms": 97
+          "ms": 104
         }
-      ]
+      ],
+      "errors": [],
+      "unexpectedRequests": [],
+      "lastLayout": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "pageWidth": 1440,
+        "portWidth": 713,
+        "contentWidth": 713,
+        "editor": {
+          "x": 16,
+          "y": 764,
+          "width": 677,
+          "height": 52
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 718,
+          "height": 860
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "initialLayout": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "pageWidth": 1440,
+        "portWidth": 713,
+        "contentWidth": 713,
+        "editor": {
+          "x": 16,
+          "y": 780,
+          "width": 677,
+          "height": 36
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 718,
+          "height": 860
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "idleReconnect": {
+        "subscriptions": 3,
+        "extraReads": 0,
+        "drift": 0,
+        "panesReady": 2
+      },
+      "keyboard": {
+        "keydowns": 17,
+        "keyups": 17,
+        "composingEnters": 1,
+        "untrustedKeys": 0,
+        "compositionStarts": 1,
+        "compositionEnds": 1,
+        "compositionEvents": [
+          {
+            "type": "compositionstart",
+            "data": "",
+            "trusted": true
+          },
+          {
+            "type": "compositionupdate",
+            "data": "拼音",
+            "trusted": true
+          },
+          {
+            "type": "compositionupdate",
+            "data": "拼音",
+            "trusted": true
+          },
+          {
+            "type": "compositionend",
+            "data": "拼音",
+            "trusted": false
+          }
+        ],
+        "transport": "browser input protocol",
+        "physicalKeyboard": "not-run",
+        "operatingSystemIME": "not-run"
+      },
+      "segments": [
+        {
+          "segment": 1,
+          "rows": 308,
+          "firstVisible": 2346,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-12"
+          ],
+          "sourceRange": {
+            "first": 2304,
+            "last": 2463
+          },
+          "userMessageRange": {
+            "first": 2196,
+            "last": 2346
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2348",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 2,
+          "rows": 462,
+          "firstVisible": 2195,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-11"
+          ],
+          "sourceRange": {
+            "first": 2144,
+            "last": 2303
+          },
+          "userMessageRange": {
+            "first": 2045,
+            "last": 2195
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2197",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 3,
+          "rows": 616,
+          "firstVisible": 2044,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-10"
+          ],
+          "sourceRange": {
+            "first": 1984,
+            "last": 2143
+          },
+          "userMessageRange": {
+            "first": 1894,
+            "last": 2044
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2046",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 4,
+          "rows": 770,
+          "firstVisible": 1893,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-9"
+          ],
+          "sourceRange": {
+            "first": 1824,
+            "last": 1983
+          },
+          "userMessageRange": {
+            "first": 1743,
+            "last": 1893
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1895",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 5,
+          "rows": 924,
+          "firstVisible": 1742,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-8"
+          ],
+          "sourceRange": {
+            "first": 1664,
+            "last": 1823
+          },
+          "userMessageRange": {
+            "first": 1592,
+            "last": 1742
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1744",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 6,
+          "rows": 1078,
+          "firstVisible": 1591,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-7"
+          ],
+          "sourceRange": {
+            "first": 1504,
+            "last": 1663
+          },
+          "userMessageRange": {
+            "first": 1441,
+            "last": 1591
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1593",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 7,
+          "rows": 1232,
+          "firstVisible": 1440,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-6"
+          ],
+          "sourceRange": {
+            "first": 1344,
+            "last": 1503
+          },
+          "userMessageRange": {
+            "first": 1290,
+            "last": 1440
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1442",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 8,
+          "rows": 1386,
+          "firstVisible": 1289,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-5"
+          ],
+          "sourceRange": {
+            "first": 1184,
+            "last": 1343
+          },
+          "userMessageRange": {
+            "first": 1139,
+            "last": 1289
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1291",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 9,
+          "rows": 1540,
+          "firstVisible": 1138,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-4"
+          ],
+          "sourceRange": {
+            "first": 1024,
+            "last": 1183
+          },
+          "userMessageRange": {
+            "first": 988,
+            "last": 1138
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1140",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 10,
+          "rows": 1694,
+          "firstVisible": 987,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-3"
+          ],
+          "sourceRange": {
+            "first": 864,
+            "last": 1023
+          },
+          "userMessageRange": {
+            "first": 837,
+            "last": 987
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-988",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 11,
+          "rows": 1848,
+          "firstVisible": 836,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-2"
+          ],
+          "sourceRange": {
+            "first": 704,
+            "last": 863
+          },
+          "userMessageRange": {
+            "first": 686,
+            "last": 836
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-838",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 12,
+          "rows": 2002,
+          "firstVisible": 685,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-1"
+          ],
+          "sourceRange": {
+            "first": 544,
+            "last": 703
+          },
+          "userMessageRange": {
+            "first": 535,
+            "last": 685
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-687",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 13,
+          "rows": 2156,
+          "firstVisible": 534,
+          "bodyGestures": 1,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-0"
+          ],
+          "sourceRange": {
+            "first": 384,
+            "last": 543
+          },
+          "userMessageRange": {
+            "first": 384,
+            "last": 534
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-536",
+            "kind": "node",
+            "delta": 0
+          }
+        }
+      ],
+      "positioning": "trusted wheel through accepted window and boundary",
+      "anchorProtocol": "completed wheel displacement followed by official commit",
+      "preciseCommitAnchors": [
+        {
+          "key": "13:input-messagemessage-2348",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-2197",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-2046",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1895",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1744",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1593",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1442",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1291",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1140",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-988",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-838",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-687",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-536",
+          "kind": "node",
+          "delta": 0
+        }
+      ],
+      "preciseCommitAnchorKinds": {
+        "node": 13
+      },
+      "viewportResizeAnchor": {
+        "key": "13:input-messagemessage-534",
+        "nodeKey": "13:input-messagemessage-534",
+        "bodyId": 534,
+        "originalWidth": 1440,
+        "height": 900,
+        "samples": [
+          {
+            "width": 1320,
+            "delta": 0,
+            "offset": -112
+          },
+          {
+            "width": 1440,
+            "delta": 0,
+            "offset": -112
+          }
+        ],
+        "elapsedMs": 657
+      },
+      "finalLayout": {
+        "viewport": {
+          "width": 1440,
+          "height": 900
+        },
+        "pageWidth": 1440,
+        "portWidth": 713,
+        "contentWidth": 713,
+        "editor": {
+          "x": 16,
+          "y": 764,
+          "width": 677,
+          "height": 52
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 718,
+          "height": 860
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "syntheticWrites": 1,
+      "measurements": {
+        "a": {
+          "rows": 2156,
+          "before": "[\"49ca0c03-b0eb-40e0-baec-d2033c46d0e3\",384]",
+          "busy": false,
+          "phase": "ready",
+          "draft": "",
+          "control": true
+        },
+        "b": {
+          "rows": 154,
+          "before": "[\"49ca0c03-b0eb-40e0-baec-d2033c46d0e3\",2464]",
+          "busy": false,
+          "phase": "ready",
+          "draft": "Draft B",
+          "control": true
+        },
+        "errors": [],
+        "corrections": [
+          {
+            "key": "13:input-messagemessage-2348",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-2197",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-2046",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1895",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1744",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1593",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1442",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1291",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1140",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-988",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-838",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-687",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-536",
+            "delta": 0,
+            "requestDelta": 0
+          }
+        ],
+        "readingFailures": [],
+        "frames": {
+          "samples": 1179,
+          "p95": 16.799999999999272,
+          "max": 283.30000000000007
+        }
+      },
+      "inputs": {
+        "wheel": 44,
+        "touchstart": 0,
+        "touchmove": 0,
+        "touchend": 0,
+        "untrusted": 0
+      },
+      "codexRendering": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "native source enters the official conversation",
+            "ms": 1029
+          },
+          {
+            "name": "official command row expands native output",
+            "ms": 496
+          },
+          {
+            "name": "official edit row expands the native diff",
+            "ms": 270
+          },
+          {
+            "name": "oversized native output uses official keyed tool detail with bounded demand reads",
+            "ms": 449
+          },
+          {
+            "name": "native user and tool images use the official gallery",
+            "ms": 367
+          },
+          {
+            "name": "native function output exposes readable text without transport fields",
+            "ms": 283
+          },
+          {
+            "name": "subagent activity stays structured and source-only",
+            "ms": 39
+          }
+        ],
+        "errors": [],
+        "unexpectedRequests": [],
+        "initialLayout": {
+          "viewportWidth": 1440,
+          "pageWidth": 1440,
+          "portWidth": 713,
+          "contentWidth": 713,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "expandedLayout": {
+          "viewportWidth": 1440,
+          "pageWidth": 1440,
+          "portWidth": 713,
+          "contentWidth": 713,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "toolDetailLayout": {
+          "viewportWidth": 1440,
+          "pageWidth": 1440,
+          "portWidth": 713,
+          "contentWidth": 713,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "imagePublication": {
+          "pendingReadsAtFirstBody": 2,
+          "revisions": 2,
+          "extraBodyReads": 0
+        },
+        "imageLayout": {
+          "viewportWidth": 1440,
+          "pageWidth": 1440,
+          "portWidth": 713,
+          "contentWidth": 713,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "syntheticWrites": 0,
+        "finalLayout": {
+          "viewportWidth": 1440,
+          "pageWidth": 1440,
+          "portWidth": 713,
+          "contentWidth": 713,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "durationMs": 2965
+      },
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 970
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 79
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 169
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 91
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 151,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1325
+      },
+      "durationMs": 25923
+    },
+    {
+      "mode": "mobile",
+      "status": "passed",
+      "budgetMs": 60000,
+      "steps": [
+        {
+          "name": "first usable official view",
+          "ms": 1383
+        },
+        {
+          "name": "idle update stream closes without failing the mounted readers",
+          "ms": 173
+        },
+        {
+          "name": "browser keyboard, composition and independent drafts",
+          "ms": 502
+        },
+        {
+          "name": "thirteen real-input older boundary crossings beyond the old node ceiling",
+          "ms": 41024
+        },
+        {
+          "name": "real viewport width change preserves the reading anchor",
+          "ms": 662
+        },
+        {
+          "name": "cached round trip and latest navigation",
+          "ms": 5699
+        },
+        {
+          "name": "synthetic native submission through official keyboard",
+          "ms": 114
+        }
+      ],
+      "errors": [],
+      "unexpectedRequests": [],
+      "lastLayout": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "pageWidth": 390,
+        "portWidth": 383,
+        "contentWidth": 383,
+        "editor": {
+          "x": 16,
+          "y": 708,
+          "width": 347,
+          "height": 52
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 388,
+          "height": 804
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "initialLayout": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "pageWidth": 390,
+        "portWidth": 383,
+        "contentWidth": 383,
+        "editor": {
+          "x": 16,
+          "y": 724,
+          "width": 347,
+          "height": 36
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 388,
+          "height": 804
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "idleReconnect": {
+        "subscriptions": 3,
+        "extraReads": 0,
+        "drift": 0,
+        "panesReady": 2
+      },
+      "keyboard": {
+        "keydowns": 17,
+        "keyups": 17,
+        "composingEnters": 1,
+        "untrustedKeys": 0,
+        "compositionStarts": 1,
+        "compositionEnds": 1,
+        "compositionEvents": [
+          {
+            "type": "compositionstart",
+            "data": "",
+            "trusted": true
+          },
+          {
+            "type": "compositionupdate",
+            "data": "拼音",
+            "trusted": true
+          },
+          {
+            "type": "compositionupdate",
+            "data": "拼音",
+            "trusted": true
+          },
+          {
+            "type": "compositionend",
+            "data": "拼音",
+            "trusted": false
+          }
+        ],
+        "transport": "browser input protocol",
+        "physicalKeyboard": "not-run",
+        "operatingSystemIME": "not-run"
+      },
+      "segments": [
+        {
+          "segment": 1,
+          "rows": 308,
+          "firstVisible": 2345,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-12"
+          ],
+          "sourceRange": {
+            "first": 2304,
+            "last": 2463
+          },
+          "userMessageRange": {
+            "first": 2196,
+            "last": 2346
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2347",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 2,
+          "rows": 462,
+          "firstVisible": 2194,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-11"
+          ],
+          "sourceRange": {
+            "first": 2144,
+            "last": 2303
+          },
+          "userMessageRange": {
+            "first": 2045,
+            "last": 2195
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2197",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 3,
+          "rows": 616,
+          "firstVisible": 2043,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-10"
+          ],
+          "sourceRange": {
+            "first": 1984,
+            "last": 2143
+          },
+          "userMessageRange": {
+            "first": 1894,
+            "last": 2044
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-2046",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 4,
+          "rows": 770,
+          "firstVisible": 1892,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-9"
+          ],
+          "sourceRange": {
+            "first": 1824,
+            "last": 1983
+          },
+          "userMessageRange": {
+            "first": 1743,
+            "last": 1893
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1894",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 5,
+          "rows": 924,
+          "firstVisible": 1742,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-8"
+          ],
+          "sourceRange": {
+            "first": 1664,
+            "last": 1823
+          },
+          "userMessageRange": {
+            "first": 1592,
+            "last": 1742
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1743",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 6,
+          "rows": 1078,
+          "firstVisible": 1590,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-7"
+          ],
+          "sourceRange": {
+            "first": 1504,
+            "last": 1663
+          },
+          "userMessageRange": {
+            "first": 1441,
+            "last": 1591
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1593",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 7,
+          "rows": 1232,
+          "firstVisible": 1439,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-6"
+          ],
+          "sourceRange": {
+            "first": 1344,
+            "last": 1503
+          },
+          "userMessageRange": {
+            "first": 1290,
+            "last": 1440
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1442",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 8,
+          "rows": 1386,
+          "firstVisible": 1288,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-5"
+          ],
+          "sourceRange": {
+            "first": 1184,
+            "last": 1343
+          },
+          "userMessageRange": {
+            "first": 1139,
+            "last": 1289
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1290",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 9,
+          "rows": 1540,
+          "firstVisible": 1137,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-4"
+          ],
+          "sourceRange": {
+            "first": 1024,
+            "last": 1183
+          },
+          "userMessageRange": {
+            "first": 988,
+            "last": 1138
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-1139",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 10,
+          "rows": 1694,
+          "firstVisible": 986,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-3"
+          ],
+          "sourceRange": {
+            "first": 864,
+            "last": 1023
+          },
+          "userMessageRange": {
+            "first": 837,
+            "last": 987
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-988",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 11,
+          "rows": 1848,
+          "firstVisible": 835,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-2"
+          ],
+          "sourceRange": {
+            "first": 704,
+            "last": 863
+          },
+          "userMessageRange": {
+            "first": 686,
+            "last": 836
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-838",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 12,
+          "rows": 2002,
+          "firstVisible": 684,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-1"
+          ],
+          "sourceRange": {
+            "first": 544,
+            "last": 703
+          },
+          "userMessageRange": {
+            "first": 535,
+            "last": 685
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-686",
+            "kind": "node",
+            "delta": 0
+          }
+        },
+        {
+          "segment": 13,
+          "rows": 2156,
+          "firstVisible": 533,
+          "bodyGestures": 2,
+          "sourceEventCount": 160,
+          "userMessageCount": 151,
+          "toolLifecycleCount": 1,
+          "toolLifecycleIds": [
+            "browser-tool-root-0"
+          ],
+          "sourceRange": {
+            "first": 384,
+            "last": 543
+          },
+          "userMessageRange": {
+            "first": 384,
+            "last": 534
+          },
+          "officialRowsAdded": 154,
+          "preciseCommitAnchor": {
+            "key": "13:input-messagemessage-535",
+            "kind": "node",
+            "delta": 0
+          }
+        }
+      ],
+      "positioning": "native scrollTo inside accepted window; trusted touch crosses each boundary",
+      "anchorProtocol": "final touch contact crosses runway; stationary contact through official commit",
+      "preciseCommitAnchors": [
+        {
+          "key": "13:input-messagemessage-2347",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-2197",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-2046",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1894",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1743",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1593",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1442",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1290",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-1139",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-988",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-838",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-686",
+          "kind": "node",
+          "delta": 0
+        },
+        {
+          "key": "13:input-messagemessage-535",
+          "kind": "node",
+          "delta": 0
+        }
+      ],
+      "preciseCommitAnchorKinds": {
+        "node": 13
+      },
+      "viewportResizeAnchor": {
+        "key": "13:input-messagemessage-533",
+        "nodeKey": "13:input-messagemessage-533",
+        "bodyId": 533,
+        "originalWidth": 390,
+        "height": 844,
+        "samples": [
+          {
+            "width": 450,
+            "delta": 0,
+            "offset": -637
+          },
+          {
+            "width": 390,
+            "delta": 0,
+            "offset": -637
+          }
+        ],
+        "elapsedMs": 662
+      },
+      "finalLayout": {
+        "viewport": {
+          "width": 390,
+          "height": 844
+        },
+        "pageWidth": 390,
+        "portWidth": 383,
+        "contentWidth": 383,
+        "editor": {
+          "x": 16,
+          "y": 708,
+          "width": 347,
+          "height": 52
+        },
+        "port": {
+          "x": 0,
+          "y": 40,
+          "width": 388,
+          "height": 804
+        },
+        "editorHit": true,
+        "failures": 0
+      },
+      "syntheticWrites": 1,
+      "measurements": {
+        "a": {
+          "rows": 2156,
+          "before": "[\"7ac68262-6b84-4848-8518-9f916bb98126\",384]",
+          "busy": false,
+          "phase": "ready",
+          "draft": "",
+          "control": true
+        },
+        "b": {
+          "rows": 154,
+          "before": "[\"7ac68262-6b84-4848-8518-9f916bb98126\",2464]",
+          "busy": false,
+          "phase": "ready",
+          "draft": "Draft B",
+          "control": true
+        },
+        "errors": [],
+        "corrections": [
+          {
+            "key": "13:input-messagemessage-2347",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-2197",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-2046",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1894",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1743",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1593",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1442",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1290",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-1139",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-988",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-838",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-686",
+            "delta": 0,
+            "requestDelta": 0
+          },
+          {
+            "key": "13:input-messagemessage-535",
+            "delta": 0,
+            "requestDelta": 0
+          }
+        ],
+        "readingFailures": [],
+        "frames": {
+          "samples": 2866,
+          "p95": 16.799999999999272,
+          "max": 199.89999999999998
+        }
+      },
+      "inputs": {
+        "wheel": 0,
+        "touchstart": 46,
+        "touchmove": 360,
+        "touchend": 33,
+        "untrusted": 0
+      },
+      "codexRendering": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "native source enters the official conversation",
+            "ms": 884
+          },
+          {
+            "name": "official command row expands native output",
+            "ms": 392
+          },
+          {
+            "name": "official edit row expands the native diff",
+            "ms": 266
+          },
+          {
+            "name": "oversized native output uses official keyed tool detail with bounded demand reads",
+            "ms": 428
+          },
+          {
+            "name": "native user and tool images use the official gallery",
+            "ms": 231
+          },
+          {
+            "name": "native function output exposes readable text without transport fields",
+            "ms": 167
+          },
+          {
+            "name": "subagent activity stays structured and source-only",
+            "ms": 33
+          }
+        ],
+        "errors": [],
+        "unexpectedRequests": [],
+        "initialLayout": {
+          "viewportWidth": 390,
+          "pageWidth": 390,
+          "portWidth": 383,
+          "contentWidth": 383,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "expandedLayout": {
+          "viewportWidth": 390,
+          "pageWidth": 390,
+          "portWidth": 383,
+          "contentWidth": 383,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "toolDetailLayout": {
+          "viewportWidth": 390,
+          "pageWidth": 390,
+          "portWidth": 383,
+          "contentWidth": 383,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "imagePublication": {
+          "pendingReadsAtFirstBody": 2,
+          "revisions": 2,
+          "extraBodyReads": 0
+        },
+        "imageLayout": {
+          "viewportWidth": 390,
+          "pageWidth": 390,
+          "portWidth": 383,
+          "contentWidth": 383,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "syntheticWrites": 0,
+        "finalLayout": {
+          "viewportWidth": 390,
+          "pageWidth": 390,
+          "portWidth": 383,
+          "contentWidth": 383,
+          "editorVisible": true,
+          "editorHit": true,
+          "errors": 0
+        },
+        "durationMs": 2428
+      },
+      "nativeColdOpen": {
+        "status": "passed",
+        "steps": [
+          {
+            "name": "unprepared native archive opens read-only history without an all-archive scan",
+            "ms": 837
+          },
+          {
+            "name": "a second official Pane opens independently from the shared accepted source page",
+            "ms": 157
+          },
+          {
+            "name": "read-only input recovers in place without replacing the official reader or submitting its draft",
+            "ms": 178
+          },
+          {
+            "name": "closing and reopening a Pane reuses native bodies and restores the official reader",
+            "ms": 73
+          }
+        ],
+        "firstNativePaint": {
+          "ms": 157,
+          "nativeTurns": 2048,
+          "bodyReads": 7,
+          "readonlyBodyVisible": true
+        },
+        "durationMs": 1261
+      },
+      "durationMs": 53450
     }
-  ]
+  ],
+  "identity": {
+    "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+    "upstreamVersion": "0.2.1-rc.3",
+    "patchSetSha256": "6f70a9ca6f5525ce0cf32670d051edbae448ed63a5ed8ecf425e7d7441c566d9",
+    "packages": [
+      {
+        "name": "@deepseek-ai/dsh-api-session-controller",
+        "file": "deepseek-ai-dsh-api-session-controller-0.2.1-rc.3.tgz",
+        "bytes": 303261,
+        "sha256": "4c4187fb19d99dc78dfb919c24ca7167448818e82b48cd8d69c6b4aeaf8e6395"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-chat",
+        "file": "deepseek-ai-dsh-client-ui-chat-0.2.1-rc.3.tgz",
+        "bytes": 254858,
+        "sha256": "2a93815eb9ce2e8e36d261c72c19274e2b706638d30b7f54a66485770bfafb97"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-commands",
+        "file": "deepseek-ai-dsh-client-ui-commands-0.2.1-rc.3.tgz",
+        "bytes": 43672,
+        "sha256": "73e0821ffd5881f97d69aecee106af79dc70fb2d957e1c7644ff777e9233c4c2"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-conversation",
+        "file": "deepseek-ai-dsh-client-ui-conversation-0.2.1-rc.3.tgz",
+        "bytes": 308852,
+        "sha256": "3e553df4d316e2e1b629222a3aea613f35aece00655c416977620b6f985b3fb5"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-input-trigger",
+        "file": "deepseek-ai-dsh-client-ui-input-trigger-0.2.1-rc.3.tgz",
+        "bytes": 42145,
+        "sha256": "d2553725d98613594b2b2a0cfbb07f97807dfdd7589c4c130160c6bb0b2d3642"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-plan",
+        "file": "deepseek-ai-dsh-client-ui-plan-0.2.1-rc.3.tgz",
+        "bytes": 22793,
+        "sha256": "7edd82b26e5118443010d804787b8e1aeabcf3ccb41d47e49b6afc4aa0e9cd1e"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-renderer",
+        "file": "deepseek-ai-dsh-client-ui-renderer-0.2.1-rc.3.tgz",
+        "bytes": 32251,
+        "sha256": "37a87a89293a2f35c1859743b530deabe243536a7ef31413654ec2fd42ac3d82"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-session",
+        "file": "deepseek-ai-dsh-client-ui-session-0.2.1-rc.3.tgz",
+        "bytes": 17864,
+        "sha256": "ee53d1e6382fd7868f84474614eefa46d82aada7c84715e8691ee1b1fa7512e5"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-slots",
+        "file": "deepseek-ai-dsh-client-ui-slots-0.2.1-rc.3.tgz",
+        "bytes": 32232,
+        "sha256": "4bbf9631949d87b23b317186b35f1ff9666b8dbd06ea1c7b17e50ae9b074cfc7"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-tool",
+        "file": "deepseek-ai-dsh-client-ui-tool-0.2.1-rc.3.tgz",
+        "bytes": 79362,
+        "sha256": "4b2ee9342e02a04f12dbaa7bcfffdae5ffe3baba976f692c890334b393efeb34"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-trajectory",
+        "file": "deepseek-ai-dsh-client-ui-trajectory-0.2.1-rc.3.tgz",
+        "bytes": 108513,
+        "sha256": "ec6fbebb3c417c94d4583a06c726509e78891dec52aeaee9e97ee3ede55673ce"
+      }
+    ],
+    "packageIdentities": {
+      "@deepseek-ai/dsh-client-ui-chat": {
+        "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
+        "upstreamVersion": "0.2.1-rc.3",
+        "patchSetSha256": "a1a100d952493d8d200fddd71e619a2480aeb92854e7d847d163861774107476"
+      }
+    },
+    "artifacts": [
+      {
+        "name": "@deepseek-ai/dsh-api-session-controller",
+        "entry": "client.js",
+        "sha256": "d8ac11ba82d6d9cc338d4339cd9d7438c0f597bc2948a84d05853c7c2599565b"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-slots",
+        "entry": "index.js",
+        "sha256": "57e1314e31a2015f30231e1e7596da658f1bb5cb64c103c4cf13381647412c99"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-renderer",
+        "entry": "client.js",
+        "sha256": "bc13d16ad4a42d946d7213e6a556cc9b84e91a1480f69edf0af1847f8ee2146b"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-session",
+        "entry": "client.js",
+        "sha256": "516b8db72b60d871be75db76f36dec6e0f86acdd07a9a439e692dfc1b931bc1e"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-conversation",
+        "entry": "client.js",
+        "sha256": "4306aa8e6aa492255fdeaad6d83fcf5bb1301bfce7037e6124e8de41109abec7"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-chat",
+        "entry": "client.js",
+        "sha256": "34334441ea54138bf00d78497e8b178e791705d43994326437ade60da41ca132"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-trajectory",
+        "entry": "client.js",
+        "sha256": "0e783c70903452969591dd9bd68f8d9cdce06bc8283bc8c5299b4b0d161719d8"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-tool",
+        "entry": "client.js",
+        "sha256": "6dadfe7811e9d27056638ba7b866085cd5303c4e7938a75b107501a9f89fcc82"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-plan",
+        "entry": "client.js",
+        "sha256": "bd44280a386ab421b5d00c1eadb43b5ad14ee82d38a9dcb56154f71167c5d6e6"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-input-trigger",
+        "entry": "client.js",
+        "sha256": "1c461b681d7d58e48f2f7e8ae4adb79ce70cd4147c30b8b3c92e47e89c29528c"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-commands",
+        "entry": "client.js",
+        "sha256": "e07db31f4280afb39f4421d956f3734a40bc378ca01316b05b108942af1f15b8"
+      }
+    ],
+    "officialModules": [
+      {
+        "name": "@deepseek-ai/dsh-api-session-controller",
+        "browserEntry": "client.js",
+        "sha256": "d8ac11ba82d6d9cc338d4339cd9d7438c0f597bc2948a84d05853c7c2599565b"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-renderer",
+        "browserEntry": "client.js",
+        "sha256": "bc13d16ad4a42d946d7213e6a556cc9b84e91a1480f69edf0af1847f8ee2146b"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-session",
+        "browserEntry": "client.js",
+        "sha256": "516b8db72b60d871be75db76f36dec6e0f86acdd07a9a439e692dfc1b931bc1e"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-conversation",
+        "browserEntry": "client.js",
+        "sha256": "4306aa8e6aa492255fdeaad6d83fcf5bb1301bfce7037e6124e8de41109abec7"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-chat",
+        "browserEntry": "client.js",
+        "sha256": "34334441ea54138bf00d78497e8b178e791705d43994326437ade60da41ca132"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-tool",
+        "browserEntry": "client.js",
+        "sha256": "6dadfe7811e9d27056638ba7b866085cd5303c4e7938a75b107501a9f89fcc82"
+      },
+      {
+        "name": "@deepseek-ai/dsh-client-ui-attachment",
+        "browserEntry": "client.js",
+        "sha256": "cdb497656ed0e66f011125df22791f6f579c85710d2d915020ddcfe6c0f58072"
+      },
+      {
+        "name": "@deepseek-ai/dsh-api-gateway",
+        "browserEntry": "client.browser.js",
+        "sha256": "3043de82334846a3a5654b7317830c5403f90e9aeca692d3c15e30e01d16505d"
+      }
+    ],
+    "staticModules": [
+      "react",
+      "react/jsx-runtime",
+      "react-dom",
+      "react-dom/client",
+      "@deepseek-ai/cordis",
+      "zod",
+      "@tanstack/react-virtual",
+      "@deepseek-ai/dsh-client-store",
+      "@deepseek-ai/dsh-client-ui-slots",
+      "@deepseek-ai/dsh-client-ui-primitives",
+      "@deepseek-ai/dsh-client-ui-dockkit"
+    ],
+    "buildMs": 777,
+    "geometryMocks": false,
+    "shell": "two-pane component fixture",
+    "sourceTransport": "synthetic loopback SourceEventIndex, plus cold native SQLite via production DirectCodexAdapter"
+  },
+  "browser": {
+    "engine": "chromium",
+    "version": "153.0.8010.12"
+  },
+  "finishedAt": "2026-11-05T09:25:40.054Z"
 }

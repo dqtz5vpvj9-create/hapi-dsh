@@ -1,16 +1,30 @@
 --- a/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
 +++ b/packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx
-@@ -101,6 +101,9 @@
+@@ -101,6 +101,23 @@
    const layoutRevision = useRef(0)
    const pendingLayout = useRef<{ changed: boolean; revision: number } | null>(null)
  
 +  const paneVisible = useRef(false)
-+  const rowMeasurements = useRef(new WeakMap<HTMLElement, { model: readonly VirtualChatRow[]; size: number }>())
++  const rowMeasurements = useRef(new WeakMap<HTMLElement, { height: number }>())
++  const dirtyRows = useRef(new WeakSet<HTMLElement>())
++  const mutations = useRef<MutationObserver | null>(null)
++  const invalidateMutations = useCallback((records: readonly MutationRecord[]) => {
++    for (const record of records) {
++      // Reindexing retained keyed DOM does not change its border-box height.
++      if (record.type === 'attributes' && record.attributeName === 'data-index') continue
++      const target = record.target instanceof Element ? record.target : record.target.parentElement
++      const row = target?.closest<HTMLElement>('[data-chat-virtual-row]')
++      if (row) dirtyRows.current.add(row)
++    }
++  }, [])
++  const consumeMutations = useCallback(() => {
++    if (mutations.current) invalidateMutations(mutations.current.takeRecords())
++  }, [invalidateMutations])
 +  const [, setWidthRevision] = useState(0)
    const rowsRef = useRef(rows)
    rowsRef.current = rows
    const indexes = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows])
-@@ -144,16 +147,13 @@
+@@ -144,16 +161,15 @@
          return instance.itemSizeCache.get(instance.options.getItemKey(index)) ?? instance.options.estimateSize(index)
        }
  
@@ -30,20 +44,29 @@
 +      // Hidden occurrences must not overwrite a usable measured size with zero.
 +      if (entry.contentRect.width === 0 && height === 0) return instance.itemSizeCache.get(key) ?? instance.options.estimateSize(index)
 +      const size = height + (rowsRef.current[index]?.gapBefore ?? 0)
-+      rowMeasurements.current.set(element, { model: rowsRef.current, size })
++      consumeMutations()
++      rowMeasurements.current.set(element, { height })
++      dirtyRows.current.delete(element)
        if (instance.itemSizeCache.get(key) !== size) layoutRevision.current++
        return size
      },
-@@ -200,12 +200,29 @@
+@@ -200,12 +216,37 @@
  
    const listRef = useRef<HTMLDivElement | null>(null)
    useLayoutEffect(() => {
 -    const viewport = scrollElement
--    const list = listRef.current
+     const list = listRef.current
 -    if (viewport === null || list === null || list.getClientRects().length === 0) return
 -    const margin = list.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop
 -    if (Math.abs(margin - scrollMargin) > 0.5) setScrollMargin(margin)
 -  })
++    if (list === null) return
++    const observer = new MutationObserver(invalidateMutations)
++    mutations.current = observer
++    observer.observe(list, { subtree: true, childList: true, characterData: true, attributes: true })
++    return () => { observer.disconnect(); mutations.current = null }
++  }, [invalidateMutations])
++  useLayoutEffect(() => {
 +    const viewport = scrollElement, list = listRef.current
 +    if (viewport === null || list === null) return
 +    let width: number | undefined
@@ -70,7 +93,7 @@
  
    const virtualItems = virtualizer.getVirtualItems()
    const geometry = virtualItems.map(row => `${row.key}:${row.start}:${row.size}`).join('|')
-@@ -213,19 +230,29 @@
+@@ -213,19 +254,36 @@
    useLayoutEffect(() => {
      const list = listRef.current
      measuredLayout.current = false
@@ -78,28 +101,35 @@
 -    const visible = list.getClientRects().length > 0
 +    if (list === null || !paneVisible.current) return
 +    const elements = [...list.querySelectorAll<HTMLElement>('[data-chat-virtual-row]')]
-+    const dirty = elements.filter(element => rowMeasurements.current.get(element)?.model !== rows)
++    // React may recreate row models without changing their keyed DOM. Only
++    // actual content/style mutations, new mounts and width reflow invalidate
++    // accepted heights. Consume this commit before acknowledging its geometry.
++    consumeMutations()
++    const dirty = elements.filter(element => !rowMeasurements.current.has(element) || dirtyRows.current.has(element))
 +    // Read the complete candidate DOM before any virtualizer update can change
 +    // spacers or scroll geometry. Existing rows reuse their accepted measurements.
 +    const visible = dirty.length === 0 || list.getClientRects().length > 0
      if (!visible && rows.length > 0) return
--    let measured = rows.length === 0 || virtualItems.length > 0
--    for (const element of visible ? list.querySelectorAll<HTMLElement>('[data-chat-virtual-row]') : []) {
 +    const measurements = dirty.map(element => {
-       const index = Number(element.dataset.index)
++      return { element, height: element.getBoundingClientRect().height }
++    })
++    for (const { element, height } of measurements) {
++      rowMeasurements.current.set(element, { height })
++      dirtyRows.current.delete(element)
++    }
+     let measured = rows.length === 0 || virtualItems.length > 0
+-    for (const element of visible ? list.querySelectorAll<HTMLElement>('[data-chat-virtual-row]') : []) {
+-      const index = Number(element.dataset.index)
 -      const item = virtualItems.find(row => row.index === index)
 -      const height = element.getBoundingClientRect().height
 -      const size = Number.isFinite(height)
 -        ? height + (Number.parseFloat(getComputedStyle(element).marginTop) || 0)
 -        : item?.size ?? (rows[index] === undefined ? 96 : 96 + rows[index]!.gapBefore)
-+      return { element, size: element.getBoundingClientRect().height + (rows[index]?.gapBefore ?? 0) }
-+    })
-+    for (const { element, size } of measurements) rowMeasurements.current.set(element, { model: rows, size })
-+    let measured = rows.length === 0 || virtualItems.length > 0
 +    const changes: Array<{ index: number; size: number }> = []
 +    for (const element of elements) {
 +      const index = Number(element.dataset.index), item = virtualItems.find(row => row.index === index)
-+      const size = rowMeasurements.current.get(element)?.size
++      const height = rowMeasurements.current.get(element)?.height
++      const size = height === undefined ? undefined : height + (rows[index]?.gapBefore ?? 0)
 +      if (size === undefined || !Number.isFinite(size)) { measured = false; continue }
        if (item === undefined || Math.abs(item.size - size) > 0.5) measured = false
 -      if (virtualizer.itemSizeCache.get(virtualizer.options.getItemKey(index)) !== size) layoutRevision.current++
@@ -159,7 +189,15 @@
    const virtualization: ChatFlowVirtualization = {
      getScrollElement: () => scroller,
      savedAnchorKey: null,
-@@ -98,6 +102,33 @@
+@@ -91,13 +95,81 @@
+     beforeLayout: () => {},
+     afterLayout: () => {},
+   }
+-  const { container } = render(<VirtualChatRows rows={rows} virtualization={virtualization} />, { container: mount })
++  const { container, rerender } = render(<VirtualChatRows rows={rows} virtualization={virtualization} />, { container: mount })
+   act(() => { notify(scroller, 800, 400) })
+ 
+   await waitFor(() => expect(container.querySelector('[data-index="0"]')).not.toBeNull())
    expect(container.querySelector('[data-index="299"]')).toBeNull()
    expect(container.querySelectorAll('[data-chat-virtual-row]').length).toBeLessThan(24)
  
@@ -168,25 +206,66 @@
 +  expect(rowReads).toBe(0)
 +  expect(listReads).toBe(0)
 +
++  // A new model/render closure can rebind the official Builder while retaining
++  // exactly the same DOM. Neither that nor virtualizer reindexing needs layout.
++  const rebound = rows.map(row => ({ ...row, render: () => row.render() }))
++  act(() => { rerender(<VirtualChatRows rows={rebound} virtualization={virtualization} />) })
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++  const retained = container.querySelector<HTMLElement>('[data-index="1"]')!
++  retained.dataset.index = '2'; retained.dataset.index = '1'
++  act(() => { rerender(<VirtualChatRows rows={[...rebound]} virtualization={virtualization} />) })
++  expect(rowReads).toBe(0)
++  expect(listReads).toBe(0)
++
++  // Real text, child and style changes must be measured before a layout is
++  // acknowledged, even when ResizeObserver has not delivered a notification.
++  let currentRows = rebound
++  for (const [kind, height] of [['text', 110], ['child', 125], ['style', 140]] as const) {
++    const before = Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)
++    const oldHeight = heights.get(1) ?? 96
++    heights.set(1, height)
++    currentRows = currentRows.map((row, index) => index !== 1 ? row : {
++      ...row,
++      render: () => <div data-chat-anchor-key="anchor-1" data-chat-flow-key="anchor-1" style={kind === 'style' ? { padding: 15 } : undefined}>
++        {kind === 'text' ? 'expanded message text' : <span>expanded child</span>}
++      </div>,
++    })
++    rowReads = 0; listReads = 0
++    act(() => { rerender(<VirtualChatRows rows={currentRows} virtualization={virtualization} />) })
++    expect(rowReads).toBe(1)
++    expect(listReads).toBe(1)
++    expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(before + height - oldHeight)
++    expect(api?.isLayoutReady(false)).toBe(true)
++  }
++  rowReads = 0; listReads = 0
 +  const growing = container.querySelector<HTMLElement>('[data-index="1"]')!
 +  const previousHeight = Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)
 +  heights.set(1, 180)
 +  act(() => { notify(growing, 800, 180) })
-+  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 84))
++  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 40))
 +  expect(rowReads).toBe(0)
 +  expect(listReads).toBe(0)
 +
 +  hidden = true
 +  act(() => { notify(scroller, 0, 0); notify(growing, 0, 0) })
 +  expect(api?.isLayoutReady(false)).toBe(false)
++  heights.set(1, 210)
++  currentRows = currentRows.map((row, index) => index !== 1 ? row : {
++    ...row, render: () => <div data-chat-anchor-key="anchor-1">changed while hidden</div>,
++  })
++  rowReads = 0
++  act(() => { rerender(<VirtualChatRows rows={currentRows} virtualization={virtualization} />) })
++  expect(rowReads).toBe(0)
++  expect(api?.isLayoutReady(false)).toBe(false)
 +  hidden = false
 +  act(() => { notify(scroller, 800, 400) })
 +  await waitFor(() => expect(api?.isLayoutReady(false)).toBe(true))
-+  expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 84)
++  expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 70)
 +
 +  width = 390; heights.set(1, 240)
 +  act(() => { notify(scroller, 390, 400) })
-+  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 144))
++  await waitFor(() => expect(Number.parseFloat(container.querySelector<HTMLElement>('[data-chat-virtual-rows]')!.style.height)).toBe(previousHeight + 100))
 +  expect(rowReads).toBeGreaterThan(0)
 +  expect(api?.isLayoutReady(false)).toBe(true)
 +

@@ -218,7 +218,20 @@ export function syntheticWorkspace(sessionId) {
 export function installObserver({ sessionId, allowedReadStreams, profile = false }) {
   const state = window.__hhpiSmoke = { sessionId, blocked: 0, isolatedWorkspace: 0, isolatedReadState: 0,
     isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], monitor: false, lastFrame: null };
-  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = [];
+  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {};
+  if (profile && typeof HTMLElement === 'function') {
+    for (const method of ['getClientRects', 'getBoundingClientRect']) {
+      const original = HTMLElement.prototype[method];
+      HTMLElement.prototype[method] = function(...args) {
+        const started = performance.now(), value = original.apply(this, args), duration = performance.now() - started;
+        const kind = this.hasAttribute('data-chat-virtual-rows') ? 'virtual-list' : this.hasAttribute('data-chat-virtual-row') ? 'virtual-row' : this.hasAttribute('data-conversation-scroll') ? 'scrollport' : this.hasAttribute('data-chat-anchor-key') ? 'anchor' : 'other';
+        const key = `${method}:${kind}`, record = state.nativeReads[key] ??= { count: 0, total: 0, max: 0 };
+        record.count++; record.total += duration;
+        if (duration > record.max) { record.max = duration; record.maxAt = started; record.phase = state.phase; record.stack = new Error().stack?.split('\n').slice(2, 6).map(line => line.replace(/https?:[^ )]*?(?=:\d+:\d+(?:[ )]|$))/gu, '<script>')); }
+        return value;
+      };
+    }
+  }
   const phase = name => { state.phase = name; if (profile) state.phases.push({ start: performance.now(), phase: name }); };
   phase('opening');
   if (profile && typeof PerformanceObserver === 'function') {
@@ -597,7 +610,7 @@ async function runScenario(browser, config, name) {
     });
     await awaiting('install-blocked-stream-counter', page.exposeBinding('hhpiSmokeBlocked', () => { result.blockedStreams++; }));
     cdp = await awaiting('attach-browser-network-inspector', context.newCDPSession(page));
-    if (profile && name === 'desktop') {
+    if (profile && name === 'desktop' && process.env.HAPI_DSH_SMOKE_SKIP_TRACE !== '1') {
       traceCompletion = new Promise(resolve => cdp.once('Tracing.tracingComplete', resolve));
       await cdp.send('Tracing.start', { categories: 'devtools.timeline,v8.execute,disabled-by-default-v8.cpu_profiler', transferMode: 'ReturnAsStream' });
     }
@@ -796,7 +809,7 @@ async function runScenario(browser, config, name) {
     result.error = timedOut ? 'scenario-budget-exhausted' : error.smokeCode ?? (error.name === 'TimeoutError' ? 'step-timeout' : 'interaction-failed');
   } finally {
     clearTimeout(deadline);
-    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [] })).catch(() => null);
+    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [], nativeReads: window.__hhpiSmoke?.nativeReads ?? {} })).catch(() => null);
     if (traceCompletion) {
       let traceDeadline;
       const saveTrace = async () => {

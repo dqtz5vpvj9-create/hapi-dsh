@@ -27,13 +27,15 @@ class BrowserStorage implements Storage {
 }
 const require = createRequire(import.meta.url), root = resolve(import.meta.dirname, '..')
 let Sessions: typeof RemoteSessions
+let SourceSessionFace: typeof RemoteSourceSession
 before(async () => {
   const output = await build({ entryPoints: [resolve(root, 'src/client/remote-sessions.ts')],
     alias: { '@deepseek-ai/dsh-api-session-controller/client': resolve(root, 'tests/fixtures/client-session-contract.ts') },
     external: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-api-gateway/client'], bundle: true, platform: 'node', format: 'cjs', target: 'node24', write: false, logLevel: 'silent' })
-  const module = { exports: {} as { RemoteSessions: typeof RemoteSessions } }
+  const module = { exports: {} as { RemoteSessions: typeof RemoteSessions; RemoteSourceSession: typeof RemoteSourceSession } }
   new Function('require', 'module', 'exports', output.outputFiles[0]!.text)(require, module, module.exports)
   Sessions = module.exports.RemoteSessions
+  SourceSessionFace = module.exports.RemoteSourceSession
 })
 const session: SourceSession = { id: 'hhpi:machine:source:codex:thread', machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'thread',
   title: 'Synthetic offline read', cwd: '/synthetic', updatedAt: 1, status: 'idle', activeTurnId: null, pendingRequests: [],
@@ -437,4 +439,39 @@ test('persistent Pane windows share one body table and sidebar bootstrap reads m
     assert.equal(restored.read(session.id)?.windows.length, 2)
     assert.equal(restored.readPosition(session.id, 'left')?.anchorTop, 12)
   } finally { restored.dispose() }
+})
+
+
+test('repeated source metadata keeps conversation snapshots stable while real controls and titles update', async t => {
+  const history = new RemoteSourceHistory(session.id, { read: async request => page(request), changes: idle })
+  const face = new SourceSessionFace(session.id as SessionId, session, history, {} as HhpiRemoteApi)
+  t.after(() => { face.dispose(); history.dispose() })
+  await face.ready
+  const title = face.projections.faceOf('title'), source = face.projections.faceOf('hhpiSource')
+  assert.equal(title.getSnapshot(), session.title, 'initial metadata must initialize projections')
+  assert.equal(source.getSnapshot(), face.metadata.getSnapshot())
+  const before = { metadata: face.metadata.getSnapshot(), state: face.getSnapshot(), source: source.getSnapshot() }
+  const notifications = { metadata: 0, state: 0, title: 0, source: 0 }
+  face.metadata.subscribe(() => ++notifications.metadata)
+  face.subscribe(() => ++notifications.state)
+  title.subscribe(() => ++notifications.title)
+  source.subscribe(() => ++notifications.source)
+  for (let repeat = 0; repeat < 6; ++repeat) face.update(structuredClone(session))
+  assert.deepEqual(notifications, { metadata: 0, state: 0, title: 0, source: 0 })
+  assert.equal(face.metadata.getSnapshot(), before.metadata)
+  assert.equal(face.getSnapshot(), before.state)
+  assert.equal(source.getSnapshot(), before.source)
+  const changed = { ...session, title: 'Renamed source', capabilities: { ...session.capabilities, send: false } }
+  face.update(changed)
+  assert.equal(title.getSnapshot(), changed.title)
+  assert.equal(face.metadata.getSnapshot().capabilities.send, false, 'write capability changes cannot be hidden by metadata deduplication')
+  assert.deepEqual(notifications, { metadata: 1, state: 0, title: 1, source: 1 })
+  face.update({ ...changed, status: 'running', activeTurnId: 'turn-active' })
+  assert.equal(face.getSnapshot().running, true)
+  face.update({ ...changed, status: 'offline' })
+  assert.equal(face.getSnapshot().running, true, 'disconnect cannot erase the last known native running state')
+  face.update(changed)
+  assert.equal(face.getSnapshot().running, false)
+  assert.equal(notifications.state, 2)
+  assert.throws(() => face.update({ ...changed, id: 'hhpi:machine:source:codex:other' }), /crossed session identities/)
 })

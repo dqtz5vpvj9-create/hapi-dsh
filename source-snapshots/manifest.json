@@ -153,7 +153,7 @@
           "name": "ui-chat-layout-batched-geometry",
           "approvedPackage": "@deepseek-ai/dsh-client-ui-chat",
           "baseUiSourceIdentity": "6f70a9ca6f5525ce0cf32670d051edbae448ed63a5ed8ecf425e7d7441c566d9",
-          "sourceIdentity": "f78b9d956c0f54ee9ba4ded9ca66e6ab81ef29fc48431b070f3495b8723f8df6",
+          "sourceIdentity": "a1a100d952493d8d200fddd71e619a2480aeb92854e7d847d163861774107476",
           "patch": "dsh-ext/ui-chat-layout.patch",
           "changedPaths": [
             "packages/client/ui-chat/src/client/chat/VirtualChatRows.tsx",
