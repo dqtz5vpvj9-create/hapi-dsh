@@ -2,7 +2,8 @@
 import type { SourceChanges, SourceEntry, SourcePage, SourceSession } from '../remote/protocol.ts'
 
 export class RemoteSessionState {
-  private readonly journal: SourceChanges[] = []
+  private readonly journal: Array<{ change: SourceChanges; bytes: number }> = []
+  private snapshots = 0
   private bytes = 0
   private readonly sessions = new Map<string, SourceSession>()
   private readonly authoritative = new Set<string>()
@@ -22,11 +23,23 @@ export class RemoteSessionState {
   forget(id: string): void { this.sessions.delete(id); this.authoritative.delete(id) }
   clear(): void { this.sessions.clear(); this.authoritative.clear(); this.reset() }
   reset(): void { this.journal.length = 0; this.bytes = 0 }
+  /** Buffer only while a snapshot transaction can need replay. Ordinary live
+   * paging already uses the accepted entry cache and does not own this copy. */
+  beginSnapshot(): () => void {
+    if (this.snapshots++ === 0) this.reset()
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--this.snapshots === 0) this.reset()
+    }
+  }
   record(change: SourceChanges): void {
     if (change.reset) this.reset()
-    else {
-      this.journal.push(change); this.bytes += JSON.stringify(change).length * 2
-      while (this.journal.length > this.maxFrames || this.bytes > this.maxBytes) this.bytes -= JSON.stringify(this.journal.shift()!).length * 2
+    else if (this.snapshots > 0) {
+      const bytes = JSON.stringify(change).length * 2
+      this.journal.push({ change, bytes }); this.bytes += bytes
+      while (this.journal.length > this.maxFrames || this.bytes > this.maxBytes) this.bytes -= this.journal.shift()!.bytes
     }
   }
   /** Each page is replayed from its own baseline, never merely relabelled. */
@@ -34,7 +47,7 @@ export class RemoteSessionState {
     if (page.epoch !== epoch || page.version > version) throw this.stale()
     const entries = new Map(page.entries.map(entry => [entry.event.seq, entry]))
     let covered = page.version
-    for (const change of this.journal) {
+    for (const { change } of this.journal) {
       if (change.version <= covered) continue
       if (change.epoch !== epoch || change.base !== covered) throw this.stale()
       for (const seq of change.removed) entries.delete(seq as SourceEntry['event']['seq'])

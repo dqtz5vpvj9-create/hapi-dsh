@@ -121,6 +121,7 @@ export class RemoteSourceHistory {
     }, 300)
     this.releaseTimer.unref?.()
   }
+  beginSnapshot(): () => void { return this.accepted.beginSnapshot() }
   get recoveryTarget(): string { return JSON.stringify([this.epoch, this.generation]) }
   reconcilePages(pages: readonly SourcePage[]): SourcePage { return this.accepted.merge(pages, this.sourceEpoch, this.version, this.lastSession ?? pages.at(-1)!.session) }
   get metadataFromCache(): boolean { return this.restoredMetadata }
@@ -626,13 +627,17 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   }
   recover(): Promise<void> {
     return this.recoveryTask.request(this.owner.recoveryTarget, async current => {
-      try { await this.performRecovery(current) }
-      catch (error) {
-        if (!current() || sourceReadFailureCode(error) !== 'STALE_VERSION') throw error
-        await this.performRecovery(current)
-      }
+      const release = this.owner.beginSnapshot()
+      try {
+        try { await this.performRecovery(current) }
+        catch (error) {
+          if (!current() || sourceReadFailureCode(error) !== 'STALE_VERSION') throw error
+          await this.performRecovery(current)
+        }
+      } finally { release() }
     })
   }
+
   private async performRecovery(current: () => boolean): Promise<void> {
     const prior = this.state, navigation = ++this.navigation, epoch = this.owner.sourceEpoch
     const body = (this.publication.published?.snapshot ?? prior).entries.filter(entry => !this.context.has(entry.event.seq))
