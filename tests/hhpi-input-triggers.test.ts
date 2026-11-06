@@ -41,3 +41,11 @@ test('at-reference candidates read the native workspace and serialize the select
   await at!.candidates(session, { query: 'index', position: 'inline', drilled: false, signal })
   assert.deepEqual(calls.map(call => [call.method, call.params]), [['fs/readDirectory', { path: '/workspace' }], ['fuzzyFileSearch', { query: 'index', roots: ['/workspace'] }]])
 })
+
+
+test('retained Pane command candidates use their bound source even without a canonical owner in the installer context', async () => {
+  const [slash] = codexInputSources({} as HhpiRemoteApi, () => undefined, () => true)
+  const binding = { session: { metadata: { getSnapshot: () => source } } } as unknown as import('@deepseek-ai/dsh-api-session-controller/client').SessionBinding
+  const rows = await slash!.candidates({ sessionId: id, binding }, { query: 'compact', position: 'leading', drilled: false, signal })
+  assert.deepEqual(rows.map(row => row.name), ['compact'])
+})

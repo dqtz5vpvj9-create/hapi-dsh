@@ -1,3 +1,4 @@
+import { installSkillDirectoryProvider } from './skill-directory-provider.ts'
 import { Context, type Fiber } from '@deepseek-ai/cordis'
 import type { Entry } from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
@@ -78,6 +79,11 @@ export class CommandListReads<Key, Value> {
  * execute is delegated unchanged. Other Remote namespaces and consumers keep
  * their original owner. Each Host graph owns its own rounds and generation. */
 export async function installCommandDirectoryProvider(ctx: Context): Promise<() => Promise<void>> {
+  const stops = await Promise.all([installCommandProvider(ctx), installSkillDirectoryProvider(ctx)])
+  return async () => { await Promise.all(stops.map(stop => stop())) }
+}
+
+async function installCommandProvider(ctx: Context): Promise<() => Promise<void>> {
   const providers = new Map<symbol, Fiber>()
   const prior = new Map<Entry, Record<string, true | string> | null>()
   let stopped = false

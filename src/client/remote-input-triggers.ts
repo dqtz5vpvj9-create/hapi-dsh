@@ -1,7 +1,7 @@
 /** Native Codex commands and workspace references in the official input pipeline. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import type { CommandClaim, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+import type { ClientSessionContext, CommandClaim, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import type { SourceSession } from '../remote/protocol.ts'
 import type { CodexCall } from '../remote/codex-access.ts'
@@ -17,12 +17,14 @@ const commands = {
 export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) => SourceSession | undefined, zh: () => boolean): InputTriggerSource[] {
   // A missing reply pins the original request. A repeated submit reads its receipt,
   // and a changed draft cannot silently replace that unresolved native operation.
+  const metadataOf = (session: ClientSessionContext) => (session.binding?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot() ?? sourceOf(session.sessionId)
   const pending = new Map<string, { text: string; request: CodexCall; busy: boolean }>()
-  const claimOf = (id: SessionId, name: string): CommandClaim | undefined => {
-    if (!(name in commands) || !sourceOf(id)?.codex) return undefined
+  const claimOf = (session: ClientSessionContext, name: string): CommandClaim | undefined => {
+    const id = session.sessionId
+    if (!(name in commands) || !metadataOf(session)?.codex) return undefined
     return { name, token: `/${name} `, attachments: false, hint: commands[name as keyof typeof commands][zh() ? 0 : 1],
       async submit(args, _ctx, attachments) {
-        const source = sourceOf(id)
+        const source = metadataOf(session)
         if (!source?.codex || !api.nativeCall) return { kind: 'error', text: '原 Codex 会话不可用。草稿已保留。' }
         if (attachments.length) return { kind: 'error', text: '此命令不接受附件，请先移除附件。' }
         const text = JSON.stringify([name, args]), saved = pending.get(id)
@@ -55,15 +57,15 @@ export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) 
     }
   }
   return [{ trigger: '/', name: 'codex-native', order: -50,
-    candidates: async (session, request) => sourceOf(session.sessionId)?.codex && request.position === 'leading'
+    candidates: async (session, request) => metadataOf(session)?.codex && request.position === 'leading'
       ? Object.entries(commands).filter(([name, labels]) => `${name} ${labels.join(' ')}`.toLowerCase().includes(request.query.toLowerCase())).map(([name, labels]) => ({ name, description: labels[zh() ? 0 : 1] })) : [],
-    onPick: pick => { const claim = claimOf(pick.session.sessionId, pick.candidate.name); return claim ? { claim } : undefined },
-    matchSpace: (session, token) => { const claim = claimOf(session.sessionId, token.slice(1)); return claim ? { claim } : undefined },
-    matchEnter: async (session, line, signal) => { signal.throwIfAborted(); const claim = claimOf(session.sessionId, /^\/([^\s]+)/u.exec(line)?.[1] ?? ''); return claim ? { claim } : undefined },
-    matchClaim: async (session, token, signal) => { signal.throwIfAborted(); return claimOf(session.sessionId, token.slice(1)) },
+    onPick: pick => { const claim = claimOf(pick.session, pick.candidate.name); return claim ? { claim } : undefined },
+    matchSpace: (session, token) => { const claim = claimOf(session, token.slice(1)); return claim ? { claim } : undefined },
+    matchEnter: async (session, line, signal) => { signal.throwIfAborted(); const claim = claimOf(session, /^\/([^\s]+)/u.exec(line)?.[1] ?? ''); return claim ? { claim } : undefined },
+    matchClaim: async (session, token, signal) => { signal.throwIfAborted(); return claimOf(session, token.slice(1)) },
   }, { trigger: '@', name: 'codex-files', order: -50,
     async candidates(session, request) {
-      const source = sourceOf(session.sessionId)
+      const source = metadataOf(session)
       if (!source?.codex || !source.cwd || !api.nativeCall) return []
       const response = await api.nativeCall({ sourceId: source.sourceId,
         method: request.query ? 'fuzzyFileSearch' : 'fs/readDirectory',
@@ -89,8 +91,9 @@ export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) 
   }]
 }
 export function installRemoteInputTriggers(ctx: Context, api: HhpiRemoteApi): () => void {
-  const fiber = ctx.inject(['inputTriggers', 'hhpiSessions', 'locale'], owner => {
-    const sources = codexInputSources(api, id => (owner.hhpiSessions.binding(id)?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot(), () => owner.locale.getSnapshot().active.startsWith('zh'))
+  const sessions = ctx.sessions, locale = ctx.locale
+  const fiber = ctx.inject(['inputTriggers'], owner => {
+    const sources = codexInputSources(api, id => (sessions.binding(id)?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot(), () => locale.getSnapshot().active.startsWith('zh'))
     const stops = sources.map(source => owner.inputTriggers.registerSource(source))
     return () => { for (const stop of stops) stop() }
   })
