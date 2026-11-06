@@ -1,3 +1,5 @@
+import { installRemoteInputTriggers } from './remote-input-triggers.ts'
+import { installRemoteFeedbackPolicy } from './remote-feedback.tsx'
 import { installRemoteFileUpload } from './remote-file-upload.ts'
 import type { SourceViewportSession } from './source-sessions.ts'
 import { remoteReadingOwner } from './remote-reading-owner.ts'
@@ -261,7 +263,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installNativeActionDock(ctx, native, api))
     disposers.push(installSourceUsage(ctx))
     disposers.push(installComposerPicker(ctx, controls, observedControls))
-    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi))
+    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi), installRemoteInputTriggers(ctx, ctx.remote.hhpi), installRemoteFeedbackPolicy(ctx))
     disposers.push(installSourceDshChildControls(ctx, api))
     disposers.push(installTurnSharing(ctx))
     disposers.push(installNativeComposerAdmission(ctx.sessions, ctx.conversation.blocks, {

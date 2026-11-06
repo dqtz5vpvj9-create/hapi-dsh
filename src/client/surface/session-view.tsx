@@ -669,7 +669,7 @@ export function installSessionViewHost(ctx: Context): {
                 const session = ctx.sessions.binding(sessionId)?.session as
                     (SessionReference['binding']['session'] & Partial<SourceViewportSession>) | undefined
                 return !isSourceSessionId(sessionId) && session?.sourceWindow === undefined ? undefined : {
-                    foldCompletedTurns: true, stepGrouping: 'collapsed' as const, virtualizeGroupMembers: true,
+                    foldCompletedTurns: true, stepGrouping: 'collapsed' as const, virtualizeGroupMembers: false,
                 }
             },
         }))
