@@ -23,6 +23,7 @@ export const SOURCE_SESSION_CONSUMERS = [
   '@deepseek-ai/dsh-client-ui-approval',
   '@deepseek-ai/dsh-client-ui-goal',
   '@deepseek-ai/dsh-client-ui-input-trigger',
+  '@deepseek-ai/dsh-client-ui-reference',
   '@deepseek-ai/dsh-client-ui-model-selection',
   '@deepseek-ai/dsh-client-ui-open-in-app',
   '@deepseek-ai/dsh-client-ui-permission-presets',
