@@ -6,7 +6,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
-import { isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
+import { sourceSessionId, isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { operationRefusal, sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
@@ -134,9 +134,9 @@ export class RemoteSourceSession implements SessionFace {
   }
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
     if (this.disposed) throw sourceError('The source view was released.')
-    if (input.attachments.length) throw sourceError('This source currently accepts text input. Your files and draft have been kept.')
+    if (input.attachments.some(attachment => attachment.type === 'file') || input.attachments.length && !this.metadata.getSnapshot().capabilities.images) throw sourceError('This source cannot accept these attachments. Your files and draft have been kept.')
     const requestId = crypto.randomUUID() as SessionRequestId
-    if (this.outbox) {
+    if (this.outbox && !input.attachments.length) {
       const metadata = this.metadata.getSnapshot()
       const kind = input.mode === 'steer' ? 'steer' : 'send'
       const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text: input.text,
@@ -163,14 +163,15 @@ export class RemoteSourceSession implements SessionFace {
     const requestId = suppliedId ?? crypto.randomUUID() as SessionRequestId
     if (this.outbox) {
       try {
-        if (content.some(part => part.type !== 'text')) {
+        if (content.some(part => part.type === 'file' || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) {
           this.outbox.abandon(requestId)
-          throw sourceError('This source currently accepts text input. Your files and draft have been kept.')
+          throw sourceError('This source cannot accept these attachments. Your files and draft have been kept.')
         }
         const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
+        const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
         const saved = this.outbox.get(requestId)
         if (!saved) signal?.throwIfAborted()
-        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
+        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || JSON.stringify(saved.operation.images ?? []) !== JSON.stringify(images) || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
           this.outbox.abandon(requestId)
           throw sourceError('A saved submission cannot be changed after admission.')
         }
@@ -180,7 +181,7 @@ export class RemoteSourceSession implements SessionFace {
           const metadata = this.metadata.getSnapshot()
           if (mode !== 'steer' && !sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
           const kind = mode === 'steer' ? 'steer' : 'send'
-          const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text,
+          const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}),
             ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) }
           if (kind !== 'send') this.assertOperationCurrent(operation)
           this.outbox.enqueue(operation)
@@ -201,14 +202,15 @@ export class RemoteSourceSession implements SessionFace {
     if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
     this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
     try {
-      if (content.some(part => part.type !== 'text')) throw sourceError('This source currently accepts text input. File resources remain scoped to its source machine.')
+      if (content.some(part => part.type === 'file' || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) throw sourceError('This source cannot accept these attachments. File resources remain scoped to its source machine.')
+      const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
       const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
       const metadata = this.metadata.getSnapshot()
       const kind = mode === 'steer' ? 'steer' : 'send'
       if (sourceIsOffline(metadata)) throw sourceError('The source is offline. No operation was sent.')
       if (!metadata.capabilities[kind]) throw sourceError(`The source does not support ${kind}.`)
       if (kind === 'steer' && !metadata.activeTurnId) throw sourceError('There is no active native turn to steer.')
-      const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text,
+      const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}),
         ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) })
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
       return { ok: true, value: { accepted: true } }
@@ -223,12 +225,13 @@ export class RemoteSourceSession implements SessionFace {
   operate(operation: SourceOperation): Promise<SourceReceipt> {
     if (this.disposed) return Promise.reject(sourceError('The source view was released.'))
     if (operation.sessionId !== this.sessionId) return Promise.reject(sourceError('An operation belongs to another source session.'))
-    if (this.outbox) {
+    // Structured answers may contain secret fields; do not persist them in the browser outbox.
+    if (this.outbox && operation.response === undefined) {
       const saved = this.outbox.get(operation.operationId)
       if (!saved) this.assertOperationCurrent(operation)
       return this.outbox.submit(operation)
     }
-    const fingerprint = JSON.stringify([operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
+    const fingerprint = JSON.stringify([operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images])])
     const existing = this.operations.get(operation.operationId)
     if (existing && existing.fingerprint !== fingerprint) return Promise.reject(sourceError('An operation ID was reused with different arguments.'))
     if (existing?.promise) return existing.promise
@@ -519,14 +522,24 @@ export class RemoteSessions implements ISessions {
   }
   private publish(): void {
     const base = this.original.list.getSnapshot()
-    const ids = [...base.ids], byId = { ...base.byId }
+    const ids = [...base.ids], byId = { ...base.byId }, projectionsBySession = { ...base.projectionsBySession }
+    const catalogs = new Map<string, Array<{ id: SessionId; createdAt: number; mode: 'external'; label: string }>>()
+    for (const child of this.metadata.values()) {
+      if (!child.codex?.parentThreadId) continue
+      const parent = sourceSessionId({ ...child, nativeId: child.codex.parentThreadId })
+      const entries = catalogs.get(parent) ?? []
+      entries.push({ id: child.id as SessionId, createdAt: child.updatedAt, mode: 'external', label: child.codex.agentNickname ?? child.title })
+      catalogs.set(parent, entries)
+    }
     for (const session of this.metadata.values()) {
       const id = session.id as SessionId
       ids.push(id)
-      byId[id] = { id, title: session.title, displayTitle: session.title, cwd: session.cwd, running: session.status === 'running' || session.status === 'waiting',
-        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt, projectionValues: { hhpiSource: session, hhpiDiscovery: this.advertised.has(session.id) ? 'advertised' : 'last-known' } }
+      byId[id] = { id, title: session.title, displayTitle: session.title, cwd: session.cwd,
+        ...(session.codex?.parentThreadId ? { parentId: sourceSessionId({ ...session, nativeId: session.codex.parentThreadId }) as SessionId, origin: 'subagent' as const } : {}), running: session.status === 'running' || session.status === 'waiting',
+        retainedBy: this.retainInfo(id).getSnapshot().retainedBy, blank: false, updatedAt: session.updatedAt, projectionValues: { hhpiSource: session, subagentCatalog: catalogs.get(session.id) ?? [], hhpiDiscovery: this.advertised.has(session.id) ? 'advertised' : 'last-known' } }
+      projectionsBySession[id] = { values: byId[id]!.projectionValues!, state: 'ready', error: null }
     }
-    this.list.set(this.listSnapshot({ ...base, ids, byId }))
+    this.list.set(this.listSnapshot({ ...base, ids, byId, projectionsBySession }))
   }
   private listSnapshot(base: SessionListState): SessionListState {
     const pending = !this.catalogChecked && base.phase === 'ready'

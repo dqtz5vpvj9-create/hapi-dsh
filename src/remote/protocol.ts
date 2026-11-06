@@ -1,4 +1,5 @@
 /** HHPI source wire, v1. Native DSH continues using its unchanged federation wire. */
+import type { CodexAccessBridge } from './codex-access-bridge.ts';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 
@@ -22,7 +23,7 @@ export function parseSourceSessionId(value: string): SourceIdentity {
 
 /** seq is allocated once by the source index, never by a browser or a page. */
 export interface SourceEntry { type: 'event'; event: SessionEvent }
-export interface SourceCapabilities { send: boolean; steer: boolean; cancel: boolean; approve: boolean; files: boolean }
+export interface SourceCapabilities { send: boolean; steer: boolean; cancel: boolean; approve: boolean; files: boolean; images?: boolean | undefined }
 export interface SourceApproval { id: string; method: string; turnId: string | null; itemId: string | null; params: Record<string, unknown> }
 export interface SourceSession extends SourceIdentity {
     id: string; title: string; cwd: string; updatedAt: number;
@@ -30,6 +31,7 @@ export interface SourceSession extends SourceIdentity {
     /** Legacy status=offline remains readable; new sources retain execution state across outages. */
     connection?: { state: 'online' | 'offline'; observedAt: number } | undefined;
     capabilities: SourceCapabilities; pendingRequests: SourceApproval[];
+    codex?: { model: string | null; reasoningEffort: string | null; parentThreadId: string | null; agentNickname: string | null; settings?: Record<string, unknown> | undefined } | undefined;
     /** Exact pre-cutover resource, advertised only by its verified native owner. */
     legacyOrigin?: { hubId: string; sessionId: string } | undefined;
 }
@@ -48,6 +50,8 @@ export interface SourceChangesRequest { sessionId: string; epoch: string; versio
 export interface SourceOperation {
     sessionId: string; operationId: string; kind: 'send' | 'steer' | 'cancel' | 'approve';
     text?: string; turnId?: string; requestId?: string;
+    response?: Record<string, unknown>;
+    images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }>;
     decision?: 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 }
 export interface SourceReceipt {
@@ -69,6 +73,7 @@ export interface SourceCatalog { protocol: 1; legacyHapi: boolean; storageScope?
 /** Each adapter owns its native protocol and operations. It never creates a DSH Agent. */
 export interface SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine: string;
+    readonly nativeAccess?: CodexAccessBridge;
     list(signal?: AbortSignal): Promise<SourceSession[]>;
     /** Resolve an authorized original identity without waiting for the complete directory. */
     resolve?(sessionId: string, signal?: AbortSignal): Promise<SourceSession>;

@@ -140,3 +140,20 @@ test('read-only receipts use official exact-session authorization without granti
         assert.equal(app.lookups.length, 2, 'revoked lookups cannot enter the source adapter');
     } finally { await app.close(); }
 });
+
+test('native Codex routes require a source grant even when the caller owns one session', async () => {
+    const app = await mount();
+    let calls = 0;
+    Object.assign(app.adapter, { nativeAccess: { call: async () => { calls++; return { status: 'accepted', message: 'Synthetic native read', result: { data: [] } }; } } });
+    try {
+        app.grants.push({ role: { name: 'Session native route', resource: 'session', actions: ['hhpi/nativeCall'] }, resource: { kind: 'session', id: SessionId(session.id) } });
+        const request = { sourceId: identity.sourceId, method: 'model/list', params: {} };
+        await assert.rejects(app.invoke('nativeCall', { request }), denied);
+        assert.equal(calls, 0);
+        app.grants.push({ role: { name: 'Source native route', resource: 'hhpiSource', actions: ['hhpi/nativeCall'] }, resource: { kind: 'hhpiSource', id: identity.sourceId } });
+        assert.deepEqual(await app.invoke('nativeCall', { request }), { status: 'accepted', message: 'Synthetic native read', result: { data: [] } });
+        assert.equal(calls, 1);
+        await assert.rejects(app.invoke('nativeCall', { request: { ...request, sourceId: 'another-source' } }), denied);
+        assert.equal(calls, 1);
+    } finally { await app.close(); }
+});

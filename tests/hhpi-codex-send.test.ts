@@ -271,3 +271,17 @@ for (const delivery of ['not-dispatched', 'unknown'] as const) test(`an approval
     assert.deepEqual(f.responses, [{ id: 42, result: { decision: 'accept' } }], 'only one response ever leaves the local write boundary');
     assert.deepEqual(f.writes(), [], 'approval recovery never creates, resumes or sends a prompt');
 });
+
+test('native image inputs preserve the original thread and stable operation identity', async t => {
+    const f = await fixture(t, { loaded: true });
+    await f.adapter.list();
+    const request: SourceOperation = { ...operation('with-image'), text: '', images: [{ mediaType: 'image/png', data: 'aGVsbG8=' }] };
+    assert.equal((await f.adapter.operate(request)).status, 'accepted');
+    assert.equal((await f.adapter.operate(request)).status, 'accepted');
+    const writes = f.writes();
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.params.threadId, identity.nativeId);
+    assert.equal(writes[0]?.params.clientUserMessageId, request.operationId);
+    assert.deepEqual(writes[0]?.params.input, [{ type: 'image', url: 'data:image/png;base64,aGVsbG8=' }]);
+    await assert.rejects(f.adapter.operate({ ...request, images: [{ mediaType: 'image/png', data: 'ZGlmZmVyZW50' }] }), /reused/);
+});

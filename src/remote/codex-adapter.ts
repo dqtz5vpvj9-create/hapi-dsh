@@ -1,4 +1,5 @@
 /** Direct source-side Codex v2 adapter. Native thread identity and execution ownership are preserved. */
+import { CodexAccessBridge } from './codex-access-bridge.ts';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 import { CodexObservation, SupersededObservation } from './codex-observation.ts';
@@ -55,6 +56,7 @@ const delay = (ms: number, signal: AbortSignal): Promise<void> => new Promise((r
 export class DirectCodexAdapter implements SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine = 'codex';
     private readonly rpc: CodexRpc;
+    readonly nativeAccess: CodexAccessBridge;
     private readonly imageReader: CodexImageReader;
     private readonly metadataReader: NativeMetadataReader;
     private readonly readMetadata: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
@@ -89,6 +91,30 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.readImage = options.readImage ?? ((path, signal) => this.imageReader.read(path, signal));
         this.ledger = new OperationLedger(join(directory, 'operations'));
         this.creations = new CreationLedger(join(directory, 'creations'), JSON.stringify([this.machineId, this.id, this.engine]));
+        this.nativeAccess = new CodexAccessBridge(this.id, this.rpc, directory,
+            async (method, params) => {
+                if (method === 'thread/resume' && this.config.ownership !== 'exclusive' && this.config.writerLock !== 'native') {
+                    throw new SourceError('UNSUPPORTED', 'Resuming shared history requires verified native writer locking.');
+                }
+                // Execution methods never silently resume or replace an existing owner.
+                if (params && typeof params.threadId === 'string' && (method.startsWith('turn/') || method === 'thread/settings/update' || method === 'review/start' || method === 'thread/compact/start')) {
+                    const loaded = await this.loadedThreads(this.lifetime.signal);
+                    if (!loaded.has(params.threadId)) throw new SourceError('UNSUPPORTED', 'This thread is not loaded by this native execution owner.');
+                }
+            },
+            (_method, _params, response) => {
+                if (isRecord(response) && isRecord(response.thread)) {
+                    const thread = nativeThreadSchema.safeParse(response.thread);
+                    if (thread.success) this.remember(thread.data);
+                }
+                this.catalogAt = 0;
+            },
+            async (request, operationId, response) => {
+                const owner = this.threads.get(String(request.params.threadId));
+                if (!owner || !isRecord(response)) throw new SourceError('INVALID_REQUEST', 'Native response requires an owned thread and an object result.');
+                const receipt = await this.operate({ sessionId: owner.session.id, operationId, kind: 'approve', requestId: this.approvalId(request.id, request.generation), response });
+                return { status: receipt.status, message: receipt.message };
+            });
         this.stops = [this.rpc.onNotification(value => { this.notification(value); }), this.rpc.onRequest(request => { this.approval(request); }), this.rpc.onDisconnect(() => { this.disconnected(); })];
         // A source lifetime is independent of any Pane. This never cancels its native turn.
         this.timer = setInterval(() => {
@@ -153,7 +179,8 @@ export class DirectCodexAdapter implements SourceAdapter {
             status: pendingRequests.length ? 'waiting' : running ? 'running' : 'idle',
             connection: this.rpc.online ? sourceOnlineConnection(previous, this.now()) : { state: 'offline', observedAt: this.now() },
             activeTurnId: running ? previous?.activeTurnId ?? null : null,
-            capabilities: { send: loaded || resumable, steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false }, pendingRequests };
+            codex: { model: typeof thread.model === 'string' ? thread.model : null, reasoningEffort: typeof thread.reasoningEffort === 'string' ? thread.reasoningEffort : null, parentThreadId: typeof thread.parentThreadId === 'string' ? thread.parentThreadId : null, agentNickname: typeof thread.agentNickname === 'string' ? thread.agentNickname : null, ...(isRecord(thread.threadSettings) ? { settings: thread.threadSettings } : previous?.codex?.settings ? { settings: previous.codex.settings } : {}) },
+            capabilities: { send: loaded || resumable, steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false, images: true }, pendingRequests };
     }
     private remember(thread: NativeThread): ThreadOwner {
         let owner = this.threads.get(thread.id);
@@ -539,6 +566,10 @@ export class DirectCodexAdapter implements SourceAdapter {
         owner.observation.invalidate();
         owner.dirty = true;
         try {
+            if (method === 'thread/settings/updated' && isRecord(params.threadSettings)) {
+                owner.native = { ...owner.native, threadSettings: params.threadSettings, ...(typeof params.threadSettings.model === 'string' ? { model: params.threadSettings.model } : {}), reasoningEffort: params.threadSettings.reasoningEffort ?? params.threadSettings.effort ?? owner.native.reasoningEffort };
+                this.metadata(owner, this.descriptor(owner.native)); return;
+            }
             if (method === 'thread/reverted' || method === 'thread/compacted') { owner.pendingCompletions.clear(); owner.attachments?.revoke(true); owner.rewrite = true; owner.full = true; return; }
             if (method === 'thread/deleted') { owner.deleted = true; this.markOffline(owner); this.catalogAt = 0; return; }
             if (method === 'thread/closed' || method === 'thread/archived') { this.markOffline(owner); this.catalogAt = 0; return; }
@@ -580,10 +611,8 @@ export class DirectCodexAdapter implements SourceAdapter {
     private approvalId(id: unknown, generation: number): string { return JSON.stringify([generation, typeof id, id]); }
     private approval(request: NativeRequest): void {
         const threadId = request.params.threadId;
-        if (typeof threadId !== 'string' || !['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(request.method)) {
-            void this.rpc.respond(request, undefined, { code: -32601, message: 'HHPI does not implement this native request capability.' }).catch(() => {});
-            return;
-        }
+        // Source-level requests are handled by nativeAccess; thread requests stay with this owner.
+        if (typeof threadId !== 'string') return;
         const owner = this.threads.get(threadId);
         if (!owner) { void this.rpc.respond(request, undefined, { code: -32602, message: 'This native thread is not registered with the source.' }).catch(() => {}); return; }
         const id = this.approvalId(request.id, request.generation), acknowledgement = Promise.withResolvers<void>();
@@ -637,9 +666,10 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (operation.kind === 'approve') {
             const pending = operation.requestId ? this.approvals.get(operation.requestId) : undefined;
             if (!pending || pending.sessionId !== operation.sessionId || pending.request.generation !== this.rpc.currentGeneration || pending.submitted) throw new SourceError('INVALID_REQUEST', 'The native approval is no longer available for this source session.');
-            if (!operation.decision) throw new SourceError('INVALID_REQUEST', 'An explicit native approval decision is required.');
+            if (!operation.decision && !operation.response) throw new SourceError('INVALID_REQUEST', 'An explicit native response is required.');
+            if (operation.decision && !['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(pending.request.method)) throw new SourceError('INVALID_REQUEST', 'This native request requires its typed answer, not an approval decision.');
             pending.submitted = true;
-            try { await this.rpc.respond(pending.request, { decision: operation.decision }); }
+            try { await this.rpc.respond(pending.request, operation.response ?? { decision: operation.decision }); }
             catch (error) {
                 if (error instanceof SourceError && error.delivery === 'not-dispatched'
                     && this.approvals.get(operation.requestId!) === pending && pending.request.generation === this.rpc.currentGeneration) pending.submitted = false;
@@ -651,7 +681,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 return outcome ? receipt('accepted', 'The native engine resolved the approval request.') : receipt('indeterminate', 'The approval response was sent; native resolution has not been observed. It will not be resent.');
             } finally { timeout.abort(); }
         }
-        if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim()) {
+        if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim() && !operation.images?.length) {
             throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.');
         }
         try {
@@ -675,7 +705,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 this.loaded.add(owner.native.id); this.remember(resumed.thread);
             }
             if (operation.kind === 'send' || operation.kind === 'steer') {
-                const input = [{ type: 'text', text: operation.text, text_elements: [] }];
+                const input = [...(operation.text?.trim() ? [{ type: 'text', text: operation.text, text_elements: [] }] : []), ...(operation.images ?? []).map(image => ({ type: 'image', url: `data:${image.mediaType};base64,${image.data}` }))];
                 if (operation.kind === 'steer') {
                     if (!operation.turnId) throw new SourceError('INVALID_REQUEST', 'Steer requires the exact native active turn.');
                     const response = await this.rpc.request<{ turnId: string }>('turn/steer', { threadId: owner.native.id, expectedTurnId: operation.turnId, clientUserMessageId: operation.operationId, input }, { write: true });
@@ -718,7 +748,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     }
     async dispose(): Promise<void> {
         if (this.disposed) return;
-        this.disposed = true; clearInterval(this.timer); this.lifetime.abort();
+        this.disposed = true; this.nativeAccess.dispose(); clearInterval(this.timer); this.lifetime.abort();
         for (const stop of this.stops) stop();
         await Promise.all([this.rpc.dispose(), this.metadataReader.dispose(), this.imageReader.dispose(), ...[...this.threads.values()].map(owner => owner.attachments?.dispose())]);
         await Promise.allSettled([...this.receiptReads.values(), ...[...this.threads.values()].flatMap(owner => [owner.preparing, owner.refreshing].filter((work): work is Promise<void> => Boolean(work)))]);

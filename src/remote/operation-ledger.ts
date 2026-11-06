@@ -13,7 +13,7 @@ const isOutcome = (value: unknown): value is Outcome => typeof value === 'object
     && ['accepted', 'rejected', 'indeterminate'].includes(String((value as Outcome).status)) && typeof (value as Outcome).message === 'string';
 
 /** Shared persistence for native operations and native creation; never stores prompt bodies. */
-class ReceiptLedger<R extends Outcome> {
+export class ReceiptLedger<R extends Outcome> {
     private readonly inFlight = new Map<string, { fingerprint: string; promise: Promise<R> }>();
     constructor(private readonly directory: string) {}
     /** Lookup never installs an uncertainty marker and never invokes execute. */
@@ -100,7 +100,7 @@ export class OperationLedger {
     private readonly receipts: ReceiptLedger<SourceReceipt>;
     constructor(directory: string) { this.receipts = new ReceiptLedger(directory); }
     private payload(operation: SourceOperation): unknown {
-        return [operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null];
+        return [operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images])];
     }
     private valid(operation: SourceOperation, value: unknown): value is SourceReceipt {
         if (!isOutcome(value) || (value as SourceReceipt).operationId !== operation.operationId || (value as SourceReceipt).sessionId !== operation.sessionId) return false;

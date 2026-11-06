@@ -27,7 +27,7 @@ const MAX_OWNER_RECEIPTS = 128
 const EMPTY: readonly SourceDelivery[] = Object.freeze([])
 const prefixOf = (scope: string): string => `hhpi:outbox:v1:${scope}:`
 const fingerprint = (operation: SourceOperation): string => JSON.stringify([operation.sessionId, operation.operationId, operation.kind,
-  operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null])
+  operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images])])
 
 function decode(value: string | null | undefined): StoredDelivery | undefined {
   if (!value) return undefined
@@ -156,7 +156,7 @@ export class RemoteOutbox {
   /** Must finish before the official input commits its draft. No network work occurs here. */
   enqueue(operation: SourceOperation): SourceDelivery {
     if (this.disposed || !this.access) throw new Error('This message could not be saved on this device. Your draft has been kept.')
-    if ((['send', 'steer'].includes(operation.kind) && !operation.text?.trim()) || !operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
+    if ((['send', 'steer'].includes(operation.kind) && !operation.text?.trim() && !operation.images?.length) || !operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
     const existing = this.entries.get(operation.operationId)
     if (existing) {
       if (fingerprint(existing.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')

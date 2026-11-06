@@ -38,6 +38,7 @@ import { useWorkspaceLinks, WorkspaceLinkNotice } from './workspace-links.tsx'
 import { acceptsWorkspaceDrag, writeWorkspaceDrag } from '../workspace/drag.ts'
 import { SidebarScrollAnchor } from './sidebar-scroll.tsx'
 import { SidebarWindow, type SidebarScrollObserver } from './sidebar-window.tsx'
+import { SidebarScope } from './sidebar-scope.tsx'
 import { SidebarSearchControls } from './sidebar-search-controls.tsx'
 import { SessionRowState, SessionTime } from './sidebar-row-state.tsx'
 import { buildSidebarSearchIndex, compareSidebarSearch, sourceWorktreeLabel } from '../workspace/sidebar-search.ts'
@@ -210,6 +211,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
         data-hapi-pane-visible={!hidden} aria-label={`${t('pane')}: ${title}`} tabIndex={focused && !hidden ? 0 : -1} {...drop.handlers}
         onFocusCapture={() => { if (!hidden) controller.store.focus(pane.id) }} onPointerDownCapture={() => { if (!hidden) controller.store.focus(pane.id) }}>
         <header className="hapi-pane-header" data-hapi-pane-header={pane.id}>
+            <button type="button" className="hapi-pane-back" aria-label={t('allChats')} onClick={controller.requestSessionPicker}><WorkspaceIcon kind="back"/></button>
             <div className="hapi-pane-heading" data-hapi-pane-drag title={[title, location.machineName, summary?.cwd, t('paneDrag')].filter(Boolean).join('\n')} draggable={!hidden}
                 onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'pane', paneId: pane.id }) }}>
                 {summary && <ActivityDot {...activity} model={(nativeProjection(summary) ?? observedProjection(summary))?.model} t={t}/>}
@@ -774,9 +776,11 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                 }} title={[row.displayTitle, readableEngine(location.engine), machineLabel, row.cwd, worktree].filter(Boolean).join('\n')}
                     onPointerEnter={() => controller.preloadSession(row.id)} onFocus={() => controller.preloadSession(row.id)}
                     draggable onDragStart={event => { event.stopPropagation(); writeWorkspaceDrag(event.dataTransfer, { kind: 'session', sessionId: row.id }) }}>
-                    <div className="hapi-session-title"><ActivityDot {...activity} model={(nativeProjection(row) ?? observedProjection(row))?.model} latest={row.id === latestCompleted} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{row.displayTitle}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
-                    <div className="hapi-session-meta"><span className={`hapi-engine hapi-engine-${location.engine === 'codex' ? 'codex' : 'dsh'}`} title={t('engine')}>{readableEngine(location.engine)}</span>
-                        {machineLabel && <span className="hapi-ellipsis">{machineLabel}</span>}{destination ? <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span> : <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1)}</span>}
+                    <div className="hapi-session-title"><ActivityDot {...activity} model={(nativeProjection(row) ?? observedProjection(row))?.model} latest={row.id === latestCompleted} t={t}/><span>{pinnedIds.has(row.id) && '⌁ '}{readableTitle(row.displayTitle, t, 120)}</span>{unread && <span className="hapi-unread-dot" aria-label={t('unread')}/>}<SessionTime at={row.updatedAt} t={t}/></div>
+                    <div className="hapi-session-meta">
+                        <span className="hapi-ellipsis hapi-session-directory">{worktree ?? row.cwd?.split(/[\\/]/).filter(Boolean).at(-1) ?? t('unknownFolder')}</span>
+                        <span aria-hidden="true">·</span><span className="hapi-session-engine">{readableEngine(location.engine)}</span>
+                        {destination && <span className="hapi-session-destination" title={t('selected')}>{destination.label}</span>}
                         <span className="hapi-session-source-state"><SessionRowState state={row.sourceRowState} detailed={!mobile || statusMode === 'detailed'} t={t}/></span>
                     </div>
                 </button>}</SidebarActionSurface>
@@ -830,12 +834,13 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
         <header>
             {snapshot.pickingSession && <button ref={pickerBack} type="button" className="hapi-picker-back" title={t('backToWorkspace')} aria-label={t('backToWorkspace')}
                 onClick={controller.closeSessionPicker}><WorkspaceIcon kind="back"/></button>}
-            <strong>{t('allChats')}</strong><span className="hapi-sidebar-count" title={`${tree.length + discoveredMatching.length} ${t('sessions')}`}>{tree.length + discoveredMatching.length}</span>
-            <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
+            <strong>{t('sessions')}</strong><span className="hapi-sidebar-count" title={`${tree.length + discoveredMatching.length} ${t('sessions')}`}>{tree.length + discoveredMatching.length}</span>
+            <button type="button" className="hapi-directory-create" onClick={() => { controller.closeSessionPicker(); controller.requestNewSession() }}><WorkspaceIcon kind="add"/><span>{t('newSession')}</span></button>
             <IconButton label={t('sidebarOptions')} icon="more" onClick={() => setOptionsOpen(true)}/>
         </header>
-        <SidebarSearchControls query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
+        <SidebarSearchControls persistent query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
+        <SidebarScope filter={filter} counts={counts} onFilter={filter => controller.sidebar.change({ filter })} t={t}/>
         <div className="hapi-session-list" aria-label={t('allChats')} ref={setScrollElement}>
             <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={recentRows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
             {!tree.length && !discoveredMatching.length && <p className="hapi-list-empty" role="status">{snapshot.catalog.phase === 'ready' ? t('noSessions') : t('loading')}</p>}
@@ -886,9 +891,7 @@ export function SessionSidebar({ controller, controls, api, wide, expandSidebar,
                 <button type="button" aria-pressed={mode === 'recent'} onClick={() => { reseed(); controller.sidebar.change({ mode: 'recent' }) }}>{t('recent')}</button>
                 <button type="button" aria-pressed={mode === 'folders'} onClick={() => { controller.sidebar.change({ mode: 'folders' }) }}>{t('folders')}</button>
             </div>
-            <select className="hapi-status-select" aria-label={t('statusFilter')} value={filter} onChange={event => controller.sidebar.change({ filter: event.currentTarget.value as SidebarFilter })}>
-                {(['all', 'running', 'attention', 'unread'] as SidebarFilter[]).map(key => <option key={key} value={key}>{t(key)}{counts[key] ? ` · ${counts[key]}` : ''}</option>)}
-            </select>
+            <IconButton label={t('refresh')} icon="refresh" onClick={() => { reseed(); void controller.refresh() }}/>
             <button type="button" className="hapi-mark-all" onClick={() => controller.sidebar.markAllSeen(matching)} title={t('markAllRead')} aria-label={t('markAllRead')}>✓</button>
         </div>
         <div className="hapi-sidebar-options">

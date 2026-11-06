@@ -1,7 +1,7 @@
 import { useState, type Ref } from 'react'
 import { explicitEffort, modelLabel, visibleServiceTier, type PickerAction, type PickerChoice, type PickerData, type PickerPending } from './data.ts'
 
-export type PickerMode = 'model' | 'permission' | 'actions'
+export type PickerMode = 'model' | 'effort' | 'permission' | 'actions'
 export type Translate = (english: string, chinese: string) => string
 
 export function Glyph({ kind }: { kind: 'model' | 'permission' | 'check' | 'down' | 'back' | 'close' | 'more' }) {
@@ -54,12 +54,17 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
             <button ref={refs.model} type="button" className="hapi-picker-capsule hapi-model-trigger" {...shared('model')}
                 data-pending={pending ? '' : undefined} title={[tr('Model and reasoning effort', '模型与推理强度'), model, effortText, tierText].filter(Boolean).join(' · ')}
                 onClick={() => onToggle('model')}>
-                <Glyph kind="model"/><span data-picker-label>{model}</span>
-                {effortText && <span className="hapi-picker-badge" data-picker-effort title={effortText}>{effortText}</span>}
+                <span data-picker-label>{model}</span>
                 {tierText && <span className="hapi-picker-badge" data-picker-service-tier title={tierText}>{tierText}</span>}
                 <Glyph kind="down"/>
             </button>
         </span>
+        {effortText && <span className="hapi-picker-anchor" data-hapi-composer-picker="effort">
+            <button ref={refs.effort} type="button" className="hapi-picker-capsule hapi-effort-trigger" {...shared('effort')}
+                aria-label={`${tr('Reasoning effort', '推理强度')} · ${effortText}`} onClick={() => onToggle('effort')}>
+                <span data-picker-effort>{effortText}</span><Glyph kind="down"/>
+            </button>
+        </span>}
         {summary.permissionAvailable ? <span className="hapi-picker-anchor" data-hapi-composer-picker="permission">
             <button ref={refs.permission} type="button" className="hapi-picker-capsule hapi-permission-trigger" {...shared('permission')}
                 title={`${tr('Session permissions', '会话权限')} · ${permissionLabel(summary.permission, tr)}`} onClick={() => onToggle('permission')}>

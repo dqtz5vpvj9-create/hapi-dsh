@@ -1,3 +1,4 @@
+import { SourceNativeQuestion } from './remote-native-question.tsx'
 import { sourceControlOperationId } from '../shared/source-operation-policy.ts'
 /** Additive controls for capabilities owned by the native source engine. */
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
@@ -54,6 +55,7 @@ interface ApprovalProps {
   disabled?: boolean
 }
 export function SourceApprovalControl(props: ApprovalProps) {
+  if (['item/tool/requestUserInput', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'item/tool/call'].includes(props.request.method)) return <SourceNativeQuestion key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
   return <SourceApprovalButtons key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
 }
 function SourceApprovalButtons({ session, request, zh, disabled = false }: ApprovalProps) {

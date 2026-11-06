@@ -13,7 +13,7 @@ function CalendarIcon() {
     return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>
 }
 
-export function SidebarSearchControls({ query, onQueryChange, start, end, onDatesChange, activityDates, expanded, onExpandedChange, inputRef, t }: {
+export function SidebarSearchControls({ query, onQueryChange, start, end, onDatesChange, activityDates, expanded, onExpandedChange, inputRef, t, persistent = false }: {
     query: string
     onQueryChange: (value: string) => void
     start: string
@@ -24,24 +24,26 @@ export function SidebarSearchControls({ query, onQueryChange, start, end, onDate
     onExpandedChange: (value: boolean) => void
     inputRef: RefObject<HTMLInputElement>
     t: WorkspaceTranslate
+    persistent?: boolean
 }) {
     const [calendar, setCalendar] = useState(false)
     const searchButton = useRef<HTMLButtonElement>(null), dateButton = useRef<HTMLButtonElement>(null)
     const dialogId = useId()
     const hasRange = Boolean(start && end)
-    const focusSearch = (): void => { (expanded ? inputRef.current : searchButton.current)?.focus() }
-    const focusAfterDate = (): void => { (expanded ? inputRef.current : dateButton.current)?.focus() }
+    const visible = persistent || expanded
+    const focusSearch = (): void => { (visible ? inputRef.current : searchButton.current)?.focus() }
+    const focusAfterDate = (): void => { (visible ? inputRef.current : dateButton.current)?.focus() }
     const closeCalendar = (): void => { setCalendar(false); focusAfterDate() }
     useEffect(() => { if (expanded) inputRef.current?.focus(); else setCalendar(false) }, [expanded, inputRef])
-    return <div className={`hapi-sidebar-search-controls${expanded ? ' hapi-sidebar-search-expanded' : ''}`}
-        onBlur={event => { if (expanded && !event.currentTarget.contains(event.relatedTarget as Node | null)) onExpandedChange(false) }}
+    return <div className={`hapi-sidebar-search-controls${visible ? ' hapi-sidebar-search-expanded' : ''}`}
+        onBlur={event => { if (!persistent && expanded && !event.currentTarget.contains(event.relatedTarget as Node | null)) onExpandedChange(false) }}
         onKeyDown={event => {
             if (event.key !== 'Escape') return
             event.preventDefault(); event.stopPropagation()
             if (calendar) closeCalendar()
-            else { onExpandedChange(false); requestAnimationFrame(() => searchButton.current?.focus()) }
+            else if (!persistent) { onExpandedChange(false); requestAnimationFrame(() => searchButton.current?.focus()) }
         }}>
-        {expanded ? <div className="hapi-search"><SearchIcon/>
+        {visible ? <div className="hapi-search"><SearchIcon/>
             <input ref={inputRef} type="search" value={query} onChange={event => onQueryChange(event.currentTarget.value)} aria-label={t('search')} placeholder={t('search')}/>
             {query && <button type="button" className="hapi-search-clear" aria-label={t('clearSearch')} title={t('clearSearch')} onClick={() => { onQueryChange(''); focusSearch() }}>×</button>}
         </div> : <div className={`hapi-search-chip${query ? ' hapi-search-chip-active' : ''}`}>

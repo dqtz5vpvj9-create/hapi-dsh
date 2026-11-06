@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { DirectCodexControls } from '../remote-codex-controls.tsx'
+import { isSourceSessionId } from '../../remote/protocol.ts'
+import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -12,7 +14,7 @@ import { positionPicker, type PickerPosition } from './position.ts'
 import type { SourceInputProps } from './slots.ts'
 import { composerPickerStyles } from './styles.ts'
 
-type InputProps = SourceInputProps & PropsRenderSlots<'hapi.source.composer-actions'>
+export type InputProps = SourceInputProps & PropsRenderSlots<'hapi.source.composer-actions'>
 const fallbackPane = { focused: true, visible: true }
 const emptySubscribe = (): (() => void) => () => {}
 const fallbackPaneSnapshot = () => fallbackPane
@@ -29,18 +31,19 @@ interface ControlsProps {
     error: string | null
     sourceLocked: boolean
     refresh(): Promise<void>
+    actionsContent?: ReactNode
     apply(action: PickerAction): Promise<boolean>
 }
 
 /** A single session occurrence owns the three controls and their callbacks.
  * Portals preserve its React/session context; global focused-session state is
  * never used to route a setting or an action. */
-function SourceControls({ ctx, props, initial, permissionCapable, data, loading, busy, pending, error, sourceLocked, refresh, apply }: ControlsProps) {
+export function SourceControls({ ctx, props, initial, permissionCapable, data, loading, busy, pending, error, sourceLocked, refresh, apply, actionsContent }: ControlsProps) {
     const locale = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active)
     const tr: Translate = (en, zh) => locale.startsWith('zh') ? zh : en
     const pane = useWorkspacePane(ctx)
     const paneState = useSyncExternalStore(pane?.state.subscribe ?? emptySubscribe, pane?.state.getSnapshot ?? fallbackPaneSnapshot)
-    const [open, setOpen] = useState<PickerMode | null>(null), [page, setPage] = useState<'options' | 'models'>('options')
+    const [open, setOpen] = useState<PickerMode | null>(null)
     const [attention, setAttention] = useState(false)
     const triggers = useRef<Partial<Record<PickerMode, HTMLButtonElement | null>>>({})
     const settingsPopup = useRef<HTMLDivElement>(null), actionsPopup = useRef<HTMLDivElement>(null)
@@ -60,7 +63,7 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
         if (restoreFocus && paneState.visible && open) triggers.current[open]?.focus({ preventScroll: true })
     }, [open, paneState.visible])
     const closeActions = useCallback(() => setOpen(current => current === 'actions' ? null : current), [])
-    const toggle = (mode: PickerMode): void => { setPage('options'); setOpen(current => current === mode ? null : mode) }
+    const toggle = (mode: PickerMode): void => { setOpen(current => current === mode ? null : mode) }
     const panelElement = (): HTMLDivElement | null => visible === 'actions' ? actionsPopup.current : settingsPopup.current
 
     useEffect(() => { if (!paneState.visible || open === 'permission' && !permissionAvailable) setOpen(null) }, [paneState.visible, open, permissionAvailable])
@@ -98,7 +101,7 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
             observer?.disconnect(); window.removeEventListener('resize', positionPopup); window.removeEventListener('scroll', positionPopup, true)
             window.visualViewport?.removeEventListener('resize', positionPopup); window.visualViewport?.removeEventListener('scroll', positionPopup)
         }
-    }, [visible, page, data, loading, error, pending, locale])
+    }, [visible, data, loading, error, pending, locale])
     useEffect(() => {
         if (!visible) return
         const outside = (event: Event): void => {
@@ -120,24 +123,21 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
 
     const select = (action: PickerAction): void => {
         if (disabled || action.kind === 'permission' && !permissionAvailable) return
-        void apply(action).then(confirmed => { if (confirmed && action.kind === 'model') setPage('options') })
+        void apply(action).then(confirmed => { if (confirmed && action.kind === 'model') close(true) })
     }
-    const heading = visible === 'permission' ? tr('Permissions', '权限') : page === 'models' ? tr('Choose model', '选择模型') : tr('Model settings', '模型设置')
+    const heading = visible === 'permission' ? tr('Permissions', '权限') : visible === 'effort' ? tr('Reasoning effort', '推理强度') : tr('Choose model', '选择模型')
     const panelStyle = { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }
     const settings = visible && visible !== 'actions' && <div ref={settingsPopup} id={`${id}-settings`} className="hapi-picker-popover" role="dialog" aria-modal="false"
-        aria-label={visible === 'model' ? tr('Model settings', '模型设置') : tr('Permissions', '权限')}
+        aria-label={heading}
         data-hapi-picker-popup={visible} data-picker-layout={position.layout} data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
-        <header>{visible === 'model' && page === 'models' && <button type="button" aria-label={tr('Back to model settings', '返回模型设置')} onClick={() => setPage('options')}><Glyph kind="back"/></button>}
-            <strong>{heading}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
-        {visible === 'model' && page === 'options' && <>
-            <div className="hapi-picker-model-page"><button type="button" disabled={!data?.models.length} onClick={() => setPage('models')} aria-label={tr('Choose model', '选择模型')}>
-                <Glyph kind="model"/><span>{summary.model ?? tr('Model', '模型')}<small>{tr('Choose a model', '选择模型')}</small></span><Glyph kind="down"/></button></div>
+        <header><strong>{heading}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
+        {visible === 'effort' && <>
             {data && data.efforts.length > 0 && <EffortChoices data={data} disabled={disabled || !data.editable.effort} select={select} tr={tr} name={`${id}-effort`}/>}
             {data && (data.fastAvailable || data.fast) && <div className="hapi-picker-fast"><span>Fast</span>
                 <button className="hapi-picker-switch" type="button" role="switch" aria-label={tr('Fast mode', '快速模式')} aria-checked={data.fast}
                     disabled={disabled || !data.editable.fast} onClick={() => select({ kind: 'fast', value: !data.fast })}><span/></button></div>}
         </>}
-        {visible === 'model' && page === 'models' && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Models', '模型')}>
+        {visible === 'model' && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Models', '模型')}>
             {data?.models.map(choice => <label key={modelKey(choice.value)}>
                 <input type="radio" name={`${id}-model`} value={modelKey(choice.value)} checked={modelKey(data.model) === modelKey(choice.value)}
                     disabled={disabled || !data.editable.model} onChange={() => select({ kind: 'model', value: choice.value })}/>
@@ -167,11 +167,11 @@ function SourceControls({ ctx, props, initial, permissionCapable, data, loading,
         data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
         <header><strong>{tr('More input controls', '更多输入控件')}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
         <div role="group" aria-label={tr('More input controls', '更多输入控件')}>
-            {props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
+            {actionsContent ?? props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
         </div>
     </div>
     return <><SourceControlRow summary={summary} sessionId={props.sessionId} open={visible} panelId={id} pending={Boolean(pending)} attention={attention} tr={tr} onToggle={toggle}
-        refs={{ model: node => { triggers.current.model = node }, permission: node => { triggers.current.permission = node }, actions: node => { triggers.current.actions = node } }}/>
+        refs={{ effort: node => { triggers.current.effort = node }, model: node => { triggers.current.model = node }, permission: node => { triggers.current.permission = node }, actions: node => { triggers.current.actions = node } }}/>
         {createPortal(<>{settings}{actions}</>, document.body)}</>
 }
 
@@ -223,6 +223,7 @@ function ObservedControls({ ctx, observed, props }: { ctx: Context; observed: Ob
 /** Ordinary DSH and source child-history trees have no replacement controls. */
 export function SourceComposerControls({ ctx, native, observed, props }: { ctx: Context; native: NativeControlLedger; observed: ObservedControlLedger; props: InputProps }) {
     const nativeSource = props.useProjection('hapi'), observedSource = props.useProjection('hapiObserved')
+    if (isSourceSessionId(props.sessionId)) return <DirectCodexControls key={props.sessionId} ctx={ctx} props={props}/>
     if (observedSource?.sidechain || observedSource?.dshChild) return null
     if (nativeSource) return <NativeControls key={props.sessionId} ctx={ctx} native={native} props={props}/>
     if (observedSource) return <ObservedControls key={props.sessionId} ctx={ctx} observed={observed} props={props}/>

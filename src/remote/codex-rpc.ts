@@ -23,7 +23,7 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 
 export class CodexRpcError extends Error {
     override readonly name = 'CodexRpcError';
-    constructor(readonly code: number, message: string) { super(message); }
+    constructor(readonly code: number, message: string, readonly data?: unknown) { super(message); }
 }
 export class CodexRpc {
     private connection: Connection | undefined;
@@ -164,7 +164,7 @@ export class CodexRpc {
         const key = `${connection.generation}:${String(value.id)}`, pending = this.pending.get(key);
         if (!pending) return; // An individually cancelled read has no consumer; it does not cancel shared source work.
         this.pending.delete(key); clearTimeout(pending.timer);
-        if (record(value.error) && typeof value.error.code === 'number') pending.reject(new CodexRpcError(value.error.code, typeof value.error.message === 'string' ? value.error.message : 'The native app-server rejected this request.'));
+        if (record(value.error) && typeof value.error.code === 'number') pending.reject(new CodexRpcError(value.error.code, typeof value.error.message === 'string' ? value.error.message : 'The native app-server rejected this request.', value.error.data));
         else if ('result' in value) pending.resolve(value.result);
         else pending.reject(new SourceError(pending.write ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', 'The native app-server returned an invalid response.'));
     }

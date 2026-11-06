@@ -97,6 +97,14 @@ export function canonicalHhpiSessionId(value) {
 
 export function hhpiRequestPolicy(method, body, targetId) {
   const args = body?.payload?.args ?? {};
+  if (method === 'hhpi/nativeCall') {
+    if (!canonicalHhpiSessionId(targetId)) return 'block';
+    const [, , sourceId, , nativeId] = targetId.split(':').map(decodeURIComponent);
+    const request = args.request;
+    if (request?.sourceId !== sourceId || request.operationId !== undefined) return 'block';
+    if (request.method === 'model/list' || request.method === 'permissionProfile/list') return 'read';
+    return request.method === 'thread/read' && request.params?.threadId === nativeId && request.params?.includeTurns === false ? 'read' : 'block';
+  }
   if (method === 'hhpi/catalog') return requestPolicy(method, body) === 'read' && args.request === undefined ? 'read' : 'block';
   if (method === 'hhpi/resolve' || method === 'hhpi/read' || method === 'hhpi/resource') {
     return requestPolicy(method, body) === 'read' && args.request?.sessionId === targetId ? 'read' : 'block';

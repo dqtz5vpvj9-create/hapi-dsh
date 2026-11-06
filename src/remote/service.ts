@@ -1,4 +1,5 @@
 /** HHPI methods use the official authenticated Typert carrier and its resource policies. */
+import type { CodexCall, CodexReply, CodexEventsRequest } from './codex-access.ts';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
@@ -50,6 +51,34 @@ export class HhpiSourceService extends TypertRemoteService {
         const ctx = this.ctx;
         return resource => resource.kind === 'source' ? ctx.remoteAccess.allows({ kind: 'hhpiSource', id: resource.id })
             : ctx.remoteAccess.allows({ kind: 'session', id: resource.id as SessionId });
+    }
+    private async nativeInvocation<T>(sourceId: string, invoke: (native: ReturnType<SourceGateway['nativeAccess']>) => Promise<T> | T): Promise<T> {
+        const access = this.access;
+        try {
+            const value = await invoke(this.gateway.nativeAccess(sourceId, access));
+            this.gateway.nativeAccess(sourceId, access); // Recheck revocation before releasing native data.
+            return value;
+        } catch (error) { remoteError(error); }
+    }
+    @Remote({ name: 'nativeCapabilities', resources: { hhpiSource: addressedSource } })
+    async nativeCapabilities(request: { sourceId: string }, signal?: AbortSignal) {
+        return this.nativeInvocation(request.sourceId, native => native.capabilities(signal));
+    }
+    @Remote({ name: 'nativeCall', resources: { hhpiSource: addressedSource } })
+    async nativeCall(request: CodexCall, signal?: AbortSignal) {
+        return this.nativeInvocation(request.sourceId, native => native.call(request, false, signal));
+    }
+    @Remote({ name: 'nativeReceipt', resources: { hhpiSource: addressedSource } })
+    async nativeReceipt(request: CodexCall, signal?: AbortSignal) {
+        return this.nativeInvocation(request.sourceId, native => native.call(request, true, signal));
+    }
+    @Remote({ name: 'nativeReply', resources: { hhpiSource: addressedSource } })
+    async nativeReply(request: CodexReply) {
+        return this.nativeInvocation(request.sourceId, native => native.reply(request));
+    }
+    @Remote({ name: 'nativeEvents', resources: { hhpiSource: addressedSource } })
+    async nativeEvents(request: CodexEventsRequest, signal?: AbortSignal) {
+        return this.nativeInvocation(request.sourceId, native => { signal?.throwIfAborted(); return native.readEvents(request); });
     }
     @Remote('catalog')
     async catalog(signal?: AbortSignal): Promise<SourceCatalog> {

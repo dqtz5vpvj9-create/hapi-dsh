@@ -119,6 +119,12 @@ export class SourceGateway {
             this.checkSession(adapter, change.session, request.sessionId); yield change;
         }
     }
+    nativeAccess(sourceId: string, access: SourceAccess) {
+        this.assertLive(); this.assertAllowed(access, { kind: 'source', id: sourceId });
+        const native = this.adapters.get(sourceId)?.nativeAccess;
+        if (!native) throw new SourceError('UNSUPPORTED', 'This source has no native Codex interface.');
+        return native;
+    }
     async operate(request: SourceOperation, access: SourceAccess): Promise<SourceReceipt> {
         const adapter = this.adapterFor(request.sessionId, access), receipt = await adapter.operate(request);
         this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId });

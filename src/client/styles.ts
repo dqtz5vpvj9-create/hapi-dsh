@@ -244,7 +244,7 @@ html,body {overscroll-behavior-y:none}
 /* Narrow pane: keep attach / editor / Stop+Send; secondary official controls are
    revealed in place by the overflow entry (no reparenting, no reimplementation). */
 @container hapi-pane (max-width:560px) {
-  [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:none;--dsh-composer-model-icon-display:block}
+  [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none}
   [data-composer-card] .uV2eYG_add {width:24px;height:24px}
   [data-composer-card] .uV2eYG_primary {width:28px;height:28px}
   [data-composer-card] .uV2eYG_select {max-width:120px}
@@ -293,7 +293,7 @@ html,body {overscroll-behavior-y:none}
 @media(max-width:640px) {
  [data-sidebar-collapsed]:has(.hapi-workspace-mobile):not([data-rightbar-fullscreen]) {grid-template-columns:0 minmax(0,1fr) 0!important}
  [data-sidebar-collapsed]:has(.hapi-workspace-mobile)>div:has(>[data-slot="sidebar"]) {visibility:hidden;overflow:hidden}
- .hapi-workspace-mobile .hapi-pane-header {display:none}
+ .hapi-workspace-mobile .hapi-pane-header {display:flex;background:var(--hapi-bg);min-height:48px;padding:0 8px}
  .hapi-workspace-mobile .hapi-statusbar {min-height:44px;gap:0;flex-wrap:nowrap;overflow:visible;padding:0 2px env(safe-area-inset-bottom,0px)}
  .hapi-workspace-mobile .hapi-mobile-pane-bar {border:0;padding:0;gap:0;min-width:0;max-width:44%;min-height:44px;background:transparent}
  .hapi-workspace-mobile .hapi-mobile-pane-bar>.hapi-pane-add,.hapi-workspace-mobile .hapi-mobile-pane-bar>.hapi-menu {display:none}
@@ -311,10 +311,66 @@ html,body {overscroll-behavior-y:none}
  .hapi-workspace-mobile [data-composer-card] .uV2eYG_tools {gap:0!important}
  .hapi-workspace-mobile .hapi-source-controls {flex-wrap:nowrap;gap:0}
  .hapi-workspace-mobile .hapi-picker-capsule {padding:4px;min-width:40px}
- .hapi-workspace-mobile .hapi-picker-capsule [data-picker-label],.hapi-workspace-mobile .hapi-picker-capsule [data-picker-effort] {display:none}
- .hapi-workspace-mobile .hapi-picker-capsule svg:last-child {display:none}
+ .hapi-workspace-mobile .hapi-picker-capsule [data-picker-label],.hapi-workspace-mobile .hapi-picker-capsule [data-picker-effort] {display:block}
+
  .hapi-workspace-mobile .hapi-source-collaboration[data-hapi-source-collaboration="default"] {display:none}
  .hapi-workspace-mobile .hapi-goal-trigger {padding:4px;min-height:44px}
+}
+
+/* Mobile task journey. The official Conversation, editor, process groups and
+   source controls remain mounted; only their supported layout surfaces change. */
+.hapi-pane-back {display:none}
+.hapi-session-sidebar>header>.hapi-directory-create {display:flex;align-items:center;gap:4px;margin-left:auto;width:auto;height:36px;padding:4px 8px;border:0;border-radius:6px;background:transparent;color:var(--hapi-fg);font:inherit;cursor:pointer}
+.hapi-directory-create:hover {background:var(--hapi-hover)}
+.hapi-sidebar-scope {display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none;padding:2px 0 8px}
+.hapi-sidebar-scope>select,.hapi-sidebar-scope>button {min-height:36px;max-width:70%;border:0;border-radius:6px;padding:4px 8px;font:var(--hapi-font-small);color:var(--hapi-secondary);background:transparent;cursor:pointer}
+.hapi-sidebar-scope>select {color:var(--hapi-fg);min-width:0}
+.hapi-sidebar-scope>select option {background:var(--hapi-bg);color:var(--hapi-fg)}
+.hapi-sidebar-scope>button {display:flex;align-items:center;gap:6px;white-space:nowrap}
+.hapi-sidebar-scope>button[aria-pressed=true] {color:var(--hapi-accent);background:var(--hapi-hover)}
+.hapi-session-meta .hapi-session-directory {margin-left:0;flex:0 1 auto;text-align:left}
+.hapi-session-engine {flex:none}
+.hapi-session-picker>header {padding:4px 0 12px;font-size:18px}
+.hapi-session-picker>header>.hapi-sidebar-count {display:none}
+.hapi-session-picker .hapi-sidebar-search-controls {min-height:44px;margin-bottom:6px}
+.hapi-session-picker .hapi-search {background:var(--hapi-muted);border:1px solid var(--hapi-border);border-radius:9px;padding:0 10px;min-height:44px}
+.hapi-session-picker .hapi-search input {min-width:0;min-height:42px;background:transparent}
+.hapi-session-picker .hapi-sidebar-scope {border-bottom:1px solid var(--hapi-border)}
+.hapi-session-picker .hapi-sidebar-scope>select,.hapi-session-picker .hapi-sidebar-scope>button {min-height:44px;font-size:13px}
+.hapi-session-picker .hapi-session-row {border-radius:0;border-bottom:1px solid var(--hapi-border)}
+.hapi-session-picker .hapi-session-open {padding:14px 4px 14px 6px}
+.hapi-session-picker .hapi-session-meta {font-size:12px;padding-top:5px}
+.hapi-session-picker .hapi-session-title {font-size:15px}
+.hapi-session-picker .hapi-session-date {font-size:12px;padding:14px 4px 6px}
+.hapi-session-picker .hapi-tree-toggle {min-width:28px;min-height:44px}
+.hapi-session-picker .hapi-session-branch {border-inline-start:1px solid transparent}
+@container hapi-pane (max-width:600px) {
+ [data-conversation-content] {--dsh-chat-content-width:100%;--dsh-composer-card-max-width:100%;--dsh-composer-side-clearance:12px}
+ [data-conversation-scroll] div:has(>[data-chat-flow]) {padding-inline:16px}
+ [data-chat-flow] {max-width:100%}
+ [data-composer-card] {border-radius:12px!important;box-shadow:none;border:1px solid var(--dsw-alias-border-l2,#d8dedf);padding:6px 8px!important}
+ [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none;min-height:44px;overflow:visible;flex-wrap:wrap}
+ [data-composer-card] [data-slot="conversation.input.model"] {min-width:0;max-width:180px}
+ [data-composer-card] .uV2eYG_primary {background:var(--hapi-accent);color:white}
+ [data-composer-card] .uV2eYG_primary:disabled {opacity:.4}
+ .hapi-source-controls {justify-content:flex-start;margin-left:0;gap:3px}
+ .hapi-picker-anchor[data-hapi-composer-picker="model"] {max-width:150px}
+ .hapi-model-trigger {padding-inline:6px}
+ .hapi-permission-trigger [data-picker-label] {max-width:92px}
+}
+@media(max-width:640px) {
+ .hapi-workspace-mobile .hapi-pane-back {display:grid;place-items:center;flex:none;width:40px;height:44px;border:0;background:transparent;color:var(--hapi-secondary);cursor:pointer}
+ .hapi-workspace-mobile .hapi-pane-heading {cursor:default;font-size:14px}
+ .hapi-workspace-mobile .hapi-pane-toolbar>.hapi-icon-button {display:none}
+ .hapi-workspace-mobile .hapi-pane-toolbar>.hapi-menu>summary {width:40px;height:44px}
+ .hapi-workspace-mobile .hapi-pane-focused>.hapi-pane-header {box-shadow:none}
+ .hapi-workspace-mobile .hapi-window-position,.hapi-workspace-mobile .hapi-prefix {display:none}
+ .hapi-workspace-mobile .hapi-window-tabs>button {border:0;background:transparent;border-radius:0;max-width:170px;font-size:13px}
+ .hapi-workspace-mobile .hapi-window-tabs>button.hapi-window-tab-active {background:transparent;box-shadow:inset 0 -2px var(--hapi-accent);font-weight:600}
+ .hapi-workspace-mobile .hapi-mobile-pane-bar {max-width:30%}
+ .hapi-workspace-mobile .hapi-statusbar {border-top:1px solid var(--hapi-border);background:var(--hapi-bg)}
+ .hapi-workspace-mobile [data-composer-card] .uV2eYG_row {flex-wrap:wrap!important;gap:4px}
+ .hapi-workspace-mobile .hapi-source-controls {flex-wrap:wrap;gap:3px}
 }
 
 `
