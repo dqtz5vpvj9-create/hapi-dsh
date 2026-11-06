@@ -1,3 +1,4 @@
+import type { HhpiRemoteApi } from '../../hhpi-api.ts'
 import { DirectCodexControls } from '../remote-codex-controls.tsx'
 import { isSourceSessionId } from '../../remote/protocol.ts'
 import { type ReactNode, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -221,9 +222,9 @@ function ObservedControls({ ctx, observed, props }: { ctx: Context; observed: Ob
 }
 
 /** Ordinary DSH and source child-history trees have no replacement controls. */
-export function SourceComposerControls({ ctx, native, observed, props }: { ctx: Context; native: NativeControlLedger; observed: ObservedControlLedger; props: InputProps }) {
+export function SourceComposerControls({ ctx, hhpi, native, observed, props }: { ctx: Context; hhpi: HhpiRemoteApi; native: NativeControlLedger; observed: ObservedControlLedger; props: InputProps }) {
     const nativeSource = props.useProjection('hapi'), observedSource = props.useProjection('hapiObserved')
-    if (isSourceSessionId(props.sessionId)) return <DirectCodexControls key={props.sessionId} ctx={ctx} props={props}/>
+    if (isSourceSessionId(props.sessionId)) return <DirectCodexControls key={props.sessionId} ctx={ctx} api={hhpi} props={props}/>
     if (observedSource?.sidechain || observedSource?.dshChild) return null
     if (nativeSource) return <NativeControls key={props.sessionId} ctx={ctx} native={native} props={props}/>
     if (observedSource) return <ObservedControls key={props.sessionId} ctx={ctx} observed={observed} props={props}/>
@@ -233,9 +234,10 @@ export function SourceComposerControls({ ctx, native, observed, props }: { ctx: 
 export function installComposerPicker(ctx: Context, native: NativeControlLedger, observed: ObservedControlLedger): () => void {
     // One public list contribution declares one private-to-our-plugin child
     // slot. Neither official single model/permission slot is registered over.
+    const hhpi = ctx.remote.hhpi
     const stop = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hapi.source-controls', order: 90,
         children: { 'hapi.source.composer-actions': { kind: 'single', scope: 'session' } },
-    }, (props: InputProps) => <SourceComposerControls ctx={ctx} native={native} observed={observed} props={props}/>))
+    }, (props: InputProps) => <SourceComposerControls ctx={ctx} hhpi={hhpi} native={native} observed={observed} props={props}/>))
     const style = document.createElement('style'); style.textContent = composerPickerStyles; document.head.append(style)
     return () => { stop(); style.remove() }
 }

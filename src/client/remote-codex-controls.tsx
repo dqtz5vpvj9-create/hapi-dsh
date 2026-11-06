@@ -120,19 +120,19 @@ function controller(api: HhpiRemoteApi, metadata: SourceSession): CodexSettingsC
   if (!value) { value = new CodexSettingsController(api, metadata); sessions.set(metadata.id, value) }
   return value
 }
-export function DirectCodexControls({ ctx, props }: { ctx: Context; props: InputProps }) {
+export function DirectCodexControls({ ctx, api, props }: { ctx: Context; api: HhpiRemoteApi; props: InputProps }) {
   const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
-  return session ? <Controls key={props.sessionId} ctx={ctx} props={props} session={session}/> : null
+  return session ? <Controls key={props.sessionId} ctx={ctx} api={api} props={props} session={session}/> : null
 }
-function Controls({ ctx, props, session }: { ctx: Context; props: InputProps; session: RemoteSourceSession }) {
+function Controls({ ctx, api, props, session }: { ctx: Context; api: HhpiRemoteApi; props: InputProps; session: RemoteSourceSession }) {
   const metadata = useSyncExternalStore(session.metadata.subscribe, session.metadata.getSnapshot)
-  const settings = useMemo(() => controller(ctx.remote.hhpi, metadata), [ctx.remote.hhpi, metadata.id])
+  const settings = useMemo(() => controller(api, metadata), [api, metadata.id])
   const state = useSyncExternalStore(settings.subscribe, settings.getSnapshot)
   useEffect(() => settings.observe(metadata), [settings, metadata])
   const refresh = useCallback(() => settings.refresh(), [settings])
   const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
-  if (!metadata.codex || !ctx.remote.hhpi.nativeCall) return null
+  if (!metadata.codex || !api.nativeCall) return null
   return <SourceControls ctx={ctx} props={props} initial={{ model: metadata.codex.model, effort: metadata.codex.reasoningEffort, permission: null, serviceTier: null }}
-    actionsContent={<CodexActions key={metadata.id} api={ctx.remote.hhpi} metadata={metadata} zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
+    actionsContent={<CodexActions key={metadata.id} api={api} metadata={metadata} zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
     permissionCapable data={state.data} loading={state.loading} busy={state.busy} pending={state.pending} error={state.error} sourceLocked={locked || sourceIsOffline(metadata)} refresh={refresh} apply={settings.apply}/>
 }
