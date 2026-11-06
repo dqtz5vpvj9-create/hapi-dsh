@@ -7,7 +7,14 @@ import type { CodexAccessBridge } from './codex-access-bridge.ts'
 import type { SourceSession, SourceUploadRequest } from './protocol.ts'
 import { SourceError } from './errors.ts'
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-interface Stored { sessionId: string; path: string; name: string; bytes: number }
+interface Stored { sessionId: string; path: string; name: string; bytes: number; image?: boolean }
+/** Classify supported raster containers without changing or recompressing uploaded bytes. */
+function isRaster(data: Buffer): boolean {
+  return data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    || data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff
+    || data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP'
+    || ['GIF87a', 'GIF89a'].includes(data.toString('ascii', 0, 6))
+}
 export class CodexUploads {
   constructor(private readonly directory: string, private readonly native: CodexAccessBridge) {}
   async upload(session: SourceSession, request: SourceUploadRequest, signal?: AbortSignal): Promise<FileUploadValue> {
@@ -35,19 +42,20 @@ export class CodexUploads {
       const result = await this.native.call({ sourceId: session.sourceId, operationId: `upload:${request.operationId}:${suffix}`, method, params }, false, signal)
       if (result.status !== 'accepted') throw new SourceError(result.status === 'indeterminate' ? 'OUTCOME_UNKNOWN' : 'TARGET_UNAVAILABLE', result.message)
     }
-    const stored: Stored = { sessionId: session.id, path: target, name, bytes: Buffer.from(request.data, 'base64').length }
+    const stored: Stored = { sessionId: session.id, path: target, name, bytes: Buffer.from(request.data, 'base64').length, image: isRaster(Buffer.from(request.data, 'base64')) }
     await mkdir(this.directory, { recursive: true, mode: 0o700 })
     await writeFileAtomic(join(this.directory, `${request.operationId}.json`), JSON.stringify(stored), { mode: 0o600 })
     return { receiptId: request.operationId as FileUploadValue['receiptId'], file: { attachmentId: request.operationId as FileUploadValue['file']['attachmentId'], name, bytes: stored.bytes } }
   }
-  async inputs(sessionId: string, receipts: readonly string[]): Promise<Array<{ type: 'text'; text: string; text_elements: never[] }>> {
+  async inputs(sessionId: string, receipts: readonly string[]): Promise<Array<{ type: 'text'; text: string; text_elements: never[] } | { type: 'localImage'; path: string }>> {
     return Promise.all(receipts.map(async receipt => {
       if (!uuid.test(receipt)) throw new SourceError('INVALID_REQUEST', 'Invalid file upload receipt.')
       let stored: Stored
       try { stored = JSON.parse(await readFile(join(this.directory, `${receipt}.json`), 'utf8')) as Stored }
       catch { throw new SourceError('INVALID_REQUEST', 'The file upload receipt is unavailable. Upload the file again.') }
       if (stored.sessionId !== sessionId || typeof stored.path !== 'string' || typeof stored.name !== 'string') throw new SourceError('INVALID_REQUEST', 'The file upload belongs to another source session.')
-      return { type: 'text', text: `Attached file ${JSON.stringify(stored.name)}: ${JSON.stringify(stored.path)}`, text_elements: [] }
+      if (stored.image) return { type: 'localImage' as const, path: stored.path }
+      return { type: 'text' as const, text: `Attached file ${JSON.stringify(stored.name)}: ${JSON.stringify(stored.path)}`, text_elements: [] }
     }))
   }
 }

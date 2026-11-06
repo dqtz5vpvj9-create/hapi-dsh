@@ -1,3 +1,4 @@
+import { initializeOfficialController } from './official-controller-initialization.ts'
 /** Unchanged installed DSH registries, Chat definitions/builder, and history reader.
  * Only unused Host services and browser primitives are protocol test seats. */
 import assert from 'node:assert/strict'
@@ -41,7 +42,7 @@ export interface OfficialChatAssembler {
 }
 
 function browserModule(name: string): Record<string, unknown> {
-    assert.equal((require(`${name}/package.json`) as { version: string }).version, '0.2.1-rc.3')
+    assert.equal((require(`${name}/package.json`) as { version: string }).version, '0.2.2-rc.1')
     let registration: { id: string; factory(resolve: (id: string) => unknown): Record<string, unknown> } | undefined
     new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({
         __ModuleLoader__: { load(value: typeof registration) { registration = value } },
@@ -50,7 +51,7 @@ function browserModule(name: string): Record<string, unknown> {
     const unusedBrowserPrimitive = new Proxy({}, { get(_target, key) {
         return () => { throw new Error(`Conversation assembly unexpectedly rendered browser primitive ${String(key)}`) }
     } })
-    return registration!.factory(id => id === '@deepseek-ai/dsh-client-ui-primitives' ? unusedBrowserPrimitive : require(id))
+    return registration!.factory(Object.assign((id: string) => id === '@deepseek-ai/dsh-client-ui-primitives' ? unusedBrowserPrimitive : require(id), { asset: (reference: string) => reference }))
 }
 
 /** Register the real Chat business definitions through its public plugin entry.
@@ -85,10 +86,10 @@ class FixtureQuery extends SessionQueryEngine {
 export async function officialHistoryPage(session: Session) {
     const ctx = new Context()
     try {
-        await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(TypertRegistry)
+        await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
         new FixtureQuery(ctx); new RemoteAccessService(ctx)
         ctx.provide('fileUploads', { registerAgentResolver: () => () => {} } as unknown as Context['fileUploads'])
-        const controller = new SessionController(ctx, { nativeOpen: false })
+        const controller = await initializeOfficialController(new SessionController(ctx, { nativeOpen: false }))
         // Re-prepare the detached source log through the official store; a cwd
         // is required by the public cold-safe history route.
         // Client tests also augment Context.sessions with its browser face.

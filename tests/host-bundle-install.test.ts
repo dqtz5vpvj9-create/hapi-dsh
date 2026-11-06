@@ -284,8 +284,8 @@ test('state normalization keeps the pinned runtime pointer across failed install
     const { normalizeState } = await import('../scripts/bundle/lib/release.mjs')
     const normalized = normalizeState({ version: 1, profiles: { hapi: { role: 'host', active: null, previous: [],
         managedOverrides: {}, runtime: { dshBinary: '/tmp/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js',
-            dshVersion: '0.2.1-rc.3', extRelease: '7', releaseId: 'r1' } } }, releases: {}, attempt: null, history: [] })
+            dshVersion: '0.2.2-rc.1', extRelease: '7', releaseId: 'r1' } } }, releases: {}, attempt: null, history: [] })
     const profile = (normalized.profiles as Record<string, { runtime?: unknown }>).hapi
     assert.deepEqual(profile?.runtime, { dshBinary: '/tmp/runtime/node_modules/@deepseek-ai/dsh/lib/bin.js',
-        dshVersion: '0.2.1-rc.3', extRelease: '7', releaseId: 'r1' })
+        dshVersion: '0.2.2-rc.1', extRelease: '7', releaseId: 'r1' })
 })

@@ -103,6 +103,7 @@ function transport(maxEvents: number, options: { initial?: SessionHistoryRecord[
         channel.push(options.opening ? options.opening(opening) : opening)
         return boundedSourceFollow(channel, { maxEvents, maxBytes: 1_000_000 })
       },
+      async prompt() { return { ok: true as const, value: { accepted: true as const } } },
       async page() { pages++; throw new Error('A contiguous rollover must not require gap repair') },
     },
   }
@@ -216,6 +217,7 @@ test('operation snapshots retain official inbox and approval projections and the
       assert.deepEqual(owner.projections.faceOf('inbox').getSnapshot(), inbox)
       assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
       const input = owner.beginSubmission({ mode: 'queue', text: 'Unconfirmed user input', attachments: [] })
+      await owner.prompt([{ type: 'text', text: 'Unconfirmed user input' }], 'queue', undefined, input.requestId)
       try {
         fixture.append(event(2, 'new operation status'))
         await until(() => fixture.requests.length === 2)
@@ -314,7 +316,7 @@ test('real ClientSession operations and an independent source body share one sta
         assert.deepEqual(owner.projections.faceOf('hapi').getSnapshot(), approvals)
         const input = owner.beginSubmission({ mode: 'queue', text: 'Unconfirmed input', attachments: [] })
         try {
-          assert.ok(original.session.getSnapshot().pendingSubmissions.some(value => value.requestId === input.requestId))
+          assert.equal(original.session.getSnapshot().pendingSubmissions.some(value => value.requestId === input.requestId), false, 'native echoes appear after acceptance')
           await owner.prompt([{ type: 'text', text: 'A later source prompt' }], 'queue', undefined, input.requestId)
           assert.equal(prompts, 2)
           assert.equal(owner.getSnapshot().awaitingFirstTurn, false, 'a later prompt never hides the existing conversation')
@@ -364,6 +366,7 @@ test('the published Session owner installs replacement baselines without losing 
       const binding = reference.binding, owner = binding.session, feed = binding.eventSource, scope = binding.ctx
       assert.ok(feed.getSnapshot().entries.some(entry => entry.type === 'transient' && entry.event.data.attemptId === firstAttempt))
       const submission = owner.beginSubmission({ mode: 'queue', text: 'Pending source input', attachments: [] })
+      await owner.prompt([{ type: 'text', text: 'Pending source input' }], 'queue', undefined, submission.requestId)
       const replacements: number[] = []
       const stop = feed.subscribe(() => { if (feed.getSnapshot().change.kind === 'replace') replacements.push(fixture.requests.length) })
       try {

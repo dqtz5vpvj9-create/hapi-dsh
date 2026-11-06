@@ -120,7 +120,7 @@ test('doctor reports Host and Runner identity drift recorded in one DSH home', a
         assert.equal(check(result, 'host-runner-identity').status, 'pass')
 
         const driftedManifest = structuredClone(manifest)
-        driftedManifest.release.extRelease = '0.2.1-rc.3.ext.drifted'
+        driftedManifest.release.extRelease = '0.2.2-rc.1.ext.drifted'
         driftedManifest.releaseId = release.computeReleaseId(driftedManifest)
         state = await release.readBundleState(harness.dshHome)
         state = release.commitActivation(state, 'hapi-runner', {

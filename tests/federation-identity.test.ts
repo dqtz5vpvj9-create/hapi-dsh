@@ -7,19 +7,19 @@ import { identityMatches, runtimeIdentity, validRuntimeIdentity, RUNTIME_PROTOCO
 import { FEDERATION_PROTOCOL, parseFrame } from '../src/runner/protocol.ts';
 
 function identity(overrides: Partial<RuntimeIdentityV1> = {}): RuntimeIdentityV1 {
-    return { upstreamVersion: '0.2.1-rc.3', upstreamCommit: 'abc123', extRelease: '2', patchSetSha256: 'patch',
-        packageSetSha256: 'packages', capabilities: { historySource: 1, mountedChat: 1 }, compositionVersion: '0.2.1-rc.3+ext.2',
+    return { upstreamVersion: '0.2.2-rc.1', upstreamCommit: 'abc123', extRelease: '2', patchSetSha256: 'patch',
+        packageSetSha256: 'packages', capabilities: { historySource: 1, mountedChat: 1 }, compositionVersion: '0.2.2-rc.1+ext.2',
         protocol: RUNTIME_PROTOCOL, ...overrides };
 }
 
 test('runtime identity reports the pinned upstream and a source ext fallback', () => {
-    const value = runtimeIdentity({ dshVersion: '0.2.1-rc.3' });
+    const value = runtimeIdentity({ dshVersion: '0.2.2-rc.1' });
     assert.equal(value.protocol, 2);
-    assert.equal(value.upstreamVersion, '0.2.1-rc.3');
+    assert.equal(value.upstreamVersion, '0.2.2-rc.1');
     const upstream = JSON.parse(readFileSync(new URL('../UPSTREAMS.json', import.meta.url), 'utf8')) as { dsh: { commit: string } };
     assert.equal(value.upstreamCommit, upstream.dsh.commit, 'the upstream commit comes from the packaged provenance');
     assert.equal(value.extRelease, 'source');
-    assert.equal(value.compositionVersion, '0.2.1-rc.3+source');
+    assert.equal(value.compositionVersion, '0.2.2-rc.1+source');
     assert.deepEqual(value.capabilities, {});
     assert.equal(FEDERATION_PROTOCOL, RUNTIME_PROTOCOL, 'the federation frames and the identity share one protocol revision');
 });
@@ -29,15 +29,15 @@ test('identity reads the sealed release identity from the bundle state', () => {
   mkdirSync(join(home, 'hapi-dsh'), { recursive: true });
   writeFileSync(join(home, 'hapi-dsh', 'state.json'), JSON.stringify({ version: 1,
     profiles: { hapi: { active: { releaseId: 'r1' } } },
-    releases: { r1: { releaseId: 'r1', dirName: 'r-r1', identity: { upstreamVersion: '0.2.1-rc.3', upstreamCommit: 'e'.repeat(40), extRelease: '7', patchSetSha256: 'a'.repeat(64),
+    releases: { r1: { releaseId: 'r1', dirName: 'r-r1', identity: { upstreamVersion: '0.2.2-rc.1', upstreamCommit: 'e'.repeat(40), extRelease: '7', patchSetSha256: 'a'.repeat(64),
       packageSetSha256: 'b'.repeat(64), capabilities: { historySource: 1, mountedChat: 1, windowCommit: 1 },
-      compositionVersion: '0.2.1-rc.3+ext.7' } } } }));
-  const value = runtimeIdentity({ dshVersion: '0.2.1-rc.3', dshHome: home, profile: 'hapi' });
+      compositionVersion: '0.2.2-rc.1+ext.7' } } } }));
+  const value = runtimeIdentity({ dshVersion: '0.2.2-rc.1', dshHome: home, profile: 'hapi' });
   assert.equal(value.upstreamCommit, 'e'.repeat(40), 'the sealed release pins the upstream commit inside the installed runtime too');
   assert.equal(value.extRelease, '7');
   assert.equal(value.patchSetSha256, 'a'.repeat(64));
   assert.deepEqual(value.capabilities, { historySource: 1, mountedChat: 1, windowCommit: 1 });
-  assert.equal(value.compositionVersion, '0.2.1-rc.3+ext.7');
+  assert.equal(value.compositionVersion, '0.2.2-rc.1+ext.7');
 });
 
 test('identity matching is exact across every field and capability value', () => {
@@ -65,13 +65,13 @@ test('identity parser accepts the advertised shape and rejects revisions or fiel
 test('hello and welcome frames carry the identity and reject a stale protocol', () => {
     const value = identity();
     const hello = parseFrame(JSON.stringify({ type: 'hello', protocol: 2, machineId: 'machine-a', name: 'Machine A',
-        dshVersion: '0.2.1-rc.3', generation: 'gen-1', identity: value }));
+        dshVersion: '0.2.2-rc.1', generation: 'gen-1', identity: value }));
     assert.equal(hello.type, 'hello');
     const welcome = parseFrame(JSON.stringify({ type: 'welcome', protocol: 2, identity: value }));
     assert.equal(welcome.type, 'welcome');
     assert.throws(() => parseFrame(JSON.stringify({ type: 'hello', protocol: 1, machineId: 'machine-a', name: 'Machine A',
-        dshVersion: '0.2.1-rc.3', generation: 'gen-1', identity: value })), /Invalid federation frame/);
+        dshVersion: '0.2.2-rc.1', generation: 'gen-1', identity: value })), /Invalid federation frame/);
     assert.throws(() => parseFrame(JSON.stringify({ type: 'hello', protocol: 2, machineId: 'machine-a', name: 'Machine A',
-        dshVersion: '0.2.1-rc.3', generation: 'gen-1' })), /Invalid federation frame/);
+        dshVersion: '0.2.2-rc.1', generation: 'gen-1' })), /Invalid federation frame/);
     assert.throws(() => parseFrame(JSON.stringify({ type: 'welcome', protocol: 2 })), /Invalid federation frame/);
 });

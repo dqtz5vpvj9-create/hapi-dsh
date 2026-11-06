@@ -1,3 +1,4 @@
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol';
 import { join } from 'node:path';
 import { installSources, registerSourceContract } from '../remote/service.ts';
 import type { Context } from '@deepseek-ai/cordis';
@@ -13,8 +14,8 @@ export const inject = ['connection', 'webServer', 'clientModules', 'appReady', '
 export interface Config { configFile?: string }
 
 interface RunnerServices {
-    connection: { requestRejection(req: IncomingMessage): number | undefined; authenticatedUrl(origin: string): string };
-    webServer: { getOrigin(): string; collectIndexInjections(): Array<{ kind: string; name?: string; value?: unknown }>;
+    connection: { readonly browserPeer: PeerScope; requestRejection(req: IncomingMessage): number | undefined; authenticatedUrl(origin: string): string };
+    webServer: { getOrigin(): string; collectIndexInjections(peer: PeerScope): Array<{ kind: string; name?: string; value?: unknown }>;
         register(route: { kind: 'exact'; path: string; handler(req: IncomingMessage, res: ServerResponse): void }): () => void };
     clientModules: { graph(): { release?: { version: string }; [key: string]: unknown } };
     appReady: { onReady(callback: () => void): () => void };

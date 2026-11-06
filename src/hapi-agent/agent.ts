@@ -1,3 +1,4 @@
+import { sourceModel } from '../codex/source-model.ts'
 import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
@@ -99,6 +100,7 @@ class ObservedInbox implements Inbox {
 
 /** A public Agent observer. HAPI's original engine owns every execution and mutation. */
 export class HapiObservedAgent implements Agent {
+  readonly model = sourceModel(() => this.options)
   readonly id: SessionId
   readonly logicalSessionId: SessionId
   readonly displayRevision: number
@@ -266,6 +268,11 @@ export class HapiObservedAgent implements Agent {
         agent.historyStale = false
       }
       await agent.applyRows(rows, true, checkpoint)
+      config.assertSourceCurrent?.()
+      agent.historyJournal.assertCurrent(checkpoint)
+      agent.detachSession = agent.ctx.sessions.enter(agent.session)
+      agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
+      agent.ctx.sessions.announce(agent.session)
       agent.initializing = false; agent.observe(source)
       if (!agent.fault) await agent.journal.reconcileSource()
       agent.syncInbox(); agent.publish()
@@ -274,10 +281,7 @@ export class HapiObservedAgent implements Agent {
       // A fast opening seed is a bounded window, never a complete archive.
       if (config.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, false)
       else agent.cache.write(rows, !agent.historyStale)
-      agent.detachSession = agent.ctx.sessions.enter(agent.session)
-      agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindObservedCommands(agent)
-      agent.ctx.sessions.announce(agent.session)
       // Profile plugins may attach local prompt/team tooling in a startup
       // listener. A source-owned Agent only mirrors remote execution, so a
       // listener that cannot run here must not fail opening the session.

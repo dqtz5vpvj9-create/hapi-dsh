@@ -2,6 +2,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { isSourceSessionId } from '../remote/protocol.ts'
+import { prepareSourceImages } from './source-image-preparation.ts'
 import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto'
 
 const MAX_BYTES = 6 * 1024 * 1024
@@ -10,6 +11,25 @@ export function installRemoteFileUpload(ctx: Context, api: HhpiRemoteApi): () =>
   if (!register || !api.upload) return () => {}
   return ctx.fileUpload.registerProvider!({
     matches: isSourceSessionId,
+    async uploadImage(sessionId, data, mediaType, name = 'image', signal, onProgress) {
+      signal?.throwIfAborted()
+      // This promise owns preprocessing and upload; native DSH owns when it starts.
+      const [image] = await prepareSourceImages([{ mediaType, data: bytesToBase64(new Uint8Array(await data.arrayBuffer())) }], signal)
+      signal?.throwIfAborted()
+      const bytes = Uint8Array.from(atob(image!.data), char => char.charCodeAt(0))
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: image!.mediaType }))
+      const { width, height } = bitmap
+      bitmap.close()
+      signal?.throwIfAborted()
+      const uploaded = await api.upload!({ sessionId, operationId: crypto.randomUUID(), name, data: image!.data }, signal)
+      signal?.throwIfAborted()
+      if (!uploaded.ok) return uploaded
+      onProgress?.({ loaded: bytes.length, total: bytes.length })
+      return { ok: true, value: { receiptId: uploaded.value.receiptId, image: {
+        attachmentId: uploaded.value.file.attachmentId, mediaType: image!.mediaType, bytes: bytes.length,
+        width, height, name: uploaded.value.file.name,
+      } } }
+    },
     async upload(sessionId, data, name = 'attachment', signal, onProgress) {
       signal?.throwIfAborted()
       const chunks: Uint8Array[] = []

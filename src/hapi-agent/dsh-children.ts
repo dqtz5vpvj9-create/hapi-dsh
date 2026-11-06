@@ -1,3 +1,4 @@
+import { sourceModel } from '../codex/source-model.ts'
 import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
@@ -65,6 +66,7 @@ class ChildInbox implements Inbox {
 
 /** A source child remains a child of its real parent, and never starts a local AgentLoop. */
 export class HapiDshChildAgent implements Agent {
+  readonly model = sourceModel(() => this.options)
   readonly [sourceChildCapability] = true
   readonly id: SessionId
   readonly logicalSessionId: SessionId
@@ -104,7 +106,6 @@ export class HapiDshChildAgent implements Agent {
     this.logicalSessionId = sourceChildSessionId(owner.logicalSessionId, scopeId)
     this.parentSessionId = owner.agent.id
     this.scope = createScope(owner.agent.ctx, this, { parent: owner.agent }); this.ctx = withSourceAgentServices(this.scope.ctx, owner.agent.ctx)
-    this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
     this.current = this.ctx.sessions.prepare(this.id, { meta: this.meta() })
     this.dispatch = agentEvents(this.ctx, this); this.inbox = new ChildInbox(this)
     mkdirSync(directory, { recursive: true, mode: 0o700 })
@@ -142,6 +143,7 @@ export class HapiDshChildAgent implements Agent {
     descriptor: SourceDshChildDescriptor, options: { cacheOnly?: boolean; generation?: number } = {}): Promise<HapiDshChildAgent> {
     const child = new HapiDshChildAgent(owner, transport, directory, descriptor, options.generation ?? 0)
     try {
+      await child.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
       child.readCache()
       if (options.cacheOnly === true) {
         // Large parents seed their children from cache first; the network
@@ -164,13 +166,13 @@ export class HapiDshChildAgent implements Agent {
         child.lastReadAt = Date.now(); child.persistHistory(); child.historyError = null
       } catch (error) { child.historyError = describe(error) }
       if (child.history && options.cacheOnly !== true) child.projectHistory(child.history)
+      child.detachSession = child.ctx.sessions.enter(child.session)
+      child.detachAgent = child.ctx.agents.enter(child, owner.agent)
+      child.ctx.sessions.announce(child.session)
       child.session.append('model/selection', { provider: 'hapi-observed', model: 'dsh' })
       establishSourceChild(owner.agent.session, child.session, child.scopeInfo.label, descriptor.mode === 'continuable')
       child.initializing = false; child.publish()
-      child.detachSession = child.ctx.sessions.enter(child.session)
-      child.detachAgent = child.ctx.agents.enter(child, owner.agent)
       child.blockLocalCommands()
-      child.ctx.sessions.announce(child.session)
       try { await child.ctx.agents.announce(child, 'startup') }
       catch (error) { console.warn('[hapi-dsh] child startup listener failed; continuing:', error instanceof Error ? error.message : String(error)) }
       return child

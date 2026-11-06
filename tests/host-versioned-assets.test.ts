@@ -15,7 +15,7 @@ test('only versioned public assets receive immutable caching; index, mutable fil
     await writeFile(join(directory, 'config.js'), 'mutable');
     await writeFile(join(directory, 'index.html'), 'authenticated index');
     const dispose = await mountVersionedAssets({ register: route => {
-        routes.set(route.path, route); return () => { routes.delete(route.path); };
+        assert.ok('handler' in route); routes.set(route.path, route); return () => { routes.delete(route.path); };
     } }, directory);
     const server = createServer((req, res) => {
         const route = routes.get(req.url!);

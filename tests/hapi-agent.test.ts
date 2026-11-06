@@ -100,7 +100,7 @@ function codex(id: string, index: number, data: unknown): HapiMessage { return r
 function ready(id = 'ready', index = 10): HapiMessage { return row(id, index, 'agent', { type: 'event', data: { type: 'ready' } }) }
 async function mount(fixture: Fixture, directory: string, options: Partial<HapiAgentServiceOptions> = {}) {
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let service: HapiAgentService | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => {
     service = new HapiAgentService(owner, fixture, { stateDirectory: directory, ...options }); await service.start()

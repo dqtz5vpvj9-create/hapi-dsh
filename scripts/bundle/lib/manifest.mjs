@@ -12,8 +12,8 @@ export const BUNDLE_NAME = 'hapi-dsh-bundle';
 export const BUNDLE_PROTOCOL = 2;
 /** Capability names fixed by the distribution spec (section 4/5). */
 export const EXT_CAPABILITIES = Object.freeze(['historySource', 'mountedChat', 'windowCommit']);
-export const PINNED_UPSTREAM_VERSION = '0.2.1-rc.3';
-export const PINNED_UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
+export const PINNED_UPSTREAM_VERSION = '0.2.2-rc.1';
+export const PINNED_UPSTREAM_COMMIT = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db';
 export const MINIMUM_PNPM = '11.28.5';
 
 export const BUNDLE_LAYOUT = Object.freeze({

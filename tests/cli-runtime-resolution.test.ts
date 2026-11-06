@@ -20,10 +20,10 @@ test('a shared singleton resolved to two versions across runtime consumers fails
     const release = await releaseRoot();
     try {
         const runtime = join(release, 'runtime');
-        await writePackage(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '@deepseek-ai/dsh', '0.2.1-rc.3');
+        await writePackage(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '@deepseek-ai/dsh', '0.2.2-rc.1');
         await writePackage(join(runtime, 'node_modules', 'hapi-dsh', 'package.json'), 'hapi-dsh', '0.1.2');
         await writePackage(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-session', 'package.json'),
-            '@deepseek-ai/dsh-session', '0.2.1-rc.3');
+            '@deepseek-ai/dsh-session', '0.2.2-rc.1');
         await writePackage(join(runtime, 'node_modules', 'hapi-dsh', 'node_modules', '@deepseek-ai', 'dsh-session', 'package.json'),
             '@deepseek-ai/dsh-session', '0.2.0-rc.1');
         const audit = await ops.auditResolution(release);
@@ -38,11 +38,11 @@ test('same-version peer variants are pnpm layout, not a split', async () => {
     const release = await releaseRoot();
     try {
         const runtime = join(release, 'runtime');
-        await writePackage(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '@deepseek-ai/dsh', '0.2.1-rc.3');
+        await writePackage(join(runtime, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), '@deepseek-ai/dsh', '0.2.2-rc.1');
         await writePackage(join(runtime, 'node_modules', 'hapi-dsh', 'package.json'), 'hapi-dsh', '0.1.2');
         for (const consumer of [join('node_modules', '@deepseek-ai', 'dsh'), join('node_modules', 'hapi-dsh')]) {
             await writePackage(join(runtime, consumer, 'node_modules', '@deepseek-ai', 'dsh-session', 'package.json'),
-                '@deepseek-ai/dsh-session', '0.2.1-rc.3');
+                '@deepseek-ai/dsh-session', '0.2.2-rc.1');
         }
         const audit = await ops.auditResolution(release);
         assert.equal(audit.ok, true, 'the same version in two physical locations is not a version split');

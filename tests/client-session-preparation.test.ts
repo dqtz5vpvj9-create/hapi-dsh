@@ -60,7 +60,7 @@ function observable<T>(initial: T) {
 }
 
 function official(name: string): { apply(ctx: Context): void; inject: string[] } {
-    assert.equal(require(`${name}/package.json`).version, '0.2.1-rc.3')
+    assert.equal(require(`${name}/package.json`).version, '0.2.2-rc.1')
     let registration: { factory(resolve: typeof require): { apply(ctx: Context): void; inject: string[] } } | undefined
     new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({
         __ModuleLoader__: { load(value: typeof registration) { registration = value } },

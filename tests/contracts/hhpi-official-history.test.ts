@@ -31,7 +31,7 @@ const production = require('../../.tmp/hhpi-official-contract.cjs') as {
   windowCommit: { createWindowCommitFactory(): WindowCommitFactoryV1 }
 }
 function browserModule(name: string): Record<string, unknown> {
-  assert.equal(require(`${name}/package.json`).version, '0.2.1-rc.3')
+  assert.equal(require(`${name}/package.json`).version, '0.2.2-rc.1')
   let registration: { factory(resolve: (id: string) => unknown): Record<string, unknown> } | undefined
   new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })
   assert.ok(registration)

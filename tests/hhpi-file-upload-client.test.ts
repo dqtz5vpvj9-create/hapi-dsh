@@ -22,3 +22,26 @@ test('official upload provider preserves source routing, bytes, cancellation, an
   assert.equal(requests.length, 1)
   stop(); assert.equal(disposed, true)
 })
+
+
+test('selected images finish local optimization before any source upload and use the real source receipt', async t => {
+  let provider!: FileUploadProvider
+  const events: string[] = [], requests: { data: string }[] = []
+  const ctx = { fileUpload: { registerProvider(value: FileUploadProvider) { provider = value; return () => {} } } } as unknown as Context
+  const api = { async upload(request: { data: string }) { events.push('remote upload'); requests.push(request); return { ok: true, value: { receiptId: 'receipt', file: { attachmentId: 'stored', name: 'shot.png', bytes: 3 } } } } } as unknown as HhpiRemoteApi
+  const originalBitmap = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap')
+  Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, value: async () => { events.push('local decode'); return { width: 2, height: 2, close() {} } } })
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  const originalReader = Object.getOwnPropertyDescriptor(globalThis, 'FileReader')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement() { return { getContext() { return { clearRect() {}, drawImage() {} } }, toBlob(done: (value: Blob) => void) { events.push('local encode'); done(new Blob([Uint8Array.of(1, 2, 3)], { type: 'image/png' })) } } } } })
+  Object.defineProperty(globalThis, 'FileReader', { configurable: true, value: class { result = ''; onload?: () => void; readAsDataURL() { this.result = 'data:image/png;base64,AQID'; this.onload?.() } } })
+  t.after(() => { for (const [name, descriptor] of [['document', originalDocument], ['FileReader', originalReader], ['createImageBitmap', originalBitmap]] as const) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else Reflect.deleteProperty(globalThis, name) } })
+  installRemoteFileUpload(ctx, api)
+  const result = await provider.uploadImage!('hhpi:machine:source:codex:thread' as SessionId, new Blob([new Uint8Array(7 * 1024 * 1024)], { type: 'image/png' }), 'image/png', 'shot.png')
+  assert.deepEqual(events, ['local decode', 'local encode', 'local decode', 'remote upload'])
+  assert.deepEqual(requests.map(value => value.data), ['AQID'])
+  assert.equal(result.ok && result.value.receiptId, 'receipt')
+  const aborted = new AbortController(); aborted.abort()
+  await assert.rejects(provider.uploadImage!('hhpi:machine:source:codex:thread' as SessionId, new Blob(), 'image/png', 'shot.png', aborted.signal), { name: 'AbortError' })
+  assert.equal(requests.length, 1)
+})

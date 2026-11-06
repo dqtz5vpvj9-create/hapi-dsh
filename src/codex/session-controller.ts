@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { SessionController, type Config } from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
+  SessionObserveEventRequest, SessionEventFrame, SessionProjectionFrame, SessionStateRequest, SessionState, SessionWaitRequest, SessionWaitValue, SessionEventsPage,
   ModelCatalog, SessionAddress, SessionAttachmentRequest, SessionAttachmentValue, SessionCancelRequest, SessionCancelValue,
   SessionControlFrame, SessionCreateRequest, SessionCreateValue, SessionFollowFrame, SessionFollowRequest,
   SessionForkRequest, SessionForkValue, SessionListRequest, SessionListValue, SessionOpenWorkspacePathRequest,
@@ -46,7 +47,6 @@ export class NativeAwareSessionController extends TypertRemoteService {
   }
 
   resolveAgent(sessionId: SessionId): ReturnType<SessionController['resolveAgent']> { assertOrdinarySourceTarget(sessionId); return this.ordinary.resolveAgent(sessionId) }
-  inspect(sessionId: SessionId, signal?: AbortSignal): ReturnType<SessionController['inspect']> { assertOrdinarySourceTarget(sessionId); return this.ordinary.inspect(sessionId, signal) }
   workspaceDesktop(): ReturnType<SessionController['workspaceDesktop']> { return this.ordinary.workspaceDesktop() }
 
   @Remote('list')
@@ -147,13 +147,44 @@ export class NativeAwareSessionController extends TypertRemoteService {
   cancel(request: SessionCancelRequest): SessionCancelValue {
     assertOrdinarySourceTarget(request.sessionId); return this.ordinary.cancel(request) }
 
-  @Remote({ name: 'page', resources: { session: addressedSession } })
+  @Remote('page')
   page(request: SessionPageRequest, signal: AbortSignal): Promise<SessionPage> {
     assertOrdinarySourceTarget(addressedSession(request))
     return this.ordinary.page(request, signal)
   }
 
-  @Remote({ mode: 'stream', resources: { session: addressedSession } })
+  @Remote
+  events(request: SessionPageRequest, signal: AbortSignal): Promise<SessionEventsPage> {
+    assertOrdinarySourceTarget(addressedSession(request))
+    return this.ordinary.events(request, signal)
+  }
+  @Remote({ mode: 'stream' })
+  observeEvent(request: SessionObserveEventRequest, signal: AbortSignal): AsyncIterable<SessionEventFrame> {
+    assertOrdinarySourceTarget(addressedSession(request))
+    return this.ordinary.observeEvent(request, signal)
+  }
+  @Remote({ mode: 'stream' })
+  observeProjections(request: SessionProjectionsRequest, signal: AbortSignal): AsyncIterable<SessionProjectionFrame> {
+    assertOrdinarySourceTarget(request.sessionId)
+    return this.ordinary.observeProjections(request, signal)
+  }
+  @Remote
+  state(request: SessionStateRequest, signal: AbortSignal): Promise<SessionState> {
+    assertOrdinarySourceTarget(request.sessionId)
+    return this.ordinary.state(request, signal)
+  }
+  @Remote({ mode: 'stream' })
+  observeState(request: SessionStateRequest, signal: AbortSignal): AsyncIterable<SessionState> {
+    assertOrdinarySourceTarget(request.sessionId)
+    return this.ordinary.observeState(request, signal)
+  }
+  @Remote
+  wait(request: SessionWaitRequest, signal: AbortSignal): Promise<SessionWaitValue> {
+    assertOrdinarySourceTarget(request.sessionId)
+    return this.ordinary.wait(request, signal)
+  }
+
+  @Remote({ mode: 'stream' })
   follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
     assertOrdinarySourceTarget(addressedSession(request))
     return this.ordinary.follow(openingWindow(request), signal)

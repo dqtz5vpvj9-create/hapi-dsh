@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -347,7 +348,7 @@ test('official Remote Gateway routes exact legacy IDs to the adapter with origin
   const f = fixture(), ctx = new Context(), abort = new AbortController()
   try {
     const state = await f.open()
-    await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
+    await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
     new RemoteAccessService(ctx)
     const config = TerminalController.Config()
     new TerminalController(officialDelegateFixture(ctx, 'terminal-controller', config), config)

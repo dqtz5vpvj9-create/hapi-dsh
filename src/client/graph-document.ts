@@ -19,5 +19,5 @@ export function createGraphModules(document: Document, source = __HAPI_DSH_OFFIC
     new Function('window', 'document', source)({ __ModuleLoader__: { load(value: ClientBundleRegistration) { registration = value } } }, document)
     if (!registration) throw new Error('The official module loader did not register')
     const missing = (id: string): never => { throw new Error(`Unexpected platform import in the pinned module loader: ${id}`) }
-    return registration.factory(Object.assign(missing, { async: async (id: string) => missing(id) })) as OfficialModules
+    return registration.factory(Object.assign(missing, { async: async (id: string) => missing(id), asset: (reference: string) => reference })) as OfficialModules
 }

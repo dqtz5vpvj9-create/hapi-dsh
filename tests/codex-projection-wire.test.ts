@@ -21,16 +21,16 @@ function fixture(): NonNullable<HapiProjectionState> {
 
 /** Protocol inputs are synthetic; Session, projection drive and publication
  * gates below are the actual pinned official packages, without browser mocks. */
-async function harness(definition: ProjectionDefinition<'hapi'> & { wire: NonNullable<ProjectionDefinition<'hapi'>['wire']> }) {
+async function harness(definition: ProjectionDefinition<'hapi', HapiProjectionState> & { wire: NonNullable<ProjectionDefinition<'hapi', HapiProjectionState>['wire']> }) {
   const ctx = new Context()
   await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry)
-  ctx.sessionProjections.register(definition)
+  const projection = await ctx.sessionProjections.register(definition)
   const session = ctx.sessions.create(SessionId('projection-wire-fixture'))
   const notifications: HapiProjection[] = []
   const stop = ctx.sessionProjections.onChanged((target, key, value) => {
     if (target === session && key === 'hapi') notifications.push(value as HapiProjection)
   })
-  return { ctx, session, notifications, async close() { stop(); await ctx.fiber.dispose() } }
+  return { ctx, session, notifications, projection, async close() { stop(); await ctx.fiber.dispose() } }
 }
 
 test('official registry suppresses only Host execution sequence churn: old and new wire publication benchmark', async t => {
@@ -49,7 +49,7 @@ test('official registry suppresses only Host execution sequence churn: old and n
       for (let sequence = 2; sequence <= 101; sequence++) {
         appendPluginRecord(app.session, 'plugin:hapi-dsh/execution', { ...source.execution!, sequence })
       }
-      const state = app.ctx.sessionProjections.stateOf(app.session, 'hapi')
+      const state = app.projection.stateOf(app.session)
       assert.equal(state?.execution?.sequence, 101, 'the Host retains the latest exact source sequence')
       assert.deepEqual(state?.delivery, source.delivery)
       assert.deepEqual(state?.pendingRequests, source.pendingRequests)
@@ -104,7 +104,7 @@ test('real execution, queue, approval and notice changes still publish complete 
     appendPluginRecord(app.session, 'plugin:hapi-dsh/execution', null)
     assert.equal(app.notifications.length, 8)
     assert.equal(app.notifications.at(-1)?.execution, null)
-    assert.equal(app.ctx.sessionProjections.stateOf(app.session, 'hapi')?.execution, null)
+    assert.equal(app.projection.stateOf(app.session)?.execution, null)
     assert.deepEqual(app.notifications.at(-1), app.ctx.sessionProjections.snapshot(app.session).values.hapi)
   } finally { await app.close() }
 })

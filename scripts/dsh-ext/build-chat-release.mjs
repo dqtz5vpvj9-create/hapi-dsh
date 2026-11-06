@@ -43,7 +43,7 @@ for (const [from, to] of [
 ]) { await cp(from, join(output, to)); release.sourceOffer.push(to); }
 release.sourceOffer.push(archive, 'source/previous-release.json', 'source/live-process-inputs.json');
 release.extRelease = 'hhpi-live-process-20261106.1';
-release.compositionVersion = '0.2.1-rc.3+hhpi.liveprocess.20261106.1';
+release.compositionVersion = `${release.upstreamVersion}+hhpi.liveprocess.20261106.1`;
 release.patchSetSha256 = patchSetSha256;
 const packages = [];
 for (const item of release.packages) {

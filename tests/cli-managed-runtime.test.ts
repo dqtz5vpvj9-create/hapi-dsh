@@ -36,7 +36,7 @@ async function writeRuntime(dshHome: string, dshVersion: string, extRelease: str
 test('a managed runtime is used only when its resolved DSH matches the recorded version', async () => {
     const dshHome = await home();
     try {
-        const binary = await writeRuntime(dshHome, '0.2.1-rc.3', '3');
+        const binary = await writeRuntime(dshHome, '0.2.2-rc.1', '3');
         const command = await resolveDshCommand({ dsh: { home: dshHome, profile: 'hapi' } });
         assert.equal(command.args[0], binary, 'the bundle runtime binary becomes the launcher');
         assert.equal(command.executable, process.execPath);
@@ -55,7 +55,7 @@ test('a malformed managed-runtime pointer fails instead of silently using anothe
     try {
         await mkdir(join(dshHome, 'hapi-dsh'), { recursive: true });
         await writeFile(join(dshHome, 'hapi-dsh', 'state.json'), JSON.stringify({
-            version: 1, profiles: { hapi: { runtime: { dshBinary: 'relative/path', dshVersion: '0.2.1-rc.3', extRelease: '3' } } },
+            version: 1, profiles: { hapi: { runtime: { dshBinary: 'relative/path', dshVersion: '0.2.2-rc.1', extRelease: '3' } } },
         }));
         await assert.rejects(resolveDshCommand({ dsh: { home: dshHome, profile: 'hapi' } }), /pointer is malformed/);
     } finally {
@@ -66,7 +66,7 @@ test('a malformed managed-runtime pointer fails instead of silently using anothe
 test('a runtime file changed after sealing refuses to start', async () => {
     const dshHome = await home();
     try {
-        const binary = await writeRuntime(dshHome, '0.2.1-rc.3', '3');
+        const binary = await writeRuntime(dshHome, '0.2.2-rc.1', '3');
         await writeFile(binary, '#!/usr/bin/env node\n// tampered\n');
         await assert.rejects(resolveDshCommand({ dsh: { home: dshHome, profile: 'hapi' } }), /changed since sealing/,
             'a re-installed or modified runtime must not be booted silently');
@@ -78,7 +78,7 @@ test('a runtime file changed after sealing refuses to start', async () => {
 test('a managed DSH home refuses an explicit launcher and an unmanaged profile', async () => {
     const dshHome = await home();
     try {
-        await writeRuntime(dshHome, '0.2.1-rc.3', '3');
+        await writeRuntime(dshHome, '0.2.2-rc.1', '3');
         await assert.rejects(resolveDshCommand({ dsh: { home: dshHome, profile: 'hapi', command: '/usr/bin/false' } }),
             /bypasses the bundle-managed runtime/, 'an explicit launcher must not silently bypass the verified runtime');
         await assert.rejects(resolveDshCommand({ dsh: { home: dshHome, profile: 'other' } }),
@@ -100,7 +100,7 @@ test('a managed DSH home refuses an explicit launcher and an unmanaged profile',
 test('a sealed path that resolves outside the runtime is refused', async () => {
     const dshHome = await home();
     try {
-        const binary = await writeRuntime(dshHome, '0.2.1-rc.3', '3');
+        const binary = await writeRuntime(dshHome, '0.2.2-rc.1', '3');
         const runtimeRoot = join(dshHome, 'hapi-dsh', 'releases', 'r-fixture', 'runtime');
         const outside = join(dshHome, 'outside.txt');
         await writeFile(outside, 'outside');

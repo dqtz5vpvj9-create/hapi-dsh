@@ -21,7 +21,7 @@ const manifest = JSON.parse(await readFile(join(source, 'package.json'), 'utf8')
 if (manifest.packageManager !== 'pnpm@11.28.5') throw new Error('The pinned upstream package manager changed.');
 const provenance = JSON.parse(await readFile(join(source, 'hhpi-source-inputs.json'), 'utf8'));
 const identity = { upstreamCommit: provenance.upstreamCommit, upstreamVersion: provenance.upstreamVersion, patchSetSha256: provenance.patchSetSha256 };
-const pnpm = (args, cwd = source, timeout = 180_000) => run('npm', ['exec', '--yes', '--package=pnpm@11.28.5', '--', 'pnpm', ...args], { cwd, timeout });
+const pnpm = (args, cwd = source, timeout = 180_000) => process.env.PNPM_COMMAND ? run(process.env.PNPM_COMMAND, args, { cwd, timeout }) : run('npm', ['exec', '--yes', '--package=pnpm@11.28.5', '--', 'pnpm', ...args], { cwd, timeout });
 console.log('Installing the exact upstream lockfile with lifecycle scripts disabled.');
 console.log(pnpm(['install', '--frozen-lockfile', '--ignore-scripts'], source, 300_000));
 console.log('Generating official Typert source contracts before Client compilation.');

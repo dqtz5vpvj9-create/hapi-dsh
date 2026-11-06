@@ -17,9 +17,10 @@ async function fixture(t: TestContext) {
     await writeFile(join(dir, 'index.html'), '<html><head></head><body>official fixture</body></html>');
     let exchanges = 0;
     const dispose = await mountPasswordLogin({ webServer: {
-        register(route) { routes.set(route.path, route.handler); return () => { routes.delete(route.path); }; },
+        register(route) { assert.ok('handler' in route); routes.set(route.path, route.handler); return () => { routes.delete(route.path); }; },
         renderIndex(html) { return html.replace('</head>', '<script src="official.js"></script></head>'); },
     }, connection: {
+        browserPeer: { principal: { kind: 'owner' } } as import('@deepseek-ai/dsh-typert-protocol').PeerScope,
         requestRejection(req) {
             const headers = req.headers as Record<string, string | undefined>;
             return headers.host?.startsWith('127.0.0.1:') ? headers.cookie === 'official=accepted' ? undefined : 401 : 403;

@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 /** Official Cordis/Remote services are real; the HAPI HTTP responses below are explicit source fixtures. */
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -43,7 +44,7 @@ async function mount(config: Config = {}, original: 'local' | 'recording' | 'lat
   const directory = await mkdtemp(join(tmpdir(), 'hapi-file-reference-'))
   await writeFile(join(directory, 'hub-only.txt'), 'Explicit Hub filesystem fixture, never a source file')
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
   new RemoteAccessService(ctx)
   const localLookups: Agent[] = []
   ctx.provide('workingDirectory', { ensure: async (agent: Agent, signal: AbortSignal) => {

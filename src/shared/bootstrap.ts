@@ -1,13 +1,14 @@
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { DSH_VERSION } from '../cli/config.ts';
 import { BOOTSTRAP_PATH } from '../runner/protocol.ts';
 import { HAPI_DSH_BUILD_ID } from '../build-info.ts';
 
 export interface BootstrapServices {
-    connection: { requestRejection(req: IncomingMessage): number | undefined };
+    connection: { readonly browserPeer: PeerScope; requestRejection(req: IncomingMessage): number | undefined };
     webServer: {
         getOrigin?(): string;
-        collectIndexInjections(): Array<{ kind: string; name?: string; value?: unknown }>;
+        collectIndexInjections(peer: PeerScope): Array<{ kind: string; name?: string; value?: unknown }>;
         register(route: { kind: 'exact'; path: string; handler(req: IncomingMessage, res: ServerResponse): void }): () => void;
     };
     clientModules: { graph(): { rev?: string; release?: { version: string } } };
@@ -20,13 +21,13 @@ export const SAFE_GLOBALS = new Set([
 ]);
 
 /** Forward the official graph and public JSON config without executing injection scripts. */
-export function bootstrapPayload(services: Pick<BootstrapServices, 'webServer' | 'clientModules'>): {
+export function bootstrapPayload(services: Pick<BootstrapServices, 'webServer' | 'clientModules'> & { connection: Pick<BootstrapServices['connection'], 'browserPeer'> }): {
     dshVersion: string; hostBuildId: string; graph: unknown; globals: Record<string, unknown>;
 } {
     const graph = services.clientModules.graph();
     if (graph.release?.version && graph.release.version !== DSH_VERSION) throw new Error('Host DSH release does not match the pinned distribution');
     const globals: Record<string, unknown> = {};
-    for (const row of services.webServer.collectIndexInjections()) {
+    for (const row of services.webServer.collectIndexInjections(services.connection.browserPeer)) {
         if (row.kind === 'global' && row.name && SAFE_GLOBALS.has(row.name)) globals[row.name] = row.value;
     }
     return { dshVersion: DSH_VERSION, hostBuildId: HAPI_DSH_BUILD_ID, graph, globals };

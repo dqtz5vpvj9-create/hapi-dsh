@@ -82,7 +82,7 @@ function run(index: number, child: string, status: string, extra: Record<string,
 }
 async function mount(source: Source, directory: string, native = false) {
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let service: CodexService | HapiAgentService | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => {
     service = native ? new CodexService(owner, source, { stateDirectory: directory })

@@ -33,7 +33,7 @@ const logFile = process.env.HAPI_DSH_FAKE_LOG
 const fail = process.env.HAPI_DSH_FAKE_FAIL ?? ''
 const log = (entry) => { if (logFile) appendFileSync(logFile, JSON.stringify(entry) + '\\n') }
 const flag = (name) => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined }
-if (args[0] === '--version') { console.log('0.2.1-rc.3'); process.exit(0) }
+if (args[0] === '--version') { console.log('0.2.2-rc.1'); process.exit(0) }
 const profile = flag('--profile')
 const profileDir = join(dshHome, 'profiles', profile)
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\\n')
@@ -79,7 +79,7 @@ if (args[0] === 'plugin' && args.includes('add')) {
     }
     if (fail === 'health') {
       const broken = JSON.parse(readFileSync(join(unpacked, 'package.json'), 'utf8'))
-      writeJson(join(unpacked, 'package.json'), { ...broken, version: '0.2.1-rc.3' })
+      writeJson(join(unpacked, 'package.json'), { ...broken, version: '0.2.2-rc.1' })
     }
     const link = join(profileDir, 'node_modules', item.name)
     mkdirSync(dirname(link), { recursive: true })
@@ -187,7 +187,7 @@ export async function createHarness(): Promise<Harness> {
         await write('node_modules/hapi-dsh/package.json', { name: 'hapi-dsh', version: '0.1.2' })
         const packages = []
         for (const item of manifest.payload.dshExt) {
-            await write(`node_modules/${item.name}/package.json`, { name: item.name, version: fail === 'health' ? '0.2.1-rc.3' : item.version })
+            await write(`node_modules/${item.name}/package.json`, { name: item.name, version: fail === 'health' ? '0.2.2-rc.1' : item.version })
             packages.push({ name: item.name, version: item.version, sha256: '0'.repeat(64) })
         }
         // Sealed identity so inspectRuntime verifies hashes like production.
@@ -258,7 +258,7 @@ export const EXT_PACKAGES = [
 export async function makeExtRelease(root: string, tag: string): Promise<string> {
     const directory = join(root, `ext-release-${tag}`)
     await mkdir(directory, { recursive: true })
-    const version = `0.2.1-rc.3.ext.${tag}`
+    const version = `0.2.2-rc.1.ext.${tag}`
     const packages = []
     for (const item of EXT_PACKAGES) {
         const source = join(directory, 'sources', item.name.replace(/[^A-Za-z0-9]/g, '_'))
@@ -278,8 +278,8 @@ export async function makeExtRelease(root: string, tag: string): Promise<string>
     }
     const patchSet = await digest.sha256File(join(repositoryRoot, 'package.json'))
     await writeFile(join(directory, 'release.json'), JSON.stringify({
-        upstreamVersion: '0.2.1-rc.3',
-        upstreamCommit: '1f81c047fc48fa190a683e469daa699857e9afe8',
+        upstreamVersion: '0.2.2-rc.1',
+        upstreamCommit: '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db',
         extRelease: version,
         patchSetSha256: patchSet,
         compositionVersion: `ext-${tag}`,

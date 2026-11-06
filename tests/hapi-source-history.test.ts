@@ -121,7 +121,7 @@ class Fixture implements HapiObservedTransport {
 }
 
 async function mount(source: Fixture, directory: string) {
-  const ctx = new Context(); await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  const ctx = new Context(); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let native: CodexService | undefined, observed: HapiAgentService | undefined, history: SourceHistory | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => {
     native = new CodexService(owner, source, { stateDirectory: directory }); await native.start()

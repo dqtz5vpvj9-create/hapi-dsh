@@ -1530,7 +1530,7 @@ class SourceSession implements SessionFace, SourceViewportSession {
   }
   prompt(...args: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> { return this.record.originalFace.prompt(...args) }
   readAttachment(...args: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
-    const [attachmentId] = args
+    const [{ attachmentId }] = args
     return readSourceAttachmentWithFallback(
       () => this.record.originalFace.readAttachment(...args),
       async () => {

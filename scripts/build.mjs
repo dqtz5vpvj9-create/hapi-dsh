@@ -37,6 +37,6 @@ await writeFile('dist/runner/package.json', JSON.stringify({
     main: './index.js', exports: { '.': './index.js', './package.json': './package.json', './cordis.patch.yml': './cordis.patch.yml' },
     engines: { node: '>=24', dsh: manifest.engines.dsh },
     dsh: { bundle: { patch: './cordis.patch.yml' } },
-    peerDependencies: { '@deepseek-ai/cordis': '4.0.5' },
+    peerDependencies: { '@deepseek-ai/cordis': manifest.peerDependencies['@deepseek-ai/cordis'] },
 }, null, 2) + '\n');
 await writeFile('dist/runner/cordis.patch.yml', await readFile('config/runner.patch.yml', 'utf8'));

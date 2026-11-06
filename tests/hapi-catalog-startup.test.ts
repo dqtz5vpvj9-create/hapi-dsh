@@ -90,7 +90,7 @@ async function withOnDemandCatalog(run: (fixture: CatalogFixture, codex: CodexSe
     const directory = await mkdtemp(testTemporaryJoin(testTemporaryRoot(), "hapi-resolver-snapshot-")), fixture = new CatalogFixture(), ctx = new Context();
     let codex!: CodexService, observed!: HapiAgentService;
     try {
-        await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime);
+        await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime);
         await ctx.plugin(Object.assign(async (owner: Context) => {
             codex = new CodexService(owner, fixture, { stateDirectory: join(directory, 'native'), discovery: 'on-demand', fastHistorySeed: true });
             observed = new HapiAgentService(owner, fixture, { stateDirectory: join(directory, 'observed'), discovery: 'on-demand', fastHistorySeed: true });
@@ -172,7 +172,7 @@ test('154 mixed sessions keep importing after startup while exact late native an
     let codex!: CodexService, observed!: HapiAgentService, completed: Promise<void> = Promise.resolve(), startup: string | undefined;
     const errors: string[] = [];
     try {
-        await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime);
+        await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime);
         await ctx.plugin(Object.assign(async (owner: Context) => {
             codex = new CodexService(owner, fixture, { stateDirectory: join(directory, 'native'), onError: error => { errors.push(error.message); } });
             observed = new HapiAgentService(owner, fixture, { stateDirectory: join(directory, 'observed'), onError: error => { errors.push(error.message); } });
@@ -207,7 +207,7 @@ test('disposing a Host during the first slow catalog batch stops later backgroun
     const directory = await mkdtemp(join(tmpdir(), 'hapi-catalog-dispose-')), fixture = new CatalogFixture(), ctx = new Context(), errors: string[] = [];
     let codex!: CodexService, observed!: HapiAgentService;
     try {
-        await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime);
+        await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime);
         await ctx.plugin(Object.assign(async (owner: Context) => {
             codex = new CodexService(owner, fixture, { stateDirectory: join(directory, 'native'), onError: error => { errors.push(error.message); } });
             observed = new HapiAgentService(owner, fixture, { stateDirectory: join(directory, 'observed'), onError: error => { errors.push(error.message); } });

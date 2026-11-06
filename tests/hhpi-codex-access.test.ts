@@ -130,7 +130,11 @@ test('uploaded file receipts survive restart, reject cross-session use, and neve
     assert.equal(f.calls.length, 2, 'the original native writes must not replay');
     const restarted = new CodexUploads(join(f.root, 'uploads'), f.bridge);
     const input = await restarted.inputs(session.id, [result.receiptId]);
-    assert.ok(input[0]!.text.includes('/source/work/.hhpi/uploads/'));
+    assert.ok(input[0]?.type === 'text' && input[0].text.includes('/source/work/.hhpi/uploads/'));
+    const imageRequest = { ...request, operationId: randomUUID(), name: 'shot.png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC' };
+    const imageReceipt = await uploads.upload(session, imageRequest);
+    const imageInput = await restarted.inputs(session.id, [imageReceipt.receiptId]);
+    assert.equal(imageInput[0]?.type, 'localImage', 'staged images retain native vision input rather than a text-only filename');
     await assert.rejects(restarted.inputs('another-session', [result.receiptId]), /another source session/);
     await assert.rejects(uploads.upload({ ...session, id: 'another-session' }, request), /another source session/);
     await assert.rejects(uploads.upload(session, { ...request, data: Buffer.from('different').toString('base64') }), /different arguments/);

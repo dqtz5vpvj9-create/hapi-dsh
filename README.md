@@ -42,8 +42,8 @@ hapi-dsh start
 | --- | --- |
 | Node.js | 24 或更新版本；CI 固定 24.19.0 |
 | pnpm | 11.28.5；官方 DSH 插件管理器要求 `pnpm` 位于 `PATH` |
-| 官方 DSH | `@deepseek-ai/dsh@0.2.1-rc.3`，主机和 Runner 必须一致 |
-| DSH 对照源码 | [`1f81c047fc48fa190a683e469daa699857e9afe8`](https://github.com/deepseek-ai/deepseek-harness/tree/1f81c047fc48fa190a683e469daa699857e9afe8) |
+| 官方 DSH | `@deepseek-ai/dsh@0.2.2-rc.1`，主机和 Runner 必须一致 |
+| DSH 对照源码 | [`66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`](https://github.com/deepseek-ai/deepseek-harness/tree/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db) |
 | HAPI 原生桥 | [`dqtz5vpvj9-create/hapi@55166cf8d87814ccfb383b538a8e8c55283bed81`](https://github.com/dqtz5vpvj9-create/hapi/tree/55166cf8d87814ccfb383b538a8e8c55283bed81) |
 | 构建 HAPI 时需要 | Bun 1.4.0；运行本插件本身不需要 Bun |
 

@@ -31,4 +31,4 @@ export const hapiObservedProjectionDefinition = {
     return value?.type === 'plugin:hapi-dsh-observed/state' ? hapiObservedProjectionSchema.parse(value.data) : state
   },
   wire: { viewSchema: hapiObservedProjectionSchema, view: state => state },
-} satisfies ProjectionDefinition<'hapiObserved'>
+} satisfies ProjectionDefinition<'hapiObserved', HapiObservedProjection>

@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { HostConnectionHandle, ConnectionIndexResponse } from '@deepseek-ai/dsh-client-connection';
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver';
 
-type Services = { connection: Pick<HostConnectionHandle, 'requestRejection' | 'authorizeIndex' | 'authenticatedUrl'>;
+type Services = { connection: Pick<HostConnectionHandle, 'requestRejection' | 'authorizeIndex' | 'authenticatedUrl' | 'browserPeer'>;
     webServer: Pick<WebServer, 'register' | 'renderIndex'> };
 
 /** Password admission exchanges through Connection; it never creates a second credential. */
@@ -44,7 +44,7 @@ export async function mountPasswordLogin(services: Services, passwordFile: strin
                 if (req.method === 'HEAD') reply(res, 200); else page(res); return;
             }
             if (!connection.authorizeIndex(req, res)) return;
-            const html = webServer.renderIndex(await readFile(indexFile, 'utf8'))
+            const html = webServer.renderIndex(await readFile(indexFile, 'utf8'), connection.browserPeer)
                 .replace(/<head(?:\s[^>]*)?>/i, open => `${open}<base href="./"><meta name="hhpi-password-login" content="enabled">`);
             reply(res, 200, req.method === 'HEAD' ? '' : html, { 'content-type': 'text/html; charset=utf-8' });
         });

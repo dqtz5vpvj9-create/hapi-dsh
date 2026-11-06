@@ -139,8 +139,7 @@ function terminal(status: 'completed' | 'interrupted' | 'failed' = 'completed'):
 async function mount(fake: FakeHapi, directory: string, options: Partial<CodexServiceOptions> = {}) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(AgentRegistry)
-  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry)
   await ctx.plugin(CommandRuntime)
   let service: CodexService | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => {

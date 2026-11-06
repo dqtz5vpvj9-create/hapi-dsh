@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 /** Tests the plugin composition boundary; the ordinary service below is an explicit recording fixture. */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
@@ -48,7 +49,7 @@ class RecordingOrdinary extends TypertRemoteService {
   }
 }
 async function mount() {
-  const ctx = new Context(); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
+  const ctx = new Context(); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
   new RemoteAccessService(ctx)
   ctx.provide('workingDirectory', {} as Context['workingDirectory'])
   const isolated = officialDelegateFixture(ctx, 'subagent', {}), entry = [...ctx.loader.entries()][0]!

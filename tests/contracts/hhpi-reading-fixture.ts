@@ -27,7 +27,7 @@ function store<T>(initial: T) {
 }
 function official(name: string): { apply(ctx: Context): void; inject: string[]; [key: string]: unknown } {
   const metadata = require(`${name}/package.json`)
-  assert.equal(metadata.version, '0.2.1-rc.3')
+  assert.equal(metadata.version, '0.2.2-rc.1')
   assert.ok(metadata.hhpiSourceExtension, `${name} must be an installed source build`)
   let registration: { factory(resolve: (id: string) => unknown): ReturnType<typeof official> } | undefined
   // Client factories retain their lexical Window. Give them the actual DOM

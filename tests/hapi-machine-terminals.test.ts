@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -280,7 +281,7 @@ test('public terminal composition preserves the real Gateway, native authorizati
   const output = new PassThrough(), done = deferred<{ exitCode: number; signal: null }>()
   const writes: string[] = []; let spawned = 0, terminated = 0
   try {
-    await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
+    await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
     new RemoteAccessService(ctx)
     ctx.provide('sandboxPolicy', { workspaceRoot: '/ordinary', resolve: () => ({ mode: 'danger-full-access', workspaceRoot: '/ordinary' }) } as never)
     ctx.provide('workingDirectory', { get: () => '/ordinary', ensure: async () => '/ordinary' } as never)

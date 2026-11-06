@@ -90,7 +90,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export const name = 'hapi-dsh-client'
-export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload']
+export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload', 'fileDrag']
 
 /** Consume the namespace installed by the source-session provider. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {

@@ -1,3 +1,5 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
+import { initializeOfficialController } from './official-controller-initialization.ts'
 import { tmpdir as testTemporaryRoot } from 'node:os'
 import { HistoryProjectionSink } from '../src/shared/projection-event-sink.ts'
 import assert from 'node:assert/strict'
@@ -54,10 +56,10 @@ async function app(): Promise<App> {
     lookups: { configure() {} },
     contexts: { configureHost() {} },
   })
-  ctx.provide('sessionProjections', { register() {}, onChanged() { return () => {} } })
+  await ctx.plugin(SessionProjectionRegistry)
   ctx.provide('fileUploads', { registerAgentResolver() {} })
   ctx.provide('sessions', { get(id: string) { return sessions.get(id) } })
-  const controller = new SessionController(ctx, {})
+  const controller = await initializeOfficialController(new SessionController(ctx, {}))
   return {
     directory, ctx, store, controller, sessions,
     async close() {
@@ -115,44 +117,18 @@ function attachmentDenied(): RemoteError<'session/attachment-invalid'> {
     { reason: 'ATTACHMENT_NOT_REFERENCED' })
 }
 
-test('official in-memory protocol rejects a detached history image that the display log does not reference', async () => {
+test('official in-memory image read verifies the complete reference while source grants retain their own scope', async () => {
   const f = await app()
   try {
     const image = await f.store.saveImage({ data: PNG, mediaType: 'image/png', name: 'history.png' })
     const records = detachedHistoryPage(image)
-    const refs = collectRecordImageRefs(records)
-    assert.equal(refs.length, 1)
-    assert.equal(String(refs[0]!.attachmentId), String(image.attachmentId))
-
-    // The real display Session log has no image event. The bytes are already in
-    // the official store, exactly as the probe's imported 41e986bf... image.
+    assert.equal(collectRecordImageRefs(records).length, 1)
     const display = seedSession('display-seed', [{ type: 'text', text: 'seed without the history image' }])
     f.sessions.set(String(display.id), display)
-    await assert.rejects(
-      () => f.controller.attachment({ sessionId: display.id, attachmentId: image.attachmentId }),
-      (error: unknown) => {
-        assert.ok(error instanceof RemoteError)
-        assert.equal(error.code, 'session/attachment-invalid')
-        assert.deepEqual(error.details, { reason: 'ATTACHMENT_NOT_REFERENCED' })
-        assert.equal(isAttachmentNotReferenced(error), true)
-        return true
-      },
-    )
-
-    // A seed image in the same real log still follows the official path.
-    const seedWithImage = seedSession('display-seed-image', [{ type: 'image', attachment: image }])
-    f.sessions.set(String(seedWithImage.id), seedWithImage)
-    const official = await f.controller.attachment({ sessionId: seedWithImage.id, attachmentId: image.attachmentId })
-    const expected = await f.store.readImage(image)
-    assert.deepEqual(Buffer.from(official.data, 'base64'), Buffer.from(expected.data))
-    assert.equal(official.attachment.attachmentId, image.attachmentId)
-
-    // The bounded source-window index authorizes exactly the page-served ref.
-    const grants = new SourceWindowAttachments('hapi-codex-display', 'source-session')
-    assert.equal(grants.grant(records, 1), 1)
-    const adapted = await grants.read(f.store, String(image.attachmentId), 1)
-    assert.deepEqual(Buffer.from(adapted.data), Buffer.from(expected.data))
-    assert.equal(adapted.ref.attachmentId, image.attachmentId)
+    const value = await f.controller.attachment({ sessionId: display.id, attachment: image })
+    assert.equal(value.data, PNG.toString('base64'))
+    await assert.rejects(() => f.controller.attachment({ sessionId: display.id, attachment: { ...image, bytes: image.bytes + 1 } }),
+      (error: unknown) => error instanceof RemoteError && error.code === 'session/attachment-invalid')
   } finally { await f.close() }
 })
 

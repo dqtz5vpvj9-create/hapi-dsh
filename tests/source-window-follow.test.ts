@@ -30,7 +30,7 @@ const frame = (key: string): SourceFrame => ({ key, source: { messageId: key, at
 
 async function mount() {
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(TypertRegistry)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(TypertRegistry)
   new RemoteAccessService(ctx)
   ctx.typert.resources.register('session', { field: 'sessionId' })
   const agents = new Map<string, ReturnType<typeof add>>()

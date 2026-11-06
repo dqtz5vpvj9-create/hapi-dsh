@@ -82,4 +82,4 @@ export const hapiProjectionDefinition = {
     viewSchema: hapiProjectionViewSchema,
     view: hapiProjectionView,
   },
-} satisfies ProjectionDefinition<'hapi'>
+} satisfies ProjectionDefinition<'hapi', HapiProjectionState>

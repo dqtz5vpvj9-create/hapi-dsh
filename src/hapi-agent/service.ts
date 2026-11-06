@@ -44,7 +44,7 @@ export class HapiAgentService {
   private readonly errors = new Map<string, string>()
   private readonly revisionFile: string
   private unsubscribe: (() => void) | undefined
-  private unregister: (() => void) | undefined
+  private unregister: (() => Promise<void>) | undefined
   private started = false
   private disposed = false
   private catalogRefresh: Promise<void> | undefined
@@ -68,7 +68,8 @@ export class HapiAgentService {
     if (this.started) return
     if (this.disposed) throw new Error('The HAPI observation service was disposed')
     this.started = true
-    this.unregister = this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
+    const projection = await this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
+    this.unregister = () => projection.dispose()
     this.unsubscribe = this.transport.subscribe(event => this.enqueue(event))
     await this.refreshCatalog()
   }
@@ -449,7 +450,7 @@ export class HapiAgentService {
     for (const sync of this.attachRetries.values()) sync.dispose()
     this.attachRetries.clear()
     await Promise.allSettled([...this.attaching.values(), ...[...this.work.values()].map(queue => queue.dispose()), ...(this.catalogRefresh ? [this.catalogRefresh] : [])])
-    await Promise.allSettled(this.list().map(agent => { this.options.onDisplayRetired?.(agent.id, agent.binding.hapiSessionId); return agent.dispose() })); this.agents.clear(); this.work.clear(); this.reconciling.clear(); this.historyJournals.clear(); this.unregister?.()
+    await Promise.allSettled(this.list().map(agent => { this.options.onDisplayRetired?.(agent.id, agent.binding.hapiSessionId); return agent.dispose() })); this.agents.clear(); this.work.clear(); this.reconciling.clear(); this.historyJournals.clear(); await this.unregister?.()
   }
   private report(error: unknown, sourceId?: string): void {
     const failure = error instanceof Error ? error : new Error('The original HAPI source could not be synchronized')

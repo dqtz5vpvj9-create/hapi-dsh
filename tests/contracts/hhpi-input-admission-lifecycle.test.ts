@@ -34,8 +34,8 @@ async function loadOfficial(): Promise<Official> {
   const source = process.env.HHPI_DSH_SOURCE
   assert.ok(source, 'This contract requires the prepared pinned DSH source graph.')
   const provenance = JSON.parse(readFileSync(resolve(source, 'hhpi-source-inputs.json'), 'utf8'))
-  assert.equal(provenance.upstreamCommit, '1f81c047fc48fa190a683e469daa699857e9afe8')
-  assert.ok(provenance.inputs.some((input: { path: string }) => input.path === 'scripts/dsh-ext/input-acceptance.mjs'))
+  assert.equal(provenance.upstreamCommit, '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db')
+  assert.ok(provenance.inputs.some((input: { path: string }) => input.path === 'source-snapshots/dsh-ext/source.patch'))
   await prepareOfficialBrowserLibrary()
   const result = await build({
     stdin: { contents: [
@@ -86,15 +86,16 @@ async function fixture(t: TestContext) {
   const emptyStore = { getSnapshot: () => undefined, subscribe: () => () => {} }
   let nextId = 0, beforeAdmission: (() => void) | undefined, active: Pane | undefined
   const session = {
-    sessionId: 'synthetic-admission', inputCommitPolicy: 'after-acceptance',
+    sessionId: 'synthetic-admission',
     projections: { faceOf: () => emptyStore },
     getSnapshot: () => ({ sessionId: 'synthetic-admission', blank: false, running: false }),
-    beginSubmission(input: { text: string }) {
+    beginSubmission(input: { text: string; onAccept?: () => void }) {
       const requestId = `operation-${++nextId}`
       dom.window.localStorage.setItem(requestId, JSON.stringify(input))
       admissions.push(input.text)
       beforeAdmission?.()
-      return { requestId, admitted: true as const, abandon() { dom.window.localStorage.removeItem(requestId) } }
+      input.onAccept?.()
+      return { requestId, abandon() { dom.window.localStorage.removeItem(requestId) } }
     },
     prompt(...args: unknown[]) { prompts.push(args); prompted.resolve(); return gate.promise },
   } as unknown as SessionFace
@@ -187,27 +188,24 @@ test('durable admission clears both real draft stores before paint and close/reo
   }
 })
 
-test('the admission callback and later settlement preserve a replacement draft revision even when its text matches', { timeout: 15000 }, async t => {
+test('acceptance from a released input generation cannot clear an identical draft in the reopened Pane', { timeout: 15000 }, async t => {
   const f = await fixture(t), first = f.open(), sent = '同样的文字也是新的草稿'
   first.shell.setDraft(sent)
-  const revision = first.shell.snapshot.draftRev
+  let reopened!: ReturnType<typeof f.open>
   f.beforeAdmission(() => {
-    first.shell.setDraft('用户先修改这一版')
-    first.shell.setDraft(sent)
+    void first.close()
+    reopened = f.open()
+    reopened.shell.setDraft(sent)
   })
   first.shell.submit('queue')
   assert.deepEqual(f.admissions, [sent])
-  assert.ok(first.shell.snapshot.draftRev > revision)
-  assert.equal(first.shell.snapshot.draft, sent, 'admission belongs to the captured revision, not matching text')
-  assert.equal(f.officialDraft(), sent); assert.equal(f.savedDraft(), sent)
-  assert.equal(f.prompts.length, 0)
-  await first.close()
-  const reopened = f.open()
   assert.equal(reopened.shell.snapshot.draft, sent)
+  assert.equal(f.officialDraft(), sent); assert.equal(f.savedDraft(), sent)
   await f.prompted
   f.gate.resolve({ ok: true, value: { accepted: true } })
   await flush()
   assert.equal(reopened.shell.snapshot.draft, sent)
+  assert.equal(reopened.element.textContent, sent)
   assert.equal(f.officialDraft(), sent); assert.equal(f.savedDraft(), sent)
   assert.deepEqual(f.errors, [])
 })

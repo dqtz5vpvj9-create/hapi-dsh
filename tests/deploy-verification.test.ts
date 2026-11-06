@@ -22,7 +22,7 @@ async function fixture(t: TestContext) {
     const control = { client: localClient, trailer: '//# sourceMappingURL=/client.js.map?rev=current\n', legacyBootstrap: false };
     const headers = { cookie: 'admitted=synthetic-only' };
     const remove = mountBootstrapRoute({
-        connection: { requestRejection: request => request.headers.cookie === headers.cookie ? undefined : 401 },
+        connection: { browserPeer: { principal: { kind: 'owner' } } as import('@deepseek-ai/dsh-typert-protocol').PeerScope, requestRejection: request => request.headers.cookie === headers.cookie ? undefined : 401 },
         webServer: { collectIndexInjections: () => [{ kind: 'global', name: '__DSH_CONNECTION_RECOVERY__', value: { backoffBaseMs: 200 } }],
             register: value => { route = value; return () => { route = undefined; }; } },
         clientModules: { graph: () => graph },

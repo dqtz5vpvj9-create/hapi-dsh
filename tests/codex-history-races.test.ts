@@ -89,7 +89,7 @@ function page(rows: readonly HapiMessage[]): HapiMessagesPage {
 
 async function fixture(kind: Kind) {
   const directory = await mkdtemp(join(tmpdir(), `hapi-history-${kind}-race-`)), ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let owner!: Context
   await ctx.plugin({ name: 'history-race-fixture', inject: ['sessions', 'agents', 'sessionProjections'], apply(value: Context) { owner = value } })
   const source: HapiSession = { id: 'race-source', namespace: 'fixture', seq: 1, createdAt: 1000, updatedAt: 1000,

@@ -309,7 +309,7 @@ test('an unreadable pairing policy fails closed for active Runner connections', 
 
 test('Runner bootstrap exports only official safe JSON globals and keeps the original module graph', () => {
     const graph = { rev: 'fixture-revision', entries: [], batches: [] };
-    const payload = bootstrapPayload({ clientModules: { graph: () => graph }, webServer: {
+    const payload = bootstrapPayload({ connection: { browserPeer: { principal: { kind: 'owner' } } as import('@deepseek-ai/dsh-typert-protocol').PeerScope }, clientModules: { graph: () => graph }, webServer: {
         collectIndexInjections: () => [
             { kind: 'global', name: '__DSH_CONNECTION_RECOVERY__', value: { backoffBaseMs: 200 } },
             { kind: 'global', name: '__HHPI_STORAGE_SCOPE__', value: 'synthetic-authenticated-installation-account' },

@@ -44,7 +44,6 @@ function sourceError(message: string, indeterminate = false): RemoteError<'hhpi/
 interface TrackedOperation { readonly fingerprint: string; promise?: Promise<SourceReceipt> | undefined; receipt?: SourceReceipt | undefined }
 
 export class RemoteSourceSession implements SessionFace {
-  readonly inputCommitPolicy = 'after-acceptance' as const
   readonly eventSource = new MutableSessionEventSource()
   readonly metadata: Value<SourceSession>
   readonly historyRead: { readonly version: 1; openView(viewId: string, budget?: Budget, signal?: AbortSignal, cacheId?: string): Promise<HistoryFeedV1> }
@@ -149,12 +148,20 @@ export class RemoteSourceSession implements SessionFace {
       else if (!sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
       this.outbox.enqueue(operation)
       this.submissions.set(requestId, input)
-      return { requestId, admitted: true, abandon: () => { this.outbox?.abandon(requestId) } }
+      this.acceptSubmission(requestId)
+      return { requestId, abandon: () => { this.outbox?.abandon(requestId) } }
     }
     this.submissions.set(requestId, input)
     this.state.set({ ...this.state.getSnapshot(), pendingSubmissions: [...this.state.getSnapshot().pendingSubmissions,
       { requestId, placement: input.mode === 'steer' ? 'steering' : 'transcript', time: Date.now(), text: input.text, attachments: input.attachments }] })
     return { requestId, abandon: () => { this.retire(requestId, { reason: 'failed' }) } }
+  }
+  private acceptSubmission(id: string): void {
+    const pending = this.submissions.get(id)
+    if (!pending?.onAccept) return
+    const { onAccept, ...accepted } = pending
+    this.submissions.set(id, accepted)
+    onAccept()
   }
   private retire(id: string, retirement: PendingSubmissionRetirement): void {
     const pending = this.submissions.get(id)
@@ -191,6 +198,7 @@ export class RemoteSourceSession implements SessionFace {
           if (kind !== 'send') this.assertOperationCurrent(operation)
           await this.outbox.admit(operation)
         }
+        this.acceptSubmission(requestId)
         this.outbox.start(requestId)
         if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
         return { ok: true, value: { accepted: true } }
@@ -220,6 +228,7 @@ export class RemoteSourceSession implements SessionFace {
       const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}),
         ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) })
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
+      this.acceptSubmission(requestId)
       return { ok: true, value: { accepted: true } }
     } catch (cause) {
       const error = cause instanceof RemoteError ? cause as RemoteError<'hhpi/source'> : sourceError(cause instanceof Error ? cause.message : 'The source did not acknowledge this operation.', true)
@@ -301,9 +310,10 @@ export class RemoteSourceSession implements SessionFace {
       return { ok: false, error: sourceError(message, true) }
     }
   }
-  async readAttachment(...[attachmentId]: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
+  async readAttachment(...[attachment]: Parameters<SessionFace['readAttachment']>): ReturnType<SessionFace['readAttachment']> {
     if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
     try {
+      const attachmentId = attachment.attachmentId
       const epoch = this.history.sourceEpoch
       const resource = result(await this.api.resource({ sessionId: this.sessionId, path: `attachment:${attachmentId}` }))
       if (this.disposed || this.history.sourceEpoch !== epoch) throw sourceError('The source history changed while its image was loading.')

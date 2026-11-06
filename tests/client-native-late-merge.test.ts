@@ -141,8 +141,7 @@ function terminal(turnId: string, itemId: string, seq: number, at: number): Hapi
 
 async function mount(fake: FakeHapi, directory: string) {
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry)
-  await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let service: any
   const errors: string[] = []
   await ctx.plugin(Object.assign(async (owner: Context) => {

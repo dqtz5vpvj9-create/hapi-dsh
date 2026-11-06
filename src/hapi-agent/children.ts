@@ -1,3 +1,4 @@
+import { sourceModel } from '../codex/source-model.ts'
 import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
@@ -46,6 +47,7 @@ class ChildInbox implements Inbox {
 
 /** A real public Agent prevents an observer Session from being resumed by another engine. */
 export class HapiObservedChild implements Agent {
+  readonly model = sourceModel(() => this.options)
   readonly id: SessionId
   readonly logicalSessionId: SessionId
   readonly ctx: Context
@@ -75,7 +77,6 @@ export class HapiObservedChild implements Agent {
     this.scope = createScope(parent.ctx, this, { parent }); this.ctx = withSourceAgentServices(this.scope.ctx, parent.ctx)
     // The official registry reference-counts one definition across scopes.
     // Native-only deployments do not otherwise need an observed root service.
-    this.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
     this.current = this.ctx.sessions.prepare(this.id, { meta: this.meta() })
     this.dispatch = agentEvents(this.ctx, this)
     this.projector = this.createProjector()
@@ -93,14 +94,15 @@ export class HapiObservedChild implements Agent {
   static async create(owner: SourceChildOwner, parent: Agent, info: ObservedScopeInfo, items: readonly ObservedItem[], generation = 0): Promise<HapiObservedChild> {
     const child = new HapiObservedChild(owner, parent, info, generation)
     try {
+      await child.ctx.sessionProjections.register(hapiObservedProjectionDefinition)
+      child.detachSession = child.ctx.sessions.enter(child.session)
+      child.detachAgent = child.ctx.agents.enter(child, parent)
+      child.ctx.sessions.announce(child.session)
       child.apply(items, true)
       child.session.append('model/selection', { provider: 'hapi-observed', model: child.options.model ?? owner.state().flavor })
       establishSourceChild(parent.session, child.session, child.info.label)
       child.publish()
-      child.detachSession = child.ctx.sessions.enter(child.session)
-      child.detachAgent = child.ctx.agents.enter(child, parent)
       child.blockCommands()
-      child.ctx.sessions.announce(child.session)
       try { await child.ctx.agents.announce(child, 'startup') }
       catch (error) { console.warn('[hapi-dsh] child startup listener failed; continuing:', error instanceof Error ? error.message : String(error)) }
       return child

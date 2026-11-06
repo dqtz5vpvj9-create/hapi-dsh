@@ -76,7 +76,7 @@ class CountedAttachments extends LocalAttachmentStore {
 
 async function mount(source: SourceFixture, directory: string, creations = new Map<string, Awaited<ReturnType<SourceInitialTaskCreationLookup>>>()) {
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   const attachments = new CountedAttachments(ctx, { dshHome: join(directory, 'attachments-home') })
   // HTTP carrier registration is outside this test. The actual FileUploads
   // receiver-scoped staging/binding/retirement implementation runs unchanged.

@@ -1,3 +1,4 @@
+import { initializeOfficialController } from './official-controller-initialization.ts'
 import { projectedSourceEvents } from './source-frame-fixture.ts'
 import { SOURCE_FRAME_EVENT, type SourceFrameBatch } from '../src/shared/source-frames.ts'
 /** Original source protocol fixtures with the real published Agent/Session/Scope registries. */
@@ -98,7 +99,7 @@ class Source implements HapiObservedTransport {
   emit(event: HapiEvent) { for (const listener of this.listeners) listener(event) }
 }
 async function mount(source: Source, directory: string) {
-  const ctx = new Context(); await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  const ctx = new Context(); await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let service: HapiAgentService | undefined
   await ctx.plugin(Object.assign(async (owner: Context) => { service = new HapiAgentService(owner, source, { stateDirectory: directory }); await service.start() },
     { inject: ['sessions', 'agents', 'sessionProjections'] }))
@@ -118,7 +119,7 @@ async function controls(ctx: Context) {
   ctx.provide('fileUploads', { registerAgentResolver: () => () => {}, retirePrompt: () => {} } as unknown as Context['fileUploads'])
   ctx.provide('llm', { listProviders: () => [], listModels: async () => [] } as unknown as Context['llm'])
   ctx.provide('agentDefaultModel', { currentSelection: () => undefined } as unknown as Context['agentDefaultModel'])
-  new SessionController(ctx, { nativeOpen: false, listWorkSliceMs: 16 })
+  await initializeOfficialController(new SessionController(ctx, { nativeOpen: false, listWorkSliceMs: 16 }))
   const isolated = officialDelegateFixture(ctx, 'subagent', {}), originalFiber = await isolated.plugin(SubagentRuntime)
   const original = isolated.get('subagents')!
   assert.ok(original)

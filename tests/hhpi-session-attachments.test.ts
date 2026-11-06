@@ -39,7 +39,7 @@ async function fixture(t: TestContext, readResource: (request: SourceResourceReq
 
 test('official image read resolves through the exact HHPI source session and returns decoded bytes', async t => {
     const f = await fixture(t, async () => resource());
-    const result = await f.face.readAttachment(attachment.attachmentId);
+    const result = await f.face.readAttachment(attachment);
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.value.attachment, attachment);
@@ -50,17 +50,17 @@ test('official image read resolves through the exact HHPI source session and ret
 test('a mismatched image identity or malformed source bytes never enters the official image cache', async t => {
     let value = { ...resource(), attachment: { ...attachment, attachmentId: AttachmentId('sha256:' + 'b'.repeat(64)) } };
     const f = await fixture(t, async () => value);
-    assert.equal((await f.face.readAttachment(attachment.attachmentId)).ok, false);
+    assert.equal((await f.face.readAttachment(attachment)).ok, false);
     value = { ...resource(), attachment, content: 'YQ==' };
-    assert.equal((await f.face.readAttachment(attachment.attachmentId)).ok, false, 'truncated source bytes must fail durable reference length validation');
+    assert.equal((await f.face.readAttachment(attachment)).ok, false, 'truncated source bytes must fail durable reference length validation');
 });
 
 test('releasing a Session while its image is loading rejects the late response and future image reads', async t => {
     const gate = Promise.withResolvers<SourceResource>();
     const f = await fixture(t, async () => gate.promise);
-    const pending = f.face.readAttachment(attachment.attachmentId);
+    const pending = f.face.readAttachment(attachment);
     f.face.dispose(); gate.resolve(resource());
     assert.equal((await pending).ok, false);
-    assert.equal((await f.face.readAttachment(attachment.attachmentId)).ok, false);
+    assert.equal((await f.face.readAttachment(attachment)).ok, false);
     assert.equal(f.requests.length, 1, 'released source views cannot dispatch another resource read');
 });

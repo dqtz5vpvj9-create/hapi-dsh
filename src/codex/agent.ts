@@ -1,3 +1,4 @@
+import { sourceModel } from './source-model.ts'
 import { SourceFrameFeed } from '../shared/source-frame-feed.ts'
 import { withSourceAgentServices } from '../shared/source-agent-services.ts'
 import { sessionHeaderCwd } from '../hapi/session-header-cwd.ts'
@@ -244,6 +245,7 @@ class NativeInbox implements Inbox {
  * never creates an AgentLoop or owns the native app-server process.
  */
 export class NativeCodexAgent implements Agent {
+  readonly model = sourceModel(() => this.options)
   readonly id: SessionId
   readonly logicalSessionId: SessionId
   readonly displayRevision: number
@@ -434,6 +436,11 @@ export class NativeCodexAgent implements Agent {
       if (!rows) rows = []
       if (agent.historyAnchor?.partial) agent.projector.setSuppressFirstTurnStart()
       await agent.applyRows(rows, true, checkpoint)
+      options.assertSourceCurrent?.()
+      agent.historyJournal.assertCurrent(checkpoint)
+      agent.detachSession = agent.ctx.sessions.enter(agent.session)
+      agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
+      agent.ctx.sessions.announce(agent.session)
       agent.initializing = false
       agent.observe(source)
       if (agent.fault === null) await agent.journal.reconcileSource()
@@ -444,10 +451,7 @@ export class NativeCodexAgent implements Agent {
       // A fast opening seed is a bounded window, never a complete archive.
       if (options.fastHistorySeed && !initialRows) agent.cache.writeOpening(rows, false, agent.historyEpoch)
       else agent.cache.write(rows, !agent.historyStale, agent.historyEpoch)
-      agent.detachSession = agent.ctx.sessions.enter(agent.session)
-      agent.detachAgent = agent.ctx.agents.enter(agent, undefined)
       bindNativeCommands(agent)
-      agent.ctx.sessions.announce(agent.session)
       // Profile plugins may attach local prompt/team tooling in a startup
       // listener. A source-owned Agent only mirrors remote execution, so a
       // listener that cannot run here must not fail opening the session.

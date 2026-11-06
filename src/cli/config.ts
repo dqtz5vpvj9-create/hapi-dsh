@@ -9,7 +9,7 @@ import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webs
 import { parseSources } from '../remote/config.ts';
 import type { DirectSourceConfig } from '../remote/protocol.ts';
 
-export const DSH_VERSION = '0.2.1-rc.3';
+export const DSH_VERSION = '0.2.2-rc.1';
 export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
 export const CONFIG_VERSION = 1;
 

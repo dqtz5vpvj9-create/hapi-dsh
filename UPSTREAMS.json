@@ -1,16 +1,14 @@
 {
   "dsh": {
     "repository": "https://github.com/deepseek-ai/deepseek-harness",
-    "commit": "1f81c047fc48fa190a683e469daa699857e9afe8",
-    "version": "0.2.1-rc.3",
+    "commit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "version": "0.2.2-rc.1",
     "license": "MIT",
     "modified": true,
     "sourceSnapshot": "source-snapshots/dsh-ext/source.patch",
-    "additionalSourceSnapshots": [
-      "source-snapshots/dsh-ext/native-persistence.patch",
-      "source-snapshots/dsh-ext/file-upload-provider.patch"
-    ],
-    "sourceSnapshotManifest": "source-snapshots/manifest.json"
+    "additionalSourceSnapshots": [],
+    "sourceSnapshotManifest": "source-snapshots/manifest.json",
+    "previousRcSources": "source-snapshots/dsh-ext/releases/0.2.1-rc.3"
   },
   "hapi": {
     "repository": "https://github.com/dqtz5vpvj9-create/hapi",

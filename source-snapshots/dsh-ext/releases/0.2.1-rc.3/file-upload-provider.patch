@@ -1,0 +1,140 @@
+diff --git a/packages/client/file-upload/README.md b/packages/client/file-upload/README.md
+index b4472262..78e040d2 100644
+--- a/packages/client/file-upload/README.md
++++ b/packages/client/file-upload/README.md
+@@ -32,6 +32,8 @@ Mount the package before a consumer that injects `fileUpload`, then call `ctx.fi
+   name: '@deepseek-ai/dsh-client-file-upload'
+ ```
+ 
++A client plugin can register an optional Session-addressed provider with `ctx.fileUpload.registerProvider({ matches, upload })`. The first match owns the body, cancellation, progress, receipt, and failure. A provider failure never falls through to the local upload route. Disposing the plugin removes its registration for new uploads; active uploads keep their original owner. Sessions with no match use the default carrier.
++
+ The package has no Cordis configuration fields. A `Blob` uses XMLHttpRequest inside a dedicated Worker so the service can report browser upload progress, including the total when the browser provides it. A `ReadableStream` transfers to that Worker and feeds Fetch incrementally; progress reports consumed bytes without a total. An `AbortSignal` terminates the dedicated Worker or reaches a page-owned carrier. Exact bytes use the generated Remote.
+ 
+ -----
+diff --git a/packages/client/file-upload/README.zh.md b/packages/client/file-upload/README.zh.md
+index 86bc9ef6..f186246d 100644
+--- a/packages/client/file-upload/README.zh.md
++++ b/packages/client/file-upload/README.zh.md
+@@ -99,3 +99,5 @@ Host 插件提供 `ctx.fileUploads`。它拥有经过认证的流式路由、编
+ 无。
+ 
+ </details>
++
++客户端插件可通过可选的 `ctx.fileUpload.registerProvider({ matches, upload })` 注册按会话匹配的上传实现。首个匹配项负责正文、取消、进度、回执与失败；失败不会转交本地上传路径。插件卸载后不再接收新上传，已开始的上传仍归原实现负责。没有匹配项的会话继续使用默认路径。
+diff --git a/packages/client/file-upload/src/client/contract.ts b/packages/client/file-upload/src/client/contract.ts
+index 8bf11451..d375dc5b 100644
+--- a/packages/client/file-upload/src/client/contract.ts
++++ b/packages/client/file-upload/src/client/contract.ts
+@@ -13,6 +13,13 @@ export interface FileUploadProgress {
+ 
+ /** Browser upload service addressed by one Session identity. */
+ export interface FileUploadService {
++  /**
++   * Register a Session-addressed upload provider. The first matching provider
++   * owns the upload, including failures; unmatched Sessions use the default carrier.
++   * @param provider - Session matcher and upload implementation.
++   * @returns a disposer that stops routing new uploads to this provider.
++   */
++  registerProvider?(provider: FileUploadProvider): () => void
+   /**
+    * Store one file for a Session. Blob and stream bodies use
+    * the background carrier; exact bytes use Remote.
+@@ -31,3 +38,11 @@ export interface FileUploadService {
+     onProgress?: (progress: FileUploadProgress) => void,
+   ): Promise<RemoteResult<FileUploadValue>>
+ }
++
++/** Optional upload owner for a subset of Session identities. */
++export interface FileUploadProvider {
++  /** Select this provider before consuming the body. */
++  matches(sessionId: SessionId): boolean
++  /** Upload with the same receipt, cancellation, and progress contract as the service. */
++  upload: FileUploadService['upload']
++}
+diff --git a/packages/client/file-upload/src/client/index.ts b/packages/client/file-upload/src/client/index.ts
+index bf6696a4..047397e7 100644
+--- a/packages/client/file-upload/src/client/index.ts
++++ b/packages/client/file-upload/src/client/index.ts
+@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
+ import { FileUploadRuntime } from './runtime.ts'
+ import type { FileUploadService } from './contract.ts'
+ 
+-export type { FileUploadProgress, FileUploadService } from './contract.ts'
++export type { FileUploadProgress, FileUploadService, FileUploadProvider } from './contract.ts'
+ export type { FileUploadReceiptId, FileUploadValue } from '../types.ts'
+ 
+ declare module '@deepseek-ai/cordis' {
+diff --git a/packages/client/file-upload/src/client/runtime.ts b/packages/client/file-upload/src/client/runtime.ts
+index 556da15f..2ad92452 100644
+--- a/packages/client/file-upload/src/client/runtime.ts
++++ b/packages/client/file-upload/src/client/runtime.ts
+@@ -9,7 +9,7 @@ import { FILE_UPLOAD_ROUTE } from '../protocol.ts'
+ import type {
+   ClientFileUploadHooks, EncodedFileUploadRequest, FileUploadFetch, FileUploadValue,
+ } from '../types.ts'
+-import type { FileUploadBody, FileUploadService } from './contract.ts'
++import type { FileUploadBody, FileUploadService, FileUploadProvider } from './contract.ts'
+ 
+ interface FileUploadRequest {
+   /** Document-relative app-owned upload route, query string included. */
+@@ -162,6 +162,19 @@ interface FileUploadTransport {
+ /** Cordis service that owns one background carrier per upload operation. */
+ export class FileUploadRuntime extends Service implements FileUploadService {
+   private readonly transport: FileUploadTransport
++  private readonly providers = new Set<FileUploadProvider>()
++
++  /**
++   * Route matching Sessions through a provider until its registration is disposed.
++   * @param provider - Session matcher and upload implementation.
++   * @returns the registration disposer; active uploads keep their original owner.
++   */
++  registerProvider(provider: FileUploadProvider): () => void {
++    return this.ctx.effect(() => {
++      this.providers.add(provider)
++      return () => { this.providers.delete(provider) }
++    })
++  }
+ 
+   /** @param ctx - providing Client context. */
+   constructor(ctx: Context) {
+@@ -195,6 +208,9 @@ export class FileUploadRuntime extends Service implements FileUploadService {
+     signal?: AbortSignal,
+     onProgress?: (progress: { readonly loaded: number; readonly total?: number }) => void,
+   ): Promise<RemoteResult<FileUploadValue>> {
++    for (const provider of this.providers) {
++      if (provider.matches(sessionId)) return provider.upload(sessionId, data, name, signal, onProgress)
++    }
+     if (!(data instanceof Uint8Array)) {
+       const query = new URLSearchParams({ sessionId })
+       if (name !== undefined) query.set('name', name)
+diff --git a/packages/client/file-upload/tests/file-upload.client.spec.ts b/packages/client/file-upload/tests/file-upload.client.spec.ts
+index 2392feed..deba3cd0 100644
+--- a/packages/client/file-upload/tests/file-upload.client.spec.ts
++++ b/packages/client/file-upload/tests/file-upload.client.spec.ts
+@@ -389,6 +389,26 @@ describe('Session-addressed file upload', () => {
+     return { ctx, fiber, remote, service: ctx.fileUpload }
+   }
+ 
++  it('routes a matched body once, preserves provider failures, and removes routing on plugin disposal', async () => {
++    const { ctx, fiber, remote, service } = await scopedService()
++    const upload = vi.fn(() => Promise.reject(new Error('source offline')))
++    const provider = ctx.plugin({ inject: ['fileUpload'], apply(owner: Context) {
++      owner.fileUpload.registerProvider?.({ matches: id => id === SESSION_ID, upload })
++    } })
++    await provider
++    const body = new Uint8Array([1, 2, 3]), signal = new AbortController().signal, progress = vi.fn()
++    await expect(service.upload(SESSION_ID, body, 'file', signal, progress)).rejects.toThrow('source offline')
++    expect(upload).toHaveBeenCalledExactlyOnceWith(SESSION_ID, body, 'file', signal, progress)
++    expect(remote).not.toHaveBeenCalled()
++    await service.upload('ordinary' as SessionId, body)
++    expect(remote).toHaveBeenCalledOnce()
++    await provider.dispose()
++    await service.upload(SESSION_ID, body)
++    expect(remote).toHaveBeenCalledTimes(2)
++    expect(upload).toHaveBeenCalledOnce()
++    await fiber.dispose()
++  })
++
+   it('assembles the scoped streaming request and parses progress and receipt fields', async () => {
+     const progress = vi.fn()
+     const fetch = vi.fn((_url: string | URL, init: RequestInit) => {

@@ -190,7 +190,7 @@ export class SourceInitialTasks {
         const receiptId = attachment.receiptId as FileUploadReceiptId
         const file = this.ctx.fileUploads.resolve(agent, receiptId)
         if (!file) throw conflict('An attachment upload is not staged for this exact source display')
-        fileReceipts.push(receiptId); parts.push({ type: 'file', attachment: file })
+        fileReceipts.push(receiptId); parts.push(file.type === 'image' ? { type: 'image', attachment: file.attachment, encodedBytes: file.encodedBytes } : { type: 'file', attachment: file.attachment })
       } else parts.push({ type: 'image', mediaType: attachment.mediaType, data: attachment.data,
         ...(attachment.name === undefined ? {} : { name: attachment.name }) })
     }

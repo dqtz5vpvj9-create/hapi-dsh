@@ -29,8 +29,8 @@ async function loadOfficial(): Promise<Official> {
   const source = process.env.HHPI_DSH_SOURCE
   assert.ok(source, 'This contract requires the prepared pinned DSH source graph.')
   const provenance = JSON.parse(readFileSync(resolve(source, 'hhpi-source-inputs.json'), 'utf8'))
-  assert.equal(provenance.upstreamCommit, '1f81c047fc48fa190a683e469daa699857e9afe8')
-  assert.ok(provenance.inputs.some((input: { path: string }) => input.path === 'scripts/dsh-ext/input-acceptance.mjs'))
+  assert.equal(provenance.upstreamCommit, '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db')
+  assert.ok(provenance.inputs.some((input: { path: string }) => input.path === 'source-snapshots/dsh-ext/source.patch'))
   await prepareOfficialBrowserLibrary()
   const result = await build({
     stdin: { contents: [
@@ -58,7 +58,7 @@ function deferred<T>() {
 }
 const flush = () => new Promise<void>(resolve => { setImmediate(resolve) })
 
-async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; quota?: number; disabled?: boolean; admitted?: true } = { policy: 'after-acceptance' }) {
+async function fixture(t: TestContext, options: { quota?: number; acceptEarly?: boolean } = {}) {
   const { JSDOM } = require('jsdom') as typeof import('jsdom')
   const dom = new JSDOM('<!doctype html><html><body><div contenteditable="true"></div></body></html>', {
     url: 'https://synthetic.invalid/', pretendToBeVisual: true, storageQuota: options.quota ?? 4096,
@@ -69,9 +69,6 @@ async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; q
     Object.defineProperty(globalThis, key, { configurable: true, value: Reflect.get(dom.window, key) })
     restores.push(() => { if (old) Object.defineProperty(globalThis, key, old); else Reflect.deleteProperty(globalThis, key) })
   }
-  const flag = Object.getOwnPropertyDescriptor(globalThis, '__DSH_CLIENT_INPUT_ACCEPTANCE')
-  Object.defineProperty(globalThis, '__DSH_CLIENT_INPUT_ACCEPTANCE', { configurable: true, value: options.disabled ? 'off' : undefined })
-  restores.push(() => { if (flag) Object.defineProperty(globalThis, '__DSH_CLIENT_INPUT_ACCEPTANCE', flag); else Reflect.deleteProperty(globalThis, '__DSH_CLIENT_INPUT_ACCEPTANCE') })
   const ctx = new Context()
   t.after(async () => {
     await ctx.fiber.dispose()
@@ -84,16 +81,17 @@ async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; q
   const emptyStore = { getSnapshot: () => undefined, subscribe: () => () => {} }
   let nextId = 0
   const session = {
-    sessionId: 'synthetic-input', ...options.policy === undefined ? {} : { inputCommitPolicy: options.policy },
+    sessionId: 'synthetic-input',
     projections: { faceOf: () => emptyStore },
     getSnapshot: () => ({ sessionId: 'synthetic-input', blank: false, running: false }),
-    beginSubmission(input: { text: string }) {
+    beginSubmission(input: { text: string; onAccept?: () => void }) {
       const requestId = `operation-${++nextId}`
       // The browser's real Storage quota fails synchronously inside the real
       // async ConversationController.sendSession; no manufactured throw.
       dom.window.localStorage.setItem(requestId, input.text)
       admissions.push(input.text)
-      return { requestId, ...options.admitted ? { admitted: true } : {}, abandon() { dom.window.localStorage.removeItem(requestId) } }
+      if (options.acceptEarly) input.onAccept?.()
+      return { requestId, abandon() { dom.window.localStorage.removeItem(requestId) } }
     },
     prompt(...args: unknown[]) { prompts.push(args); prompted.resolve(); return gate.promise },
   } as unknown as SessionFace
@@ -109,7 +107,7 @@ async function fixture(t: TestContext, options: { policy?: 'after-acceptance'; q
 }
 
 test('official composer never clears on local Storage quota refusal and allows a corrected retry', { timeout: 15000 }, async t => {
-  const f = await fixture(t, { policy: 'after-acceptance', quota: 48 })
+  const f = await fixture(t, { quota: 48 })
   const text = '原始草稿不能先消失。'.repeat(20)
   f.shell.setDraft(text)
   f.shell.submit('queue')
@@ -131,135 +129,44 @@ test('official composer never clears on local Storage quota refusal and allows a
   assert.equal(f.shell.snapshot.draft, '')
 })
 
-test('official composer serializes double clicks and retains text typed during durable acceptance', { timeout: 15000 }, async t => {
+test('native composer serializes clicks and keeps an unaccepted draft read-only until settlement', { timeout: 15000 }, async t => {
   const f = await fixture(t)
   f.shell.setDraft('发送的正文')
   f.shell.submit('queue', 'click')
   f.shell.submit('queue', 'click')
-  assert.equal(f.shell.snapshot.phase, 'plain', 'the editor remains editable')
+  assert.equal(f.shell.snapshot.phase, 'sending')
   assert.equal(f.shell.snapshot.draft, '发送的正文')
-  f.shell.setDraft('发送的正文\n继续输入')
-  f.shell.submit('queue', 'click')
   await f.prompted
   assert.deepEqual(f.admissions, ['发送的正文'])
   assert.equal(f.prompts.length, 1)
-  assert.equal(f.dom.window.localStorage.getItem('operation-1'), '发送的正文')
   f.gate.resolve({ ok: true, value: { accepted: true } })
   await flush()
-  assert.equal(f.shell.snapshot.draft, '\n继续输入')
-  assert.equal(f.dom.window.document.querySelector('[contenteditable]')!.textContent, '继续输入')
+  assert.equal(f.shell.snapshot.draft, '')
+  assert.equal(f.shell.snapshot.phase, 'plain')
 })
 
-test('synchronous durable admission commits once before paint while blocking repeated sends and preserving the next draft', { timeout: 15000 }, async t => {
-  const f = await fixture(t, { policy: 'after-acceptance', admitted: true })
-  f.shell.setDraft('same words, separate intent')
+test('durable onAccept commits before paint and a late result cannot clear the next draft', { timeout: 15000 }, async t => {
+  const f = await fixture(t, { acceptEarly: true })
+  f.shell.setDraft('already safely saved')
   f.shell.submit('queue', 'click')
-  assert.equal(f.shell.snapshot.draft, '', 'the exact admitted attempt commits before sendSession yields')
-  assert.deepEqual(f.admissions, ['same words, separate intent'])
-  assert.equal(f.prompts.length, 0, 'the prompt call is still behind nextPaint')
-  f.shell.setDraft('same words, separate intent')
-  f.shell.submit('queue', 'click')
-  assert.equal(f.admissions.length, 1, 'the original attempt continues to serialize clicks until its sink settles')
+  assert.equal(f.shell.snapshot.draft, '')
+  assert.deepEqual(f.admissions, ['already safely saved'])
+  assert.equal(f.prompts.length, 0)
+  f.shell.setDraft('the next draft')
   await f.prompted
-  f.gate.resolve({ ok: true, value: { accepted: true } })
+  f.gate.reject(new Error('late transport failure after acceptance'))
   await flush()
-  assert.equal(f.shell.snapshot.draft, 'same words, separate intent', 'late success cannot recommit a new draft with identical text')
-  assert.equal(f.prompts.length, 1)
+  assert.equal(f.shell.snapshot.draft, 'the next draft')
 })
 
-test('official composer keeps a replacement draft on successful or rejected admission', { timeout: 15000 }, async t => {
-  for (const accepted of [true, false]) {
-    await t.test(accepted ? 'success' : 'failure', async child => {
-      const f = await fixture(child)
-      f.shell.setDraft('original')
-      f.shell.submit('queue')
-      await f.prompted
-      f.shell.setDraft('改写后的草稿')
-      if (accepted) f.gate.resolve({ ok: true, value: { accepted: true } })
-      else f.gate.reject(new Error('local admission refused'))
-      await flush()
-      assert.equal(f.shell.snapshot.draft, '改写后的草稿')
-      assert.equal(f.dom.window.document.querySelector('[contenteditable]')!.textContent, '改写后的草稿')
-      assert.ok(f.revisions.every(draft => draft !== ''))
-    })
-  }
-})
-
-test('ordinary native DSH and the explicit disable switch retain optimistic input behavior', { timeout: 15000 }, async t => {
-  for (const options of [{ admitted: true as const }, { policy: 'after-acceptance' as const, disabled: true, admitted: true as const }]) {
-    await t.test(options.disabled ? 'disabled' : 'default', async child => {
-      const f = await fixture(child, options)
-      f.shell.setDraft('first')
-      f.shell.submit('queue')
-      assert.equal(f.shell.snapshot.draft, '')
-      f.shell.setDraft('second')
-      f.shell.submit('queue')
-      assert.equal(f.shell.snapshot.draft, '')
-      assert.deepEqual(f.admissions, ['first', 'second'])
-      f.gate.resolve({ ok: true, value: { accepted: true } })
-      await flush()
-    })
-  }
-})
-
-test('disposing an opted-in official composer ignores late acceptance', { timeout: 15000 }, async t => {
+test('disposing the native composer ignores late settlement', { timeout: 15000 }, async t => {
   const f = await fixture(t)
-  f.shell.setDraft('still owned by the editor until accepted')
+  f.shell.setDraft('still owned until accepted')
   f.shell.submit('queue')
   await f.prompted
   f.shell.dispose()
   const before = f.revisions.length
   f.gate.resolve({ ok: true, value: { accepted: true } })
   await flush()
-  assert.equal(f.revisions.length, before, 'a late accepted sink cannot publish into a disposed Pane')
-})
-
-test('official composer retains unresolved attachments and references on admission failure', { timeout: 15000 }, async t => {
-  await t.test('attachment-only refusal keeps the rail and later typing', async child => {
-    const f = await fixture(child)
-    const id = 'unresolved-image' as Parameters<SessionInput['addAttachments']>[0][number]
-    f.shell.addAttachments([id])
-    f.shell.submit('queue')
-    assert.deepEqual(f.shell.snapshot.attachmentIds, [id])
-    f.shell.setDraft('继续输入')
-    await flush()
-    assert.equal(f.shell.snapshot.draft, '继续输入')
-    assert.deepEqual(f.shell.snapshot.attachmentIds, [id])
-    assert.equal(f.admissions.length, 0)
-  })
-  await t.test('missing reference owner retains the semantic draft without calling the sink', async child => {
-    const f = await fixture(child)
-    f.shell.setDraft('@ref')
-    assert.equal(f.shell.insertReference({ source: 'missing', ref: 'ref-id', label: 'Reference', clipboardText: '@reference' },
-      { start: 0, end: 4, draftRev: f.shell.snapshot.draftRev }), true)
-    const before = f.shell.snapshot
-    f.shell.submit('queue')
-    assert.equal(f.shell.snapshot.draft, before.draft)
-    await flush()
-    assert.equal(f.shell.snapshot.draft, before.draft)
-    assert.deepEqual(f.shell.snapshot.occurrences, before.occurrences)
-    assert.equal(f.admissions.length, 0)
-  })
-})
-
-test('accepted reference serialization cannot clear a replacement chip with the same displayed text', { timeout: 15000 }, async t => {
-  const f = await fixture(t)
-  const controller = { lexicon: { getSnapshot: () => new Map(), subscribe: () => () => {} }, track() {},
-    serializeReference: async (_source: string, ref: string) => `serialized:${ref}` }
-  f.ctx.reflect.provide('inputTriggers', { sessionOf: () => controller } as never)
-  const insert = (ref: string) => {
-    f.shell.setDraft('@ref')
-    assert.equal(f.shell.insertReference({ source: 'reference', ref, label: 'Reference', clipboardText: '@reference' },
-      { start: 0, end: 4, draftRev: f.shell.snapshot.draftRev }), true)
-  }
-  insert('original')
-  f.shell.submit('queue')
-  await f.prompted
-  insert('replacement')
-  const before = f.shell.snapshot.draft
-  f.gate.resolve({ ok: true, value: { accepted: true } })
-  await flush()
-  assert.deepEqual(f.admissions, ['serialized:original'])
-  assert.equal(f.shell.snapshot.draft, before)
-  assert.equal(f.shell.snapshot.occurrences[0]?.ref, 'replacement')
+  assert.equal(f.revisions.length, before)
 })

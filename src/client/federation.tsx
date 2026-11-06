@@ -72,10 +72,10 @@ const PLATFORM_MODULES = [
 ] as const
 const MODULES_ID = '@deepseek-ai/dsh-client-modules'
 const bootstrapSchema = z.object({
-    dshVersion: z.literal('0.2.1-rc.3'), graph: z.object({
+    dshVersion: z.literal('0.2.2-rc.1'), graph: z.object({
         rev: z.string(), entries: z.array(z.object({ id: z.string(), url: z.string(), rev: z.string() }).passthrough()),
         batches: z.array(z.object({ phase: z.enum(['bootstrap', 'application']), url: z.string(), rev: z.string(), entries: z.array(z.string()) })),
-        release: z.object({ version: z.literal('0.2.1-rc.3'), commit: z.string().optional() }).optional(),
+        release: z.object({ version: z.literal('0.2.2-rc.1'), commit: z.string().optional() }).optional(),
     }), globals: z.record(z.string(), z.json()),
 })
 type Bootstrap = z.infer<typeof bootstrapSchema>

@@ -1,22 +1,12 @@
-/** Restore the pinned, licensed DSH sources into a fresh build directory. */
+/** Restore the licensed DSH rc with the matching, consolidated source patch. */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { applyCompleteWindows } from './complete-windows.mjs';
-import { applyReaderPublication, applyReaderLayout } from './reader-publication.mjs';
-import { applyInputContracts } from './input-contracts.mjs';
-import { applyReadingOccurrences } from './reading-occurrences.mjs';
-import { applyReadingTargets } from './reading-targets.mjs';
-import { applyInputBindingOccurrences } from './input-binding-occurrences.mjs';
-import { applyReadingMemory } from './reading-memory.mjs';
-import { applyInteractionOccurrences } from './interaction-occurrences.mjs';
-import { applyInputAcceptance } from './input-acceptance.mjs';
-import { applyLiveProcessExpansion } from './live-process-expansion.mjs';
-export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
-export const UPSTREAM_VERSION = '0.2.1-rc.3';
-export const UI_EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands'];
+export const UPSTREAM_COMMIT = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db';
+export const UPSTREAM_VERSION = '0.2.2-rc.1';
+export const UI_EXTENSION_PACKAGES = ['packages/client/file-upload', 'packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands'];
 export const NATIVE_EXTENSION_PACKAGES = ['packages/session/session-persistence', 'packages/session/session-format-v3-to-v4', 'packages/session/session-persistence-jsonl'];
 export const EXTENSION_PACKAGES = [...UI_EXTENSION_PACKAGES, ...NATIVE_EXTENSION_PACKAGES];
 export const ROOT = resolve(fileURLToPath(new URL('../../', import.meta.url)));
@@ -26,67 +16,24 @@ export function run(command, args, options = {}) {
   return result.stdout;
 }
 const sha256 = value => createHash('sha256').update(value).digest('hex');
-export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) {
-  const snapshot = join(ROOT, 'source-snapshots', 'dsh-ext'), patches = [join(snapshot, 'source.patch')];
-  try { for (const name of (await readdir(join(snapshot, 'hhpi-patches'))).filter(name => name.endsWith('.patch')).sort()) patches.push(join(snapshot, 'hhpi-patches', name)); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
+export async function prepareDshSource(parent = '/mnt/cache/data-cache/hhpi-dsh-ext') {
+  const patch = join(ROOT, 'source-snapshots/dsh-ext/source.patch');
   await mkdir(parent, { recursive: true });
   const directory = await mkdtemp(join(parent, 'source-'));
   run('git', ['init', '--quiet', directory]);
   run('git', ['remote', 'add', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'], { cwd: directory });
   run('git', ['fetch', '--quiet', '--depth=1', 'origin', UPSTREAM_COMMIT], { cwd: directory });
   run('git', ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], { cwd: directory });
-  if (run('git', ['rev-parse', 'HEAD'], { cwd: directory }).trim() !== UPSTREAM_COMMIT) throw new Error('The DSH source revision does not match the pinned input.');
-  const inputs = [];
-  for (const patch of patches) {
-    run('git', ['apply', '--check', '--recount', patch], { cwd: directory });
-    run('git', ['apply', '--recount', patch], { cwd: directory });
-    inputs.push({ path: patch.slice(ROOT.length + 1), sha256: sha256(await readFile(patch)) });
-  }
-  const nativePatch = join(snapshot, 'native-persistence.patch');
-  run('git', ['apply', '--check', '--recount', nativePatch], { cwd: directory });
-  run('git', ['apply', '--recount', nativePatch], { cwd: directory });
-  const nativeInputs = [inputs[0], { path: nativePatch.slice(ROOT.length + 1), sha256: sha256(await readFile(nativePatch)) }];
-  const overrides = join(snapshot, 'hhpi-sources');
-  const copySources = async (path, relative = '') => {
-    for (const entry of await readdir(path, { withFileTypes: true })) {
-      const name = join(relative, entry.name), input = join(path, entry.name);
-      if (entry.isDirectory()) await copySources(input, name);
-      else if (entry.isFile()) {
-        if (!name.replaceAll('\\', '/').startsWith('packages/')) throw new Error('An extension override must be an upstream package source.');
-        await mkdir(resolve(directory, name, '..'), { recursive: true }); await cp(input, join(directory, name));
-        inputs.push({ path: `source-snapshots/dsh-ext/hhpi-sources/${name}`, sha256: sha256(await readFile(input)) });
-      } else throw new Error('Extension sources cannot contain symlinks.');
-    }
-  };
-  try { await copySources(overrides); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  await applyCompleteWindows(directory);
-  await applyReaderPublication(directory);
-  await applyReaderLayout(directory);
-  await applyInputContracts(directory);
-  await applyReadingOccurrences(directory);
-  await applyReadingTargets(directory);
-  await applyInputBindingOccurrences(directory);
-  await applyReadingMemory(directory);
-  await applyInputAcceptance(directory);
-  await applyInteractionOccurrences(directory);
-  await applyLiveProcessExpansion(directory);
-  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs', 'interaction-occurrences.mjs', 'live-process-expansion.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
-  inputs.push({ path: 'source-snapshots/dsh-ext/live-process-expansion.test.txt', sha256: sha256(await readFile(join(snapshot, 'live-process-expansion.test.txt'))) });
-  const layoutPatch = join(snapshot, 'ui-chat-layout.patch');
-  try {
-    const patch = await readFile(layoutPatch);
-    run('git', ['apply', '--check', layoutPatch], { cwd: directory });
-    run('git', ['apply', layoutPatch], { cwd: directory });
-    inputs.push({ path: layoutPatch.slice(ROOT.length + 1), sha256: sha256(patch) });
-  } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const nativeSourceExtension = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION,
-    inputs: nativeInputs, patchSetSha256: sha256(JSON.stringify(nativeInputs)) };
-  const provenance = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs,
-    patchSetSha256: sha256(JSON.stringify(inputs)), nativeSourceExtension };
-
+  run('git', ['apply', '--check', patch], { cwd: directory });
+  run('git', ['apply', patch], { cwd: directory });
+  const provenance = await sourceProvenance();
   await writeFile(join(directory, 'hhpi-source-inputs.json'), `${JSON.stringify(provenance, null, 2)}\n`);
   return { directory, provenance };
+}
+export async function sourceProvenance() {
+  const inputs = [{ path: 'source-snapshots/dsh-ext/source.patch', sha256: sha256(await readFile(join(ROOT, 'source-snapshots/dsh-ext/source.patch'))) }];
+  const identity = { upstreamCommit: UPSTREAM_COMMIT, upstreamVersion: UPSTREAM_VERSION, inputs, patchSetSha256: sha256(JSON.stringify(inputs)) };
+  return { ...identity, nativeSourceExtension: identity };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const { directory, provenance } = await prepareDshSource(process.argv[2]); console.log(JSON.stringify({ directory, ...provenance }));

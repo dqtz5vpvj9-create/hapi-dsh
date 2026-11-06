@@ -86,15 +86,15 @@ ext 仓库发布后，给它一个 release 目录（例如 `dsh-ext/ext/releases
 
 ```json
 {
-  "upstreamVersion": "0.2.1-rc.3",
+  "upstreamVersion": "0.2.2-rc.1",
   "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
-  "extRelease": "0.2.1-rc.3.ext.1",
+  "extRelease": "0.2.2-rc.1.ext.1",
   "patchSetSha256": "<64 hex>",
   "compositionVersion": "1",
   "protocol": 2,
   "capabilities": { "historySource": 1, "mountedChat": 1, "windowCommit": 1 },
   "packages": [
-    { "name": "@deepseek-ai/dsh-client-ui-chat", "version": "0.2.1-rc.3.ext.1", "tarball": "dsh-client-ui-chat-0.2.1-rc.3.ext.1.tgz" }
+    { "name": "@deepseek-ai/dsh-client-ui-chat", "version": "0.2.2-rc.1.ext.1", "tarball": "dsh-client-ui-chat-0.2.2-rc.1.ext.1.tgz" }
   ],
   "licenses": ["LICENSE"],
   "sourceOffer": ["patches/0001-history-source.patch"]

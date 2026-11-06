@@ -43,7 +43,7 @@ export class CodexService {
   private readonly revisions = new Map<string, number>()
   private readonly revisionFile: string
   private unsubscribe: (() => void) | undefined
-  private unregisterProjection: (() => void) | undefined
+  private unregisterProjection: (() => Promise<void>) | undefined
   private catalogRefresh: Promise<void> | undefined
   private disposed = false
   private started = false
@@ -71,7 +71,8 @@ export class CodexService {
     if (this.started) return
     if (this.disposed) throw new Error('The Codex service was disposed')
     this.started = true
-    this.unregisterProjection = this.ctx.sessionProjections.register(hapiProjectionDefinition)
+    const projection = await this.ctx.sessionProjections.register(hapiProjectionDefinition)
+    this.unregisterProjection = () => projection.dispose()
     // Subscribe before discovery; source changes in the loading window are queued.
     this.unsubscribe = this.transport.subscribe(event => this.enqueue(event))
     await this.refreshCatalog()
@@ -489,7 +490,7 @@ export class CodexService {
     this.eventWork.clear()
     this.reconciling.clear()
     this.historyJournals.clear()
-    this.unregisterProjection?.()
+    await this.unregisterProjection?.()
   }
 
   private report(error: unknown, sourceSessionId?: string): void {

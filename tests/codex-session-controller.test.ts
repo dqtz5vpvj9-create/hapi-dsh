@@ -1,3 +1,4 @@
+import { initializeOfficialController } from './official-controller-initialization.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
@@ -35,8 +36,7 @@ class FixtureQuery extends SessionQueryEngine {
 async function mount(Controller: typeof SessionController | typeof NativeAwareSessionController = NativeAwareSessionController) {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(AgentRegistry)
-  await ctx.plugin(SessionProjectionRegistry)
+  await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry)
   await ctx.plugin(TypertRegistry)
   new FixtureQuery(ctx)
   new RemoteAccessService(ctx)
@@ -70,7 +70,7 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
   // Only Loader entry discovery is a fixture here. The isolated official
   // constructor, Cordis service tracing, Remote metadata and Gateway are real.
   const privateScope = Symbol('official Session controller fixture')
-  const original = new SessionController(Controller === SessionController ? ctx : ctx.isolate('sessionController', privateScope), config)
+  const original = await initializeOfficialController(new SessionController(Controller === SessionController ? ctx : ctx.isolate('sessionController', privateScope), config))
   const entry = { options: { id: 'session-controller', name: '@deepseek-ai/dsh-api-session-controller', isolate: { sessionController: true } },
     disabled: false, fiber: { config }, realm: { access: () => privateScope } }
   ctx.provide('loader', { *entries() { yield entry } } as unknown as Context['loader'])
@@ -88,6 +88,7 @@ async function mount(Controller: typeof SessionController | typeof NativeAwareSe
     const cancellations: unknown[] = []
     const agent = {
       id: session.id, session, ctx: agentContext, status: 'idle',
+      model: { current: () => undefined, select: (value: import('@deepseek-ai/dsh-agent').ModelSelection) => session.append('model/selection', value) },
       inbox: {
         nextTurn: queued, nextStep: [],
         remove: (itemId: string) => { const index = queued.findIndex(item => item.id === itemId); if (index < 0) return false; queued.splice(index, 1); return true },

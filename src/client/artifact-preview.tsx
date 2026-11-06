@@ -107,7 +107,7 @@ function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: Artifac
         // opaque artifact has no filesystem base and must not guess one.
         const artifactPath = reference.document.kind === 'artifact' ? sessionFileArtifactPath(reference.document.artifactId) : null
         if (presentation.viewer === 'markdown' && content.kind === 'text') return <div className="hapi-source-markdown" data-document-markdown><SourceMarkdown text={content.text} complete={content.eof}
-            source={reference.source} {...(artifactPath === null ? {} : { documentPath: artifactPath })} language={language}
+            source={reference.source} fileDrag={ctx.fileDrag.actions} {...(artifactPath === null ? {} : { documentPath: artifactPath })} language={language}
             openFile={(path, line) => tab.actions.openResource(sessionFileAddress(props.sessionId, path), line === undefined ? {} : { params: { line } })}/></div>
         if (presentation.viewer === 'code' && content.kind === 'text') return <CodeBlock className="hapi-artifact-code" code={content.text} lang={languageForPath(loaded.metadata.fileName)} streaming={false}
             lineNumbers wrap={wrap} copyLabel={labels.code.copyLabel} copiedLabel={labels.code.copiedLabel} toolbarLabels={labels.code.toolbarLabels}/>

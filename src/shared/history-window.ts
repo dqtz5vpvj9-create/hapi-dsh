@@ -23,7 +23,7 @@ export function openingWindow(request: SessionFollowRequest): SessionFollowReque
  * omitting a list hint never clears an existing sequenced projection. */
 export function sessionListHints(value: SessionListValue): SessionListValue {
     return { ...value, items: value.items.map(row => {
-        if (!row.projections || !Object.hasOwn(row.projections.values, 'turnOutline')) return row;
+        if (!row.projections || !('turnOutline' in row.projections.values)) return row;
         const { turnOutline: _outline, ...values } = row.projections.values;
         return { ...row, projections: { ...row.projections, values } };
     }) };

@@ -12,13 +12,13 @@ test('bundled Host and nested Runner preserve packaged provenance outside the ch
     const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     const temporary = await mkdtemp(join(tmpdir(), 'hhpi-bundled-identity-'));
     try {
-        const source = runtimeIdentity({ dshVersion: '0.2.1-rc.3' });
+        const source = runtimeIdentity({ dshVersion: '0.2.2-rc.1' });
         for (const path of ['index.mjs', 'runner/index.mjs']) {
             const outfile = join(temporary, path); await mkdir(dirname(outfile), { recursive: true });
             await build({ entryPoints: [join(root, 'src/runner/identity.ts')], outfile, bundle: true,
                 platform: 'node', format: 'esm', packages: 'external', target: 'node24' });
             const module = await import(pathToFileURL(outfile).href) as { runtimeIdentity(input: { dshVersion: string }): RuntimeIdentityV1 };
-            const bundled = module.runtimeIdentity({ dshVersion: '0.2.1-rc.3' });
+            const bundled = module.runtimeIdentity({ dshVersion: '0.2.2-rc.1' });
             assert.notEqual(bundled.upstreamCommit, 'unknown', `${path} must carry the actual build provenance`);
             assert.deepEqual(bundled, source);
             assert.equal(identityMatches(source, bundled), true);

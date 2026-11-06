@@ -1,3 +1,4 @@
+import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import { CommandDefinitionId } from '@deepseek-ai/dsh-commands'
 import { freezeMessage, MessageId } from '@deepseek-ai/dsh-llm'
 import type { HapiObservedAgent } from './agent.js'
@@ -19,7 +20,7 @@ export function bindObservedCommands(agent: HapiObservedAgent): void {
           if (input.agent !== agent) throw new Error('The source command belongs to a different Session')
           if (input.signal.aborted) throw new Error('The source command was cancelled before admission')
           agent.followup(freezeMessage({ id: MessageId(`hapi-command:${input.commandId}`), role: 'user',
-            source: { kind: 'user', rpcId: `source-command:${input.commandId}` },
+            source: { kind: 'user', rpcId: `source-command:${input.commandId}` as SessionRequestId },
             content: [{ type: 'text', text: `/${name}${input.rawInput}` }, ...input.attachments] }))
           return { kind: 'success', text: 'Submitted to the original HAPI owner. Source delivery and feedback determine the outcome.' }
         },

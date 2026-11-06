@@ -46,7 +46,7 @@ export async function sourceQueueFixture(kind: 'native' | 'observed') {
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
   }
   const ctx = new Context()
-  await ctx.plugin(SessionStore); await ctx.plugin(AgentRegistry); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(CommandRuntime)
+  await ctx.plugin(SessionStore); await ctx.plugin(SessionProjectionRegistry); await ctx.plugin(AgentRegistry); await ctx.plugin(CommandRuntime)
   let service!: CodexService | HapiAgentService
   await ctx.plugin(Object.assign(async (owner: Context) => {
     service = kind === 'native' ? new CodexService(owner, transport, { stateDirectory: directory })
