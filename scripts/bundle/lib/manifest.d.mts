@@ -61,7 +61,7 @@ export interface BundleManifest {
     releaseId: string;
 }
 
-export function validateBundleManifest(input: unknown): BundleManifest;
+export function validateBundleManifest(input: unknown, options?: { storedRelease?: boolean }): BundleManifest;
 export function payloadEntries(manifest: BundleManifest): Array<{ path: string; sha256: string; size: number }>;
 export function packageSetSha256(packages: Array<{ name: string; version: string; sha256: string }>): string;
 export function releaseIdentity(manifest: BundleManifest): RuntimeIdentity;

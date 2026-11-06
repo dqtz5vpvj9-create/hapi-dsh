@@ -15,6 +15,11 @@ export interface SourceComposerBridge extends ComposerEnterAttachments {
 }
 export function installSourceComposerBridge(ctx: Context): SourceComposerBridge {
     const seats = new Map<SessionId, Set<{ props: ComposerAttachmentsProps }>>();
+    // StoredEntry is the registry's public erasure boundary. Forward the native
+    // business injection unchanged so its drag/drop owner remains intact.
+    const register = ctx.slots.register.bind(ctx.slots) as (options: {
+        name: 'conversation.input.attachments'; priority: number; locale: 'conversation'; inject?: StoredEntry['inject']
+    }, component: ComponentType<ComposerAttachmentsProps>) => () => void;
     let wrapped: StoredEntry | undefined; let shadow: (() => void) | undefined;
     let component: ComponentType<ComposerAttachmentsProps> | undefined; let changing = false;
     const reconcile = () => {
@@ -26,7 +31,7 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
             shadow?.(); shadow = undefined; wrapped = original;
             // Additional plugin-owned subtree/state needs its own public
             // adapter. Never fabricate an attachment provider's inject props.
-            if (!original || original.children || original.inject || original.store) return;
+            if (!original || original.children || original.store) return;
             const Official = original.component as ComponentType<ComposerAttachmentsProps>;
             const AttachmentSeat = (props: ComposerAttachmentsProps) => {
                 useLayoutEffect(() => {
@@ -40,7 +45,7 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
                     <div className="hapi-composer-files" hidden={props.attachments.length === 0}>{createElement(Official, props)}</div></>;
             };
             component = AttachmentSeat;
-            shadow = ctx.slots.register({ name: 'conversation.input.attachments', priority: (original.options.priority ?? 0) - 1, locale: 'conversation' }, AttachmentSeat);
+            shadow = register({ name: 'conversation.input.attachments', priority: (original.options.priority ?? 0) - 1, locale: 'conversation', ...(original.inject ? { inject: original.inject } : {}) }, AttachmentSeat);
         } finally { changing = false; }
     };
     const stop = ctx.slots.subscribe('conversation.input.attachments', reconcile); reconcile();

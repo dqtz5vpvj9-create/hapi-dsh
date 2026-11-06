@@ -1,10 +1,10 @@
 /** Production disclosure and operation state; native RPC and storage are explicit boundaries. */
-import { useState } from 'react'
+import { createElement, useState, type ComponentType } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { expect, test, vi } from 'vitest'
 import { useLiveDisclosure } from '../../src/client/live-disclosure.ts'
 import { SourcePlanOperation, proposedPlanText } from '../../src/client/source-plan.tsx'
-import { CompactAttachmentButton } from '../../src/client/source-composer.tsx'
+import { CompactAttachmentButton, installSourceComposerBridge } from '../../src/client/source-composer.tsx'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { CodexCall } from '../../src/remote/codex-access.ts'
 import type { SourceSession } from '../../src/remote/protocol.ts'
@@ -79,4 +79,28 @@ test('file chooser results stay with the editor that opened the chooser', () => 
   view.rerender(<CompactAttachmentButton ctx={ctx} props={{ ...owner, inputActions: {} as ComposerAttachmentsProps['inputActions'], onAddFiles: other }}/> )
   act(() => fireEvent.change(view.container.querySelector('input')!, { target: { files: [file] } }))
   expect(other).not.toHaveBeenCalled(); expect(onAddFiles).toHaveBeenCalledTimes(1)
+})
+
+
+test('the source composer preserves native injected attachment ownership and retains the attach button', () => {
+  const nativeOwner = vi.fn(), nativeInject = vi.fn(() => ({ readFileDrag: nativeOwner }))
+  function Official(props: { readFileDrag: unknown }) {
+    expect(props.readFileDrag).toBe(nativeOwner)
+    return <span>Native attachment component</span>
+  }
+  const original = { options: {}, component: Official, inject: nativeInject }
+  let Component!: ComponentType<ComposerAttachmentsProps>, options!: { inject: typeof nativeInject }
+  const ctx = { slots: { entries: () => [original], subscribe: () => () => {},
+    register(value: typeof options, component: typeof Component) { options = value; Component = component; return () => {} },
+  }, locale: { getSnapshot: () => ({ active: 'en' }) } } as unknown as Context
+  const bridge = installSourceComposerBridge(ctx)
+  expect(options.inject).toBe(nativeInject)
+  const file = new File(['fixture'], 'shot.png', { type: 'image/png' })
+  const owner = { sessionId: 'hhpi:machine:source:codex:thread', attachments: [{ id: 'fixture', kind: 'image', file, previewUrl: 'blob:fixture' }], uploads: {}, inputActions: {}, canAcceptDrop: true } as unknown as ComposerAttachmentsProps
+  const view = render(createElement(Component, { ...owner, ...options.inject() }))
+  expect(screen.getByRole('button', { name: 'Attach files' })).toBeVisible()
+  expect(screen.getByText('Native attachment component')).toBeVisible()
+  expect(bridge.inspectSubmission(owner.sessionId!, owner.inputActions!, [])).toBe('ready')
+  expect(bridge.captureFiles(owner.sessionId!, ['fixture'])[0]?.file).toBe(file)
+  view.unmount(); bridge.dispose()
 })

@@ -317,7 +317,7 @@ export async function copyTree(source, destination) {
     }
 }
 
-export async function readManifestFrom(root) {
+export async function readManifestFrom(root, options) {
     let text;
     try {
         text = await readFile(join(root, BUNDLE_LAYOUT.manifest), 'utf8');
@@ -331,7 +331,7 @@ export async function readManifestFrom(root) {
     } catch {
         throw new Error(`${BUNDLE_LAYOUT.manifest} is not valid JSON`);
     }
-    return validateBundleManifest(parsed);
+    return validateBundleManifest(parsed, options);
 }
 
 /**
@@ -408,7 +408,7 @@ export function isGeneratedReleasePath(path) {
 
 /** Verify an installed release directory (bundle copy + generated payloads). */
 export async function verifyReleaseDirectory(root) {
-    const manifest = await readManifestFrom(root);
+    const manifest = await readManifestFrom(root, { storedRelease: true });
     const files = await walkReleaseFiles(root);
     const sums = parseSums(await readFile(join(root, BUNDLE_LAYOUT.sums), 'utf8'));
     const sumPaths = new Set(sums.map((entry) => entry.path));

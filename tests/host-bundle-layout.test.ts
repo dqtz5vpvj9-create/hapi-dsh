@@ -94,6 +94,16 @@ test('the fixture bundle has the layout fixed by the distribution spec', async (
         assert.equal(manifest.computeReleaseId(bundleManifest), bundleManifest.releaseId)
         assert.equal(manifest.packageSetSha256(bundleManifest.payload.dshExt), bundleManifest.release.packageSetSha256)
         assert.equal(bundleManifest.fixture, true)
+        const historical = structuredClone(bundleManifest)
+        historical.release.upstreamVersion = '0.2.1-rc.3'
+        historical.release.upstreamCommit = '1f81c047fc48fa190a683e469daa699857e9afe8'
+        historical.release.compositionVersion = '0.2.1-rc.3+archived'
+        historical.releaseId = manifest.computeReleaseId(historical)
+        assert.throws(() => manifest.validateBundleManifest(historical), /pinned/)
+        assert.equal(manifest.validateBundleManifest(historical, { storedRelease: true }).release.upstreamVersion, '0.2.1-rc.3')
+        historical.release.upstreamCommit = '0'.repeat(40)
+        assert.throws(() => manifest.validateBundleManifest(historical, { storedRelease: true }), /pinned/)
+
 
         assert.deepEqual(manifest.bundleLayoutErrors(await listFiles(bundleRoot)), [])
         const sumsEntries = manifest.parseSums(await readFile(join(bundleRoot, 'SHA256SUMS'), 'utf8'))

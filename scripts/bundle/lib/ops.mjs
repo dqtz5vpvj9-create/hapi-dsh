@@ -600,7 +600,7 @@ export async function rollbackRelease(rawOptions) {
     const env = { ...process.env, ...(extraEnv ?? {}), DSH_HOME: home };
     let state = await readBundleState(home);
     const target = rollbackActivation(state, profile, { toReleaseId });
-    const targetManifest = validateBundleManifest(JSON.parse(await readFile(join(releaseDirectory(home, target.to.releaseId), 'manifest.json'), 'utf8')));
+    const targetManifest = validateBundleManifest(JSON.parse(await readFile(join(releaseDirectory(home, target.to.releaseId), 'manifest.json'), 'utf8')), { storedRelease: true });
     // The backup that restores a release is the one taken just before that
     // release's successor was installed: it names the release we roll back from.
     const backup = { directory: backupDirectory(home, target.from.releaseId, profile) };

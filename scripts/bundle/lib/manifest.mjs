@@ -48,7 +48,7 @@ function checkString(errors, value, name, pattern) {
 }
 
 /** Validate and return a normalised bundle manifest (throws on any schema error). */
-export function validateBundleManifest(input) {
+export function validateBundleManifest(input, { storedRelease = false } = {}) {
     const errors = [];
     if (!isRecord(input)) fail(['manifest must be a JSON object']);
     const manifest = input;
@@ -61,9 +61,10 @@ export function validateBundleManifest(input) {
     if (!isRecord(release)) errors.push('release must be an object');
     else {
         checkString(errors, release.upstreamVersion, 'release.upstreamVersion', SEMVER);
-        if (release.upstreamVersion !== PINNED_UPSTREAM_VERSION) errors.push(`release.upstreamVersion must be the pinned ${PINNED_UPSTREAM_VERSION}`);
+        const previousRc = storedRelease && release.upstreamVersion === '0.2.1-rc.3' && release.upstreamCommit === '1f81c047fc48fa190a683e469daa699857e9afe8';
+        if (!previousRc && release.upstreamVersion !== PINNED_UPSTREAM_VERSION) errors.push(`release.upstreamVersion must be the pinned ${PINNED_UPSTREAM_VERSION}`);
         checkString(errors, release.upstreamCommit, 'release.upstreamCommit', /^[a-f0-9]{40}$/);
-        if (release.upstreamCommit !== PINNED_UPSTREAM_COMMIT) errors.push(`release.upstreamCommit must be the pinned ${PINNED_UPSTREAM_COMMIT}`);
+        if (!previousRc && release.upstreamCommit !== PINNED_UPSTREAM_COMMIT) errors.push(`release.upstreamCommit must be the pinned ${PINNED_UPSTREAM_COMMIT}`);
         checkString(errors, release.extRelease, 'release.extRelease');
         checkString(errors, release.patchSetSha256, 'release.patchSetSha256', SHA256);
         checkString(errors, release.packageSetSha256, 'release.packageSetSha256', SHA256);
