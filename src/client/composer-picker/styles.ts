@@ -1,3 +1,4 @@
+import { compactComposerStyles } from '../compact-composer-styles.ts'
 export const composerPickerStyles = String.raw`
 /* Replace source cells only at the actual composer occurrence. The ordinary
    DSH composer has no source group and keeps all official controls/styles. */
@@ -87,10 +88,5 @@ export const composerPickerStyles = String.raw`
 .hapi-native-actions input {box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:8px;border:1px solid var(--dsw-alias-border-l2,#d8dedf);border-radius:8px;background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:inherit}
 .hapi-native-actions form button {align-self:flex-end;min-height:44px;padding:8px 12px;border:0;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover,#eef2f1)}
 .hapi-native-actions p {margin:4px;overflow-wrap:anywhere}
-/* The source controls may shrink and wrap, while Send/Stop keeps its own seat. */
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_standardControls"] {flex-wrap:wrap;gap:4px}
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_trailing"]:not([class*="_trailingActive"]) {min-width:0;flex:1 1 100%!important;align-items:center!important}
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) .hapi-source-controls {flex:1 1 180px;flex-wrap:wrap;margin-left:0;justify-content:flex-start}
-.hapi-pane [data-composer-card] [class*="_primary"] {flex-shrink:0}
 @media (prefers-reduced-motion:reduce) {.hapi-picker-switch>span {transition:none}}
-`
+` + compactComposerStyles

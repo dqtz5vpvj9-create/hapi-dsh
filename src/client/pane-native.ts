@@ -13,6 +13,7 @@ import { HAPI_REMOTE } from '../client-api.ts'
 import { en, zh } from './locales.ts'
 import { installWorkspaceStyles } from './styles.ts'
 import { installNativeIntegration } from './native-integration.tsx'
+import { installSourceComposerBridge } from './source-composer.tsx'
 import { installHapiTabs } from './hapi-tabs.tsx'
 import { installRemoteSourceControls } from './remote-controls.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
@@ -62,6 +63,8 @@ function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): 
     const api = ctx.remote.hapi
     const disposers: Array<() => void | Promise<void>> = []
     try {
+        const composer = installSourceComposerBridge(ctx)
+        disposers.push(() => composer.dispose())
         disposers.push(installPaneDocumentStyles(document))
         // One consumer per Pane graph: the mounted Chat control is published
         // under this Pane's own element, so other panes never share or clear it.
@@ -86,7 +89,7 @@ function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): 
         const unprovide = ctx.reflect.provide('hapiPaneNative', integration)
         disposers.push(() => unprovide())
         disposers.push(installWithLegacyHapiCapability(ctx.hhpiSessions.capabilities, () => {
-            const installed = [installHapiTabs(ctx, api), installSourceAdmin(ctx, api)]
+            const installed = [installHapiTabs(ctx, api, composer), installSourceAdmin(ctx, api)]
             return () => { for (const dispose of installed.reverse()) dispose() }
         }))
         disposers.push(installRemoteSourceControls(ctx))

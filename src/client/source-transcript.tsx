@@ -1,0 +1,52 @@
+/** Reuse the official assistant renderer and its published content factories. */
+import { createElement, useMemo, type ComponentType } from 'react'
+import type { Context } from '@deepseek-ai/cordis'
+import type { PropsRuntime, PropsRenderSlots, PropsRenderFactories, StoredEntry, OwnerOf } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
+import type {} from '@deepseek-ai/dsh-client-ui-attachment/client'
+import { isSourceSessionId } from '../remote/protocol.ts'
+import { useLiveDisclosure } from './live-disclosure.ts'
+import { SourcePlanActions, proposedPlanText } from './source-plan.tsx'
+
+type Props = PropsRuntime<'conversation.chat.node', 'assistant-step'> & PropsRenderFactories
+type OfficialProps = Props & Pick<PropsRenderSlots<'conversation.chat.reasoning.body' | 'conversation.chat.message.images'>, 'renderSlot'>
+type BodyOwner = OwnerOf<'conversation.chat.reasoning.body'>
+type ImageOwner = OwnerOf<'conversation.chat.message.images'>
+
+export function installSourceTranscript(ctx: Context): () => void {
+    return ctx.slots.inject('conversation.chat.node', () => {
+        let original: StoredEntry | undefined, remove: (() => void) | undefined, updating = false
+        const own = new Set<unknown>()
+        const reconcile = () => {
+            if (updating) return
+            const entry = ctx.slots.entries('conversation.chat.node').find(value => value.options.key === 'assistant-step' && !own.has(value.component))
+            if (entry === original) return
+            updating = true
+            try {
+                remove?.(); remove = undefined; original = entry
+                if (!entry) return
+                const Official = entry.component as ComponentType<OfficialProps>
+                function SourceNode(props: Props) {
+                    const source = isSourceSessionId(props.sessionId), running = props.node.data.status === 'running'
+                    const useDisclosure = useMemo(() => function useSourceDisclosure() {
+                        return useLiveDisclosure(props.useDisclosure, running)
+                    }, [props.useDisclosure, running])
+                    // Both are public official factories. No child slot is redeclared or borrowed.
+                    const renderSlot = ((_key: string, owner: BodyOwner | ImageOwner) => 'text' in owner
+                        ? props.renderFactorySlot('conversation.chat.reasoning.content', owner)
+                        : props.renderFactorySlot('conversation.images.content', owner)) as OfficialProps['renderSlot']
+                    const plan = source && props.groupPart !== 'reasoning' ? proposedPlanText(props.node.data.blocks) : null
+                    return <>{createElement(Official, { ...props, renderSlot, useDisclosure: source ? useDisclosure : props.useDisclosure })}
+                        {plan && !running && <SourcePlanActions key={`${props.sessionId}:${props.node.key}`} ctx={ctx} sessionId={props.sessionId} planId={props.node.key} text={plan}
+                            session={props.sessionBinding?.session as import('./remote-sessions.ts').RemoteSourceSession | undefined}/>}
+                    </>
+                }
+                own.add(SourceNode)
+                remove = ctx.slots.register({ name: 'conversation.chat.node', key: 'assistant-step', priority: (entry.options.priority ?? 0) - 1,
+                    locale: entry.locale as 'chat', inject: entry.inject as never }, SourceNode)
+            } finally { updating = false }
+        }
+        const stop = ctx.slots.subscribe('conversation.chat.node', reconcile); reconcile()
+        return () => { stop(); remove?.() }
+    })
+}

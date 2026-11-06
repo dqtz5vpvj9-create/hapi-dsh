@@ -58,12 +58,15 @@ test('registered native composer keeps one remote service across renders and ope
     slots: {
       inject: (_name: string, install: () => () => void) => install(),
       register: (_spec: unknown, entry: typeof Entry) => { Entry = entry; return () => {} },
+      entries: () => [], subscribe: () => () => {},
     },
   } as unknown as Context
   const stop = installComposerPicker(ctx, {} as never, {} as never)
   const session = { metadata: { getSnapshot: () => metadata, subscribe: () => () => {} } }
   const props = { sessionId: metadata.id, sessionBinding: { session }, useProjection: () => undefined,
     useInput: (select: (state: { phase: string }) => unknown) => select({ phase: 'idle' }),
+    useSession: (select: (state: { running: boolean }) => unknown) => select({ running: false }),
+    renderSlot: () => null,
   } as unknown as InputProps
   const view = render(<Entry {...props}/> )
   await waitFor(() => expect(f.calls.filter(call => call.method === 'thread/read')).toHaveLength(1))

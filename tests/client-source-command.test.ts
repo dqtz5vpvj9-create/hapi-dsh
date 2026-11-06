@@ -21,12 +21,12 @@ test('source shell aliases render the registered official component and leave sp
     const alias = slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'CodexBash')!
     assert.ok(alias); assert.equal(alias.locale, 'conversation')
     const html = renderToStaticMarkup(createElement(alias.component as ComponentType<ToolCallViewProps>,
-        { phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash', t: (key: string) => key } as unknown as ToolCallViewProps))
+        { sessionId: 'hapi-fixture', phase: 'start', block: call({ cmd: 'pwd' }), toolName: 'CodexBash', t: (key: string) => key } as unknown as ToolCallViewProps))
     assert.equal(html, '<span data-official-bash="bash">pwd</span>')
     const nativeAlias = slots.entriesOfSlot('tool.call.toolview').find(entry => entry.options.key === 'codex.commandExecution')!
     assert.ok(nativeAlias, 'native HHPI Codex calls must reach the same official Bash view')
     assert.equal(renderToStaticMarkup(createElement(nativeAlias.component as ComponentType<ToolCallViewProps>,
-        { phase: 'start', block: { ...call({ command: 'npm test' }), name: 'codex.commandExecution' }, toolName: 'codex.commandExecution',
+        { sessionId: 'hhpi:fixture:native:codex:thread', phase: 'start', block: { ...call({ command: 'npm test' }), name: 'codex.commandExecution' }, toolName: 'codex.commandExecution',
             t: (key: string) => key } as unknown as ToolCallViewProps)), '<span data-official-bash="bash">npm test</span>')
     const Specialized = () => null
     const remove = slots.register({ name: 'tool.call.toolview', key: 'CodexBash', priority: 0 } as never, Specialized as never)

@@ -12,7 +12,7 @@ import type {} from './source-navigation.ts';
 import { remoteValue, type HapiRemoteApi, type CatalogMachine, type SourceNote } from '../client-api.ts';
 import { NativeLibraryPanel, NativeSessionToolsPanel, SourceHistoryPanel, SourceNotesPanel, SourceSchedulePanel, SourceMigrationPanel } from './deferred-panels.tsx';
 import { SourceSessionToolsPanel } from './source-lifecycle.tsx';
-import { installSourceComposerBridge } from './source-composer.tsx';
+import { installSourceComposerBridge, type SourceComposerBridge } from './source-composer.tsx';
 import { SourceTitlePanel } from './source-title-panel.tsx';
 import { installSourceComposerParking } from './source-composer-parking.tsx';
 import { installComposerGoal } from './composer-goal.tsx';
@@ -72,9 +72,10 @@ const styles = `
 `;
 
 /** Registers source-specific pages without owning tab layout, retention, menus or renderers. */
-export function installHapiTabs(ctx: Context, api: HapiRemoteApi): () => void {
+export function installHapiTabs(ctx: Context, api: HapiRemoteApi, existingComposer?: SourceComposerBridge): () => void {
     const disposers: Array<() => void> = [];
-    const composer = installSourceComposerBridge(ctx); disposers.push(() => composer.dispose());
+    const composer = existingComposer ?? installSourceComposerBridge(ctx);
+    if (!existingComposer) disposers.push(() => composer.dispose());
     disposers.push(installShareReceiver(ctx, composer));
     disposers.push(installComposerGoal(ctx, api));
     const parking = installSourceComposerParking(ctx, api, composer);

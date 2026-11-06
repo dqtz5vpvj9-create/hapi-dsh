@@ -2,6 +2,8 @@ import { createElement, Fragment, useMemo, type ComponentType } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { StoredEntry, PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
+import { useLiveDisclosure } from './live-disclosure.ts'
+import { isSourceSessionId } from '../remote/protocol.ts'
 import { SOURCE_TOOL_ALIASES, SOURCE_TOOL_VIEW_TARGETS, sourceToolBlocks, sourceToolView } from './source-command-model.ts'
 
 /** Adapt native data into the actual registered DSH tool components. */
@@ -24,6 +26,9 @@ export function installSourceCommandViews(ctx: Context): () => void {
                     if (!entry) return
                     const Alias = (props: ToolCallViewProps & PropsLocale<'conversation'>) => {
                         const view = sourceToolView(props.block, target)
+                        const useDisclosure = useMemo(() => function useSourceDisclosure() {
+                            return useLiveDisclosure(props.useDisclosure, props.phase !== 'result')
+                        }, [props.useDisclosure, props.phase])
                         const Official = (registered.get(view.renderer) ?? entry).component as ComponentType<ToolCallViewProps>
                         const blocks = useMemo(() => sourceToolBlocks(props.block, view.toolName, {
                             read: props.t('tool.title.read'), search: props.t('tool.title.search'), listFiles: props.t('tool.title.glob'),
@@ -48,7 +53,7 @@ export function installSourceCommandViews(ctx: Context): () => void {
                             },
                         }), [props.block, props.t, view.toolName])
                         return createElement(Fragment, null, blocks.map((block, index) =>
-                            createElement(Official, { ...props, key: index, toolName: view.toolName, block } as ToolCallViewProps & { key: number })))
+                            createElement(Official, { ...props, useDisclosure: isSourceSessionId(props.sessionId) ? useDisclosure : props.useDisclosure, key: index, toolName: view.toolName, block } as ToolCallViewProps & { key: number })))
                     }
                     registrations.push(...(SOURCE_TOOL_ALIASES[target] ?? []).map(key => ctx.slots.register({ name: 'tool.call.toolview', key,
                         locale: 'conversation', priority: 1000 }, Alias)))

@@ -14,8 +14,10 @@ import { EffortChoices, Glyph, PendingNote, SourceControlRow, permissionLabel, t
 import { positionPicker, type PickerPosition } from './position.ts'
 import type { SourceInputProps } from './slots.ts'
 import { composerPickerStyles } from './styles.ts'
+import { installComposerDetails } from '../composer-details.tsx'
+import { CompactComposerTools, ComposerSteerAction } from '../compact-composer.tsx'
 
-export type InputProps = SourceInputProps & PropsRenderSlots<'hapi.source.composer-actions'>
+export type InputProps = SourceInputProps & PropsRenderSlots<'hapi.source.composer-actions' | 'hapi.source.composer-details'>
 const fallbackPane = { focused: true, visible: true }
 const emptySubscribe = (): (() => void) => () => {}
 const fallbackPaneSnapshot = () => fallbackPane
@@ -146,6 +148,7 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
             </label>)}
         </div>}
         {visible === 'permission' && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Permission modes', '权限模式')}>
+            {summary.permission === null && <p className="hapi-picker-note">{tr('The source has not reported the current permissions.', '源端尚未报告当前权限。')}</p>}
             {data?.permissions.map(value => <label key={value}>
                 <input type="radio" name={`${id}-permission`} value={value} checked={data.permission === value}
                     disabled={disabled || !data.editable.permission} onChange={() => select({ kind: 'permission', value })}/>
@@ -168,10 +171,14 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
         data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
         <header><strong>{tr('More input controls', '更多输入控件')}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
         <div role="group" aria-label={tr('More input controls', '更多输入控件')}>
-            {actionsContent ?? props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
+            <ComposerSteerAction ctx={ctx} props={props} zh={locale.startsWith('zh')} close={closeActions}/>
+            {actionsContent}
+            {props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
+            <div className="hapi-composer-details">{props.renderSlot('hapi.source.composer-details', {})}</div>
         </div>
     </div>
     return <><SourceControlRow summary={summary} sessionId={props.sessionId} open={visible} panelId={id} pending={Boolean(pending)} attention={attention} tr={tr} onToggle={toggle}
+        utilities={<CompactComposerTools ctx={ctx} props={props} zh={locale.startsWith('zh')}/>}
         refs={{ effort: node => { triggers.current.effort = node }, model: node => { triggers.current.model = node }, permission: node => { triggers.current.permission = node }, actions: node => { triggers.current.actions = node } }}/>
         {createPortal(<>{settings}{actions}</>, document.body)}</>
 }
@@ -236,8 +243,9 @@ export function installComposerPicker(ctx: Context, native: NativeControlLedger,
     // slot. Neither official single model/permission slot is registered over.
     const hhpi = ctx.remote.hhpi
     const stop = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hapi.source-controls', order: 90,
-        children: { 'hapi.source.composer-actions': { kind: 'single', scope: 'session' } },
+        children: { 'hapi.source.composer-actions': { kind: 'single', scope: 'session' }, 'hapi.source.composer-details': { kind: 'list', scope: 'session' } },
     }, (props: InputProps) => <SourceComposerControls ctx={ctx} hhpi={hhpi} native={native} observed={observed} props={props}/>))
+    const stopDetails = installComposerDetails(ctx)
     const style = document.createElement('style'); style.textContent = composerPickerStyles; document.head.append(style)
-    return () => { stop(); style.remove() }
+    return () => { stopDetails(); stop(); style.remove() }
 }

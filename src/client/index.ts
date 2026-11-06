@@ -39,6 +39,7 @@ import { installNativeRewindAction } from './native-rewind-action.tsx'
 import { installNativeComposerAdmission } from './native-composer.ts'
 import { installPaneNative } from './pane-native.ts'
 import type {} from './pane-navigation.ts'
+import { installSourceComposerBridge } from './source-composer.tsx'
 import { installHapiTabs } from './hapi-tabs.tsx'
 import { installSourceAdmin } from './source-admin.tsx'
 import { installSourceCompanion } from './source-companion.tsx'
@@ -53,6 +54,7 @@ import { installNotifySummaryDisplay } from './notify-summary-display.tsx'
 import { installSourceVoice } from './source-voice/index.tsx'
 import { installGeneratedMediaDisplay } from './generated-media-display.tsx'
 import { installToolProgressDisplay } from './tool-progress-display.tsx'
+import { installSourceTranscript } from './source-transcript.tsx'
 import { installNativeToolDetails } from './native-tool-details.tsx'
 import { installCodexReviewDisplay } from './codex-review-display.tsx'
 import { installNativeActionDock } from './native-action-dock.tsx'
@@ -186,6 +188,8 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     window.addEventListener('storage', onPreference)
     disposers.push(() => { window.removeEventListener('storage', onPreference) })
     stage = 'register workspace styles and locale'
+    const composer = installSourceComposerBridge(ctx)
+    disposers.push(() => composer.dispose())
     disposers.push(installWorkspaceStyles(document))
     disposers.push(installRemoteSourceControls(ctx))
     disposers.push(installWorkspaceMenus(document))
@@ -236,7 +240,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     }))
     disposers.push(installWithLegacyHapiCapability(sourceCapability, () => {
         const installed: Array<() => void> = []
-        installed.push(installHapiTabs(ctx, api))
+        installed.push(installHapiTabs(ctx, api, composer))
         administration = installSourceAdmin(ctx, api)
         installed.push(administration)
         installed.push(installSourceCompanion(ctx, api))
@@ -258,6 +262,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(installSourceVoice(ctx, api))
     disposers.push(installGeneratedMediaDisplay(ctx))
     disposers.push(installToolProgressDisplay(ctx))
+    disposers.push(installSourceTranscript(ctx))
     disposers.push(installNativeToolDetails(ctx))
     disposers.push(installCodexReviewDisplay(ctx))
     disposers.push(installNativeActionDock(ctx, native, api))

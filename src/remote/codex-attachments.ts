@@ -10,6 +10,7 @@ import { SourceError, waitFor } from './errors.ts';
 import type { SourceEventIndex } from './event-index.ts';
 import type { SourceEntry, SourceResource } from './protocol.ts';
 import { sourceImageAttachmentRefSchema } from '../source-attachment-types.ts';
+import { hasNativeImages as hasImages, nativeContentParts } from './codex-content.ts';
 
 const MAX_IMAGE_BYTES = MAX_NATIVE_IMAGE_BYTES;
 const limits: ImageAttachmentLimits = { maxImageBytes: MAX_IMAGE_BYTES, maxImagesPerMessage: 20,
@@ -26,9 +27,7 @@ const contentKey = (turnId: string, itemId: string): string => JSON.stringify(['
 const grantKey = (id: string): string => `codex-image-grants:${id}`;
 const imageResourcePath = /^attachment:sha256:[0-9a-f]{64}$/;
 const fingerprint = (item: NativeItem): string => createHash('sha256').update(JSON.stringify(
-    item.type === 'userMessage' ? [item.type, item.content] : [item.type, item.path])).digest('hex');
-const hasImages = (item: NativeItem): boolean => item.type === 'imageView' || item.type === 'userMessage'
-    && Array.isArray(item.content) && item.content.some(value => isRecord(value) && (value.type === 'image' || value.type === 'localImage'));
+    item.type === 'userMessage' ? [item.type, item.content] : item.type === 'imageView' ? [item.type, item.path] : [item.type, nativeContentParts(item)])).digest('hex');
 
 /** The same accepted native fingerprint gates live projection and version upgrades. */
 export function nativeImageContent(index: SourceEventIndex, turnId: string, item: NativeItem): ContentBlock[] | undefined {
@@ -141,7 +140,7 @@ export class CodexAttachments {
             // Loading native bytes (including embedded data URLs) belongs to the
             // workers too, so scheduling a large page cannot delay its text.
             if (event.type === 'assistant/message' && !message.content.some(block => block.type === 'tool-call'
-                && (block.name === 'read_image' || block.name === 'codex.imageView'))) continue;
+                && ['read_image', 'codex.imageView', 'codex.imageGeneration', 'codex.dynamicToolCall', 'codex.mcpToolCall', 'codex.functionCallOutput', 'hhpi-native-tool-detail'].includes(block.name))) continue;
             this.queued.set(itemKey(turnId, id), { turnId, itemId: id });
         }
         this.pump();
@@ -182,8 +181,7 @@ export class CodexAttachments {
     private async prepare(state: NativeImageState): Promise<NativeImageState | undefined> {
         const expected = fingerprint(state.item), epoch = this.index.epoch, revision = this.revision;
         const signal = AbortSignal.any([this.lifetime, this.revisionLifetime.signal]);
-        const parts = state.item.type === 'imageView' ? [{ type: 'localImage', path: state.item.path }]
-            : Array.isArray(state.item.content) ? state.item.content : [];
+        const parts = nativeContentParts(state.item);
         const content: ContentBlock[] = [], images: ImageAttachmentRef[] = [];
         let imageCount = 0, imageBytes = 0, retryable = false;
         for (const value of parts) {

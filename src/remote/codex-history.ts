@@ -6,8 +6,8 @@ import { isRecord, nativeText, type NativeItem, type NativeItemEntry, type Nativ
 import { nativeOtherContent, nativeToolPresentation, nativeUserContent, type NativeToolPresentation } from './codex-presentation.ts';
 import type { SourceSession } from './protocol.ts';
 
-/** Reproject accepted native records so cached function output uses the pinned content-block contract. */
-export const CODEX_HISTORY_PROJECTION_VERSION = 4;
+/** Reproject accepted native records to expose plan actions and generated image galleries. */
+export const CODEX_HISTORY_PROJECTION_VERSION = 5;
 export interface CodexHistoryOptions {
     userContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
     toolContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
@@ -116,7 +116,8 @@ export class CodexHistory {
             };
             const nativeTool = nativeToolPresentation(item);
             const tool = nativeTool && (this.options.toolPresentation?.(turnId, item, nativeTool) ?? nativeTool);
-            if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: nativeText(item.text) }]);
+            if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: item.type === 'plan'
+                ? `<proposed_plan>\n${nativeText(item.text)}\n</proposed_plan>` : nativeText(item.text) }]);
             else if (item.type === 'reasoning') {
                 const summary = Array.isArray(item.summary) ? item.summary.filter((v): v is string => typeof v === 'string') : [];
                 const body = Array.isArray(item.content) ? item.content.filter((v): v is string => typeof v === 'string') : [];
@@ -124,7 +125,9 @@ export class CodexHistory {
             } else if (tool) {
                 const callId = ToolCallId(identity), { name } = tool;
                 const argumentsText = JSON.stringify(tool.input);
-                putMessage([{ type: 'tool-call', id: callId, name, arguments: argumentsText }]);
+                putMessage([{ type: 'tool-call', id: callId, name, arguments: argumentsText },
+                    // Generated output is answer material, independently visible from folded process rows.
+                    ...(item.type === 'imageView' ? [] : presentationContent?.filter(block => block.type === 'image') ?? [])]);
                 const callKey = key(nativeKey, 'tool/call');
                 this.index.put(callKey, this.event('tool/call', { turn, step, callId, name, arguments: argumentsText }, time), [...dependencies, key(nativeKey, 'message')], position(2));
                 if (state.completed) {

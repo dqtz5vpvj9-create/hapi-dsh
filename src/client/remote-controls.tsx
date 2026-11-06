@@ -102,25 +102,6 @@ function SourceApprovalButtons({ session, request, zh, disabled = false }: Appro
 }
 
 export function installRemoteSourceControls(ctx: Context): () => void {
-  const SourceRight = (props: PropsRuntime<'conversation.input.right'>) => {
-    const input = props.useInput(value => value)
-    const state = props.useSession(value => value)
-    if (!isSourceSessionId(props.sessionId)) return null
-    const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
-    const metadata = session?.metadata.getSnapshot()
-    const zh = ctx.locale.getSnapshot().active.startsWith('zh')
-    if (!metadata) return null
-    const scope = `[data-conversation-session="${CSS.escape(props.sessionId)}"]`
-    return <>
-      <style>{`${scope} [data-slot="conversation.input.model"],${scope} [data-slot="conversation.input.permission"],${scope} [data-slot="conversation.input.plan"]{display:none!important}`}</style>
-      {metadata.capabilities.steer && state.running && <button type="button" className="hhpi-source-steer" aria-label="Steer"
-        disabled={sourceIsOffline(metadata) || input.phase === 'submitting' || input.phase === 'adjudicating' || !input.draft.trim() || !metadata.activeTurnId}
-        onClick={() => {
-          const scope = props.sessionBinding?.ctx ?? ctx.sessions.scope(props.sessionId)
-          if (scope) ctx.conversation.input.for(scope).submit('steer', 'click')
-        }}>{zh ? '立即插话' : 'Steer'}</button>}
-    </>
-  }
   const DockBody = ({ session }: { session: RemoteSourceSession }) => {
     const metadata = useSyncExternalStore(session.metadata.subscribe, session.metadata.getSnapshot)
     const state = useSyncExternalStore(session.subscribe, session.getSnapshot)
@@ -139,10 +120,10 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
     return session ? <DockBody session={session}/> : null
   }
-  const right = ctx.slots.inject('conversation.input.right', () => ctx.slots.register({ name: 'conversation.input.right', id: 'hhpi.source-steer', order: 85 }, SourceRight))
+
   const dock = ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({ name: 'conversation.input.dock', id: 'hhpi.source-approval', order: -90 }, Dock))
   const style = document.createElement('style')
   style.textContent = `.hhpi-source-dock:empty{display:none}.hhpi-source-dock{max-width:960px;margin:0 auto;font:13px/1.5 system-ui;padding:0 12px}.hhpi-source-dock p{margin:4px 0}.hhpi-source-approval{border:1px solid var(--dsw-alias-border-l1,#8884);border-radius:12px;padding:8px}.hhpi-source-approval pre{max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.hhpi-source-approval button,.hhpi-source-steer{font:inherit;color:inherit;border:1px solid var(--dsw-alias-border-l1,#8884);background:var(--dsw-alias-bg-base,transparent);border-radius:8px;padding:5px 10px;cursor:pointer}.hhpi-source-approval button+button{margin-left:8px}.hhpi-source-approval button:disabled,.hhpi-source-steer:disabled{opacity:.5;cursor:default}.hhpi-source-dock [role=alert]{color:var(--text-error,#c44)}@media(pointer:coarse){.hhpi-source-steer,.hhpi-source-approval button{min-height:44px}}`
   document.head.append(style)
-  return () => { right(); dock(); style.remove() }
+  return () => { dock(); style.remove() }
 }

@@ -1,4 +1,4 @@
-import { useState, type Ref } from 'react'
+import { useState, type Ref, type ReactNode } from 'react'
 import { explicitEffort, modelLabel, visibleServiceTier, type PickerAction, type PickerChoice, type PickerData, type PickerPending } from './data.ts'
 
 export type PickerMode = 'model' | 'effort' | 'permission' | 'actions'
@@ -28,6 +28,13 @@ export function permissionLabel(value: string | null, tr: Translate): string {
     return value ?? tr('Permissions not reported', '权限未报告')
 }
 
+export function compactPermissionLabel(value: string | null, tr: Translate): string {
+    if (value === null) return tr('Permissions', '权限')
+    if (value === 'default') return tr('Ask', '审批')
+    if (value === 'yolo' || value === 'bypassPermissions') return tr('Full', '完全')
+    return permissionLabel(value, tr)
+}
+
 export interface SourceControlSummary {
     model: string | null
     effort: string | null
@@ -38,10 +45,10 @@ export interface SourceControlSummary {
 }
 
 /** Source execution permission is separate from a temporary settings lock. */
-export function SourceControlRow({ summary, sessionId, open, panelId, pending, attention, refs = {}, onToggle, tr }: {
+export function SourceControlRow({ summary, sessionId, open, panelId, pending, attention, refs = {}, onToggle, tr, utilities }: {
     summary: SourceControlSummary; sessionId: string; open: PickerMode | null; panelId: string
     pending: boolean; attention: boolean; refs?: Partial<Record<PickerMode, Ref<HTMLButtonElement>>>
-    onToggle(mode: PickerMode): void; tr: Translate
+    onToggle(mode: PickerMode): void; tr: Translate; utilities?: ReactNode
 }) {
     const effort = explicitEffort(summary.effort), tier = visibleServiceTier(summary.serviceTier)
     const model = summary.model ?? tr('Model', '模型')
@@ -68,10 +75,11 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
         {summary.permissionAvailable ? <span className="hapi-picker-anchor" data-hapi-composer-picker="permission">
             <button ref={refs.permission} type="button" className="hapi-picker-capsule hapi-permission-trigger" {...shared('permission')}
                 title={`${tr('Session permissions', '会话权限')} · ${permissionLabel(summary.permission, tr)}`} onClick={() => onToggle('permission')}>
-                <Glyph kind="permission"/><span data-picker-label>{permissionLabel(summary.permission, tr)}</span><Glyph kind="down"/>
+                <Glyph kind="permission"/><span data-picker-label>{compactPermissionLabel(summary.permission, tr)}</span><Glyph kind="down"/>
             </button>
         </span> : summary.permission !== null && <span className="hapi-source-permission" data-hapi-source-permission>{permissionLabel(summary.permission, tr)}</span>}
         {summary.collaboration && <span className="hapi-source-collaboration" data-hapi-source-collaboration={summary.collaboration}>{summary.collaboration === 'plan' ? tr('Plan', '规划') : summary.collaboration}</span>}
+        {utilities}
         <button ref={refs.actions} type="button" className="hapi-picker-overflow hapi-overflow-trigger" data-hapi-composer-overflow="" {...shared('actions')}
             aria-label={tr('More input controls', '更多输入控件')} title={tr('More input controls', '更多输入控件')} onClick={() => onToggle('actions')}>
             <Glyph kind="more"/>{attention && <span className="hapi-picker-attention" aria-label={tr('Parked draft needs attention', '暂存草稿需要处理')}/>}

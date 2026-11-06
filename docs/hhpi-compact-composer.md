@@ -1,0 +1,21 @@
+# HHPI compact composer and native transcript presentation
+
+The mobile composer keeps the official editor, attachment intake, trigger providers and execution controls. Its two rows separate message entry from model, effort, permissions, references and display controls. The default measured height is 98 CSS pixels at 360/390 pixels wide; a long draft scrolls within the editor. Attachment chips remain inside the card. The More menu contains the explicit one-shot steer action and the official activity/usage pills. Native send, queue, stop and approval semantics are unchanged.
+
+The source composer bridge now belongs to the source UI lifetime, independently of optional legacy HAPI pages. Legacy pages share that bridge. A file chooser retains its editor owner; a late selection cannot add files to a replacement session. Model/effort/permission controls remain separate. Keyboard-driven viewport shrinking temporarily hides the workspace footer; desktop viewport emulation is not physical-keyboard acceptance.
+
+Process presentation uses the installed official assistant and tool components. Untouched running rows expand; completion closes them. A user's manual open/close choice takes precedence. Completed process groups use the original disclosure UI. Whole-turn folding is disabled for this source presentation so replies, generated images and plans remain visible between process groups. The assistant adapter uses the published reasoning and image content factories; it does not redeclare or borrow another registration's child slots. More-menu statistics use a private HHPI slot and retain the official pill components and inject contracts.
+
+The source-side image normalization covers native image-generation output, MCP image content, dynamic-tool image content and function-output images, in addition to existing user images and image-view results. Lazy preparation, source-revision validation, immutable attachment storage and conversation-scoped grants remain the existing image pipeline. Generated image galleries are projected into assistant content outside process groups. Projection version 5 rebuilds display records from accepted native items; previous user/image-view caches can retain verified immutable references.
+
+Explicit native plan items and `<proposed_plan>` messages offer Implement plan and Continue planning. These use native `turn/start` with the corresponding collaboration mode and the source's reported model. They require an idle, writable source. The operation is persisted before dispatch; an uncertain acknowledgement is reconciled through its original receipt, including after remount, rather than sent again. Opening a plan never executes it and its buttons do not replace an existing composer draft.
+
+No HHPI wire change or extension-package source change is required. Native source ownership, authentication and release gates remain in force.
+
+## Evidence boundaries
+
+Production projection and image-grant tests use synthetic native records and real image storage. React tests exercise process disclosure, plan-operation reconciliation and file-chooser owner changes. A real installed SlotCore checks that native child declarations survive registration and that the adapter remains stable after publication. These tests do not call a live model.
+
+The pre-publication browser probe uses the actual pinned DSH UI and authenticated conversation reads with the local client bundle. Both mobile and desktop checks opened the native model menu without losing a draft, selected a file through the browser chooser, displayed its attachment and inserted `@` through the bound editor. The upload response was synthetic; it did not write a production file or send a message. Both contexts had zero page/console errors. The 360/390-pixel views had no horizontal overflow. A twelve-line draft plus attachment remained bounded at 210 pixels on mobile. Native model execution, physical phone keyboards and IME were not exercised by this probe.
+
+Release identity, final checks, screenshots and historical-reading results are recorded separately at publication. The previously reported continuous-history performance/position failures are not cleared by these layout checks.

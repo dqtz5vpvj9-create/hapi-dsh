@@ -1,4 +1,5 @@
-import { createElement, useLayoutEffect, type ComponentType } from 'react';
+import { createElement, useLayoutEffect, useRef, type ComponentType } from 'react';
+import { isSourceSessionId } from '../remote/protocol.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots';
 import type { ComposerAttachmentsProps, ComposerAttachment } from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -34,7 +35,9 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
                     rows.add(row); seats.set(props.sessionId, rows);
                     return () => { rows.delete(row); if (!rows.size) seats.delete(props.sessionId!); };
                 }, [props]);
-                return createElement(Official, props);
+                if (!isSourceSessionId(props.sessionId ?? '')) return createElement(Official, props);
+                return <><CompactAttachmentButton ctx={ctx} props={props}/>
+                    <div className="hapi-composer-files" hidden={props.attachments.length === 0}>{createElement(Official, props)}</div></>;
             };
             component = AttachmentSeat;
             shadow = ctx.slots.register({ name: 'conversation.input.attachments', priority: (original.options.priority ?? 0) - 1, locale: 'conversation' }, AttachmentSeat);
@@ -87,4 +90,25 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
         },
         dispose() { stop(); shadow?.(); seats.clear(); },
     };
+}
+
+/** The file chooser belongs to this mounted attachment owner, including independent Panes. */
+export function CompactAttachmentButton({ ctx, props }: { ctx: Context; props: ComposerAttachmentsProps }) {
+    const picker = useRef<HTMLInputElement>(null);
+    const current = useRef(props); current.current = props;
+    const pickedOwner = useRef(props.inputActions);
+    const zh = ctx.locale.getSnapshot().active.startsWith('zh');
+    return <>
+        <button type="button" className="hapi-compact-attach" aria-label={zh ? '添加附件' : 'Attach files'} disabled={!props.canAcceptDrop}
+            onMouseDown={event => event.preventDefault()} onClick={() => { pickedOwner.current = props.inputActions; picker.current?.click(); }}>
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"><path d="m8 13 7-7a3 3 0 0 1 4 4l-9 9a5 5 0 0 1-7-7l10-10m-7 13 8-8"/></svg>
+        </button>
+        <input ref={picker} type="file" multiple hidden onChange={event => {
+            const files = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = '';
+            const owner = current.current;
+            if (pickedOwner.current !== owner.inputActions || !owner.canAcceptDrop || !files.length) return;
+            owner.onAddFiles(files);
+            if (owner.sessionBinding) ctx.conversation.input.for(owner.sessionBinding.ctx).focus();
+        }}/>
+    </>;
 }

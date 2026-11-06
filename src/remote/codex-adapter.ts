@@ -522,7 +522,7 @@ export class DirectCodexAdapter implements SourceAdapter {
             for (const group of accepted) {
                 const entries = group.entries.map(entry => this.monotoneSnapshot(history, entry, group.terminal)).filter((entry): entry is NativeItemEntry => entry !== undefined);
                 const hash = createHash('sha256').update(owner.session.id).digest('hex');
-                retainSelectedLegacyImages(['.v3.sqlite', '.v2.sqlite', '.sqlite'].map(suffix => join(this.directory, 'history', `${hash}${suffix}`)),
+                retainSelectedLegacyImages(['.v4.sqlite', '.v3.sqlite', '.v2.sqlite', '.sqlite'].map(suffix => join(this.directory, 'history', `${hash}${suffix}`)),
                     index, owner.session, owner.native, entries);
                 history.acceptItems(session, entries, group.terminal);
                 for (const item of group.items) index.cache(`source-revision:${item.turnId}:${item.itemId}`, item.revision);
