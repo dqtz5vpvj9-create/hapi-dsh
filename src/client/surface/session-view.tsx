@@ -668,8 +668,8 @@ export function installSessionViewHost(ctx: Context): {
             presentation: (sessionId: SessionId) => {
                 const session = ctx.sessions.binding(sessionId)?.session as
                     (SessionReference['binding']['session'] & Partial<SourceViewportSession>) | undefined
-                return session?.sourceWindow === undefined ? undefined : {
-                    foldCompletedTurns: false, stepGrouping: 'none' as const, virtualizeGroupMembers: true,
+                return !isSourceSessionId(sessionId) && session?.sourceWindow === undefined ? undefined : {
+                    foldCompletedTurns: true, stepGrouping: 'collapsed' as const, virtualizeGroupMembers: true,
                 }
             },
         }))

@@ -217,20 +217,20 @@ html,body {overscroll-behavior-y:none}
  * names are confined to this compatibility block (dependency is pinned).
  * ========================================================================== */
 .hapi-pane [data-composer-seat] {} /* anchor for readers */
-.hapi-pane [data-composer-seat] .wSkVaW_composerStack {gap:4px}
+.hapi-pane [data-composer-seat] ._0iK8dG_composerStack {gap:4px}
 .hapi-pane [data-composer-card] {
   box-sizing:border-box;border-radius:20px;padding:5px 8px 3px;gap:2px;
   background:var(--dsw-specific-input-major);box-shadow:var(--dsw-elevation-soft);
 }
-.hapi-pane [data-composer-card] .uV2eYG_row {flex-wrap:nowrap;align-items:center;gap:4px;min-height:26px;padding:2px 0 0}
-.hapi-pane [data-composer-card] .uV2eYG_tools,
-.hapi-pane [data-composer-card] .uV2eYG_modes {gap:4px}
-.hapi-pane [data-composer-card] .uV2eYG_trailing {gap:5px;margin-left:auto}
-.hapi-pane [data-composer-card] .uV2eYG_standardControls {gap:4px}
-.hapi-pane [data-composer-card] .uV2eYG_add {width:26px;height:26px}
-.hapi-pane [data-composer-card] .uV2eYG_primary {width:30px;height:30px;transform:none}
-.hapi-pane [data-composer-card] .uV2eYG_select {height:24px;font-size:12px;max-width:170px;padding:0 18px 0 6px}
-.hapi-pane [data-composer-card] .uV2eYG_notice {font-size:11px;line-height:16px;padding:3px 8px;margin-bottom:3px}
+.hapi-pane [data-composer-card] ._223GHW_row {flex-wrap:nowrap;align-items:center;gap:4px;min-height:26px;padding:2px 0 0}
+.hapi-pane [data-composer-card] ._223GHW_tools,
+.hapi-pane [data-composer-card] ._223GHW_modes {gap:4px}
+.hapi-pane [data-composer-card] ._223GHW_trailing {gap:5px;margin-left:auto}
+.hapi-pane [data-composer-card] ._223GHW_standardControls {gap:4px}
+.hapi-pane [data-composer-card] ._223GHW_add {width:26px;height:26px}
+.hapi-pane [data-composer-card] ._223GHW_primary {width:30px;height:30px;transform:none}
+.hapi-pane [data-composer-card] ._223GHW_select {height:24px;font-size:12px;max-width:170px;padding:0 18px 0 6px}
+.hapi-pane [data-composer-card] ._223GHW_notice {font-size:11px;line-height:16px;padding:3px 8px;margin-bottom:3px}
 .hapi-pane [data-composer-card]:has([data-slot="conversation.input.attachments"] > *) {padding-top:4px}
 .hapi-pane [data-composer-dock] {padding-top:2px;gap:8px;font-size:11px;line-height:16px}
 
@@ -244,24 +244,24 @@ html,body {overscroll-behavior-y:none}
 /* Narrow pane: keep attach / editor / Stop+Send; secondary official controls are
    revealed in place by the overflow entry (no reparenting, no reimplementation). */
 @container hapi-pane (max-width:560px) {
-  [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none}
-  [data-composer-card] .uV2eYG_add {width:24px;height:24px}
-  [data-composer-card] .uV2eYG_primary {width:28px;height:28px}
-  [data-composer-card] .uV2eYG_select {max-width:120px}
+  [data-composer-card] ._223GHW_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none}
+  [data-composer-card] ._223GHW_add {width:24px;height:24px}
+  [data-composer-card] ._223GHW_primary {width:28px;height:28px}
+  [data-composer-card] ._223GHW_select {max-width:120px}
   /* Blocked/read-only keeps model reachable: selecting a model is the official way out. */
-  [data-composer-card]:has([data-composer-input][aria-disabled="true"]) :where(.uV2eYG_modes,.uV2eYG_standardControls) {display:flex}
+  [data-composer-card]:has([data-composer-input][aria-disabled="true"]) :where(._223GHW_modes,._223GHW_standardControls) {display:flex}
 }
 @container hapi-pane (max-width:420px) {
   [data-composer-card] {border-radius:16px;padding:4px 6px 2px}
-  [data-composer-card] .uV2eYG_row {overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap;gap:3px}
+  [data-composer-card] ._223GHW_row {overflow-x:auto;scrollbar-width:none;flex-wrap:nowrap;gap:3px}
   /* Horizontal scrolling also clips vertically. Let the open menu escape its
      row; the closed row keeps its compact horizontal scroll behavior. */
-  [data-composer-card] .uV2eYG_row::-webkit-scrollbar {display:none}
-  [data-composer-card] .uV2eYG_select {max-width:96px}
+  [data-composer-card] ._223GHW_row::-webkit-scrollbar {display:none}
+  [data-composer-card] ._223GHW_select {max-width:96px}
 }
 @media (pointer:coarse) {
-  .hapi-pane [data-composer-card] .uV2eYG_add,
-  .hapi-pane [data-composer-card] .uV2eYG_primary {width:44px;height:44px}
+  .hapi-pane [data-composer-card] ._223GHW_add,
+  .hapi-pane [data-composer-card] ._223GHW_primary {width:44px;height:44px}
 }
 
 
@@ -306,9 +306,9 @@ html,body {overscroll-behavior-y:none}
  .hapi-workspace-mobile .hapi-pane-source-status>summary,.hapi-workspace-mobile .hapi-pane-source-details button {min-height:44px;box-sizing:border-box}
  .hapi-session-picker>header>.hapi-picker-back {display:grid;place-items:center;flex:none;margin-left:0;width:44px;height:44px;padding:0}
  .hapi-workspace-mobile .hapi-pane [data-composer-card] {border-radius:14px;gap:2px;padding:4px 6px}
- .hapi-workspace-mobile [data-composer-card] .uV2eYG_row {flex-wrap:nowrap!important;align-items:center!important;gap:2px;overflow:visible!important}
- .hapi-workspace-mobile [data-composer-card] .uV2eYG_trailing:not(.uV2eYG_trailingActive) {flex:1 1 0!important;min-width:0;align-items:center!important;gap:2px}
- .hapi-workspace-mobile [data-composer-card] .uV2eYG_tools {gap:0!important}
+ .hapi-workspace-mobile [data-composer-card] ._223GHW_row {flex-wrap:nowrap!important;align-items:center!important;gap:2px;overflow:visible!important}
+ .hapi-workspace-mobile [data-composer-card] ._223GHW_trailing:not(._223GHW_trailingActive) {flex:1 1 0!important;min-width:0;align-items:center!important;gap:2px}
+ .hapi-workspace-mobile [data-composer-card] ._223GHW_tools {gap:0!important}
  .hapi-workspace-mobile .hapi-source-controls {flex-wrap:nowrap;gap:0}
  .hapi-workspace-mobile .hapi-picker-capsule {padding:4px;min-width:40px}
  .hapi-workspace-mobile .hapi-picker-capsule [data-picker-label],.hapi-workspace-mobile .hapi-picker-capsule [data-picker-effort] {display:block}
@@ -349,10 +349,10 @@ html,body {overscroll-behavior-y:none}
  [data-conversation-scroll] div:has(>[data-chat-flow]) {padding-inline:16px}
  [data-chat-flow] {max-width:100%}
  [data-composer-card] {border-radius:12px!important;box-shadow:none;border:1px solid var(--dsw-alias-border-l2,#d8dedf);padding:6px 8px!important}
- [data-composer-card] .uV2eYG_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none;min-height:44px;overflow:visible;flex-wrap:wrap}
+ [data-composer-card] ._223GHW_row {--dsh-composer-model-text-display:block;--dsh-composer-model-icon-display:none;min-height:44px;overflow:visible;flex-wrap:wrap}
  [data-composer-card] [data-slot="conversation.input.model"] {min-width:0;max-width:180px}
- [data-composer-card] .uV2eYG_primary {background:var(--hapi-accent);color:white}
- [data-composer-card] .uV2eYG_primary:disabled {opacity:.4}
+ [data-composer-card] ._223GHW_primary {background:var(--hapi-accent);color:white}
+ [data-composer-card] ._223GHW_primary:disabled {opacity:.4}
  .hapi-source-controls {justify-content:flex-start;margin-left:0;gap:3px}
  .hapi-picker-anchor[data-hapi-composer-picker="model"] {max-width:150px}
  .hapi-model-trigger {padding-inline:6px}
@@ -369,7 +369,7 @@ html,body {overscroll-behavior-y:none}
  .hapi-workspace-mobile .hapi-window-tabs>button.hapi-window-tab-active {background:transparent;box-shadow:inset 0 -2px var(--hapi-accent);font-weight:600}
  .hapi-workspace-mobile .hapi-mobile-pane-bar {max-width:30%}
  .hapi-workspace-mobile .hapi-statusbar {border-top:1px solid var(--hapi-border);background:var(--hapi-bg)}
- .hapi-workspace-mobile [data-composer-card] .uV2eYG_row {flex-wrap:wrap!important;gap:4px}
+ .hapi-workspace-mobile [data-composer-card] ._223GHW_row {flex-wrap:wrap!important;gap:4px}
  .hapi-workspace-mobile .hapi-source-controls {flex-wrap:wrap;gap:3px}
 }
 

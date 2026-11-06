@@ -1,3 +1,5 @@
+import { installRemoteFeedbackPolicy } from './remote-feedback.tsx'
+import { installRemoteInputTriggers } from './remote-input-triggers.ts'
 import { installRemoteFileUpload } from './remote-file-upload.ts'
 import { installDocumentSelections } from './document-selection.tsx'
 import type { Context } from '@deepseek-ai/cordis'
@@ -44,7 +46,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     // Page-global, copyable evidence for remote/console/window failures. This
     // never gates source execution and never renders into the conversation.
     const disposers: Array<() => void> = [installDiagnostics(api)]
-    disposers.push(installSourceAppearance(ctx))
+    disposers.push(installSourceAppearance(ctx), installRemoteFeedbackPolicy(ctx))
     disposers.push(installSourcePathActions(ctx, api))
     disposers.push(installSourceFileActions(ctx, api))
     disposers.push(installSourceTerminalActions(ctx, api))
@@ -59,7 +61,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     disposers.push(installNativeActionDock(ctx, native, api))
     disposers.push(installSourceUsage(ctx))
     disposers.push(installComposerPicker(ctx, controls, observedControls))
-    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi))
+    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi), installRemoteInputTriggers(ctx, ctx.remote.hhpi))
     disposers.push(installSourceDshChildControls(ctx, api))
     disposers.push(installTurnSharing(ctx))
     const Fork = (props: Omit<NativeForkActionProps, 'controls' | 'open'>) => createElement(NativeForkAction, { ...props, controls, open })

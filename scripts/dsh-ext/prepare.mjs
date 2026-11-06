@@ -11,6 +11,7 @@ import { applyReadingOccurrences } from './reading-occurrences.mjs';
 import { applyReadingTargets } from './reading-targets.mjs';
 import { applyInputBindingOccurrences } from './input-binding-occurrences.mjs';
 import { applyReadingMemory } from './reading-memory.mjs';
+import { applyInteractionOccurrences } from './interaction-occurrences.mjs';
 import { applyInputAcceptance } from './input-acceptance.mjs';
 export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
 export const UPSTREAM_VERSION = '0.2.1-rc.3';
@@ -67,7 +68,8 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   await applyInputBindingOccurrences(directory);
   await applyReadingMemory(directory);
   await applyInputAcceptance(directory);
-  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
+  await applyInteractionOccurrences(directory);
+  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs', 'interaction-occurrences.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
   const layoutPatch = join(snapshot, 'ui-chat-layout.patch');
   try {
     const patch = await readFile(layoutPatch);
