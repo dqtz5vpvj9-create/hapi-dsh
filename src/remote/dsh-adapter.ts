@@ -167,7 +167,7 @@ export class DirectDshAdapter implements SourceAdapter {
         }
     }
     operate(request: SourceOperation): Promise<SourceReceipt> {
-        if (request.images?.length || request.response) return Promise.reject(new SourceError('UNSUPPORTED', 'This DSH source has not declared structured native inputs.'));
+        if (request.files?.length || request.images?.length || request.response) return Promise.reject(new SourceError('UNSUPPORTED', 'This DSH source has not declared structured native inputs.'));
         const nativeId = this.identity(request.sessionId);
         return this.ledger.run(request, () => this.owner.operate(nativeId, request),
             () => this.reconcile(nativeId, request, this.lifetime.signal));

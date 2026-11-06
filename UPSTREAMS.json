@@ -6,7 +6,10 @@
     "license": "MIT",
     "modified": true,
     "sourceSnapshot": "source-snapshots/dsh-ext/source.patch",
-    "additionalSourceSnapshots": ["source-snapshots/dsh-ext/native-persistence.patch"],
+    "additionalSourceSnapshots": [
+      "source-snapshots/dsh-ext/native-persistence.patch",
+      "source-snapshots/dsh-ext/file-upload-provider.patch"
+    ],
     "sourceSnapshotManifest": "source-snapshots/manifest.json"
   },
   "hapi": {

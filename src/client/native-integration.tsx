@@ -1,3 +1,4 @@
+import { installRemoteFileUpload } from './remote-file-upload.ts'
 import { installDocumentSelections } from './document-selection.tsx'
 import type { Context } from '@deepseek-ai/cordis'
 import { createElement } from 'react'
@@ -58,6 +59,7 @@ export function installNativeIntegration(ctx: Context, api: HapiRemoteApi, open:
     disposers.push(installNativeActionDock(ctx, native, api))
     disposers.push(installSourceUsage(ctx))
     disposers.push(installComposerPicker(ctx, controls, observedControls))
+    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi))
     disposers.push(installSourceDshChildControls(ctx, api))
     disposers.push(installTurnSharing(ctx))
     const Fork = (props: Omit<NativeForkActionProps, 'controls' | 'open'>) => createElement(NativeForkAction, { ...props, controls, open })

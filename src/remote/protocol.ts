@@ -1,3 +1,4 @@
+import type { FileUploadValue } from '@deepseek-ai/dsh-client-file-upload/types'
 /** HHPI source wire, v1. Native DSH continues using its unchanged federation wire. */
 import type { CodexAccessBridge } from './codex-access-bridge.ts';
 import type { SessionEvent } from '@deepseek-ai/dsh-session';
@@ -51,6 +52,7 @@ export interface SourceOperation {
     sessionId: string; operationId: string; kind: 'send' | 'steer' | 'cancel' | 'approve';
     text?: string; turnId?: string; requestId?: string;
     response?: Record<string, unknown>;
+    files?: string[];
     images?: Array<{ mediaType: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; data: string }>;
     decision?: 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 }
@@ -64,6 +66,7 @@ export interface SourceReceipt {
     /** The original execution owner durably stores this exact local ID; this says nothing about native execution or completion. */
     ownerAdmission?: { localId: string; state: 'queued' | 'dispatching' | 'indeterminate' | 'consumed' };
 }
+export interface SourceUploadRequest { sessionId: string; operationId: string; name: string; data: string }
 export interface SourceResourceRequest { sessionId: string; path: string }
 export interface SourceResource { encoding: 'base64'; content: string; mimeType: string; attachment?: ImageAttachmentRef }
 export interface SourceCreateRequest { sourceId: string; operationId: string; cwd?: string }
@@ -74,6 +77,7 @@ export interface SourceCatalog { protocol: 1; legacyHapi: boolean; storageScope?
 export interface SourceAdapter {
     readonly id: string; readonly machineId: string; readonly engine: string;
     readonly nativeAccess?: CodexAccessBridge;
+    upload?(request: SourceUploadRequest, signal?: AbortSignal): Promise<FileUploadValue>;
     list(signal?: AbortSignal): Promise<SourceSession[]>;
     /** Resolve an authorized original identity without waiting for the complete directory. */
     resolve?(sessionId: string, signal?: AbortSignal): Promise<SourceSession>;

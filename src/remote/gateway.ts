@@ -1,3 +1,4 @@
+import type { SourceUploadRequest } from './protocol.ts';
 /** Source registry and exact-scope router. Authentication remains with the official DSH carrier. */
 import { SourceAccessDenied, SourceError, waitFor } from './errors.ts';
 import { SourceRegistry } from './source-registry.ts';
@@ -124,6 +125,13 @@ export class SourceGateway {
         const native = this.adapters.get(sourceId)?.nativeAccess;
         if (!native) throw new SourceError('UNSUPPORTED', 'This source has no native Codex interface.');
         return native;
+    }
+    async upload(request: SourceUploadRequest, access: SourceAccess, signal?: AbortSignal) {
+        const adapter = this.adapterFor(request.sessionId, access);
+        if (!adapter.upload) throw new SourceError('UNSUPPORTED', 'This source does not support file uploads.');
+        const result = await adapter.upload(request, signal);
+        signal?.throwIfAborted(); this.assertLive(); this.assertAllowed(access, { kind: 'session', id: request.sessionId });
+        return result;
     }
     async operate(request: SourceOperation, access: SourceAccess): Promise<SourceReceipt> {
         const adapter = this.adapterFor(request.sessionId, access), receipt = await adapter.operate(request);

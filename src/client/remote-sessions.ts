@@ -134,7 +134,7 @@ export class RemoteSourceSession implements SessionFace {
   }
   beginSubmission(input: BeginSubmissionInput): SubmissionHandle {
     if (this.disposed) throw sourceError('The source view was released.')
-    if (input.attachments.some(attachment => attachment.type === 'file') || input.attachments.length && !this.metadata.getSnapshot().capabilities.images) throw sourceError('This source cannot accept these attachments. Your files and draft have been kept.')
+    if (input.attachments.some(attachment => attachment.type === 'file' ? !this.metadata.getSnapshot().capabilities.files : !this.metadata.getSnapshot().capabilities.images)) throw sourceError('This source cannot accept these attachments. Your files and draft have been kept.')
     const requestId = crypto.randomUUID() as SessionRequestId
     if (this.outbox && !input.attachments.length) {
       const metadata = this.metadata.getSnapshot()
@@ -163,15 +163,16 @@ export class RemoteSourceSession implements SessionFace {
     const requestId = suppliedId ?? crypto.randomUUID() as SessionRequestId
     if (this.outbox) {
       try {
-        if (content.some(part => part.type === 'file' || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) {
+        if (content.some(part => part.type === 'file' && !this.metadata.getSnapshot().capabilities.files || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) {
           this.outbox.abandon(requestId)
           throw sourceError('This source cannot accept these attachments. Your files and draft have been kept.')
         }
         const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
+        const files = content.flatMap(part => part.type === 'file' ? [part.receiptId] : [])
         const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
         const saved = this.outbox.get(requestId)
         if (!saved) signal?.throwIfAborted()
-        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || JSON.stringify(saved.operation.images ?? []) !== JSON.stringify(images) || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
+        if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || JSON.stringify(saved.operation.images ?? []) !== JSON.stringify(images) || JSON.stringify(saved.operation.files ?? []) !== JSON.stringify(files) || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
           this.outbox.abandon(requestId)
           throw sourceError('A saved submission cannot be changed after admission.')
         }
@@ -181,7 +182,7 @@ export class RemoteSourceSession implements SessionFace {
           const metadata = this.metadata.getSnapshot()
           if (mode !== 'steer' && !sourceIsOffline(metadata) && !metadata.capabilities.send) throw sourceError('The source does not support send.')
           const kind = mode === 'steer' ? 'steer' : 'send'
-          const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}),
+          const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}),
             ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) }
           if (kind !== 'send') this.assertOperationCurrent(operation)
           this.outbox.enqueue(operation)
@@ -202,7 +203,8 @@ export class RemoteSourceSession implements SessionFace {
     if (this.disposed) return { ok: false, error: sourceError('The source view was released.') }
     this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
     try {
-      if (content.some(part => part.type === 'file' || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) throw sourceError('This source cannot accept these attachments. File resources remain scoped to its source machine.')
+      if (content.some(part => part.type === 'file' && !this.metadata.getSnapshot().capabilities.files || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) throw sourceError('This source cannot accept these attachments. File resources remain scoped to its source machine.')
+      const files = content.flatMap(part => part.type === 'file' ? [part.receiptId] : [])
       const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
       const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
       const metadata = this.metadata.getSnapshot()
@@ -210,7 +212,7 @@ export class RemoteSourceSession implements SessionFace {
       if (sourceIsOffline(metadata)) throw sourceError('The source is offline. No operation was sent.')
       if (!metadata.capabilities[kind]) throw sourceError(`The source does not support ${kind}.`)
       if (kind === 'steer' && !metadata.activeTurnId) throw sourceError('There is no active native turn to steer.')
-      const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}),
+      const receipt = await this.operate({ sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}),
         ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) })
       if (receipt.status !== 'accepted') throw sourceError(receipt.message, receipt.status === 'indeterminate')
       return { ok: true, value: { accepted: true } }

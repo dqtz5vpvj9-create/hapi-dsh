@@ -25,7 +25,7 @@
 | 用户提问、权限申请 | 保留请求 ID、连接代际、结构化回答 | 原生提问表单；未知结果不重发 |
 | MCP elicitation | 原生应答 | 标准字段表单和 URL 流程；专用复杂表单/设备验证仍需对应原生界面 |
 | 图片输入 | 原输入框 → 会话操作 → Codex image input | 数据由原提交持有，使用原生 clientUserMessageId；有界消息尺寸 |
-| 普通文件上传 | 原生 fs API 已可路由 | 原输入框的 DSH 上传服务缺少可选来源 provider；单独申请扩展授权，未接通前不宣称支持 |
+| 普通文件上传 | 原生 fs/createDirectory、fs/writeFile | 已获批准的可选上传 provider 保留原附件按钮；每个文件上限 6 MiB，返回仅限原会话的回执，提交时将源端文件路径作为原生文本输入，不冒充 Codex 的图片或技能类型 |
 | 子会话 | 原生 parentThreadId、agentNickname | 通过官方目录 parentId 与 subagentCatalog 展示，不读子正文猜关系 |
 | 队列、goal、文件、终端、MCP、skills、plugins、账号、配置、实时音频等 | 清单中的原生调用和通知可路由 | 各专用 UI 尚未全部适配；传输接入不能替代对应 UI 与真实行为验收 |
 | 动态工具调用、令牌刷新等反向请求 | pending 快照和 nativeReply | 由有源级授权的能力处理器接手；普通审批按钮不能回答这些请求 |
@@ -47,3 +47,5 @@
 `HHPI_CODEX_TEST_COMMAND=/home/chris/.local/bin/codex node --import tsx --test tests/hhpi-codex-access.test.ts` 使用实际 Codex 0.165.0、隔离 home 和合成模型服务。验证原线程设置修改/readback、修改设置不发送提示词，以及原生图片提交接纳。它不证明真实外部模型的视觉理解，也不证明所有 169 种方法的业务行为。
 
 发布结果另以本次检查、线上版本核对和有界浏览器报告为准。
+
+普通文件上传使用 `client-file-upload.registerProvider`。没有匹配来源的普通 DSH 会话继续走原上传路径；匹配来源失败不会回落到本地 Agent。源端文件位于原工作目录的 `.hhpi/uploads/<upload-id>/`，上传不会启动模型；用户提交后才进入原生消息。取消或未发送的文件可能留在该目录，本次不自动删除源文件。

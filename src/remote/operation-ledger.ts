@@ -100,7 +100,7 @@ export class OperationLedger {
     private readonly receipts: ReceiptLedger<SourceReceipt>;
     constructor(directory: string) { this.receipts = new ReceiptLedger(directory); }
     private payload(operation: SourceOperation): unknown {
-        return [operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images])];
+        return [operation.kind, operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images]), ...(operation.files === undefined ? [] : [operation.files])];
     }
     private valid(operation: SourceOperation, value: unknown): value is SourceReceipt {
         if (!isOutcome(value) || (value as SourceReceipt).operationId !== operation.operationId || (value as SourceReceipt).sessionId !== operation.sessionId) return false;

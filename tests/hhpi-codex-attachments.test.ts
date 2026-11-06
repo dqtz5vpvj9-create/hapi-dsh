@@ -85,7 +85,7 @@ test('native images are imported only for a requested page and displayed with ve
     const bytes = Buffer.from(value.content, 'base64');
     assert.equal(bytes.length, image.attachment.bytes);
     assert.equal(`sha256:${createHash('sha256').update(bytes).digest('hex')}`, image.attachment.attachmentId);
-    assert.equal(f.session.capabilities.files, false, 'attachment preview must not claim arbitrary native file browsing');
+    assert.equal(f.session.capabilities.files, true, 'native file uploads are advertised; resource reads remain receipt-scoped');
     assert.equal(f.calls.some(method => method.startsWith('fs/')), false, 'image IO stays outside the execution RPC');
 });
 

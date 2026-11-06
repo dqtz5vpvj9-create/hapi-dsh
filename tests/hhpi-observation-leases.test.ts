@@ -42,3 +42,33 @@ test('reader leases stop idle body polling and reopen the durable index without 
   assert.ok(metadataReads > before, 'an actual shared observer activates source polling')
   reader.abort(); await changes.return?.()
 })
+
+
+test('a newer notification during a historical page read retries that cursor without surfacing a page error', async t => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hhpi-page-observation-')
+  let notify: (frame: NativeNotification) => void = () => {}, race = false, historicalReads = 0
+  const thread = { id: 'thread', cwd: directory, createdAt: 1, updatedAt: 1, status: { type: 'idle' } }
+  const rpc = { online: true, currentGeneration: 1, connect: async () => ({}), dispose: async () => {},
+    onNotification: (listener: typeof notify) => { notify = listener; return () => {} }, onRequest: () => () => {}, onDisconnect: () => () => {},
+    request: async (method: string) => {
+      if (method === 'thread/list') return { data: [thread], nextCursor: null }
+      if (method === 'thread/loaded/list') return { data: ['thread'], nextCursor: null }
+      if (method === 'thread/read') return { thread }
+      throw new Error(`Unexpected native IO: ${method}`)
+    } } as unknown as CodexRpc
+  const metadata = nativeMetadataFixture(() => [])
+  const adapter = new DirectCodexAdapter({ id: 'source', machineId: 'machine', engine: 'codex' }, directory,
+    { rpc, readMetadata: async request => {
+      if (request.before !== undefined) {
+        historicalReads++
+        if (race) { race = false; notify({ method: 'item/agentMessage/delta', params: { threadId: thread.id } }) }
+      }
+      return metadata(request)
+    } })
+  t.after(async () => { await adapter.dispose(); await rm(directory, { recursive: true, force: true }) })
+  const [session] = await adapter.list(), head = await adapter.read({ sessionId: session!.id })
+  race = true
+  const page = await adapter.read({ sessionId: session!.id, before: 16 })
+  assert.equal(page.epoch, head.epoch)
+  assert.ok(historicalReads >= 2, 'the invalidated page must be read again before publication')
+})

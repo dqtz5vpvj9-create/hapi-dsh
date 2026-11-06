@@ -1,3 +1,5 @@
+import { CodexUploads } from '../src/remote/codex-uploads.ts';
+import { randomUUID } from 'node:crypto';
 /** Production native carrier/ledger; only Codex RPC is synthetic. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -106,6 +108,50 @@ test('pinned native Codex settings update reaches the original thread and readba
     assert.equal(thread.id, id); assert.equal(thread.reasoningEffort, 'high');
     assert.equal((await adapter.resolve(creation.session.id)).codex?.reasoningEffort, 'high');
     assert.equal(model.calls, 0, 'changing settings must not send a prompt');
-    const image = await adapter.operate({ sessionId: creation.session.id, operationId: 'native-image', kind: 'send', text: 'Describe this synthetic pixel.', images: [{ mediaType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC' }] });
+    const uploadId = randomUUID();
+    const uploaded = await adapter.upload({ sessionId: creation.session.id, operationId: uploadId, name: 'fixture.txt', data: Buffer.from('native file bytes').toString('base64') });
+    assert.equal(uploaded.receiptId, uploadId);
+    assert.equal(await readFile(join(root, '.hhpi', 'uploads', uploadId, 'attachment-fixture.txt'), 'utf8'), 'native file bytes');
+    assert.equal(model.calls, 0, 'uploading must not send a prompt');
+    const image = await adapter.operate({ sessionId: creation.session.id, operationId: 'native-image', kind: 'send', files: [uploadId], text: 'Describe this synthetic pixel.', images: [{ mediaType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC' }] });
     assert.equal(image.status, 'accepted', image.message);
+});
+
+
+test('uploaded file receipts survive restart, reject cross-session use, and never resend an uncertain write', async t => {
+    const f = await fixture(t);
+    const session = { id: 'hhpi:m:source:codex:original', sourceId: 'source', cwd: '/source/work' } as import('../src/remote/protocol.ts').SourceSession;
+    const uploads = new CodexUploads(join(f.root, 'uploads'), f.bridge);
+    const request = { sessionId: session.id, operationId: randomUUID(), name: '../file.txt', data: Buffer.from('bytes').toString('base64') };
+    const result = await uploads.upload(session, request);
+    assert.equal(result.file.name, '.._file.txt');
+    assert.equal(f.calls.length, 2);
+    await uploads.upload(session, request);
+    assert.equal(f.calls.length, 2, 'the original native writes must not replay');
+    const restarted = new CodexUploads(join(f.root, 'uploads'), f.bridge);
+    const input = await restarted.inputs(session.id, [result.receiptId]);
+    assert.ok(input[0]!.text.includes('/source/work/.hhpi/uploads/'));
+    await assert.rejects(restarted.inputs('another-session', [result.receiptId]), /another source session/);
+    await assert.rejects(uploads.upload({ ...session, id: 'another-session' }, request), /another source session/);
+    await assert.rejects(uploads.upload(session, { ...request, data: Buffer.from('different').toString('base64') }), /different arguments/);
+    f.behave(() => { throw new Error('connection lost') });
+    const uncertain = { ...request, operationId: randomUUID() };
+    await assert.rejects(uploads.upload(session, uncertain));
+    const count = f.calls.length;
+    await assert.rejects(uploads.upload(session, uncertain));
+    assert.equal(f.calls.length, count);
+    await assert.rejects(uploads.inputs(session.id, [uncertain.operationId]), /unavailable/);
+});
+
+
+test('upload routing checks the addressed session before dispatch and again after completion', async t => {
+    const f = await fixture(t);
+    let calls = 0, allowed = true;
+    const adapter = { id: 'source', machineId: 'machine', engine: 'codex', dispose() {}, async upload() { calls++; allowed = false; return { receiptId: randomUUID(), file: { attachmentId: randomUUID(), name: 'file', bytes: 0 } }; } } as unknown as SourceAdapter;
+    const gateway = new SourceGateway([adapter], false); t.after(() => gateway.dispose());
+    const request = { sessionId: 'hhpi:machine:source:codex:thread', operationId: randomUUID(), name: 'file', data: '' };
+    await assert.rejects(gateway.upload(request, () => false), /not granted/);
+    assert.equal(calls, 0);
+    await assert.rejects(gateway.upload(request, resource => allowed && resource.kind === 'session' && resource.id === request.sessionId), /not granted/);
+    assert.equal(calls, 1);
 });

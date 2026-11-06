@@ -1,3 +1,4 @@
+import type { SourceUploadRequest } from './protocol.ts';
 /** HHPI methods use the official authenticated Typert carrier and its resource policies. */
 import type { CodexCall, CodexReply, CodexEventsRequest } from './codex-access.ts';
 import { createHash } from 'node:crypto';
@@ -97,6 +98,8 @@ export class HhpiSourceService extends TypertRemoteService {
     async *changes(request: SourceChangesRequest, signal?: AbortSignal): RemoteStream<SourceChanges> {
         try { yield* this.gateway.changes(request, this.access, signal); } catch (error) { remoteError(error, true); }
     }
+    @Remote({ name: 'upload', resources: { session: addressedSession } })
+    async upload(request: SourceUploadRequest, signal?: AbortSignal) { try { return await this.gateway.upload(request, this.access, signal); } catch (error) { remoteError(error); } }
     @Remote({ name: 'operate', resources: { session: addressedSession } })
     async operate(request: SourceOperation): Promise<SourceReceipt> { try { return await this.gateway.operate(request, this.access); } catch (error) { remoteError(error); } }
     @Remote({ name: 'receipt', resources: { session: addressedSession } })

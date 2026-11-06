@@ -1,3 +1,5 @@
+import { CodexUploads } from './codex-uploads.ts';
+import type { SourceUploadRequest } from './protocol.ts';
 /** Direct source-side Codex v2 adapter. Native thread identity and execution ownership are preserved. */
 import { CodexAccessBridge } from './codex-access-bridge.ts';
 import { createHash } from 'node:crypto';
@@ -133,6 +135,9 @@ export class DirectCodexAdapter implements SourceAdapter {
         }, options.pollMs ?? 250);
         this.timer.unref();
     }
+    private uploads?: CodexUploads;
+    private fileUploads(): CodexUploads { return this.uploads ??= new CodexUploads(join(this.directory, 'uploads'), this.nativeAccess); }
+    async upload(request: SourceUploadRequest, signal?: AbortSignal) { return this.fileUploads().upload(await this.resolve(request.sessionId, signal), request, signal); }
     get online(): boolean { return this.rpc.online; }
     private readFailed(): void {
         if (this.disposed || this.now() < this.retryReadsAt) return;
@@ -180,7 +185,7 @@ export class DirectCodexAdapter implements SourceAdapter {
             connection: this.rpc.online ? sourceOnlineConnection(previous, this.now()) : { state: 'offline', observedAt: this.now() },
             activeTurnId: running ? previous?.activeTurnId ?? null : null,
             codex: { model: typeof thread.model === 'string' ? thread.model : null, reasoningEffort: typeof thread.reasoningEffort === 'string' ? thread.reasoningEffort : null, parentThreadId: typeof thread.parentThreadId === 'string' ? thread.parentThreadId : null, agentNickname: typeof thread.agentNickname === 'string' ? thread.agentNickname : null, ...(isRecord(thread.threadSettings) ? { settings: thread.threadSettings } : previous?.codex?.settings ? { settings: previous.codex.settings } : {}) },
-            capabilities: { send: loaded || resumable, steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: false, images: true }, pendingRequests };
+            capabilities: { send: loaded || resumable, steer: loaded, cancel: loaded, approve: pendingRequests.length > 0, files: true, images: true }, pendingRequests };
     }
     private remember(thread: NativeThread): ThreadOwner {
         let owner = this.threads.get(thread.id);
@@ -351,6 +356,16 @@ export class DirectCodexAdapter implements SourceAdapter {
         owner.preparing = work;
     }
     async read(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
+        // An observation conflict rejects only that snapshot, not the user's read.
+        // Re-read the same cursor under a fresh generation; cancellation and real
+        // source errors still propagate, and sustained contention remains bounded.
+        for (let attempt = 0; ; attempt++) {
+            signal?.throwIfAborted();
+            try { return await this.readAcceptedPage(request, signal); }
+            catch (error) { if (!(error instanceof SupersededObservation) || attempt >= 2) throw error; }
+        }
+    }
+    private async readAcceptedPage(request: SourceReadRequest, signal?: AbortSignal): Promise<SourcePage> {
         const owner = await this.owner(request.sessionId, signal);
         owner.observers++;
         try {
@@ -681,7 +696,8 @@ export class DirectCodexAdapter implements SourceAdapter {
                 return outcome ? receipt('accepted', 'The native engine resolved the approval request.') : receipt('indeterminate', 'The approval response was sent; native resolution has not been observed. It will not be resent.');
             } finally { timeout.abort(); }
         }
-        if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim() && !operation.images?.length) {
+        const fileInputs = await this.fileUploads().inputs(operation.sessionId, operation.files ?? []);
+        if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim() && !operation.images?.length && !operation.files?.length) {
             throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.');
         }
         try {
@@ -705,7 +721,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                 this.loaded.add(owner.native.id); this.remember(resumed.thread);
             }
             if (operation.kind === 'send' || operation.kind === 'steer') {
-                const input = [...(operation.text?.trim() ? [{ type: 'text', text: operation.text, text_elements: [] }] : []), ...(operation.images ?? []).map(image => ({ type: 'image', url: `data:${image.mediaType};base64,${image.data}` }))];
+                const input = [...fileInputs, ...(operation.text?.trim() ? [{ type: 'text', text: operation.text, text_elements: [] }] : []), ...(operation.images ?? []).map(image => ({ type: 'image', url: `data:${image.mediaType};base64,${image.data}` }))];
                 if (operation.kind === 'steer') {
                     if (!operation.turnId) throw new SourceError('INVALID_REQUEST', 'Steer requires the exact native active turn.');
                     const response = await this.rpc.request<{ turnId: string }>('turn/steer', { threadId: owner.native.id, expectedTurnId: operation.turnId, clientUserMessageId: operation.operationId, input }, { write: true });

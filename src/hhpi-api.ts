@@ -1,3 +1,5 @@
+import type { FileUploadValue } from '@deepseek-ai/dsh-client-file-upload/types';
+import type { SourceUploadRequest } from './remote/protocol.ts';
 /** Browser-safe schemas for authenticated official Typert transport. */
 import type { CodexCall, CodexCallResult, CodexCapabilities, CodexEvents, CodexEventsRequest, CodexReply } from './remote/codex-access.ts';
 import { z } from 'zod';
@@ -6,6 +8,7 @@ import type { InvocationDescriptor, RemoteResult, RemoteStreamHandle, TypertRemo
 import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt, SourceEntry, SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './remote/protocol.ts';
 
 export interface HhpiRemoteApi {
+    upload?(request: SourceUploadRequest, signal?: AbortSignal): Promise<RemoteResult<FileUploadValue>>;
     nativeCapabilities?(request: { sourceId: string }, signal?: AbortSignal): Promise<RemoteResult<CodexCapabilities>>;
     nativeCall?(request: CodexCall, signal?: AbortSignal): Promise<RemoteResult<CodexCallResult>>;
     nativeReceipt?(request: CodexCall, signal?: AbortSignal): Promise<RemoteResult<CodexCallResult>>;
@@ -23,6 +26,7 @@ export interface HhpiRemoteApi {
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap { hhpi: HhpiRemoteApi }
     interface TypertRemoteMap {
+        'hhpi/upload': NonNullable<HhpiRemoteApi['upload']>;
         'hhpi/nativeCapabilities': NonNullable<HhpiRemoteApi['nativeCapabilities']>;
         'hhpi/nativeCall': NonNullable<HhpiRemoteApi['nativeCall']>;
         'hhpi/nativeReceipt': NonNullable<HhpiRemoteApi['nativeReceipt']>;
@@ -53,6 +57,7 @@ const entry = z.strictObject({ type: z.literal('event'), event: z.object({ seq, 
 export const readSchema: z.ZodType<SourceReadRequest> = z.strictObject({ sessionId: id, before: seq.optional(), after: seq.optional(), around: seq.optional(), limit: z.number().int().min(1).max(500).optional(), epoch: id.optional() })
     .refine(value => [value.before, value.after, value.around].filter(value => value !== undefined).length <= 1, 'One source navigation target is allowed') as z.ZodType<SourceReadRequest>;
 export const operationSchema: z.ZodType<SourceOperation> = z.strictObject({ sessionId: id, operationId: z.string().min(1).max(256), kind: z.enum(['send', 'steer', 'cancel', 'approve']),
+    files: z.array(z.uuid()).max(10).optional(),
     images: z.array(z.strictObject({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), data: z.string().max(8 * 1024 * 1024) })).max(10).refine(images => images.reduce((bytes, image) => bytes + image.data.length, 0) <= 8 * 1024 * 1024, 'Image payload exceeds the native frame budget').optional(), response: z.record(z.string(), z.unknown()).optional(), text: z.string().max(1024 * 1024).optional(), turnId: id.optional(), requestId: id.optional(), decision: z.enum(['accept', 'acceptForSession', 'decline', 'cancel']).optional() }) as z.ZodType<SourceOperation>;
 const page = z.strictObject({ session, epoch: id, version: seq, entries: z.array(entry), before: seq.nullable(), after: seq.nullable(), hasBefore: z.boolean(), hasAfter: z.boolean(), context: z.array(seq) });
 const changes = z.strictObject({ session, epoch: id, base: seq, version: seq, reset: z.boolean(), upserts: z.array(entry), removed: z.array(seq) });
@@ -62,12 +67,14 @@ const receipt = z.strictObject({ operationId: id, sessionId: id, status: z.enum(
 const nativeCall = z.strictObject({ sourceId: id, method: z.string().min(1).max(256), params: z.record(z.string(), z.unknown()).nullable(), operationId: z.string().min(1).max(256).optional() });
 const nativeResult = z.strictObject({ status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), result: z.unknown().optional(), error: z.strictObject({ code: z.number(), message: z.string(), data: z.unknown().optional() }).optional(), resultUnavailable: z.literal(true).optional() });
 const inputs = {
+    upload: z.strictObject({ sessionId: id, operationId: z.uuid(), name: z.string().max(512), data: z.string().max(8 * 1024 * 1024) }),
     nativeCapabilities: z.strictObject({ sourceId: id }), nativeCall, nativeReceipt: nativeCall,
     nativeReply: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), requestId: id, result: z.unknown() }),
     nativeEvents: z.strictObject({ sourceId: id, generation: seq.optional(), after: seq.optional() }),
     resolve: z.strictObject({ sessionId: id }), read: readSchema, changes: z.strictObject({ sessionId: id, epoch: id, version: seq }), operate: operationSchema, receipt: operationSchema,
     create: z.strictObject({ sourceId: id, operationId: z.string().min(1).max(256), cwd: z.string().min(1).max(8192).optional() }), resource: z.strictObject({ sessionId: id, path: z.string().min(1).max(8192) }) };
 const outputs = {
+    upload: z.strictObject({ receiptId: z.uuid(), file: z.strictObject({ attachmentId: z.uuid(), name: z.string(), bytes: z.number().int().nonnegative() }) }),
     nativeCapabilities: z.strictObject({ protocolVersion: z.literal('0.165.0'), runtime: z.string(), methods: z.record(z.string(), z.enum(['read', 'write'])), unavailable: z.record(z.string(), z.string()) }),
     nativeCall: nativeResult, nativeReceipt: nativeResult, nativeReply: nativeResult,
     nativeEvents: z.strictObject({ generation: seq, cursor: seq, reset: z.boolean(), events: z.array(z.strictObject({ sequence: seq, generation: seq, method: z.string(), params: z.record(z.string(), z.unknown()) })), pending: z.array(z.strictObject({ id, generation: seq, method: z.string(), params: z.record(z.string(), z.unknown()) })) }),
