@@ -373,3 +373,93 @@ test('saved identity binding is idempotent, generation aware and never guesses b
         'the candidate must also match the saved Hub exactly')
     assert.equal(panes(bindSourceResources(sameHub, { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'hub' }) }).windows[0]!.root)[0]!.resource.kind, 'chat')
 })
+
+test('a restored HHPI pane resolves its exact identity despite a settled empty directory', async () => {
+    const source = fixture(), pending = Promise.withResolvers<void>()
+    const id = 'hhpi:machine:source:codex:saved-thread'
+    source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: id }))
+    let reads = 0
+    source.sessions.resolveSession = async (target, signal) => { assert.equal(target, id); reads++; await pending.promise; signal.throwIfAborted(); source.add(id) }
+    const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 0 })
+    const paneId = controller.store.focusedPane().id
+    await Promise.resolve()
+    assert.equal(controller.getSnapshot().leases.get(paneId)?.status, 'opening')
+    source.publish(); source.publish()
+    assert.equal(reads, 1, 'catalog notifications join the same exact-target request')
+    pending.resolve(); await wait(0)
+    assert.equal(controller.getSnapshot().leases.get(paneId)?.status, 'ready')
+    assert.equal(source.refs.length, 1)
+    controller.dispose()
+})
+
+test('an HHPI source refusal remains visible and only explicit retry starts another resolution', async () => {
+    const source = fixture(), id = 'hhpi:machine:source:codex:restricted-thread'
+    source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: id }))
+    let reads = 0
+    source.sessions.resolveSession = async () => { reads++; if (reads === 1) throw new Error('Source access denied'); source.add(id) }
+    const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 0 })
+    await wait(0)
+    const paneId = controller.store.focusedPane().id, failed = controller.getSnapshot().leases.get(paneId)
+    assert.equal(failed?.reason, 'binding-denied')
+    assert.match(failed?.detail ?? '', /Source access denied/)
+    source.publish(); assert.equal(reads, 1)
+    controller.retryPane(paneId); await wait(0)
+    assert.equal(reads, 2); assert.equal(controller.getSnapshot().leases.get(paneId)?.status, 'ready')
+    controller.dispose()
+})
+
+test('closing the last restored HHPI pane cancels acquisition and ignores a late completion', async () => {
+    const source = fixture(), id = 'hhpi:machine:source:codex:closed-thread', pending = Promise.withResolvers<void>()
+    source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: id }))
+    let signal: AbortSignal | undefined
+    source.sessions.resolveSession = async (_target, abort) => { signal = abort; await pending.promise }
+    const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 0 })
+    await Promise.resolve(); assert.ok(signal)
+    const paneId = controller.store.focusedPane().id
+    controller.store.closePane(paneId)
+    assert.equal(signal.aborted, true)
+    pending.resolve(); await wait(0)
+    assert.equal(controller.getSnapshot().leases.has(paneId), false)
+    assert.equal(source.refs.length, 0)
+    controller.dispose()
+})
+
+test('two restored HHPI panes share resolution until their last reference closes', async () => {
+    const source = fixture(), id = 'hhpi:machine:source:codex:shared-thread', pending = Promise.withResolvers<void>()
+    const layout = savedLayout({ kind: 'chat', sessionId: id })
+    layout.windows[0]!.root = { type: 'split', id: 'split', axis: 'horizontal', weights: [1, 1], children: [
+        { type: 'pane', id: 'p1', resource: { kind: 'chat', sessionId: id } },
+        { type: 'pane', id: 'p2', resource: { kind: 'chat', sessionId: id } } ] }
+    source.memory.set('workspace-test', JSON.stringify(layout))
+    let reads = 0, signal: AbortSignal | undefined
+    source.sessions.resolveSession = async (_target, abort) => { reads++; signal = abort; await pending.promise; abort.throwIfAborted(); source.add(id) }
+    const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 0 })
+    await Promise.resolve()
+    assert.equal(reads, 1)
+    controller.store.closePane('p1'); assert.equal(signal?.aborted, false)
+    pending.resolve(); await wait(0)
+    assert.equal(controller.getSnapshot().leases.get('p2')?.status, 'ready')
+    assert.equal(source.refs.length, 1)
+    controller.dispose()
+})
+
+test('a replaced Host cancels the old HHPI acquisition and ignores its late failure', async () => {
+    const root = fixture(), old = fixture(), next = fixture(), pending = Promise.withResolvers<void>()
+    const id = 'hhpi:machine:source:codex:reconnected-thread', resourceId = `hapi-remote:remote:${encodeURIComponent(id)}`
+    root.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: resourceId }))
+    let signal: AbortSignal | undefined
+    old.sessions.resolveSession = async (_target, abort) => { signal = abort; await pending.promise; throw new Error('Old transport failed') }
+    next.sessions.resolveSession = async () => { next.add(id) }
+    const controller = new WorkspaceController({ ...root.options, catalogSettleMs: 0 })
+    const remove = controller.addHost({ id: 'remote', label: 'Remote', sessions: old.sessions, navigation: old.options.navigation, renderConversation: () => null })
+    await Promise.resolve(); assert.ok(signal)
+    remove(); assert.equal(signal.aborted, true)
+    controller.addHost({ id: 'remote', label: 'Remote', sessions: next.sessions, navigation: next.options.navigation, renderConversation: () => null })
+    await wait(0)
+    const paneId = controller.store.focusedPane().id
+    assert.equal(controller.getSnapshot().leases.get(paneId)?.status, 'ready')
+    pending.resolve(); await wait(0)
+    assert.equal(controller.getSnapshot().leases.get(paneId)?.status, 'ready')
+    assert.equal(old.refs.length, 0); assert.equal(next.refs.length, 1)
+    controller.dispose()
+})

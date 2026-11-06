@@ -12,7 +12,7 @@ import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type Pane
 import { rebaseWorkspace, WorkspaceRebaseConflictError } from '../workspace/rebase.ts'
 import { SidebarState } from '../workspace/sidebar-state.ts'
 import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../workspace/legacy.ts'
-import { bindingFailureState, invalidPaneAddressState, isSourceDisplaySessionId, paneOpenState, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
+import { bindingFailureState, invalidPaneAddressState, isSourceDisplaySessionId, paneOpenState, waitForCatalogSession, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
 import type { CatalogMachine, CatalogSession } from '../client-api.ts'
 import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
@@ -33,7 +33,7 @@ export interface WorkspacePersistence {
 }
 
 export interface WorkspaceOptions {
-    sessions: Pick<ISessions, 'list' | 'retain' | 'refresh' | 'using' | 'search' | 'create'>
+    sessions: Pick<ISessions, 'list' | 'retain' | 'refresh' | 'using' | 'search' | 'create'> & { resolveSession?: (id: SessionId, signal: AbortSignal) => Promise<void> }
     navigation: Pick<UiWorkspace, 'openSession' | 'startSession' | 'archiveSession' | 'unarchiveSession' | 'pinSession' | 'unpinSession' | 'forkSession'>
         & Partial<Pick<UiWorkspace, 'listDirectory' | 'pickDirectory' | 'createDirectory'>>
     storage?: Pick<Storage, 'getItem' | 'setItem'>
@@ -258,6 +258,14 @@ export function errorMessage(error: unknown): string {
 }
 
 type OriginalSource = { hubId: string; sourceSessionId: string }
+interface CatalogTargetResolution {
+    hostId: string
+    sessions: WorkspaceOptions['sessions']
+    abort: AbortController
+    phase: 'opening' | 'ready' | 'failed'
+    error?: unknown
+}
+
 interface SourceResolution {
     source: OriginalSource
     abort: AbortController
@@ -345,6 +353,7 @@ export class WorkspaceController {
     private pendingSourceSession: { sessionId: string; hubId?: string; target: PaneReadingTarget } | null
     private primarySourceHubId: string | null = null
     private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<void>) | undefined
+    private readonly catalogTargets = new Map<string, CatalogTargetResolution>()
     private readonly sourceResolutions = new Map<string, SourceResolution>()
     private readonly sourceRequests = new Map<string, number>()
     private catalogChangedAt = Date.now()
@@ -603,6 +612,35 @@ export class WorkspaceController {
         // Restored panes are background callers; explicit navigation still awaits work.
         void entry.work.catch(() => {})
         return entry
+    }
+
+    /** Directory membership is discovery, not proof that an exact HHPI target is gone. */
+    private resolveCatalogTarget(host: WorkspaceHost, id: string): CatalogTargetResolution | undefined {
+        if (!id.startsWith('hhpi:') || !host.sessions.resolveSession) return undefined
+        const key = sessionResourceId(host.id, id), previous = this.catalogTargets.get(key)
+        if (previous && previous.sessions === host.sessions && previous.phase !== 'ready') return previous
+        previous?.abort.abort()
+        const entry: CatalogTargetResolution = { hostId: host.id, sessions: host.sessions, abort: new AbortController(), phase: 'opening' }
+        this.catalogTargets.set(key, entry)
+        const active = () => !this.disposed && !entry.abort.signal.aborted && this.catalogTargets.get(key) === entry
+            && this.hosts.get(host.id)?.sessions === entry.sessions
+        void Promise.resolve().then(() => waitForCatalogSession(host.sessions, id as SessionId,
+            AbortSignal.any([this.lifetime.signal, entry.abort.signal]))).then(() => {
+            if (!active()) return
+            entry.phase = 'ready'; this.reconcileLeases()
+        }, error => {
+            if (!active()) return
+            entry.phase = 'failed'; entry.error = error; this.reconcileLeases()
+        })
+        return entry
+    }
+
+    private pruneCatalogTargets(resources: Iterable<Exclude<PaneResource, { kind: 'empty' }>>): void {
+        const needed = new Set([...resources].map(resource => resource.sessionId))
+        for (const [key, entry] of this.catalogTargets) {
+            if (needed.has(key) && this.hosts.get(entry.hostId)?.sessions === entry.sessions) continue
+            this.catalogTargets.delete(key); entry.abort.abort()
+        }
     }
 
     private pruneSourceResolutions(resources: Iterable<Exclude<PaneResource, { kind: 'empty' }>>): void {
@@ -878,6 +916,9 @@ export class WorkspaceController {
         return () => {
             if (this.hosts.get(host.id) !== host) return
             this.hosts.delete(host.id)
+            for (const [key, entry] of this.catalogTargets) if (entry.hostId === host.id) {
+                this.catalogTargets.delete(key); entry.abort.abort()
+            }
             for (const unsubscribe of this.hostUnsubscribers.get(host.id) ?? []) unsubscribe()
             this.hostUnsubscribers.delete(host.id)
             this.hostMainIds.delete(host.id)
@@ -1073,6 +1114,7 @@ export class WorkspaceController {
             const visible = new Set((active ? panes(active.root) : []).filter(pane => !layout.zoomed[layout.activeWindowId]
                 || pane.id === layout.focused[layout.activeWindowId]).map(pane => pane.id))
             this.pruneSourceResolutions(expected.values())
+            this.pruneCatalogTargets(expected.values())
             for (const [id, previous] of this.previousLeases) {
                 if (!sameSourceGeneration(previous.lease.resource, expected.get(id))) this.releasePreviousLease(id)
             }
@@ -1136,6 +1178,16 @@ export class WorkspaceController {
                     }
                     const catalog = host.sessions.list.getSnapshot()
                     if (!catalog.byId[sessionId as SessionId]) {
+                        const target = this.resolveCatalogTarget(host, sessionId)
+                        if (target) {
+                            if (target.phase === 'failed') {
+                                const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(target.error) })
+                                this.leases.set(paneId, { hostId, sessionId, status: 'failed', reason: failure.reason,
+                                    error: paneFailureError(failure), nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
+                            } else this.leases.set(paneId, { hostId, sessionId, status: 'opening', reason: 'catalog-loading',
+                                nextStep: 'Resolving this conversation directly with its original source.', retryable: true, waitingForCatalog: true })
+                            continue
+                        }
                         this.markPaneUnavailable(paneId, hostId, sessionId, resource)
                         continue
                     }
@@ -1422,6 +1474,8 @@ export class WorkspaceController {
         if (!lease || lease.status !== 'failed') return
         this.leases.delete(paneId)
         lease.reference?.release()
+        const targetKey = sessionResourceId(lease.hostId, lease.sessionId), target = this.catalogTargets.get(targetKey)
+        if (target?.phase === 'failed') { this.catalogTargets.delete(targetKey); target.abort.abort() }
         const resource = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === paneId)?.resource
         const source = resource && resource.kind !== 'empty' ? this.originalSource(resource) : undefined
         if (source) {
@@ -1637,6 +1691,8 @@ export class WorkspaceController {
         this.lifetime.abort()
         for (const entry of this.sourceResolutions.values()) entry.abort.abort()
         this.sourceResolutions.clear(); this.sourceRequests.clear(); this.sourceResolver = undefined
+        for (const entry of this.catalogTargets.values()) entry.abort.abort()
+        this.catalogTargets.clear()
         if (this.settleTimer !== undefined) { clearTimeout(this.settleTimer); this.settleTimer = undefined }
         for (const unsubscribe of this.unsubscribers) unsubscribe()
         for (const subscriptions of this.hostUnsubscribers.values()) for (const unsubscribe of subscriptions) unsubscribe()
