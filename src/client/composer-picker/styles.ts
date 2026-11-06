@@ -4,10 +4,10 @@ export const composerPickerStyles = String.raw`
 [data-composer-card]:has(.hapi-source-controls) :is([data-slot="conversation.input.model"],[data-slot="conversation.input.permission"],[data-slot="conversation.input.plan"]) {display:none!important}
 /* Pinned toolbar compatibility: let our one group wrap before it can cover
    attach/Stop/Send. Active voice retains its official expanded/hidden state. */
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) ._223GHW_row {flex-wrap:wrap;overflow:visible;align-items:flex-end;row-gap:4px}
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) ._223GHW_tools:not([hidden]) {flex:0 0 auto;max-width:100%}
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) ._223GHW_trailing:not(._223GHW_trailingActive) {flex:1 1 180px;max-width:100%;align-items:flex-end}
-.hapi-pane [data-composer-card] ._223GHW_standardControls:not([hidden]):has(.hapi-source-controls) {display:flex;flex:1 1 auto;min-width:0;max-width:100%}
+.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_row"] {flex-wrap:wrap;overflow:visible;align-items:flex-end;row-gap:4px}
+.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_tools"]:not([hidden]) {flex:0 0 auto;max-width:100%}
+.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_trailing"]:not([class*="_trailingActive"]) {flex:1 1 180px;max-width:100%;align-items:flex-end}
+.hapi-pane [data-composer-card] [class*="_standardControls"]:not([hidden]):has(.hapi-source-controls) {display:flex;flex:1 1 auto;min-width:0;max-width:100%}
 [data-composer-card] [data-slot="conversation.input.right"]:has(.hapi-source-controls) {display:contents!important}
 .hapi-source-controls {display:flex;flex:0 1 auto;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:4px;min-width:0;max-width:100%;margin-left:auto}
 .hapi-picker-anchor {display:inline-flex;align-items:center;flex:0 1 auto;min-width:0;max-width:232px}
@@ -88,9 +88,9 @@ export const composerPickerStyles = String.raw`
 .hapi-native-actions form button {align-self:flex-end;min-height:44px;padding:8px 12px;border:0;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover,#eef2f1)}
 .hapi-native-actions p {margin:4px;overflow-wrap:anywhere}
 /* The source controls may shrink and wrap, while Send/Stop keeps its own seat. */
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) ._223GHW_standardControls {flex-wrap:wrap;gap:4px}
-.hapi-pane [data-composer-card]:has(.hapi-source-controls) ._223GHW_trailing:not(._223GHW_trailingActive) {min-width:0;flex:1 1 100%!important;align-items:center!important}
+.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_standardControls"] {flex-wrap:wrap;gap:4px}
+.hapi-pane [data-composer-card]:has(.hapi-source-controls) [class*="_trailing"]:not([class*="_trailingActive"]) {min-width:0;flex:1 1 100%!important;align-items:center!important}
 .hapi-pane [data-composer-card]:has(.hapi-source-controls) .hapi-source-controls {flex:1 1 180px;flex-wrap:wrap;margin-left:0;justify-content:flex-start}
-.hapi-pane [data-composer-card] ._223GHW_primary {flex-shrink:0}
+.hapi-pane [data-composer-card] [class*="_primary"] {flex-shrink:0}
 @media (prefers-reduced-motion:reduce) {.hapi-picker-switch>span {transition:none}}
 `
