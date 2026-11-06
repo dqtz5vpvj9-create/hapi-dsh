@@ -253,8 +253,8 @@ test('public source Session accepts locally while offline, preserves quota-faile
   const failedImages: string[] = []
   face.update({ ...current, capabilities: { ...current.capabilities, images: true } })
   const imageLimits = face.projections.faceOf('imageLimits').getSnapshot()
-  assert.equal(imageLimits?.maxImageBytes, 6 * 1024 * 1024)
-  assert.equal(imageLimits?.maxMessageImageBytes, 6 * 1024 * 1024)
+  assert.equal(imageLimits?.maxImageBytes, 20 * 1024 * 1024)
+  assert.equal(imageLimits?.maxMessageImageBytes, 200 * 1024 * 1024)
   assert.equal(imageLimits?.maxImagesPerMessage, 10)
   const failedImage = face.beginSubmission({ mode: 'queue', text: 'Keep this image draft',
     attachments: [{ type: 'image', value: { previewUrl: 'blob:synthetic-image' } }], onRetire: value => failedImages.push(value.reason) })

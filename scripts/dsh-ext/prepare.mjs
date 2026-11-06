@@ -13,6 +13,7 @@ import { applyInputBindingOccurrences } from './input-binding-occurrences.mjs';
 import { applyReadingMemory } from './reading-memory.mjs';
 import { applyInteractionOccurrences } from './interaction-occurrences.mjs';
 import { applyInputAcceptance } from './input-acceptance.mjs';
+import { applyLiveProcessExpansion } from './live-process-expansion.mjs';
 export const UPSTREAM_COMMIT = '1f81c047fc48fa190a683e469daa699857e9afe8';
 export const UPSTREAM_VERSION = '0.2.1-rc.3';
 export const UI_EXTENSION_PACKAGES = ['packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands'];
@@ -69,7 +70,9 @@ export async function prepareDshSource(parent = join(ROOT, '.tmp', 'hhpi-ext')) 
   await applyReadingMemory(directory);
   await applyInputAcceptance(directory);
   await applyInteractionOccurrences(directory);
-  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs', 'interaction-occurrences.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
+  await applyLiveProcessExpansion(directory);
+  for (const file of ['complete-windows.mjs', 'reader-publication.mjs', 'input-contracts.mjs', 'reading-occurrences.mjs', 'reading-targets.mjs', 'input-binding-occurrences.mjs', 'reading-memory.mjs', 'input-acceptance.mjs', 'interaction-occurrences.mjs', 'live-process-expansion.mjs']) inputs.push({ path: `scripts/dsh-ext/${file}`, sha256: sha256(await readFile(new URL(file, import.meta.url))) });
+  inputs.push({ path: 'source-snapshots/dsh-ext/live-process-expansion.test.txt', sha256: sha256(await readFile(join(snapshot, 'live-process-expansion.test.txt'))) });
   const layoutPatch = join(snapshot, 'ui-chat-layout.patch');
   try {
     const patch = await readFile(layoutPatch);

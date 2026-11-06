@@ -106,10 +106,13 @@ export function installRemoteSourceControls(ctx: Context): () => void {
     const metadata = useSyncExternalStore(session.metadata.subscribe, session.metadata.getSnapshot)
     const state = useSyncExternalStore(session.subscribe, session.getSnapshot)
     const controlStatus = useSyncExternalStore(session.controlStatus.subscribe, session.controlStatus.getSnapshot)
+    const imagePreparation = session.projections.faceOf('hhpiPreparingImages')
+    const preparingImages = useSyncExternalStore(imagePreparation.subscribe, imagePreparation.getSnapshot)
     const zh = ctx.locale.getSnapshot().active.startsWith('zh')
     return <div className="hhpi-source-dock" data-hhpi-source={metadata.id}>
       {sourceIsOffline(metadata) && <p role="status">{zh ? '等待连接恢复，已读内容与已提交消息保留。' : 'Waiting for the source connection. Read history and submitted messages are retained.'}</p>}
       {state.promptError && <p role="alert">{state.promptError.error.message}</p>}
+      {preparingImages === true && <p role="status">{zh ? '正在本机优化图片…' : 'Optimizing images on this device…'}</p>}
       {controlStatus && <p role="status">{controlStatus}</p>}
       <SourceDeliveryStatus session={session} zh={zh}/>
       {metadata.pendingRequests.map(request => <SourceApprovalControl key={request.id} session={session} request={request} zh={zh} disabled={sourceIsOffline(metadata)}/>)}

@@ -1,0 +1,34 @@
+
+it('expands only the active process across ordinary replies and retains explicit disclosure choices', () => {
+  const builder = new ChatSnapshotBuilder(), groups = new ConversationGroupStore<ProcessGroupData>(), state = new ProcessState()
+  const nodes = [userInTurn(1, 'question', 1), reasoningAssistant(2, 'process A', 1, 1)]
+  const project = () => installGroupedSnapshot(builder, state, groups, chatSnapshotFixture({
+    nodes: [...nodes], turnTimings: new Map([[1, { startTime: 0 }]]),
+  }))
+  const h = makeHarness({ chat: project() }, { running: true })
+  h.setGrouped(groups)
+  h.props.usePresentation = bindSnapshotSelector(withHistoryPresentation(
+    createSnapshotStore(presentationPolicyFor('standard')),
+    { foldCompletedTurns: false, stepGrouping: 'collapsed', virtualizeGroupMembers: false, liveProcessExpansion: true },
+  ))
+  const view = render(<h.ChatView {...h.props} />)
+  const headers = () => [...view.container.querySelectorAll<HTMLButtonElement>('[data-process-activity]')]
+  const first = headers()[0]!
+  expect(first.getAttribute('aria-expanded')).toBe('true')
+  const group = first.closest('[data-chat-group-key]')
+  act(() => { nodes.push(assistant(3, 'ordinary reply A', 1, 2)); h.set({ chat: project() }) })
+  expect(headers()[0]).toBe(first)
+  expect(first.closest('[data-chat-group-key]')).toBe(group)
+  expect(first.getAttribute('aria-expanded')).toBe('false')
+  expect(view.getByText('ordinary reply A').closest('[data-chat-group-key]')).toBeNull()
+  act(() => { nodes.push(reasoningAssistant(4, 'process B', 1, 3)); h.set({ chat: project() }) })
+  const second = headers()[1]!
+  expect(first.getAttribute('aria-expanded')).toBe('false')
+  expect(second.getAttribute('aria-expanded')).toBe('true')
+  fireEvent.click(first)
+  fireEvent.click(second)
+  act(() => { nodes.push(assistant(5, 'ordinary reply B', 1, 4)); h.set({ chat: project() }) })
+  expect(first.getAttribute('aria-expanded')).toBe('true')
+  expect(second.getAttribute('aria-expanded')).toBe('false')
+  expect(view.getByText('ordinary reply B').closest('[data-chat-group-key]')).toBeNull()
+})

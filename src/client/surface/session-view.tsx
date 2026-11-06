@@ -670,7 +670,7 @@ export function installSessionViewHost(ctx: Context): {
                     (SessionReference['binding']['session'] & Partial<SourceViewportSession>) | undefined
                 return !isSourceSessionId(sessionId) && session?.sourceWindow === undefined ? undefined : {
                     // Member flattening bypasses native ChatGroupSeat disclosures.
-                    foldCompletedTurns: false, stepGrouping: 'history' as const, virtualizeGroupMembers: false,
+                    foldCompletedTurns: false, stepGrouping: 'collapsed' as const, virtualizeGroupMembers: false, liveProcessExpansion: true,
                 }
             },
         }))

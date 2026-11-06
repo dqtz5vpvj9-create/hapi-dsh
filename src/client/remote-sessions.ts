@@ -10,7 +10,8 @@ import { sourceSessionId, isSourceSessionId, type SourceOperation, type SourceRe
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { operationRefusal, sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
-import { SOURCE_INPUT_IMAGE_LIMITS } from '../shared/source-image-limits.ts'
+import { SOURCE_IMAGE_BASE64_LIMIT, SOURCE_INPUT_IMAGE_LIMITS } from '../shared/source-image-limits.ts'
+import { prepareSourceImages } from './source-image-preparation.ts'
 import { RemoteSessionState } from './remote-session-state.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
@@ -23,7 +24,7 @@ import type { OperationTransactions } from './remote-operation-ledger.ts'
 import { RemoteOutbox, type SourceDeliveryStore } from './remote-outbox.ts'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
-declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession; hhpiDiscovery: 'advertised' | 'last-known' } }
+declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiSource: SourceSession; hhpiDiscovery: 'advertised' | 'last-known'; hhpiPreparingImages: boolean } }
 class Value<T> {
   private readonly listeners = new Set<() => void>()
   constructor(private value: T) {}
@@ -67,6 +68,7 @@ export class RemoteSourceSession implements SessionFace {
     this.state = new Value<SessionSnapshot>({ sessionId, pendingSubmissions: [], running: metadata.status === 'running' || metadata.status === 'waiting', subagent: null,
       removed: false, openState: 'loading', openError: null, hasMore: false, loadingOlder: false, promptError: null, blank: false,
       lastAgentError: null, promptAttempted: false, awaitingFirstTurn: false })
+    this.projectionValues.set('hhpiPreparingImages', new Value(false))
     this.projections = { faceOf: key => {
       let value = this.projectionValues.get(key)
       if (!value) { value = new Value<unknown>(undefined); this.projectionValues.set(key, value) }
@@ -171,7 +173,7 @@ export class RemoteSourceSession implements SessionFace {
         }
         const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
         const files = content.flatMap(part => part.type === 'file' ? [part.receiptId] : [])
-        const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
+        const images = await this.prepareImages(content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : []), signal)
         const saved = this.outbox.get(requestId)
         if (!saved) signal?.throwIfAborted()
         if (saved && (saved.operation.sessionId !== this.sessionId || saved.operation.text !== text || JSON.stringify(saved.operation.images ?? []) !== JSON.stringify(images) || JSON.stringify(saved.operation.files ?? []) !== JSON.stringify(files) || saved.operation.kind !== (mode === 'steer' ? 'steer' : 'send'))) {
@@ -208,7 +210,7 @@ export class RemoteSourceSession implements SessionFace {
     try {
       if (content.some(part => part.type === 'file' && !this.metadata.getSnapshot().capabilities.files || part.type === 'image' && !this.metadata.getSnapshot().capabilities.images)) throw sourceError('This source cannot accept these attachments. File resources remain scoped to its source machine.')
       const files = content.flatMap(part => part.type === 'file' ? [part.receiptId] : [])
-      const images = content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : [])
+      const images = await this.prepareImages(content.flatMap(part => part.type === 'image' ? [{ mediaType: part.mediaType, data: part.data }] : []), signal)
       const text = content.flatMap(part => part.type === 'text' ? [part.text] : []).join('\n')
       const metadata = this.metadata.getSnapshot()
       const kind = mode === 'steer' ? 'steer' : 'send'
@@ -225,6 +227,13 @@ export class RemoteSourceSession implements SessionFace {
       if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
       return { ok: false, error }
     }
+  }
+  private async prepareImages(images: NonNullable<SourceOperation['images']>, signal?: AbortSignal): Promise<NonNullable<SourceOperation['images']>> {
+    if (images.reduce((size, image) => size + image.data.length, 0) <= SOURCE_IMAGE_BASE64_LIMIT) return images
+    const state = this.projectionValues.get('hhpiPreparingImages')!
+    state.set(true)
+    try { return await prepareSourceImages(images, signal === undefined ? this.lifetime.signal : AbortSignal.any([signal, this.lifetime.signal])) }
+    finally { state.set(false) }
   }
   /** Share exact operation identities across Panes, including uncertain outcomes. */
   operate(operation: SourceOperation): Promise<SourceReceipt> {
