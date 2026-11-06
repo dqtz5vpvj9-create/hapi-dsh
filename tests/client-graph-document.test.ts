@@ -4,7 +4,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import type { ClientModuleLoaderTarget } from '@deepseek-ai/dsh-client-modules/client'
-import { createGraphModules, graphStyleQueries } from '../src/client/graph-document.ts'
+import { createGraphModules, graphStyleQueries, graphAssetResolver } from '../src/client/graph-document.ts'
 
 const require = createRequire(import.meta.url)
 const bundle = readFileSync(require.resolve('@deepseek-ai/dsh-client-ui-conversation/client'), 'utf8')
@@ -76,14 +76,15 @@ test('the unchanged official loader inventories only the styles of its own graph
     const document = f.doc(f.remote, true)
     const official = createGraphModules(document, modulesSource)
     const target: ClientModuleLoaderTarget = {
-        mode: 'queue', pendingQueue: [{ id: plugin, factory: () => { f.inject(document, 'remote_build'); return { ready: true } } }],
+        mode: 'queue', pendingQueue: [{ id: plugin, factory: require => { f.inject(document, 'remote_build'); return { ready: true, asset: require.asset('plugins/fixture/assets/image.png') } } }],
         load() { throw new Error('registration target should be activated by the official loader') },
         create() { throw new Error('fixture invokes the public factory directly') },
     }
     const modules = official.createClientModuleSystem(target, { id: '@deepseek-ai/dsh-client-modules', exports: official as unknown as Record<string, unknown> }, {
         boot: { rev: 'fixture', entries: [], batches: [] }, staticModules: {},
+        resolveAsset: graphAssetResolver('https://display.invalid/hapi-dsh/machine/remote-host/'),
     })
-    assert.deepEqual(await modules.import(plugin), { ready: true })
+    assert.deepEqual(await modules.import(plugin), { ready: true, asset: 'https://display.invalid/hapi-dsh/machine/remote-host/plugins/fixture/assets/image.png' })
     assert.deepEqual(modules.loadCache.get(plugin)!.styles, [`${plugin}/UserText.module.css`])
     assert.equal(f.primary.length, 1)
     assert.equal(f.remote.length, 1)

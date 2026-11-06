@@ -53,7 +53,7 @@ import { documentPaneTarget } from '../workspace/artifacts.ts'
 import { legacyTerminalPaneTarget } from './legacy-session-terminal.tsx'
 import { createWorkspaceUiBridge } from './workspace-ui.ts'
 import { browserValue } from './browser-value.ts'
-import { createGraphModules, graphStyleQueries } from './graph-document.ts'
+import { createGraphModules, graphStyleQueries, graphAssetResolver } from './graph-document.ts'
 import { installSessionViewHost, type SessionViewHandle } from './surface/session-view.tsx'
 import { createSessionWarmup } from './surface/session-warmup.ts'
 import { createDisplayLeaseRegistry, displayLeaseIdentity } from './surface/display-leases.ts'
@@ -329,7 +329,7 @@ async function bootGraph(root: Context, host: FederationHost, resources: HostRes
     // Its unmodified npm source is separately bundled and evaluated against
     // this graph's persistence facade; all plugin consumers get that instance.
     const modules: ClientModuleSystem = target.create({ boot,
-        staticModules: { ...resources.staticModules, [GRAPH_STORE_MODULE]: createGraphStore(localStorageFacade) }, loadBundle })
+        staticModules: { ...resources.staticModules, [GRAPH_STORE_MODULE]: createGraphStore(localStorageFacade) }, loadBundle, resolveAsset: graphAssetResolver(baseUrl) })
     const ctx = new Context()
     // Compatibility pane graphs omit the source provider and retain their
     // original Session service. Only graphs carrying the provider join its realm.

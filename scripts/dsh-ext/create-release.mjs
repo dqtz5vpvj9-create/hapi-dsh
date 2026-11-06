@@ -1,5 +1,5 @@
 /** Assemble one complete source-built rc release, including its corresponding source. */
-import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { ROOT, run, UPSTREAM_VERSION, EXTENSION_PACKAGES } from './prepare.mjs';
 import { verifyExtensionSet } from './install-extension.mjs';

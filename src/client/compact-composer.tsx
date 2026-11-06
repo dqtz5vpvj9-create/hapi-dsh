@@ -10,7 +10,7 @@ export function CompactComposerTools({ ctx, props, zh }: { ctx: Context; props: 
     const anchor = useRef<HTMLButtonElement>(null)
     const insertion = useRef<ReturnType<SourceInputProps['inputActions']['captureInsertion']>>()
     const [expanded, setExpanded] = useState(false)
-    const locked = props.useInput(input => input.phase === 'submitting' || input.phase === 'adjudicating')
+    const locked = props.useInput(input => input.phase !== 'plain' && input.phase !== 'claimed')
     useLayoutEffect(() => {
         const card = anchor.current?.closest<HTMLElement>('[data-composer-card]')
         if (!card) return

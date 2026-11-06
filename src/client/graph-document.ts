@@ -21,3 +21,8 @@ export function createGraphModules(document: Document, source = __HAPI_DSH_OFFIC
     const missing = (id: string): never => { throw new Error(`Unexpected platform import in the pinned module loader: ${id}`) }
     return registration.factory(Object.assign(missing, { async: async (id: string) => missing(id), asset: (reference: string) => reference })) as OfficialModules
 }
+
+/** Keep a remote graph's package assets under the same authenticated Host mount as its modules. */
+export function graphAssetResolver(baseUrl: string): (reference: string) => string {
+    return reference => new URL(reference, baseUrl).href
+}

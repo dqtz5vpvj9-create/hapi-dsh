@@ -18,8 +18,9 @@ export function inspectComposerAttachments(
   for (const id of ids) {
     const attachment = seat.attachments.find(value => value.id === id)
     if (!attachment) return 'unavailable'
-    if (attachment.kind === 'image') continue
     const upload = seat.uploads[id]
+    // Native subagent images may still be inline; staged images wait for their upload receipt.
+    if (attachment.kind === 'image' && upload === undefined) continue
     if (upload?.status === 'error') return 'error'
     if (upload?.status !== 'ready') pending = true
   }

@@ -177,3 +177,14 @@ test('original Enter preference migrates without a new namespace and failed writ
   assert.equal(writeComposerEnterPreference(failing, 'send'), false); assert.equal(readComposerEnterPreference(failing), 'send')
   assert.deepEqual(values, ['newline', 'send']); shared.dispose(); failing.dispose()
 })
+
+
+test('staged image uploads block Enter until the receipt is ready while inline images remain supported', () => {
+  const image = { id: 'selected-image', kind: 'image' } as never
+  const owner = (uploads: object) => ({ attachments: [image], uploads }) as unknown as Parameters<typeof inspectComposerAttachments>[0]
+  const ids = ['selected-image' as DraftAttachmentId]
+  assert.equal(inspectComposerAttachments(owner({}), ids), 'ready')
+  assert.equal(inspectComposerAttachments(owner({ 'selected-image': { status: 'uploading', loaded: 0 } }), ids), 'uploading')
+  assert.equal(inspectComposerAttachments(owner({ 'selected-image': { status: 'error', message: 'refused' } }), ids), 'error')
+  assert.equal(inspectComposerAttachments(owner({ 'selected-image': { status: 'ready', receiptId: 'source-receipt' } }), ids), 'ready')
+})

@@ -24,6 +24,7 @@ export async function prepareDshSource(parent = '/mnt/cache/data-cache/hhpi-dsh-
   run('git', ['remote', 'add', 'origin', 'https://github.com/deepseek-ai/deepseek-harness.git'], { cwd: directory });
   run('git', ['fetch', '--quiet', '--depth=1', 'origin', UPSTREAM_COMMIT], { cwd: directory });
   run('git', ['checkout', '--quiet', '--detach', 'FETCH_HEAD'], { cwd: directory });
+  if (run('git', ['rev-parse', 'HEAD'], { cwd: directory }).trim() !== UPSTREAM_COMMIT) throw new Error('The DSH source revision does not match the pinned input.');
   run('git', ['apply', '--check', patch], { cwd: directory });
   run('git', ['apply', patch], { cwd: directory });
   const provenance = await sourceProvenance();
