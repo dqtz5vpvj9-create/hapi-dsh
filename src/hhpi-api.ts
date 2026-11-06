@@ -3,6 +3,7 @@ import type { SourceUploadRequest } from './remote/protocol.ts';
 /** Browser-safe schemas for authenticated official Typert transport. */
 import type { CodexCall, CodexCallResult, CodexCapabilities, CodexEvents, CodexEventsRequest, CodexReply } from './remote/codex-access.ts';
 import { z } from 'zod';
+import { SOURCE_IMAGE_BASE64_LIMIT, SOURCE_IMAGE_COUNT_LIMIT } from './shared/source-image-limits.ts';
 import { sourceImageAttachmentRefSchema } from './source-attachment-types.ts';
 import type { InvocationDescriptor, RemoteResult, RemoteStreamHandle, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import type { SourceCatalog, SourceChanges, SourceChangesRequest, SourceCreateRequest, SourceCreationReceipt, SourceEntry, SourceOperation, SourcePage, SourceReadRequest, SourceReceipt, SourceResource, SourceResourceRequest, SourceSession } from './remote/protocol.ts';
@@ -58,7 +59,7 @@ export const readSchema: z.ZodType<SourceReadRequest> = z.strictObject({ session
     .refine(value => [value.before, value.after, value.around].filter(value => value !== undefined).length <= 1, 'One source navigation target is allowed') as z.ZodType<SourceReadRequest>;
 export const operationSchema: z.ZodType<SourceOperation> = z.strictObject({ sessionId: id, operationId: z.string().min(1).max(256), kind: z.enum(['send', 'steer', 'cancel', 'approve']),
     files: z.array(z.uuid()).max(10).optional(),
-    images: z.array(z.strictObject({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), data: z.string().max(8 * 1024 * 1024) })).max(10).refine(images => images.reduce((bytes, image) => bytes + image.data.length, 0) <= 8 * 1024 * 1024, 'Image payload exceeds the native frame budget').optional(), response: z.record(z.string(), z.unknown()).optional(), text: z.string().max(1024 * 1024).optional(), turnId: id.optional(), requestId: id.optional(), decision: z.enum(['accept', 'acceptForSession', 'decline', 'cancel']).optional() }) as z.ZodType<SourceOperation>;
+    images: z.array(z.strictObject({ mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp', 'image/gif']), data: z.string().max(SOURCE_IMAGE_BASE64_LIMIT) })).max(SOURCE_IMAGE_COUNT_LIMIT).refine(images => images.reduce((bytes, image) => bytes + image.data.length, 0) <= SOURCE_IMAGE_BASE64_LIMIT, 'Image payload exceeds the native frame budget').optional(), response: z.record(z.string(), z.unknown()).optional(), text: z.string().max(1024 * 1024).optional(), turnId: id.optional(), requestId: id.optional(), decision: z.enum(['accept', 'acceptForSession', 'decline', 'cancel']).optional() }) as z.ZodType<SourceOperation>;
 const page = z.strictObject({ session, epoch: id, version: seq, entries: z.array(entry), before: seq.nullable(), after: seq.nullable(), hasBefore: z.boolean(), hasAfter: z.boolean(), context: z.array(seq) });
 const changes = z.strictObject({ session, epoch: id, base: seq, version: seq, reset: z.boolean(), upserts: z.array(entry), removed: z.array(seq) });
 const receipt = z.strictObject({ operationId: id, sessionId: id, status: z.enum(['accepted', 'rejected', 'indeterminate']), message: z.string(), turnId: id.optional(),

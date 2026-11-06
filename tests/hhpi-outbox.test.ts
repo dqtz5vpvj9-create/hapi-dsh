@@ -124,6 +124,16 @@ test('source revocation before asynchronous image admission cannot leave another
   assert.equal(storage.length, 0); assert.equal(await new RemoteOperationLedger(access).read('revoked-before-save'), undefined)
 })
 
+test('oversized image admission reports the actual source limit and retains the draft instead of an invalid-operation error', async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'native-frame-limit' }
+  let sends = 0
+  const outbox = new RemoteOutbox(async value => { sends++; return accepted(value) }); t.after(() => outbox.dispose()); outbox.setStorage(access)
+  const image = { mediaType: 'image/png' as const, data: Buffer.alloc(6 * 1024 * 1024 + 1).toString('base64') }
+  await assert.rejects(outbox.admit({ ...operation('too-large'), images: [image] }), /6 MiB.*draft and attachments have been kept/)
+  assert.equal(storage.length, 0); assert.equal(sends, 0)
+  await assert.rejects(outbox.admit({ ...operation('bad-media-type'), images: [{ ...image, data: 'YWJj', mediaType: 'image/unknown' as 'image/png' }] }), /images.0.mediaType/)
+})
+
 test('offline text is durably admitted before returning and survives reload with its original identity', { timeout: 3000 }, async t => {
   const storage = new BrowserStorage(), calls: SourceOperation[] = [], access = { storage, scope: 'account-host' }
   const send = async (request: SourceOperation): Promise<SourceReceipt> => { calls.push(request); return accepted(request) }
@@ -242,6 +252,10 @@ test('public source Session accepts locally while offline, preserves quota-faile
   assert.equal(face.getSnapshot().pendingSubmissions.length, 0)
   const failedImages: string[] = []
   face.update({ ...current, capabilities: { ...current.capabilities, images: true } })
+  const imageLimits = face.projections.faceOf('imageLimits').getSnapshot()
+  assert.equal(imageLimits?.maxImageBytes, 6 * 1024 * 1024)
+  assert.equal(imageLimits?.maxMessageImageBytes, 6 * 1024 * 1024)
+  assert.equal(imageLimits?.maxImagesPerMessage, 10)
   const failedImage = face.beginSubmission({ mode: 'queue', text: 'Keep this image draft',
     attachments: [{ type: 'image', value: { previewUrl: 'blob:synthetic-image' } }], onRetire: value => failedImages.push(value.reason) })
   const imageResult = await face.prompt([{ type: 'image', ...largeImage() }, { type: 'text', text: 'Keep this image draft' }], 'queue', undefined, failedImage.requestId)

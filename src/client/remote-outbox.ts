@@ -5,6 +5,7 @@ import type { SourceEntry, SourceOperation, SourceReceipt, SourceSession } from 
 import { operationRefusal } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { SourceStorage } from './remote-storage.ts'
+import { SOURCE_IMAGE_BASE64_LIMIT, SOURCE_IMAGE_COUNT_LIMIT } from '../shared/source-image-limits.ts'
 
 export type DeliveryState = 'queued' | 'sending' | 'confirming' | 'accepted' | 'rejected' | 'owner-accepted'
 export interface SourceDelivery {
@@ -29,6 +30,17 @@ const EMPTY: readonly SourceDelivery[] = Object.freeze([])
 const prefixOf = (scope: string): string => `hhpi:outbox:v1:${scope}:`
 const fingerprint = (operation: SourceOperation): string => JSON.stringify([operation.sessionId, operation.operationId, operation.kind,
   operation.text ?? null, operation.turnId ?? null, operation.requestId ?? null, operation.decision ?? null, ...(operation.response === undefined ? [] : [operation.response]), ...(operation.images === undefined ? [] : [operation.images]), ...(operation.files === undefined ? [] : [operation.files])])
+
+function assertOperation(operation: SourceOperation): void {
+  const parsed = operationSchema.safeParse(operation)
+  if (parsed.success) return
+  if (operation.images && (operation.images.length > SOURCE_IMAGE_COUNT_LIMIT
+    || operation.images.reduce((size, image) => size + (typeof image.data === 'string' ? image.data.length : 0), 0) > SOURCE_IMAGE_BASE64_LIMIT)) {
+    throw new Error('Image attachments exceed the HHPI limit: at most 10 images and 6 MiB in total before base64 encoding. Your draft and attachments have been kept.')
+  }
+  const fields = parsed.error.issues.map(issue => `${issue.path.join('.') || 'request'}: ${issue.message}`).join('; ')
+  throw new Error(`The message could not be submitted (${fields}). Your draft and attachments have been kept.`)
+}
 
 function decode(value: string | null | undefined): StoredDelivery | undefined {
   if (!value) return undefined
@@ -202,7 +214,8 @@ export class RemoteOutbox {
     if (this.disposed || !this.access) throw new Error('This message could not be saved on this device. Your draft has been kept.')
     if (this.restoring || this.restoreFailure) throw new Error('Saved image messages are still being restored. Your draft has been kept.')
     if (operation.images?.length) throw new Error('Image messages require transactional admission.')
-    if ((['send', 'steer'].includes(operation.kind) && !operation.text?.trim() && !operation.images?.length && !operation.files?.length) || !operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
+    assertOperation(operation)
+    if (['send', 'steer'].includes(operation.kind) && !operation.text?.trim() && !operation.files?.length) throw new Error('Add text or an attachment before sending. Your draft has been kept.')
     const existing = this.entries.get(operation.operationId)
     if (existing) {
       if (fingerprint(existing.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')
@@ -230,7 +243,7 @@ export class RemoteOutbox {
     const work = this.imageAdmissions.then(async () => {
       await this.restoring
       if (this.disposed || !access || !ledger || generation !== this.generation || sourceRevocation !== this.sourceRevocations.get(operation.sessionId) || this.restoreFailure) throw new Error('The image message could not be saved on this device. Your draft has been kept.')
-      if (!operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
+      assertOperation(operation)
       const existing = this.entries.get(operation.operationId)
       if (existing) {
         if (fingerprint(existing.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')

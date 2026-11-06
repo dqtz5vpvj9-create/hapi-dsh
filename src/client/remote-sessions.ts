@@ -10,6 +10,7 @@ import { sourceSessionId, isSourceSessionId, type SourceOperation, type SourceRe
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { operationRefusal, sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
+import { SOURCE_INPUT_IMAGE_LIMITS } from '../shared/source-image-limits.ts'
 import { RemoteSessionState } from './remote-session-state.ts'
 import { RemoteSourceHistory } from './remote-history.ts'
 import { followSourceChanges } from './remote-follow.ts'
@@ -127,7 +128,8 @@ export class RemoteSourceSession implements SessionFace {
     const state = this.state.getSnapshot()
     const running = session.status === 'offline' ? state.running : session.status === 'running' || session.status === 'waiting'
     if (running !== state.running) this.state.set({ ...state, running })
-    for (const [key, value] of [['title', session.title], ['hhpiSource', session]] as const) {
+    for (const [key, value] of [['title', session.title], ['hhpiSource', session],
+      ['imageLimits', session.capabilities.images ? SOURCE_INPUT_IMAGE_LIMITS : undefined]] as const) {
       let store = this.projectionValues.get(key)
       if (!store) { store = new Value<unknown>(value); this.projectionValues.set(key, store) } else if (store.getSnapshot() !== value) store.set(value)
     }
