@@ -101,7 +101,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     if (Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true) {
         let child: ReturnType<Context['inject']> | undefined
         try {
-            child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installPaneNative)
+            child = ctx.inject(['remote.hapi', 'remote.hhpi', 'sessions', 'hhpiSessions'], installPaneNative)
             await child
             return async () => { await child?.dispose() }
         } catch (error) {
@@ -111,7 +111,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     }
     let child: ReturnType<Context['inject']> | undefined
     try {
-        child = ctx.inject(['remote.hapi', 'sessions', 'hhpiSessions'], installWorkspace)
+        child = ctx.inject(['remote.hapi', 'remote.hhpi', 'sessions', 'hhpiSessions'], installWorkspace)
         await child
         return async () => { await child?.dispose() }
     } catch (error) {
