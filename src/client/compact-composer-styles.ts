@@ -43,6 +43,7 @@ export const compactComposerStyles = String.raw`
 .hapi-pane [data-composer-card]:has(.hapi-compact-attach) .hapi-source-collaboration {position:absolute;right:8px;bottom:100%;font-size:11px}
 .hapi-composer-files {grid-column:1 / -1;grid-row:1;min-width:0;max-width:100%;overflow-x:auto;max-height:80px}
 .hapi-composer-files[hidden] {display:none}
+.hapi-composer-files img {object-fit:contain!important}
 .hapi-pane [data-composer-card]:has(.hapi-compact-attach) ~ [data-composer-dock] {display:none}
 .hapi-composer-details {margin-top:8px;padding:8px;border-top:1px solid var(--dsw-alias-border-l1)}
 .hapi-composer-details:empty {display:none}

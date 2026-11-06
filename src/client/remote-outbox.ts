@@ -21,6 +21,7 @@ export interface SourceDeliveryStore {
   subscribe(listener: () => void): () => void
 }
 interface StoredDelivery extends SourceDelivery { version: 1 }
+interface PayloadReference { version: 2; operationId: string; sessionId: string }
 const MAX_ENTRIES = 256
 const MAX_BYTES = 4 * 1024 * 1024
 const MAX_OWNER_RECEIPTS = 128
@@ -34,7 +35,7 @@ function decode(value: string | null | undefined): StoredDelivery | undefined {
   try {
     const candidate = JSON.parse(value) as StoredDelivery
     const operation = operationSchema.safeParse(candidate.operation)
-    if (candidate.version !== 1 || !operation.success || (['send', 'steer'].includes(operation.data.kind) && !operation.data.text?.trim())
+    if (candidate.version !== 1 || !operation.success || (['send', 'steer'].includes(operation.data.kind) && !operation.data.text?.trim() && !operation.data.images?.length && !operation.data.files?.length)
       || !Number.isSafeInteger(candidate.createdAt) || candidate.createdAt < 0
       || !['queued', 'sending', 'confirming', 'accepted', 'rejected', 'owner-accepted'].includes(candidate.state)
       || typeof candidate.message !== 'string' || !Number.isSafeInteger(candidate.attempts) || candidate.attempts < 0
@@ -47,6 +48,22 @@ function decode(value: string | null | undefined): StoredDelivery | undefined {
   } catch { return undefined }
 }
 
+/** The canonical transaction retains image bytes. localStorage only indexes them. */
+function imageReference(entry: StoredDelivery): string {
+  return JSON.stringify({ version: 2, operationId: entry.operation.operationId, sessionId: entry.operation.sessionId,
+    state: entry.state, attempts: entry.attempts, retryAt: entry.retryAt, message: entry.message })
+}
+function reference(value: string | null): PayloadReference | undefined {
+  try {
+    const parsed = JSON.parse(value ?? '') as PayloadReference
+    return parsed.version === 2 && typeof parsed.operationId === 'string' && typeof parsed.sessionId === 'string' ? parsed : undefined
+  } catch { return undefined }
+}
+function journalValue(value: string): string {
+  const entry = decode(value)
+  return entry?.operation.images?.length ? imageReference(entry) : value
+}
+
 /** View disposal and transport loss never discard local work. Native history or
  * an exact durable owner admission can transfer responsibility for its echo. */
 export class RemoteOutbox {
@@ -54,6 +71,7 @@ export class RemoteOutbox {
   private ledger: OperationTransactions | undefined
   private readonly entries = new Map<string, StoredDelivery>()
   private readonly sessions = new Map<string, SourceSession>()
+  private readonly sourceRevocations = new Map<string, number>()
   private readonly listeners = new Map<string, Set<() => void>>()
   private readonly snapshots = new Map<string, readonly SourceDelivery[]>()
   private readonly retireListeners = new Set<(id: string, observed: boolean) => void>()
@@ -63,6 +81,10 @@ export class RemoteOutbox {
   private generation = 0
   private ready = false
   private disposed = false
+  private restoring: Promise<void> | undefined
+  private restoreFailure: unknown
+  private storageRevision = 0
+  private imageAdmissions: Promise<unknown> = Promise.resolve()
   private timer: ReturnType<typeof setTimeout> | undefined
 
   constructor(private readonly send: (operation: SourceOperation) => Promise<SourceReceipt>,
@@ -71,26 +93,13 @@ export class RemoteOutbox {
     private readonly createLedger: (access: SourceStorage) => OperationTransactions = access => new RemoteOperationLedger(access)) {
     const wake = (): void => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (this.restoreFailure) this.restoreStorage()
       for (const [id, entry] of this.entries) if (entry.state === 'confirming' || entry.state === 'queued' || entry.state === 'accepted') this.entries.set(id, Object.freeze({ ...entry, retryAt: 0 }))
       this.publish(); this.kick()
     }
     const storageChanged = (): void => {
       if (!this.access || this.disposed) return
-      try {
-        const current = new Map<string, StoredDelivery>(), prefix = prefixOf(this.access.scope)
-        for (let index = 0; index < this.access.storage.length; index++) {
-          const key = this.access.storage.key(index)
-          if (!key?.startsWith(prefix)) continue
-          const entry = decode(this.access.storage.getItem(key))
-          if (entry) current.set(entry.operation.operationId, entry)
-        }
-        for (const id of this.entries.keys()) if (!current.has(id)) { this.entries.delete(id); this.staged.delete(id) }
-        for (const [id, entry] of current) {
-          if (entry.operation.kind !== 'send' && entry.attempts === 0 && !this.entries.has(id)) this.staged.add(id)
-          this.entries.set(id, entry)
-        }
-        this.publish(); this.kick()
-      } catch { /* The canonical transaction remains the dispatch authority. */ }
+      this.restoreStorage()
     }
     const pause = (): void => { if (this.timer !== undefined) clearTimeout(this.timer); this.timer = undefined }
     if (typeof window === 'undefined') this.stopWake = () => {}
@@ -109,20 +118,55 @@ export class RemoteOutbox {
     ++this.generation; this.ready = false; this.sending.clear()
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined; this.entries.clear(); this.staged.clear(); this.sessions.clear(); this.access = access; this.ledger = access ? this.createLedger(access) : undefined
-    if (access) {
-      const prefix = prefixOf(access.scope)
-      try {
-        for (let index = 0; index < access.storage.length; index++) {
-          const key = access.storage.key(index)
-          if (!key?.startsWith(prefix)) continue
-          const entry = decode(access.storage.getItem(key))
-          if (entry && key === this.key(entry.operation.operationId)) this.entries.set(entry.operation.operationId,
-            entry.state === 'sending' ? Object.freeze({ ...entry, state: 'confirming', retryAt: 0 }) : entry)
-        }
-      } catch { /* Reads remain available; a new submission still requires a successful durable write. */ }
-    }
-    for (const entry of this.entries.values()) if (entry.operation.kind !== 'send' && entry.attempts === 0) this.staged.add(entry.operation.operationId)
+    this.restoring = undefined; this.restoreFailure = undefined; this.sourceRevocations.clear(); ++this.storageRevision
+    if (access) this.restoreStorage(true)
     this.publish()
+  }
+
+  private restoreStorage(initial = false): void {
+    const access = this.access!, ledger = this.ledger!, generation = this.generation, revision = ++this.storageRevision
+    const current = new Map<string, StoredDelivery>(), loads: Promise<void>[] = [], prefix = prefixOf(access.scope)
+    const mirror = (id: string, value: string | null): void => {
+      const key = `${prefix}${encodeURIComponent(id)}`
+      if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, journalValue(value))
+    }
+    const accept = (entry: StoredDelivery): void => {
+      if (initial && entry.state === 'sending') entry = Object.freeze({ ...entry, state: 'confirming', retryAt: 0 })
+      current.set(entry.operation.operationId, entry)
+    }
+    try {
+      for (let index = 0; index < access.storage.length; index++) {
+        const key = access.storage.key(index)
+        if (!key?.startsWith(prefix)) continue
+        const value = access.storage.getItem(key), entry = decode(value), pointer = reference(value)
+        if (entry && key === `${prefix}${encodeURIComponent(entry.operation.operationId)}`) {
+          if (!entry.operation.images?.length) accept(entry)
+          else loads.push(ledger.transition(entry.operation.operationId, (saved, terminal) => terminal ? null : saved ?? JSON.stringify(entry),
+            saved => mirror(entry.operation.operationId, saved)).then(saved => { if (saved) { const canonical = decode(saved); if (!canonical) throw new Error('The saved image message is invalid.'); accept(canonical) } }))
+        } else if (pointer && key === `${prefix}${encodeURIComponent(pointer.operationId)}`) {
+          loads.push(ledger.read(pointer.operationId).then(saved => {
+            if (saved === null) { mirror(pointer.operationId, null); return }
+            const canonical = decode(saved)
+            if (!canonical || canonical.operation.sessionId !== pointer.sessionId || canonical.operation.operationId !== pointer.operationId) throw new Error('The saved image message could not be restored. No operation was sent.')
+            accept(canonical)
+          }))
+        }
+      }
+    } catch (error) { this.restoreFailure = error; return }
+    const apply = (): void => {
+      if (this.disposed || generation !== this.generation || revision !== this.storageRevision) return
+      for (const id of this.entries.keys()) if (!current.has(id)) { this.entries.delete(id); this.staged.delete(id) }
+      for (const [id, entry] of current) {
+        if (entry.operation.kind !== 'send' && entry.attempts === 0 && !this.entries.has(id)) this.staged.add(id)
+        this.entries.set(id, entry)
+      }
+      this.restoreFailure = undefined; this.publish()
+    }
+    if (!loads.length) { this.restoring = undefined; apply(); this.kick(); return }
+    const work = Promise.all(loads).then(apply).catch(error => {
+      if (generation === this.generation && revision === this.storageRevision) this.restoreFailure = error
+    }).finally(() => { if (this.restoring === work) { this.restoring = undefined; this.publish(); this.kick() } })
+    this.restoring = work
   }
 
   /** A successful authenticated catalog, not cached metadata, admits dispatch. */
@@ -156,6 +200,8 @@ export class RemoteOutbox {
   /** Must finish before the official input commits its draft. No network work occurs here. */
   enqueue(operation: SourceOperation): SourceDelivery {
     if (this.disposed || !this.access) throw new Error('This message could not be saved on this device. Your draft has been kept.')
+    if (this.restoring || this.restoreFailure) throw new Error('Saved image messages are still being restored. Your draft has been kept.')
+    if (operation.images?.length) throw new Error('Image messages require transactional admission.')
     if ((['send', 'steer'].includes(operation.kind) && !operation.text?.trim() && !operation.images?.length && !operation.files?.length) || !operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
     const existing = this.entries.get(operation.operationId)
     if (existing) {
@@ -167,16 +213,63 @@ export class RemoteOutbox {
       state: 'queued', message: 'Saved on this device. Waiting to send.', attempts: 0, retryAt: 0 })
     const serialized = JSON.stringify(entry)
     const active = [...this.entries.values()].filter(value => value.state !== 'owner-accepted')
-    const bytes = active.reduce((size, value) => size + JSON.stringify(value).length * 2, serialized.length * 2)
+    const bytes = active.reduce((size, value) => size + (value.operation.images?.length ? imageReference(value) : JSON.stringify(value)).length * 2, serialized.length * 2)
     if (active.length >= MAX_ENTRIES || bytes > MAX_BYTES) throw new Error('The saved-message queue is full. Your draft has been kept.')
     try { this.persist(operation.operationId, serialized) }
     catch { throw new Error('This message could not be saved on this device. Your draft has been kept.') }
     this.entries.set(operation.operationId, entry); this.staged.add(operation.operationId); this.publish()
     return entry
   }
+
+  /** Image serialization is already asynchronous in the official composer.
+   * Finish the existing IndexedDB transaction before accepting its draft. */
+  async admit(operation: SourceOperation): Promise<SourceDelivery> {
+    if (!operation.images?.length) return this.enqueue(operation)
+    const generation = this.generation, access = this.access, ledger = this.ledger
+    const sourceRevocation = this.sourceRevocations.get(operation.sessionId)
+    const work = this.imageAdmissions.then(async () => {
+      await this.restoring
+      if (this.disposed || !access || !ledger || generation !== this.generation || sourceRevocation !== this.sourceRevocations.get(operation.sessionId) || this.restoreFailure) throw new Error('The image message could not be saved on this device. Your draft has been kept.')
+      if (!operationSchema.safeParse(operation).success) throw new Error('The operation is invalid.')
+      const existing = this.entries.get(operation.operationId)
+      if (existing) {
+        if (fingerprint(existing.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')
+        return existing
+      }
+      const key = this.key(operation.operationId)
+      let entry: StoredDelivery
+      const saved = await ledger.transition(operation.operationId, (value, terminal) => {
+        if (this.disposed || generation !== this.generation || sourceRevocation !== this.sourceRevocations.get(operation.sessionId)) throw new Error('The source was released before this image was saved. Your draft has been kept.')
+        if (terminal) throw new Error('This image submission has already been retired.')
+        const canonical = decode(value)
+        if (canonical) {
+          if (fingerprint(canonical.operation) !== fingerprint(operation)) throw new Error('An operation ID was reused with different arguments.')
+          entry = canonical
+        } else entry = Object.freeze({ version: 1, operation: Object.freeze({ ...operation }),
+          createdAt: Math.max(Date.now(), ...[...this.entries.values()].map(value => value.createdAt + 1)),
+          state: 'queued', message: 'Saved on this device. Waiting to send.', attempts: 0, retryAt: 0 })
+        const active = [...this.entries.values()].filter(value => value.state !== 'owner-accepted')
+        const bytes = active.reduce((size, value) => size + (value.operation.images?.length ? imageReference(value) : JSON.stringify(value)).length * 2, imageReference(entry).length * 2)
+        if (active.length >= MAX_ENTRIES || bytes > MAX_BYTES) throw new Error('The saved-message queue is full. Your draft has been kept.')
+        return JSON.stringify(entry)
+      }, value => { if (value === null) access.storage.removeItem(key); else this.persistImageJournal(access, key, value) })
+      // A concurrent storage event may have read its snapshot before admission.
+      // Apply that snapshot first, then publish this newly committed operation.
+      await this.restoring
+      if (this.disposed || generation !== this.generation || sourceRevocation !== this.sourceRevocations.get(operation.sessionId)) {
+        await ledger.transition(operation.operationId, () => null, () => access.storage.removeItem(key))
+        throw new Error('The source account changed before this image was accepted. Your draft has been kept.')
+      }
+      if (!saved) throw new Error('The image message could not be saved. Your draft has been kept.')
+      this.entries.set(operation.operationId, entry!); this.staged.add(operation.operationId); this.publish()
+      return entry!
+    })
+    this.imageAdmissions = work.catch(() => {})
+    return work
+  }
   /** Explicit operations share the same durable evidence as queued text. */
-  submit(operation: SourceOperation): Promise<SourceReceipt> {
-    this.enqueue(operation)
+  async submit(operation: SourceOperation): Promise<SourceReceipt> {
+    await this.admit(operation)
     const saved = this.get(operation.operationId)
     if (saved?.receipt && saved.receipt.status !== 'indeterminate' && saved.receipt.retryable !== true) return Promise.resolve(saved.receipt)
     return new Promise((resolve, reject) => {
@@ -230,12 +323,17 @@ export class RemoteOutbox {
     this.kick()
   }
   revokeSession(sessionId: string): void {
+    this.sourceRevocations.set(sessionId, (this.sourceRevocations.get(sessionId) ?? 0) + 1)
     this.sessions.delete(sessionId)
     for (const entry of this.entries.values()) if (entry.operation.sessionId === sessionId) this.remove(entry.operation.operationId, false, true)
+    this.retireIndexed(sessionId)
+    if (this.restoring) this.restoreStorage()
   }
   clear(): void {
     ++this.generation; this.ready = false; this.sending.clear()
     for (const id of [...this.entries.keys()]) this.remove(id, false, true)
+    this.retireIndexed()
+    ++this.storageRevision; this.restoring = undefined; this.restoreFailure = undefined
     this.sessions.clear()
   }
   dispose(): void {
@@ -244,6 +342,20 @@ export class RemoteOutbox {
     this.listeners.clear(); this.retireListeners.clear(); this.sending.clear(); this.stopWake()
   }
   private key(id: string): string { return `${prefixOf(this.access!.scope)}${encodeURIComponent(id)}` }
+  /** Revocation also owns references whose asynchronous payload read is in flight. */
+  private retireIndexed(sessionId?: string): void {
+    const access = this.access, ledger = this.ledger
+    if (!access || !ledger) return
+    const keys = Array.from({ length: access.storage.length }, (_, index) => access.storage.key(index))
+    for (const key of keys) {
+      if (!key?.startsWith(prefixOf(access.scope))) continue
+      const raw = access.storage.getItem(key), entry = decode(raw), pointer = reference(raw)
+      const id = entry?.operation.operationId ?? pointer?.operationId, owner = entry?.operation.sessionId ?? pointer?.sessionId
+      if (!id || sessionId !== undefined && owner !== sessionId) continue
+      access.storage.removeItem(key)
+      void ledger.transition(id, () => null, () => access.storage.removeItem(key)).catch(() => { console.error('HHPI could not retire a saved image operation.') })
+    }
+  }
   private remove(id: string, observed: boolean, revoked = false): void {
     if (!this.entries.has(id)) return
     try { this.access?.storage.removeItem(this.key(id)) } catch { if (!revoked) return }
@@ -258,7 +370,7 @@ export class RemoteOutbox {
       if (terminal) return null
       const current = decode(value) ?? entry
       return eligible(current) ? null : JSON.stringify(current)
-    }, value => { if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value) }).then(value => {
+    }, value => { if (value === null) access.storage.removeItem(key); else this.persistImageJournal(access, key, value) }).then(value => {
       if (generation !== this.generation || this.disposed) return
       if (value === null) {
         this.entries.delete(entry.operation.operationId); this.staged.delete(entry.operation.operationId)
@@ -282,10 +394,12 @@ export class RemoteOutbox {
     this.entries.set(entry.operation.operationId, Object.freeze(entry)); this.publish(); return true
   }
   private persist(id: string, value: string): void {
-    try { this.access!.storage.setItem(this.key(id), value); return } catch { /* Reclaim only data whose original owner has accepted durable responsibility. */ }
+    const journal = journalValue(value)
+    try { this.access!.storage.setItem(this.key(id), journal); return } catch { /* Reclaim only data whose original owner has accepted durable responsibility. */ }
     for (const receipt of [...this.entries.values()].filter(entry => entry.state === 'owner-accepted').sort((a, b) => a.createdAt - b.createdAt)) this.remove(receipt.operation.operationId, true)
-    this.access!.storage.setItem(this.key(id), value)
+    this.access!.storage.setItem(this.key(id), journal)
   }
+  private persistImageJournal(access: SourceStorage, key: string, value: string): void { access.storage.setItem(key, journalValue(value)) }
   private handoff(entry: StoredDelivery, receipt: SourceReceipt): boolean {
     const current = this.entries.get(entry.operation.operationId)
     if (!current || current.createdAt !== entry.createdAt || fingerprint(current.operation) !== fingerprint(entry.operation)
@@ -312,7 +426,7 @@ export class RemoteOutbox {
     return this.ready && operationRefusal(current, entry.operation) === undefined
   }
   private kick(): void {
-    if (!this.ready || !this.access || this.disposed || typeof navigator !== 'undefined' && navigator.onLine === false) return
+    if (!this.ready || !this.access || this.disposed || this.restoring || this.restoreFailure || typeof navigator !== 'undefined' && navigator.onLine === false) return
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
     let next = Infinity
@@ -358,7 +472,7 @@ export class RemoteOutbox {
         firstDispatch = current.attempts === 0; claimed = current; attempt = current.attempts + 1
         return JSON.stringify({ ...current, state: ['accepted', 'owner-accepted', 'rejected'].includes(current.state) ? current.state : firstDispatch ? 'sending' : 'confirming',
           attempts: attempt, message: ['accepted', 'owner-accepted', 'rejected'].includes(current.state) ? current.message : firstDispatch ? 'Sending the saved operation.' : 'Confirming the saved operation.' })
-      }, value => { if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value) })
+      }, value => { if (value === null) access.storage.removeItem(key); else this.persistImageJournal(access, key, value) })
       if (generation !== this.generation || this.disposed || !this.entries.has(entry.operation.operationId)) return
       if (!saved) { this.entries.delete(entry.operation.operationId); this.publish(); return }
       entry = claimed
@@ -424,7 +538,7 @@ export class RemoteOutbox {
         if (prior && (prior.state === 'owner-accepted' || prior.receipt?.status === 'accepted' && receipt?.status !== 'accepted')) return JSON.stringify(prior)
         return JSON.stringify({ ...entry, attempts: Math.max(attempt, prior?.attempts ?? 0), state, message, retryAt, ...(receipt ? { receipt } : {}) })
       }, value => {
-        if (value === null) access.storage.removeItem(key); else access.storage.setItem(key, value)
+        if (value === null) access.storage.removeItem(key); else this.persistImageJournal(access, key, value)
       })
       if (!this.owns(entry, generation)) return
       if (saved) this.entries.set(entry.operation.operationId, decode(saved)!)

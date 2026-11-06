@@ -185,12 +185,13 @@ export class RemoteSourceSession implements SessionFace {
           const operation: SourceOperation = { sessionId: this.sessionId, operationId: requestId, kind, text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}),
             ...(kind === 'steer' && metadata.activeTurnId ? { turnId: metadata.activeTurnId } : {}) }
           if (kind !== 'send') this.assertOperationCurrent(operation)
-          this.outbox.enqueue(operation)
+          await this.outbox.admit(operation)
         }
         this.outbox.start(requestId)
         if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptAttempted: true, promptError: null })
         return { ok: true, value: { accepted: true } }
       } catch (cause) {
+        if (!this.outbox.get(requestId)) this.retire(requestId, { reason: 'failed' })
         const error = cause instanceof RemoteError ? cause as RemoteError<'hhpi/source'> : sourceError(cause instanceof Error ? cause.message : 'The message could not be saved.')
         if (!this.disposed) this.state.set({ ...this.state.getSnapshot(), promptError: { op: 'send', error } })
         return { ok: false, error }

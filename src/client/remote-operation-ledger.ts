@@ -13,10 +13,29 @@ function open(): Promise<IDBDatabase> {
   })
 }
 export interface OperationTransactions {
+  read(id: string): Promise<string | null | undefined>
   transition(id: string, update: (value: string | undefined, terminal: boolean) => string | null, mirror: (value: string | null) => void): Promise<string | null>
 }
 export class RemoteOperationLedger implements OperationTransactions {
   constructor(private readonly access: SourceStorage) {}
+  async read(id: string): Promise<string | null | undefined> {
+    const key = JSON.stringify([this.access.scope, id])
+    if (typeof indexedDB === 'undefined') {
+      if (typeof window !== 'undefined') throw new Error('Transactional operation storage is unavailable in this browser.')
+      const record = fallback.get(this.access.storage)?.get(key)
+      return record?.terminal ? null : record?.value
+    }
+    const db = await open()
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction('operations', 'readonly')
+      const request = transaction.objectStore('operations').get(key)
+      request.onsuccess = () => {
+        const record = request.result as RecordValue | undefined
+        resolve(record?.terminal ? null : record?.value)
+      }
+      request.onerror = () => reject(request.error)
+    })
+  }
   async transition(id: string, update: (value: string | undefined, terminal: boolean) => string | null,
     mirror: (value: string | null) => void): Promise<string | null> {
     const key = JSON.stringify([this.access.scope, id])

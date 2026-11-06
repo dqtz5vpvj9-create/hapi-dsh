@@ -9,6 +9,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { RemoteOutbox, type SourceDeliveryStore } from '../src/client/remote-outbox.ts'
+import { RemoteOperationLedger } from '../src/client/remote-operation-ledger.ts'
 import { clearSourceStorage } from '../src/client/remote-storage.ts'
 import type { RemoteSessions, RemoteSourceSession } from '../src/client/remote-sessions.ts'
 import type { SourceEntry, SourceOperation, SourceReadRequest, SourceReceipt, SourceSession } from '../src/remote/protocol.ts'
@@ -19,6 +20,7 @@ const metadata: SourceSession = { id: 'hhpi:machine:source:codex:thread', machin
   title: 'Synthetic queued source', cwd: '/synthetic', updatedAt: 1, status: 'idle', activeTurnId: null, pendingRequests: [],
   capabilities: { send: true, steer: false, cancel: false, approve: false, files: false } }
 const operation = (id: string, text = id): SourceOperation => ({ sessionId: metadata.id, operationId: id, kind: 'send', text })
+const largeImage = (): NonNullable<SourceOperation['images']>[number] => ({ mediaType: 'image/png', data: Buffer.alloc(2 * 1024 * 1024).toString('base64') })
 const accepted = (request: SourceOperation): SourceReceipt => ({ sessionId: request.sessionId, operationId: request.operationId, status: 'accepted', message: 'Accepted by the synthetic source' })
 function when(view: SourceDeliveryStore, match: () => boolean): Promise<void> {
   if (match()) return Promise.resolve()
@@ -28,6 +30,99 @@ function history(id: string): SourceEntry[] {
   return [{ type: 'event', event: { type: 'user/message', seq: 1, time: 1, data: { id: 'native-message', role: 'user',
     source: { kind: 'user-rpc', rpcId: id }, content: [{ type: 'text', text: 'Saved text' }] } } }] as SourceEntry[]
 }
+
+test('a large image-only message survives reload through the transactional payload without filling the text journal', { timeout: 5000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'large-image' }, calls: SourceOperation[] = []
+  const set = storage.setItem.bind(storage)
+  storage.setItem = (key, value) => {
+    if (value.length * 2 > 64 * 1024) throw new DOMException('Synthetic small localStorage quota', 'QuotaExceededError')
+    set(key, value)
+  }
+  const image = largeImage(), request: SourceOperation = { ...operation('image-only', ''), images: [image] }
+  const first = new RemoteOutbox(async value => { calls.push(value); return accepted(value) }); first.setStorage(access)
+  await first.admit(request); first.start(request.operationId)
+  const journal = storage.getItem(storage.key(0)!)!
+  assert.ok(journal.length < 1000); assert.equal(journal.includes(image.data.slice(0, 100)), false)
+  assert.equal((await new RemoteOperationLedger(access).read(request.operationId))?.includes(image.data), true)
+  first.enqueue(operation('following-text')); first.start('following-text'); first.dispose()
+  const next = new RemoteOutbox(async value => { calls.push(value); return accepted(value) }); t.after(() => next.dispose())
+  next.setStorage(access); next.acceptCatalog([{ ...metadata, capabilities: { ...metadata.capabilities, images: true } }])
+  await when(next.view(metadata.id), () => next.get('following-text')?.state === 'accepted')
+  assert.deepEqual(calls.map(value => value.operationId), ['image-only', 'following-text'], 'later text waits for the earlier image payload to restore')
+  assert.deepEqual(calls[0]!.images, [image]); assert.equal(next.get('image-only')?.state, 'accepted')
+  next.observe(metadata.id, history('image-only'))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(await new RemoteOperationLedger(access).read('image-only'), null, 'observed retirement releases the image payload as well as its journal')
+})
+
+test('a lost image acknowledgement is reconciled after reload without resending the image', { timeout: 5000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'image-lost-ack' }, calls: SourceOperation[] = []
+  const called = Promise.withResolvers<void>(), lost = Promise.withResolvers<SourceReceipt>()
+  const request = { ...operation('uncertain-image'), images: [largeImage()] }
+  const first = new RemoteOutbox(value => { calls.push(value); called.resolve(); return lost.promise }); first.setStorage(access)
+  await first.admit(request); first.start(request.operationId); first.acceptCatalog([{ ...metadata, capabilities: { ...metadata.capabilities, images: true } }])
+  await called.promise; first.dispose()
+  const confirmed = Promise.withResolvers<SourceReceipt>(), lookedUp = Promise.withResolvers<SourceOperation>()
+  const next = new RemoteOutbox(async value => { calls.push(value); return accepted(value) }, value => { lookedUp.resolve(value); return confirmed.promise })
+  t.after(() => { next.dispose(); lost.resolve(accepted(request)) }); next.setStorage(access)
+  next.acceptCatalog([{ ...metadata, capabilities: { ...metadata.capabilities, images: true } }])
+  assert.deepEqual((await lookedUp.promise).images, request.images)
+  assert.equal(calls.length, 1)
+  confirmed.resolve({ ...accepted(request), ownerAdmission: { localId: request.operationId, state: 'queued' } })
+  await when(next.view(metadata.id), () => next.get(request.operationId)?.state === 'owner-accepted')
+  assert.equal(calls.length, 1); assert.ok(storage.getItem(storage.key(0)!)!.length < 1000)
+})
+
+test('existing inline image journals migrate without dispatch or dropping their original identity', { timeout: 5000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'legacy-image' }, request = { ...operation('legacy-image'), images: [largeImage()] }
+  const key = `hhpi:outbox:v1:${access.scope}:${request.operationId}`
+  storage.setItem(key, JSON.stringify({ version: 1, operation: request, createdAt: 1, state: 'confirming', attempts: 1, retryAt: 0, message: 'Confirming' }))
+  let writes = 0
+  const outbox = new RemoteOutbox(async value => { writes++; return accepted(value) }); t.after(() => outbox.dispose())
+  outbox.setStorage(access)
+  await when(outbox.view(metadata.id), () => !!outbox.get(request.operationId))
+  assert.equal(outbox.get(request.operationId)?.operation.images?.[0]?.data, request.images[0]!.data)
+  assert.equal(JSON.parse(storage.getItem(key)!).version, 2); assert.ok(storage.getItem(key)!.length < 1000); assert.equal(writes, 0)
+})
+
+test('a late image payload read cannot populate another account or dispatch there', { timeout: 5000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'image-account-a' }, request = { ...operation('owned-image'), images: [largeImage()] }
+  const first = new RemoteOutbox(async value => accepted(value)); first.setStorage(access); await first.admit(request); first.dispose()
+  const read = Promise.withResolvers<string | null | undefined>(), readCalled = Promise.withResolvers<void>()
+  let writes = 0
+  const next = new RemoteOutbox(async value => { writes++; return accepted(value) }, undefined, undefined, source => {
+    const ledger = new RemoteOperationLedger(source)
+    return { read: () => { readCalled.resolve(); return read.promise }, transition: ledger.transition.bind(ledger) }
+  }); t.after(() => next.dispose()); next.setStorage(access); await readCalled.promise
+  next.setStorage({ storage, scope: 'image-account-b' }); next.acceptCatalog([metadata])
+  read.resolve(await new RemoteOperationLedger(access).read(request.operationId))
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(next.view(metadata.id).getSnapshot().length, 0); assert.equal(writes, 0)
+})
+
+for (const revoke of ['session', 'account'] as const) test(`${revoke} revocation retires an image index while its payload is still restoring`, { timeout: 5000 }, async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: `cold-revoke-${revoke}` }, request = { ...operation('cold-image'), images: [largeImage()] }
+  const first = new RemoteOutbox(async value => accepted(value)); first.setStorage(access); await first.admit(request); first.dispose()
+  const ledger = new RemoteOperationLedger(access), original = await ledger.read(request.operationId)
+  const read = Promise.withResolvers<string | null | undefined>(), readCalled = Promise.withResolvers<void>()
+  let writes = 0
+  const next = new RemoteOutbox(async value => { writes++; return accepted(value) }, undefined, undefined, () => ({
+    read: () => { readCalled.resolve(); return read.promise }, transition: ledger.transition.bind(ledger),
+  })); t.after(() => next.dispose()); next.setStorage(access); next.acceptCatalog([metadata]); await readCalled.promise
+  if (revoke === 'session') next.revokeSession(metadata.id); else next.clear()
+  read.resolve(original); await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(storage.length, 0); assert.equal(await ledger.read(request.operationId), null)
+  assert.equal(next.view(metadata.id).getSnapshot().length, 0); assert.equal(writes, 0)
+})
+
+test('source revocation before asynchronous image admission cannot leave another saved intent', async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'admission-revoked' }
+  const outbox = new RemoteOutbox(async value => accepted(value)); t.after(() => outbox.dispose()); outbox.setStorage(access)
+  const pending = outbox.admit({ ...operation('revoked-before-save'), images: [largeImage()] })
+  outbox.revokeSession(metadata.id)
+  await assert.rejects(pending, /draft has been kept/)
+  assert.equal(storage.length, 0); assert.equal(await new RemoteOperationLedger(access).read('revoked-before-save'), undefined)
+})
 
 test('offline text is durably admitted before returning and survives reload with its original identity', { timeout: 3000 }, async t => {
   const storage = new BrowserStorage(), calls: SourceOperation[] = [], access = { storage, scope: 'account-host' }
@@ -145,6 +240,13 @@ test('public source Session accepts locally while offline, preserves quota-faile
   storage.failWrites = true
   assert.throws(() => face.beginSubmission({ mode: 'queue', text: 'Keep the draft', attachments: [] }), /draft has been kept/)
   assert.equal(face.getSnapshot().pendingSubmissions.length, 0)
+  const failedImages: string[] = []
+  face.update({ ...current, capabilities: { ...current.capabilities, images: true } })
+  const failedImage = face.beginSubmission({ mode: 'queue', text: 'Keep this image draft',
+    attachments: [{ type: 'image', value: { previewUrl: 'blob:synthetic-image' } }], onRetire: value => failedImages.push(value.reason) })
+  const imageResult = await face.prompt([{ type: 'image', ...largeImage() }, { type: 'text', text: 'Keep this image draft' }], 'queue', undefined, failedImage.requestId)
+  assert.equal(imageResult.ok, false); assert.equal(face.getSnapshot().pendingSubmissions.length, 0, 'failed image admission must remove its unsent transcript echo')
+  assert.deepEqual(failedImages, ['failed']); assert.equal(writes.length, 0)
   storage.failWrites = false
   const pending = face.beginSubmission({ mode: 'queue', text: 'Saved text', attachments: [], onRetire: value => { retired.push(value.reason) } })
   assert.ok([...Array(storage.length).keys()].some(index => storage.key(index)?.startsWith('hhpi:outbox:')), 'beginSubmission has synchronously persisted the clicked text')
