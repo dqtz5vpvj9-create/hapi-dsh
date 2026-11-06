@@ -669,6 +669,7 @@ export function installSessionViewHost(ctx: Context): {
                 const session = ctx.sessions.binding(sessionId)?.session as
                     (SessionReference['binding']['session'] & Partial<SourceViewportSession>) | undefined
                 return !isSourceSessionId(sessionId) && session?.sourceWindow === undefined ? undefined : {
+                    // Member flattening bypasses native ChatGroupSeat disclosures.
                     foldCompletedTurns: true, stepGrouping: 'collapsed' as const, virtualizeGroupMembers: false,
                 }
             },
