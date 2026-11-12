@@ -46,6 +46,18 @@ test('read-only receipt lookup checks the same immutable payload and never creat
     assert.deepEqual(await ledger.lookup(operation), accepted);
     await assert.rejects(ledger.lookup({ ...operation, text: 'different text' }), { code: 'INVALID_REQUEST' });
 }));
+test('stored receipt proof never joins its own in-flight operation or reconciles an unknown write', () => directory(async path => {
+    const ledger = new OperationLedger(path);
+    assert.equal(await ledger.stored(operation), null);
+    const receipt = await ledger.run(operation, async () => {
+        assert.equal((await ledger.stored(operation))?.status, 'indeterminate', 'a nested read cannot await this execute callback');
+        await assert.rejects(ledger.stored({ ...operation, text: 'different payload' }), { code: 'INVALID_REQUEST' });
+        return accepted;
+    });
+    assert.deepEqual(receipt, accepted);
+    assert.deepEqual(await new OperationLedger(path).stored(operation), accepted);
+    assert.equal(await ledger.stored({ ...operation, sessionId: sourceSessionId({ ...identity, machineId: 'other' }) }), null);
+}));
 test('only proven not-dispatched operations may retry the same ID, while unknown ones reconcile read-only', () => directory(async path => {
     let calls = 0;
     const ledger = new OperationLedger(path);

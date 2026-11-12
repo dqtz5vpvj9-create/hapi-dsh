@@ -17,6 +17,11 @@ const isOutcome = (value: unknown): value is Outcome => typeof value === 'object
 export class ReceiptLedger<R extends Outcome> {
     private readonly inFlight = new Map<string, { fingerprint: string; promise: Promise<R> }>();
     constructor(private readonly directory: string, private readonly persistReceipt: (receipt: R) => R = receipt => receipt) {}
+    /** Read only the durable snapshot, including while this operation is running.
+     * Never joins its promise, takes its lock, reconciles or dispatches a write. */
+    stored(identity: readonly string[], payload: unknown, valid: (value: unknown) => value is R): Promise<R | null> {
+        return this.read(hash(identity), hash(payload), valid);
+    }
     /** Lookup never installs an uncertainty marker and never invokes execute. */
     async lookup(identity: readonly string[], payload: unknown, valid: (value: unknown) => value is R,
         reconcile?: (receipt: R) => Promise<R | undefined>): Promise<R | null> {
@@ -115,6 +120,10 @@ export class OperationLedger {
     lookup(operation: SourceOperation, reconcile?: (receipt: SourceReceipt) => Promise<SourceReceipt | undefined>): Promise<SourceReceipt | null> {
         return this.receipts.lookup([operation.sessionId, operation.operationId], this.payload(operation),
             (value): value is SourceReceipt => this.valid(operation, value), reconcile);
+    }
+    stored(operation: SourceOperation): Promise<SourceReceipt | null> {
+        return this.receipts.stored([operation.sessionId, operation.operationId], this.payload(operation),
+            (value): value is SourceReceipt => this.valid(operation, value));
     }
     run(operation: SourceOperation, execute: () => Promise<SourceReceipt>, reconcile?: (receipt: SourceReceipt) => Promise<SourceReceipt | undefined>): Promise<SourceReceipt> {
         const uncertain: SourceReceipt = { operationId: operation.operationId, sessionId: operation.sessionId, status: 'indeterminate', message: 'The source operation may have been dispatched. It will not be retried automatically.' };

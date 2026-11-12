@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { acceptNativeQuestions } from '../src/remote/codex-async-questions.ts';
+import { acceptNativeQuestions, acceptNativeSkips } from '../src/remote/codex-async-questions.ts';
 import { nativeQuestionReply, questionItemId, sourceQuestionCallId } from '../src/shared/native-async-questions.ts';
 import { sourceControlOperationId } from '../src/shared/source-operation-policy.ts';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
-import { CodexRpc } from '../src/remote/codex-rpc.ts';
+import { CodexRpc, CodexRpcError } from '../src/remote/codex-rpc.ts';
+import { OperationLedger } from '../src/remote/operation-ledger.ts';
+import { SourceError } from '../src/remote/errors.ts';
 import type { NativeQuestionsPage } from '../src/remote/codex-metadata-core.mjs';
 import type { DirectCodexConfig } from '../src/remote/protocol.ts';
 import { SyntheticResponsesModel } from './fixtures/hhpi/model.ts';
@@ -63,6 +66,126 @@ test('official Skip sends an explicit empty native answer and settles only that 
     const skipped = acceptNativeQuestions(state, page([{ turnId: 'later', itemId: 'skip-reply', ordinal: 20, revision: 20,
         item: { type: 'userMessage', content: [{ type: 'text', text }] } }]));
     assert.deepEqual(skipped.active, [state.active[1]!]);
+});
+
+test('accepted Skip tombstones survive refresh but do not suppress a new identity or revised question', () => {
+    const state = acceptNativeQuestions(undefined, page([question], true)), request = state.active[0]!;
+    const skipped = acceptNativeSkips(state, [sourceQuestionCallId(request)]);
+    assert.deepEqual(acceptNativeQuestions(skipped, page([question])).active, [state.active[1]!]);
+    const revised = acceptNativeQuestions(skipped, page([{ ...question, revision: 15 }]));
+    assert.equal(revised.active.length, 2, 'a real revision needs its own explicit decision');
+    assert.equal(acceptNativeQuestions(skipped, page([{ ...question, itemId: 'new-call', item: { ...question.item, id: 'new-call' } }])).active.length, 3);
+});
+
+// Real DirectCodexAdapter/receipts/index; only the native RPC and metadata
+// boundaries are synthetic. No model or user source is involved.
+async function skipSource(t: { after(callback: () => Promise<void>): void }) {
+    const home = await mkdtemp('/mnt/cache/data-cache/hhpi-skip-recovery-'), directory = join(home, 'view');
+    const turn = { id: 'original', status: 'inProgress' as const, startedAt: 1, completedAt: null };
+    const item = { id: 'answer', type: 'agentMessage', text: 'Existing readable conversation' };
+    const native = { id: 'thread', cwd: home, createdAt: 1, updatedAt: 2, status: { type: 'active', activeFlags: [] } };
+    let revision = question.revision, reset = false, mode: 'accepted' | 'rejected' | 'indeterminate' = 'accepted';
+    const writes: string[] = [];
+    const notifications = new Set<(value: { method: string; params: Record<string, unknown> }) => void>();
+    const make = () => {
+        const rpc = { online: true, currentGeneration: 1, connect: async () => ({ codexHome: home }), dispose: async () => {},
+            onNotification: (callback: (value: { method: string; params: Record<string, unknown> }) => void) => { notifications.add(callback); return () => notifications.delete(callback); },
+            onRequest: () => () => {}, onDisconnect: () => () => {},
+            request: async (method: string, params: Record<string, unknown>, options?: { write?: boolean }) => {
+                if (options?.write) writes.push(method);
+                if (method === 'thread/read') return { thread: native };
+                if (method === 'thread/loaded/list') return { data: [native.id], nextCursor: null };
+                if (method === 'thread/items/list') return sliceNativeEntries([{ turnId: turn.id, item }], params);
+                if (method === 'turn/steer') {
+                    if (mode === 'rejected') throw new CodexRpcError(-32602, 'Synthetic native refusal');
+                    if (mode === 'indeterminate') throw new SourceError('OUTCOME_UNKNOWN', 'Synthetic lost acknowledgement');
+                    return {};
+                }
+                if (method === 'thread/queue/list') return { data: [], nextCursor: null };
+                throw new Error(`Unexpected source method ${method}`);
+            } } as unknown as CodexRpc;
+        return new DirectCodexAdapter({ id: 'source', machineId: 'fixture', engine: 'codex' }, directory, { rpc, pollMs: 60_000,
+            readMetadata: nativeMetadataFixture(() => [{ turn, items: [item] }]),
+            readQuestions: async request => { const fresh = reset; reset = false;
+                return { ...page([{ ...question, revision }], fresh || request.coordinates === undefined), through: revision }; } });
+    };
+    let source = make();
+    t.after(async () => { await source.dispose(); await rm(home, { recursive: true, force: true }); });
+    const sessionId = sourceSessionId({ machineId: 'fixture', sourceId: 'source', engine: 'codex', nativeId: native.id });
+    const initial = await source.read({ sessionId }), pending = initial.session.pendingRequests[0]!;
+    const operation = { sessionId, kind: 'approve' as const, requestId: pending.id,
+        operationId: await sourceControlOperationId(sessionId, 'approve', sourceQuestionCallId(pending)),
+        response: { ...answer(pending.id, []), nativeQuestionRevision: pending.params.revision } };
+    return { get source() { return source; }, sessionId, operation, directory, writes,
+        outcome(value: typeof mode) { mode = value; }, revise() { revision++; },
+        resetQuestions() { reset = true; },
+        invalidate() { for (const callback of notifications) callback({ method: 'thread/status/changed', params: { threadId: native.id, status: native.status } }); },
+        async reopen() { await source.dispose(); source = make(); },
+        commitSkippedDecision() {
+            const hash = createHash('sha256').update(sessionId).digest('hex');
+            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v8.sqlite`), initial.session);
+            try { index.edit(index.session, () => index.cache('native-async-questions:v1',
+                acceptNativeSkips(index.cached('native-async-questions:v1')!, [sourceQuestionCallId(pending)]))); } finally { index.dispose(); }
+        },
+        seedChannel() {
+            const hash = createHash('sha256').update(sessionId).digest('hex');
+            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v8.sqlite`), initial.session);
+            try { index.edit(index.session, () => index.cache(`native-question-channel:${pending.id}`, {
+                method: 'thread/queue/add', operationId: operation.operationId })); } finally { index.dispose(); }
+        } };
+}
+
+test('legacy accepted empty Skip is recovered from exact durable proof without another click or native reply', async t => {
+    const fixture = await skipSource(t); fixture.seedChannel();
+    const ledger = new OperationLedger(join(fixture.directory, 'operations'));
+    await ledger.run(fixture.operation, async () => ({ sessionId: fixture.sessionId, operationId: fixture.operation.operationId,
+        status: 'accepted', message: 'Legacy native queue admitted Skip.' }));
+    await fixture.reopen();
+    assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, 1);
+    assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, 1, 'catalog/read refresh cannot revive it');
+    await fixture.reopen();
+    assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, 1, 'source restart cannot revive it');
+    fixture.resetQuestions(); await fixture.reopen();
+    assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, 1, 'a rebuilt native question snapshot restores the durable decision');
+    fixture.revise();
+    await fixture.reopen();
+    assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, 2, 'a new revision remains answerable');
+    assert.deepEqual(fixture.writes, [], 'recovering the decision never resends or edits the native queue');
+});
+
+test('a delayed pre-acceptance recovery read cannot overwrite a concurrently committed exact Skip decision', async t => {
+    const fixture = await skipSource(t); fixture.seedChannel(); fixture.invalidate();
+    const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const stored = OperationLedger.prototype.stored;
+    let first = true;
+    t.mock.method(OperationLedger.prototype, 'stored', async function(this: OperationLedger, operation: Parameters<typeof stored>[0]) {
+        if (first && operation.operationId === fixture.operation.operationId) {
+            first = false; entered.resolve(); await gate.promise;
+            return { sessionId: operation.sessionId, operationId: operation.operationId, status: 'indeterminate' as const, message: 'Snapshot before acceptance' };
+        }
+        return stored.call(this, operation);
+    });
+    const reading = fixture.source.read({ sessionId: fixture.sessionId });
+    await entered.promise;
+    fixture.commitSkippedDecision(); gate.resolve();
+    assert.equal((await reading).session.pendingRequests.length, 1);
+    assert.deepEqual(fixture.writes, []);
+});
+
+test('new accepted Skip closes immediately and after reopen while nonempty, rejected and unknown replies remain pending', async t => {
+    for (const mode of ['accepted', 'rejected', 'indeterminate', 'nonempty'] as const) {
+        const fixture = await skipSource(t);
+        fixture.outcome(mode === 'nonempty' ? 'accepted' : mode);
+        const operation = mode === 'nonempty' ? { ...fixture.operation, response: { ...fixture.operation.response,
+            ...answer(fixture.operation.requestId, ['Blue']) } } : fixture.operation;
+        const receipt = await fixture.source.operate(operation);
+        assert.equal(receipt.status, mode === 'nonempty' ? 'accepted' : mode);
+        const expected = mode === 'accepted' ? 1 : 2;
+        assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, expected, mode);
+        await fixture.reopen();
+        assert.equal((await fixture.source.read({ sessionId: fixture.sessionId })).session.pendingRequests.length, expected, `${mode} after reopen`);
+        assert.deepEqual(fixture.writes, ['turn/steer'], 'refresh and restart never repeat an admitted or uncertain write');
+    }
 });
 
 test('typed question/history projections show the official answer payload and retain exact native message correlation', () => {

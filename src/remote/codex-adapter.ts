@@ -1,6 +1,6 @@
 import { capturePendingCall, pendingCallEvidence, type PendingCallAnchor } from './codex-pending-history.ts';
-import { acceptNativeQuestions, type NativeQuestionState } from './codex-async-questions.ts';
-import { nativeQuestionReply, NATIVE_ASYNC_QUESTION } from '../shared/native-async-questions.ts';
+import { acceptNativeQuestions, acceptNativeSkips, type NativeQuestionState } from './codex-async-questions.ts';
+import { nativeQuestionReply, NATIVE_ASYNC_QUESTION, sourceQuestionCallId } from '../shared/native-async-questions.ts';
 import { CodexUploads } from './codex-uploads.ts';
 import type { SourceUploadRequest } from './protocol.ts';
 import { sourceResumeContext, type SourceResumeContext } from '../workspace/source-navigation-api.ts';
@@ -1024,6 +1024,13 @@ export class DirectCodexAdapter implements SourceAdapter {
             if (!current()) throw new SupersededObservation();
             state = acceptNativeQuestions(state, page);
             if (!page.more) {
+                state = await this.acceptedQuestionSkips(owner, state);
+                if (!current()) throw new SupersededObservation();
+                // A concurrent accepted Skip can commit while the durable read
+                // above still sees its earlier uncertainty marker. Preserve that
+                // decision without carrying it across a native generation reset.
+                const latest = index.cached<NativeQuestionState>(NATIVE_ASYNC_QUESTIONS);
+                if (latest?.coordinates === state.coordinates) state = acceptNativeSkips(state, latest.skipped ?? []);
                 owner.asyncQuestions = state;
                 const session = this.descriptor(owner.native);
                 index.edit(session, () => index.cache(NATIVE_ASYNC_QUESTIONS, state));
@@ -1032,6 +1039,25 @@ export class DirectCodexAdapter implements SourceAdapter {
             }
         }
         throw new SourceError('HISTORY_UNAVAILABLE', 'Native questions exceeded their source read budget.');
+    }
+    private async acceptedQuestionSkips(owner: ThreadOwner, state: NativeQuestionState): Promise<NativeQuestionState> {
+        const skipped: string[] = [], index = this.history(owner).index;
+        for (const question of state.active) {
+            const callId = sourceQuestionCallId(question);
+            const operationId = `hhpi-control:${createHash('sha256').update(JSON.stringify([owner.session.id, 'approve', callId])).digest('hex')}`;
+            const channel = index.cached<{ method: string; operationId: string; rejected?: boolean }>(`native-question-channel:${question.id}`);
+            if (!channel || channel.rejected || channel.operationId !== operationId
+                || !['turn/steer', 'thread/queue/add'].includes(channel.method)) continue;
+            const operation: SourceOperation = { sessionId: owner.session.id, operationId, kind: 'approve', requestId: question.id,
+                response: { answers: [{ id: question.id, selected: [] }], nativeQuestionRevision: question.params.revision } };
+            // A nonempty answer has the same operation identity but a different
+            // full payload fingerprint. Neither it nor an unknown receipt is Skip.
+            try {
+                nativeQuestionReply(question, operation.response);
+                if ((await this.ledger.stored(operation))?.status === 'accepted') skipped.push(callId);
+            } catch { /* Missing, mismatched or unreadable proof leaves the question answerable. */ }
+        }
+        return skipped.length ? acceptNativeSkips(state, skipped) : state;
     }
     private savePending(owner: ThreadOwner, records: CachedPendingApproval[]): void {
         const index = this.history(owner).index;
@@ -1115,7 +1141,23 @@ export class DirectCodexAdapter implements SourceAdapter {
             const expected = `hhpi-control:${createHash('sha256').update(JSON.stringify([operation.sessionId, 'approve', target])).digest('hex')}`;
             if (operation.operationId !== expected) throw new SourceError('INVALID_REQUEST', 'Use the original native question operation identity.');
         }
-        return this.ledger.run(operation, () => this.perform(operation), receipt => this.reconcile(operation, receipt));
+        const receipt = await this.ledger.run(operation, () => this.perform(operation), receipt => this.reconcile(operation, receipt));
+        if (receipt.status === 'accepted' && operation.kind === 'approve' && operation.requestId?.startsWith('["request_user_input_async",')) {
+            const owner = this.threads.get(this.assertScope(operation.sessionId)), index = owner?.history?.index;
+            const state = index?.cached<NativeQuestionState>(NATIVE_ASYNC_QUESTIONS);
+            if (owner && index && state) {
+                const settled = await this.acceptedQuestionSkips(owner, state);
+                // Receipt I/O must not overwrite a newer native question page.
+                const latest = index.cached<NativeQuestionState>(NATIVE_ASYNC_QUESTIONS);
+                if (!latest || latest.coordinates !== state.coordinates) return receipt;
+                const current = acceptNativeSkips(latest, settled.skipped ?? []);
+                owner.asyncQuestions = current;
+                const session = this.descriptor(owner.native);
+                index.edit(session, () => index.cache(NATIVE_ASYNC_QUESTIONS, current));
+                this.metadata(owner, session);
+            }
+        }
+        return receipt;
     }
     async receipt(operation: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null> {
         const nativeId = this.assertScope(operation.sessionId);
@@ -1280,8 +1322,9 @@ export class DirectCodexAdapter implements SourceAdapter {
                         ...(channel.turnId ? { expectedTurnId: channel.turnId } : {}), input: [{ type: 'text', text, text_elements: [] }] } });
                 if (response.status === 'rejected') index.edit(owner.session, () => index.cache(key, { ...channel, rejected: true }));
                 owner.dirty = true;
-                // Admission does not settle the question. The explicit native
-                // user-message reply owns that transition on the next refresh.
+                // Ordinary answers still await the explicit native userMessage.
+                // An explicit Skip is settled only after the durable accepted
+                // outer receipt is stored, outside this in-flight operation.
                 return { ...receipt(response.status, response.message), ...(response.status === 'rejected' ? { retryable: true as const } : {}) };
             }
             if (operation.requestId && !this.approvals.has(operation.requestId)) await this.prepare(owner);
