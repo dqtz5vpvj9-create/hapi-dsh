@@ -2,7 +2,7 @@
  * fixture boundary. Canonical records follow the observed 0.162 paginated format. */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile, appendFile, rm, lstat, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, appendFile, rm, lstat, realpath, rename } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -12,6 +12,7 @@ import { chmod } from 'node:fs/promises';
 import { WebSocketServer } from 'ws';
 import test, { type TestContext } from 'node:test';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
+import { CODEX_HISTORY_PROJECTION_VERSION } from '../src/remote/codex-history.ts';
 import { capturePendingCall, pendingCallEvidence } from '../src/remote/codex-pending-history.ts';
 import { CodexRpc, type NativeNotification, type NativeRequest } from '../src/remote/codex-rpc.ts';
 import { SourceError } from '../src/remote/errors.ts';
@@ -68,7 +69,7 @@ async function fixture(t: TestContext) {
     };
     let adapter = make();
     t.after(async () => { await adapter.dispose(); await rm(home, { recursive: true, force: true }); });
-    const indexPath = join(directory, 'history', createHash('sha256').update(sessionId).digest('hex') + '.v7.sqlite');
+    const indexPath = join(directory, 'history', createHash('sha256').update(sessionId).digest('hex') + `.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`);
     const durable = () => {
         const db = new DatabaseSync(indexPath, { readOnly: true });
         try { return db.prepare("SELECT value FROM native_cache WHERE key='native-pending-requests:v1'").get()?.value; } finally { db.close(); }
@@ -79,8 +80,9 @@ async function fixture(t: TestContext) {
         async receive(value = request) {
             await adapter.read({ sessionId }); deliver(value);
             if (value.method === 'item/tool/requestUserInput' && daemon) {
-                for (let i = 0; i < 100 && !durable(); i++) await setImmediate();
-                assert.ok(durable(), 'a received question must be durable before restarting its viewer');
+                const received = () => (JSON.parse(String(durable() ?? '[]')) as Array<{ request?: NativeRequest }>).some(row => row.request?.id === value.id);
+                for (let i = 0; i < 100 && !received(); i++) await setImmediate();
+                assert.ok(received(), 'a received question must be durable before restarting its viewer');
             }
         },
         async restart(next: { daemon?: string | undefined; generation?: number; resetEpoch?: boolean } = {}) {
@@ -91,6 +93,18 @@ async function fixture(t: TestContext) {
                 index.edit(session, () => { index.removeFrom(0); index.forget(''); index.cache('native-pending-requests:v1', prior); }); index.dispose();
             }
             if ('daemon' in next) daemon = next.daemon; generation = next.generation ?? generation;
+            adapter = make(); return adapter.read({ sessionId });
+        },
+        async upgradeProjection(invalidate?: 'coordinates' | 'epoch') {
+            await adapter.dispose();
+            if (invalidate) {
+                const db = new DatabaseSync(indexPath);
+                try {
+                    if (invalidate === 'coordinates') db.prepare('UPDATE native_cache SET value=? WHERE key=?').run(JSON.stringify('replaced-native-generation'), 'native-source-coordinates');
+                    else db.prepare('UPDATE metadata SET value=? WHERE key=?').run('different-original-epoch', 'epoch');
+                } finally { db.close(); }
+            }
+            await rename(indexPath, indexPath.replace(`.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`, '.v7.sqlite'));
             adapter = make(); return adapter.read({ sessionId });
         },
         loseOutcome() { outcome = 'unknown'; },
@@ -110,6 +124,20 @@ test('a received original question restores after viewer restart and resolves by
     assert.equal((await f.adapter.operate(operation)).status, 'accepted'); assert.equal(f.responses.length, 1);
     assert.equal((await f.adapter.read({ sessionId: f.sessionId })).session.pendingRequests.length, 0);
     assert.deepEqual(f.writes, [], 'replying to the original request must not resume, create a turn, or enqueue input');
+});
+
+test('v7 display-cache upgrade preserves a received blocking question only after the same native snapshot and anchor verify it', async t => {
+    const f = await fixture(t); await f.receive();
+    const before = await f.adapter.read({ sessionId: f.sessionId }), restored = await f.upgradeProjection();
+    assert.deepEqual(restored.session.pendingRequests, before.session.pendingRequests);
+    assert.equal(restored.session.pendingRequests.length, 1);
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.responses, []);
+});
+
+for (const invalid of ['coordinates', 'epoch'] as const) test(`v7 pending migration rejects changed ${invalid} instead of relaxing the old evidence`, async t => {
+    const f = await fixture(t); await f.receive();
+    assert.equal((await f.upgradeProjection(invalid)).session.pendingRequests.length, 0);
+    assert.deepEqual(f.writes, []); assert.deepEqual(f.responses, []);
 });
 
 test('the original output excludes an old card while a second question in the same turn is waiting', async t => {
@@ -250,7 +278,7 @@ test('actual source 0.162 restores its received question after adapter disposal 
         const signal = AbortSignal.timeout(15_000);
         (await model.next(signal)).tool('request_user_input', { questions: [{ id: 'choice', header: 'Choice', question: 'Continue isolated test?', options: [{ label: 'Continue', description: 'Finish the isolated test' }] }] });
         const original = await request.promise;
-        const indexPath = join(root, 'view', 'history', createHash('sha256').update(sessionId).digest('hex') + '.v7.sqlite');
+        const indexPath = join(root, 'view', 'history', createHash('sha256').update(sessionId).digest('hex') + `.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`);
         let cached = false;
         for (let i = 0; i < 200 && !cached; i++) {
             const db = new DatabaseSync(indexPath, { readOnly: true });

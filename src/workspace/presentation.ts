@@ -38,7 +38,7 @@ export function sessionActivity(row: SourceRow & Pick<WorkspaceCatalogRow, 'runn
     if (!row || row.hostOnline === false || (source && sourceIsOffline(source))) {
         return { kind: 'offline', running: false, pending, compacting: false }
     }
-    const input = (method: string): boolean => method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request'
+    const input = (method: string): boolean => method === 'item/tool/requestUserInput' || method === 'request_user_input_async' || method === 'mcpServer/elicitation/request'
     const kind: ActivityKind = requests.some(request => !input(request.method)) ? 'permission'
         : pending || source?.status === 'waiting' ? 'input'
         : (source ? source.status === 'running' : row.running) ? 'running' : 'idle'

@@ -1,5 +1,5 @@
 /** Source-side sparse metadata helper; Node24 builtins only, no execution operations. */
-import { readNativeMetadata, readNativeLifecycles, NativeMetadataIndexMissing } from './codex-metadata-core.mjs';
+import { readNativeMetadata, readNativeLifecycles, readNativeQuestions, NativeMetadataIndexMissing } from './codex-metadata-core.mjs';
 import { NativeHistorySearch, NativeSearchError } from './codex-search-core.mjs';
 import { createInterface } from 'node:readline';
 
@@ -23,7 +23,8 @@ if (process.argv.includes('--serve')) {
             const controller = new AbortController(); active.set(id, controller);
             const task = Promise.resolve().then(() => message.request.kind === 'search'
                 ? searches.search(message.request, controller.signal) : message.request.kind === 'lifecycle'
-                    ? readNativeLifecycles(message.request) : readNativeMetadata(message.request))
+                    ? readNativeLifecycles(message.request) : message.request.kind === 'questions'
+                        ? readNativeQuestions(message.request) : readNativeMetadata(message.request))
                 .then(result => { if (!controller.signal.aborted) process.stdout.write(JSON.stringify({ id, result }) + '\n'); },
                     error => { if (!controller.signal.aborted) process.stdout.write(JSON.stringify({ id, ...failure(error) }) + '\n'); })
                 .finally(() => { active.delete(id); work.delete(task); });
@@ -41,7 +42,8 @@ if (process.argv.includes('--serve')) {
             if (Buffer.byteLength(input) > 64 * 1024) throw new Error('Metadata request exceeds its input budget');
         }
         const request = JSON.parse(input);
-        process.stdout.write(JSON.stringify({ result: request.kind === 'lifecycle' ? readNativeLifecycles(request) : await readNativeMetadata(request) }) + '\n');
+        process.stdout.write(JSON.stringify({ result: request.kind === 'lifecycle' ? readNativeLifecycles(request)
+            : request.kind === 'questions' ? await readNativeQuestions(request) : await readNativeMetadata(request) }) + '\n');
     } catch (error) {
         process.stdout.write(JSON.stringify(failure(error)) + '\n');
         process.exitCode = 1;

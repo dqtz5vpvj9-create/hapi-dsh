@@ -65,7 +65,7 @@ export async function buildClientBundle(buildIdentity, { publish = true, minifyI
  * registry can discover `dsh.client` through the same mechanism as every
  * pinned package. No upstream or node_modules byte is changed.
  */
-export async function buildSourceProvider(buildIdentity) {
+export async function buildSourceProvider(buildIdentity, { publish = true } = {}) {
     const options = {
         bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
         write: false, legalComments: 'inline', minifyWhitespace: true, minifySyntax: true, minifyIdentifiers: true,
@@ -74,6 +74,7 @@ export async function buildSourceProvider(buildIdentity) {
     };
     const result = await build({ ...options, entryPoints: ['src/client/source-sessions-provider.ts'] });
     const body = result.outputFiles[0].text;
+    if (!publish) return result;
     await mkdir('dist/session-provider', { recursive: true });
     const pending = `dist/session-provider/client.js.${process.pid}.pending`;
     await writeFile(pending, `window.__ModuleLoader__.load({id:"hapi-dsh-session-provider",factory:function(require){var module={exports:{}};var exports=module.exports;\n${body}\nreturn module.exports;}});\n`);

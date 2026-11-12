@@ -12,6 +12,7 @@ import type { RemoteSourceSession } from './remote-sessions.ts'
 import type { SourceDelivery } from './remote-outbox.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import { sourceReadFailureCode } from './remote-read-recovery.ts'
+import { NATIVE_ASYNC_QUESTION } from '../shared/native-async-questions.ts'
 
 function awaitingControlReceipt(error: unknown): boolean {
   const code = sourceReadFailureCode(error)
@@ -51,6 +52,8 @@ interface ApprovalProps {
   disabled?: boolean
 }
 export function SourceApprovalControl(props: ApprovalProps) {
+  // The official user-questions composer owns nonblocking native questions.
+  if (props.request.method === NATIVE_ASYNC_QUESTION) return null
   if (['item/tool/requestUserInput', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', 'item/tool/call'].includes(props.request.method)) return <SourceNativeQuestion key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
   return <SourceApprovalButtons key={JSON.stringify([props.session.sessionId, props.request.id])} {...props}/>
 }

@@ -5,9 +5,11 @@ import { SourceEventIndex, type EventInput } from './event-index.ts';
 import { isRecord, nativeText, type NativeItem, type NativeItemEntry, type NativeTurn } from './codex-native.ts';
 import { nativeOtherContent, nativeToolPresentation, nativeUserContent, type NativeToolPresentation } from './codex-presentation.ts';
 import type { SourceSession } from './protocol.ts';
+import type {} from '@deepseek-ai/dsh-user-questions/types';
+import { nativeAsyncQuestions, nativeQuestionReplies } from '../shared/native-async-questions.ts';
 
-/** Reproject accepted native records to expose plan actions and generated image galleries. */
-export const CODEX_HISTORY_PROJECTION_VERSION = 7;
+/** Reproject typed native questions and human replies without their transport fallback text. */
+export const CODEX_HISTORY_PROJECTION_VERSION = 8;
 export interface CodexHistoryOptions {
     userContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
     toolContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
@@ -116,9 +118,16 @@ export class CodexHistory {
         const { turn, start: turnStart } = this.ensureTurn(turnId, time);
         const identity = `codex:${[session.nativeId, turnId, item.id].map(encodeURIComponent).join(':')}`;
         if (item.type === 'userMessage') {
-            const content = presentationContent ?? nativeUserContent(item);
+            const replies = Array.isArray(item.content) ? item.content.flatMap(value => nativeQuestionReplies(isRecord(value) && value.type === 'text' ? value.text : undefined)) : [];
+            const content = replies.length ? [{ type: 'text' as const, text: JSON.stringify({
+                questions: replies.map(reply => ({ id: reply.questionItemId, question: reply.question })),
+                answers: replies.map(reply => ({ id: reply.questionItemId, selected: reply.answer ? [reply.answer] : [] })),
+            }) }] : presentationContent ?? nativeUserContent(item);
+            const source = replies.length ? { kind: 'user-question-reply' as const, callId: ToolCallId(replies[0]!.questionItemId), outcome: 'answered' as const,
+                ...(typeof item.clientId === 'string' ? { rpcId: item.clientId } : {}) }
+                : { kind: 'user' as const, ...(typeof item.clientId === 'string' ? { rpcId: item.clientId } : {}) };
             const message = freezeMessage({ id: MessageId(identity), role: 'user', content,
-                source: { kind: 'user', ...(typeof item.clientId === 'string' ? { rpcId: item.clientId } : {}) } });
+                source });
             this.index.put(key(nativeKey, 'message'), this.event('user/message', message, time), [turnStart], position(1));
         } else {
             const step = this.index.coordinate('step', turnId, item.id, ordinal);
@@ -132,7 +141,11 @@ export class CodexHistory {
             };
             const nativeTool = nativeToolPresentation(item, presentationContent);
             const tool = nativeTool && (this.options.toolPresentation?.(turnId, item, nativeTool) ?? nativeTool);
-            if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: item.type === 'plan'
+            if (item.type === 'agentMessage' && item.delivery === 'async' && nativeAsyncQuestions(item.questions)) {
+                // The official question composer owns this structured content.
+                // Keep the native anchor, without duplicating its textual menu.
+                putMessage([]);
+            } else if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: item.type === 'plan'
                 ? `<proposed_plan>\n${nativeText(item.text)}\n</proposed_plan>` : nativeText(item.text) }]);
             else if (item.type === 'reasoning') {
                 const summary = Array.isArray(item.summary) ? item.summary.filter((v): v is string => typeof v === 'string') : [];

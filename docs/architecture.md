@@ -23,6 +23,8 @@ flowchart TD
 
 普通 DSH 沿用原 Host 的官方 API、Invocation、权限和取消信号。公开组合 provider 通过隔离服务委托原实现；HHPI 路径不构造假 `Agent.ctx` 或借一个本地执行 Agent。服务器在每次操作和资源访问时复核授权，客户端可用性检查不替代最终裁决。
 
+Codex 异步问答沿原生 `agentMessage.questions/delivery` 和逐问题显式 reply 重建，界面复用官方问答组件；活动回合答复走 steering，空闲时入原生队列，回合结束不清除未答项。阻塞 RPC 与异步用户消息的契约分别处理，见[原生异步问答](adr/hhpi-native-async-questions.md)。
+
 Codex 的 app-server 继续拥有 turn、工具、审批、队列与设置。读取历史不 resume，关闭 Pane 只释放视图。显式操作保留 operation ID、原生目标与不确定结果；断线、刷新和恢复不自动重发可能已经执行的写请求。
 
 源 workspace owner 以稳定 lifetime、真实 cwd、该 OS 用户的 FileSystem/subprocess 组合 Files、上传和 Terminal。请求取消不等于 owner 生命周期结束；Pane 关闭不终止 PTY。只有明确的终端关闭动作才调用实际 owner 的关闭契约。中央 RPC bridge 不能获得另一台 OS 的资源所有权。

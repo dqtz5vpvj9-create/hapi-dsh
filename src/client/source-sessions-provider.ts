@@ -17,6 +17,7 @@ import { RemoteSessions } from './remote-sessions.ts'
 import { browserSourceStorage } from './remote-storage.ts'
 import { HAPI_DSH_REMOTE } from '../shared/client-remote.ts'
 import { SOURCE_SESSION_CONSUMERS, SOURCE_SESSIONS_REALM, sourceSessionsContext } from './source-sessions-composition.ts'
+import { installNativeQuestionProvider } from './native-question-provider.ts'
 import { installCommandDirectoryProvider } from './command-directory-provider.ts'
 import { installSourceTerminalProvider } from './source-terminal-provider.ts'
 import { installSourceWorkspaceFilesProvider } from './source-workspace-provider.ts'
@@ -63,6 +64,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const label = SOURCE_SESSIONS_REALM
   const consumers = new Set<string>(SOURCE_SESSION_CONSUMERS)
   const prior = new Map<Entry, { isolate: Record<string, true | string> | null; config: Entry['options']['config'] }>()
+  let stopQuestions: () => Promise<void> = async () => {}
   let stopCommands: () => Promise<void> = async () => {}
   let stopFiles: () => Promise<void> = async () => {}
   let stopTerminals: () => Promise<void> = async () => {}
@@ -94,6 +96,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     // Install the sessions boundary synchronously before any await. On a fresh
     // workspace ui-workspace can otherwise restore its default DSH session in
     // the microtask gap while command-directory setup is still pending.
+    stopQuestions = await installNativeQuestionProvider(ctx)
     stopCommands = await installCommandDirectoryProvider(ctx)
     const entries = await waitForEntries(ctx.loader, 10_000)
     diagnosticMark('hapi-dsh:provider:entries')
@@ -168,6 +171,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     await originalOwner
   } catch (error) {
     stopHook()
+    await stopQuestions()
     await stopCommands()
     await stopFiles()
     await stopTerminals()
@@ -179,6 +183,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     if (released) return
     released = true
     stopHook()
+    await stopQuestions()
     await stopCommands()
     await stopFiles()
     await stopTerminals()

@@ -6,3 +6,6 @@ export interface NativeMetadataPage { items: NativeMetadataItem[]; turns: Native
 export function readNativeMetadata(request: NativeMetadataRequest): Promise<NativeMetadataPage>;
 export interface NativeLifecycleRequest { kind: 'lifecycle'; home: string; candidates: readonly { threadId: string; createdAt: number }[] }
 export function readNativeLifecycles(request: NativeLifecycleRequest): { absent: string[] };
+export interface NativeQuestionsRequest { kind: 'questions'; home: string; threadId: string; after?: number; coordinates?: string; known?: string[] }
+export interface NativeQuestionsPage { items: { turnId: string; itemId: string; ordinal: number; revision: number; item: Record<string, unknown> }[]; coordinates: string; reset: boolean; more: boolean; through: number }
+export function readNativeQuestions(request: NativeQuestionsRequest): Promise<NativeQuestionsPage>;

@@ -54,7 +54,7 @@ export function readNativeLifecycles({ home, candidates }) {
     } catch { return { absent: [] }; }
     finally { db?.close(); }
 }
-/** Read only the native sparse index. Never select item_json or replay rollouts. */
+/** Read-only sparse index. Ordinary paging never selects bodies or replays rollouts. */
 export function openNativeMetadata(home) {
     const path = join(home, 'thread_history_1.sqlite');
     let database;
@@ -339,6 +339,55 @@ export async function readNativeMetadata(request) {
         const result = { items, turns, coordinates: index.coordinates, first, last, ...(position ? { positionMissing } : {}),
             hasBefore: first !== null && (index.items(first - 1, 'desc', 1).length > 0 || index.turns(first - 1, 'desc', 1).length > 0),
             hasAfter: last !== null && (index.items(last + 1, 'asc', 1).length > 0 || index.turns(last + 1, 'asc', 1).length > 0) };
+        db.query('COMMIT').get();
+        return result;
+    } finally { db.close(); }
+}
+
+/** Only typed async questions and explicit question replies, in indexed update
+ * order. The source retains the cursor; ordinary refreshes never replay bodies
+ * or scan every page of a long conversation. Generation cutovers are the same
+ * ones used by the native history reader. */
+export async function readNativeQuestions({ home, threadId, after = -1, coordinates, known = [] }) {
+    if (typeof home !== 'string' || typeof threadId !== 'string' || !threadId || threadId.includes('\0')
+        || !Number.isSafeInteger(after) || after < -1 || coordinates !== undefined && typeof coordinates !== 'string'
+        || !Array.isArray(known) || known.length > 500 || known.some(id => typeof id !== 'string' || id.length > 256)) throw new Error('Invalid native question lookup');
+    const db = openNativeMetadata(home);
+    try {
+        const generations = await nativeMetadataGenerations(home, threadId);
+        db.query('BEGIN').get();
+        const index = new NativeHistoryMetadata(db, threadId, generations.ids, generations.cutovers);
+        const reset = coordinates !== index.coordinates;
+        if (reset) after = -1;
+        const rows = [];
+        let through = after;
+        for (const [generationIndex, generation] of index.generations.entries()) {
+            const newer = index.generations.slice(generationIndex + 1);
+            const shadow = newer.length ? `AND NOT EXISTS (SELECT 1 FROM thread_items newer WHERE (${newer.map(value => `(newer.thread_id = ? ${value.cutoff === undefined ? '' : `AND newer.rollout_ordinal < ${value.cutoff}`})`).join(' OR ')}) AND newer.turn_id = thread_items.turn_id AND newer.item_id = thread_items.item_id)` : '';
+            const cutoff = generation.cutoff === undefined ? '' : `AND rollout_ordinal < ${generation.cutoff}`;
+            const max = db.query(`SELECT
+                (SELECT MAX(rollout_ordinal) FROM thread_items WHERE thread_id = ? ${cutoff}) AS original,
+                (SELECT MAX(updated_at_ordinal) FROM thread_items WHERE thread_id = ? ${cutoff}) AS updated`).get(generation.id, generation.id);
+            const last = Math.max(max?.original ?? -1, max?.updated ?? -1) + generation.offset;
+            through = Math.max(through, last);
+            if (last <= after) continue;
+            // Both predicates use native page indexes. Bodies are selected only
+            // after the native typed discriminator or exact reply wrapper matches.
+            const candidates = db.query(`SELECT turn_id, item_id, rollout_ordinal, MAX(rollout_ordinal, updated_at_ordinal) AS revision, item_json
+                FROM thread_items WHERE thread_id = ? AND (updated_at_ordinal > ? OR rollout_ordinal > ?) ${cutoff} ${shadow}
+                AND ((item_type = 'agentMessage' AND ((json_extract(item_json, '$.delivery') = 'async'
+                    AND json_type(item_json, '$.questions') = 'array') ${known.length ? `OR item_id IN (${known.map(() => '?').join(',')})` : ''}))
+                  OR (item_type = 'userMessage' AND EXISTS (SELECT 1 FROM json_each(item_json, '$.content')
+                    WHERE json_extract(value, '$.type') = 'text' AND instr(json_extract(value, '$.text'), '<send_user_message_question_reply>') > 0)))
+                ORDER BY revision, rollout_ordinal LIMIT 501`).all(generation.id, after - generation.offset, after - generation.offset, ...newer.map(value => value.id), ...known);
+            for (const row of candidates) rows.push({ turnId: row.turn_id, itemId: row.item_id,
+                ordinal: row.rollout_ordinal + generation.offset, revision: row.revision + generation.offset, item: JSON.parse(row.item_json) });
+        }
+        rows.sort((a, b) => a.revision - b.revision || a.ordinal - b.ordinal);
+        const items = rows.slice(0, 500), more = rows.length > 500;
+        const result = { items, coordinates: index.coordinates, reset, more,
+            through: more ? items.at(-1).revision : through };
+        if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) throw new Error('Native question page exceeds its source budget');
         db.query('COMMIT').get();
         return result;
     } finally { db.close(); }

@@ -2,7 +2,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
-import { readNativeMetadata, readNativeLifecycles, NativeMetadataIndexMissing, type NativeLifecycleRequest, type NativeMetadataPage, type NativeMetadataRequest } from './codex-metadata-core.mjs';
+import { readNativeMetadata, readNativeLifecycles, readNativeQuestions, NativeMetadataIndexMissing, type NativeLifecycleRequest, type NativeMetadataPage, type NativeMetadataRequest, type NativeQuestionsRequest, type NativeQuestionsPage } from './codex-metadata-core.mjs';
 import { NativeHistorySearch, NativeSearchError, type NativeHistorySearchPage, type NativeHistorySearchRequest } from './codex-search-core.mjs';
 import { SourceError, waitFor } from './errors.ts';
 import type { DirectCodexConfig } from './protocol.ts';
@@ -82,19 +82,25 @@ export class NativeMetadataReader {
     async read(request: NativeMetadataRequest, signal: AbortSignal): Promise<NativeMetadataPage> {
         return metadataPage.parse(await this.request(request, signal));
     }
+    async questions(request: NativeQuestionsRequest, signal: AbortSignal): Promise<NativeQuestionsPage> {
+        return z.object({ items: z.array(z.object({ turnId: z.string(), itemId: z.string(), ordinal,
+            revision: ordinal, item: z.record(z.string(), z.unknown()) })).max(500), coordinates: z.string(), reset: z.boolean(),
+            more: z.boolean(), through: z.number().int().min(-1) }).parse(await this.request(request, signal));
+    }
     async search(request: NativeHistorySearchRequest, signal: AbortSignal): Promise<NativeHistorySearchPage> {
         return searchPage.parse(await this.request({ ...request, kind: 'search' }, signal));
     }
     async lifecycles(request: NativeLifecycleRequest, signal: AbortSignal): Promise<{ absent: string[] }> {
         return z.object({ absent: z.array(z.string()).max(32) }).parse(await this.request(request, signal));
     }
-    private async request(request: NativeMetadataRequest | NativeLifecycleRequest | NativeHistorySearchRequest & { kind: 'search' }, signal: AbortSignal): Promise<unknown> {
+    private async request(request: NativeMetadataRequest | NativeLifecycleRequest | NativeQuestionsRequest | NativeHistorySearchRequest & { kind: 'search' }, signal: AbortSignal): Promise<unknown> {
         signal.throwIfAborted();
         if (this.disposed) throw new SourceError('DISPOSED', 'The native metadata source was closed.');
         try {
             let page: unknown;
             if (!this.config.historyMetadata) page = await waitFor<unknown>('kind' in request
-                ? request.kind === 'lifecycle' ? Promise.resolve(readNativeLifecycles(request)) : this.searchReader.search(request, signal) : readNativeMetadata(request), signal);
+                ? request.kind === 'lifecycle' ? Promise.resolve(readNativeLifecycles(request)) : request.kind === 'questions'
+                    ? readNativeQuestions(request) : this.searchReader.search(request, signal) : readNativeMetadata(request), signal);
             else {
                 const channel = this.connect(), id = ++this.nextId;
                 if (channel.pending.size >= 128) throw unavailable();

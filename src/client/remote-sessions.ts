@@ -32,6 +32,9 @@ import { NativeActionOwner } from './remote-native-actions.ts'
 import type { SourceWorkspaceApi } from '../workspace/source-api.ts'
 import { NativeSubmissionPending, submitRemoteStructuredInput, supportsCodexReference } from './remote-structured-input.ts'
 import { RemoteNativeQueue, type SourceQueueSnapshot } from './remote-native-queue.ts'
+import { sourceQuestion, sourceQuestionCallId } from '../shared/native-async-questions.ts'
+import type { AskUserQuestionAnswer, UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
+import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
 declare module '@deepseek-ai/cordis' { interface Context { hhpiSessions: RemoteSessions } }
 declare module '@deepseek-ai/dsh-session-projection/types' { interface SessionProjectionMap { hhpiArchived: boolean; hhpiSource: SourceSession; hhpiDiscovery: 'advertised' | 'last-known'; hhpiPreparingImages: boolean } }
@@ -220,6 +223,23 @@ export class RemoteSourceSession implements SessionFace {
     // Reconnection/catalog refresh may supply proof that the first lookup
     // could not read. Reuse that event; no polling or input replay is added.
     if (this.state.getSnapshot().openState === 'open' && !sourceIsOffline(session)) this.checkRestoredDeliveries(true)
+    const questions: UserQuestionProjectionView = { active: session.pendingRequests.flatMap(request => {
+      const question = sourceQuestion(request)
+      return question ? [{ callId: sourceQuestionCallId(request) as ToolCallId, questions: [question], state: 'continued' as const }] : []
+    }), settled: [] }
+    const projected = this.projections.faceOf('userQuestions')
+    if (JSON.stringify(projected.getSnapshot()) !== JSON.stringify(questions)) this.projectionValues.get('userQuestions')!.set(questions)
+  }
+  /** Official question composer channel; the source owns validation, dispatch and settlement. */
+  async answerQuestion(callId: string, answer: AskUserQuestionAnswer): Promise<boolean> {
+    const request = this.metadata.getSnapshot().pendingRequests.find(row => sourceQuestionCallId(row) === callId && sourceQuestion(row))
+    if (!request) return false
+    const operationId = await sourceControlOperationId(this.sessionId, 'approve', sourceQuestionCallId(request))
+    if (!this.metadata.getSnapshot().pendingRequests.some(row => sourceQuestionCallId(row) === callId)) return false
+    const receipt = await this.operate({ sessionId: this.sessionId, operationId, kind: 'approve', requestId: request.id,
+      response: { answers: answer.answers, nativeQuestionRevision: request.params.revision } })
+    if (receipt.status !== 'accepted') throw new Error(receipt.message)
+    return true
   }
   readonly promptReferences = { accepts: (source: string): boolean => !!this.metadata.getSnapshot().codex && !!this.nativeActions && !!this.directories && supportsCodexReference(source) }
   private nativeComposerAvailable(): boolean {

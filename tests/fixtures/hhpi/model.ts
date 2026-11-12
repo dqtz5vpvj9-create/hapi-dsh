@@ -1,19 +1,22 @@
 /** The model HTTP boundary is synthetic; tests execute an unmodified native Codex app-server. */
 import { createServer, type Server, type ServerResponse } from 'node:http';
 
-export interface ModelRequest { reply(text?: string): void; tool(name: string, args: Record<string, unknown>): void }
+export interface ModelRequest { readonly input?: unknown; reply(text?: string): void; tool(name: string, args: Record<string, unknown>): void }
 export class SyntheticResponsesModel {
     readonly server: Server;
     private readonly requests: ModelRequest[] = [];
     private readonly waiting: Array<(request: ModelRequest) => void> = [];
     private sequence = 0;
     automatic = true;
+    /** Only an explicitly isolated delivery test retains its own synthetic input. */
+    captureInput = false;
     calls = 0;
     port = 0;
     constructor() {
         this.server = createServer(async (request, response) => {
             try {
-                for await (const _chunk of request) { /* Consume input without retaining source prompts. */ }
+                const chunks: Buffer[] = [];
+                for await (const chunk of request) if (this.captureInput) chunks.push(Buffer.from(chunk));
                 if (request.method !== 'POST' || request.url !== '/v1/responses') { response.writeHead(404); response.end(); return; }
                 const id = ++this.sequence; this.calls++;
                 response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
@@ -27,6 +30,7 @@ export class SyntheticResponsesModel {
                     response.end();
                 };
                 const pending: ModelRequest = {
+                    ...(this.captureInput ? { input: JSON.parse(Buffer.concat(chunks).toString()) } : {}),
                     reply: (text = `Synthetic response ${id}`) => {
                         const item = { id: `message-${id}`, type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text, annotations: [] }] };
                         this.event(response, 'response.output_item.added', { output_index: 0, item: { ...item, status: 'in_progress', content: [] } });

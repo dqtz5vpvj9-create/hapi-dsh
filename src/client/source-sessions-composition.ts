@@ -4,6 +4,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from './source-sessions-provider.ts'
 import { waitForCatalogSession } from './catalog-readiness.ts'
+import { NATIVE_QUESTION_CONSUMER, NATIVE_QUESTION_REALM } from './native-question-provider.ts'
 import { COMMAND_DIRECTORY_CONSUMER, COMMAND_DIRECTORY_REALM } from './command-directory-provider.ts'
 
 /** Named realms belong to each Loader instance, so separate Host graphs share
@@ -46,7 +47,9 @@ export function sourceSessionsLoader(OfficialLoader: typeof Loader, sourceFacade
     override create(options: Omit<EntryOptions, 'id'>, parent: string | null = null, position = Infinity): Promise<string> {
       const selected = sourceFacade && options.name === COMMAND_DIRECTORY_CONSUMER
         ? { ...options, isolate: { ...options.isolate, 'remote.commands': COMMAND_DIRECTORY_REALM } }
-        : options
+        : sourceFacade && options.name === NATIVE_QUESTION_CONSUMER
+          ? { ...options, isolate: { ...options.isolate, 'remote.userQuestions': NATIVE_QUESTION_REALM } }
+          : options
       const managed = selected.name === '@deepseek-ai/dsh-client-ui-workspace'
         ? { ...selected, config: { ...selected.config, restoreSelection: false } }
         : selected

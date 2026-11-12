@@ -1,4 +1,6 @@
 import { capturePendingCall, pendingCallEvidence, type PendingCallAnchor } from './codex-pending-history.ts';
+import { acceptNativeQuestions, type NativeQuestionState } from './codex-async-questions.ts';
+import { nativeQuestionReply, NATIVE_ASYNC_QUESTION } from '../shared/native-async-questions.ts';
 import { CodexUploads } from './codex-uploads.ts';
 import type { SourceUploadRequest } from './protocol.ts';
 import { sourceResumeContext, type SourceResumeContext } from '../workspace/source-navigation-api.ts';
@@ -7,6 +9,7 @@ import { SourceAttentionJournal, SourceAttentionAggregateJournal, type SourceAtt
 import { CodexAccessBridge } from './codex-access-bridge.ts';
 import type { CodexCallResult } from './codex-access.ts';
 import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join } from 'node:path';
 import { CodexObservation, SupersededObservation } from './codex-observation.ts';
 import { SourceError, waitFor } from './errors.ts';
@@ -15,7 +18,7 @@ import { CodexRpc, CodexRpcError, type NativeNotification, type NativeRequest } 
 import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION, type NativeReviewStart } from './codex-history.ts';
 import { retainSelectedLegacyImages } from './codex-legacy-images.ts';
 import { NativeMetadataReader, MissingNativeMetadataIndex } from './codex-metadata.ts';
-import type { NativeMetadataRequest, NativeMetadataPage } from './codex-metadata-core.mjs';
+import type { NativeMetadataRequest, NativeMetadataPage, NativeQuestionsRequest, NativeQuestionsPage } from './codex-metadata-core.mjs';
 import { CodexAttachments } from './codex-attachments.ts';
 import { CodexToolDetails } from './codex-tool-details.ts';
 import { CodexImageReader } from './codex-image-reader.ts';
@@ -35,6 +38,7 @@ interface ThreadOwner {
     pending: NativeNotification[]; pendingBytes: number; pendingOverflow: boolean; ready: boolean; rewrite: boolean;
     /** Directory membership only; retained history/receipts and exact reads survive. */
     catalogRetired?: boolean;
+    asyncQuestions?: NativeQuestionState;
 }
 interface PendingApproval { request: NativeRequest; sessionId: string; acknowledged: Promise<void>; resolve(): void; submitted: boolean; recovered?: boolean; visible?: boolean }
 interface CachedPendingApproval { version: 1; daemon: string; epoch: string; id: string; request: NativeRequest; anchor: PendingCallAnchor; submitted: boolean; resolved: boolean }
@@ -50,12 +54,14 @@ interface AdapterOptions {
     rpc?: CodexRpc; pollMs?: number; readImage?: (path: string, signal: AbortSignal) => Promise<unknown>;
     now?: () => number; random?: () => number;
     readMetadata?: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
+    readQuestions?: (request: NativeQuestionsRequest, signal: AbortSignal) => Promise<NativeQuestionsPage>;
 }
 const MAX_CATALOG = 10_000;
 const MAX_NATIVE_PAGES = 10_000;
 const ACK_TIMEOUT = 15_000;
 const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 const NATIVE_PENDING_REQUESTS = 'native-pending-requests:v1';
+const NATIVE_ASYNC_QUESTIONS = 'native-async-questions:v1';
 const NATIVE_HISTORY_CHECKPOINT = 'native-history-checkpoint:v1';
 const delay = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
     const done = (): void => { signal.removeEventListener('abort', abort); resolve(); };
@@ -71,6 +77,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     private readonly imageReader: CodexImageReader;
     private readonly metadataReader: NativeMetadataReader;
     private readonly readMetadata: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
+    private readonly readQuestions: (request: NativeQuestionsRequest, signal: AbortSignal) => Promise<NativeQuestionsPage>;
     private readonly readImage: (path: string, signal: AbortSignal) => Promise<unknown>;
     private readonly ledger: OperationLedger;
     private readonly creations: CreationLedger;
@@ -103,6 +110,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.imageReader = new CodexImageReader(config, 30_000, options.localImageFiles === true);
         this.metadataReader = new NativeMetadataReader(config);
         this.readMetadata = options.readMetadata ?? ((request, signal) => this.metadataReader.read(request, signal));
+        this.readQuestions = options.readQuestions ?? ((request, signal) => this.metadataReader.questions(request, signal));
         if (!options.readMetadata) this.metadataReader.warm();
         this.readImage = options.readImage ?? ((path, signal) => this.imageReader.read(path, signal));
         this.ledger = new OperationLedger(join(directory, 'operations'));
@@ -266,12 +274,13 @@ export class DirectCodexAdapter implements SourceAdapter {
         const nativeId = thread.id, previous = this.threads.get(nativeId)?.session;
         if (!this.rpc.online && previous) return sourceOffline(previous, this.now());
         const id = sourceSessionId({ sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId });
-        const pendingRequests = [...this.approvals].filter(([, pending]) => pending.sessionId === id && pending.visible !== false).map(([requestId, pending]) => ({
+        const blockingRequests = [...this.approvals].filter(([, pending]) => pending.sessionId === id && pending.visible !== false).map(([requestId, pending]) => ({
             id: requestId, method: pending.request.method,
             turnId: typeof pending.request.params.turnId === 'string' ? pending.request.params.turnId : null,
             itemId: typeof pending.request.params.itemId === 'string' ? pending.request.params.itemId : null,
             params: pending.request.params,
         }));
+        const pendingRequests = [...blockingRequests, ...(this.threads.get(nativeId)?.asyncQuestions?.active ?? [])];
         const running = thread.status.type === 'active';
         const loaded = this.loaded.has(nativeId);
         // A stored thread can accept an explicit continuation without already
@@ -279,7 +288,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         const resumable = this.config.ownership === 'exclusive' || this.config.writerLock === 'native';
         return { id, sourceId: this.id, machineId: this.machineId, engine: this.engine, nativeId,
             title: nativeThreadTitle(thread), cwd: thread.cwd, updatedAt: thread.updatedAt * 1000,
-            status: pendingRequests.length || running && Array.isArray(thread.status.activeFlags) && thread.status.activeFlags.some(flag => flag === 'waitingOnUserInput' || flag === 'waitingOnApproval') ? 'waiting' : running ? 'running' : 'idle',
+            status: blockingRequests.length || running && Array.isArray(thread.status.activeFlags) && thread.status.activeFlags.some(flag => flag === 'waitingOnUserInput' || flag === 'waitingOnApproval') ? 'waiting' : running ? 'running' : 'idle',
             connection: this.rpc.online ? sourceOnlineConnection(previous, this.now()) : { state: 'offline', observedAt: this.now() },
             activeTurnId: running ? previous?.activeTurnId ?? null : null,
             codex: { model: typeof thread.model === 'string' ? thread.model : null, reasoningEffort: typeof thread.reasoningEffort === 'string' ? thread.reasoningEffort : null, parentThreadId: typeof thread.parentThreadId === 'string' ? thread.parentThreadId : null, agentNickname: typeof thread.agentNickname === 'string' ? thread.agentNickname : null, ...(isRecord(thread.threadSettings) ? { settings: thread.threadSettings } : previous?.codex?.settings ? { settings: previous.codex.settings } : {}) },
@@ -654,6 +663,13 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.setNativeHistoryCheckpoint(history, owner.session, { version: 1, state: owner.pendingCompletions.size ? 'building' : 'complete',
             updatedAt: response.thread.updatedAt, statusType: response.thread.status.type });
         await this.recoverPending(owner);
+        try { await this.recoverAsyncQuestions(owner, signal); }
+        catch (error) {
+            // Optional interaction projection cannot make readable chat fail.
+            // Keep its last good state. Dispatch below performs a strict fresh
+            // confirmation and never authorizes a reply from this cached state.
+            if (signal.aborted || error instanceof SupersededObservation) throw error;
+        }
         owner.attachments?.acceptRevision(owner.attachments.revisionToken);
     }
     /** A fresh 0.162 home has no sparse database before its first user input.
@@ -821,7 +837,7 @@ export class DirectCodexAdapter implements SourceAdapter {
             for (const group of accepted) {
                 const entries = group.entries.map(entry => this.monotoneSnapshot(history, entry, group.terminal)).filter((entry): entry is NativeItemEntry => entry !== undefined);
                 const hash = createHash('sha256').update(owner.session.id).digest('hex');
-                retainSelectedLegacyImages(['.v6.sqlite', '.v5.sqlite', '.v4.sqlite', '.v3.sqlite', '.v2.sqlite', '.sqlite'].map(suffix => join(this.directory, 'history', `${hash}${suffix}`)),
+                retainSelectedLegacyImages(['.v7.sqlite', '.v6.sqlite', '.v5.sqlite', '.v4.sqlite', '.v3.sqlite', '.v2.sqlite', '.sqlite'].map(suffix => join(this.directory, 'history', `${hash}${suffix}`)),
                     index, owner.session, owner.native, entries);
                 history.acceptItems(session, entries, group.terminal);
                 for (const item of group.items) index.cache(`source-revision:${item.turnId}:${item.itemId}`, item.revision);
@@ -937,6 +953,56 @@ export class DirectCodexAdapter implements SourceAdapter {
     private cachedPending(owner: ThreadOwner): CachedPendingApproval[] {
         return this.history(owner).index.cached<CachedPendingApproval[]>(NATIVE_PENDING_REQUESTS) ?? [];
     }
+    /** v7 -> v8 changes display material, not the native source. Carry only
+     * previously received blocking calls from the exact same source snapshot.
+     * recoverPending still verifies daemon, native anchor and live wait state. */
+    private migratePending(owner: ThreadOwner): void {
+        const index = this.history(owner).index;
+        if (index.hasCached(NATIVE_PENDING_REQUESTS)) return;
+        const coordinates = index.cached<string>('native-source-coordinates');
+        if (!coordinates) return;
+        const hash = createHash('sha256').update(owner.session.id).digest('hex');
+        let previous: DatabaseSync | undefined, records: CachedPendingApproval[] = [];
+        try {
+            previous = new DatabaseSync(join(this.directory, 'history', `${hash}.v7.sqlite`), { readOnly: true });
+            const metadata = (key: string) => (previous!.prepare('SELECT value FROM metadata WHERE key=?').get(key) as { value: string } | undefined)?.value;
+            const cached = (key: string) => (previous!.prepare('SELECT value FROM native_cache WHERE key=?').get(key) as { value: string } | undefined)?.value;
+            const session = metadata('session'), epoch = metadata('epoch'), sourceCoordinates = cached('native-source-coordinates');
+            const value = cached(NATIVE_PENDING_REQUESTS);
+            if (session && epoch && sourceCoordinates && value && JSON.parse(session).id === owner.session.id
+                && JSON.parse(sourceCoordinates) === coordinates) {
+                const parsed: unknown = JSON.parse(value);
+                if (Array.isArray(parsed) && parsed.length <= 64) records = parsed.filter((record): record is CachedPendingApproval => isRecord(record)
+                    && record.version === 1 && record.epoch === epoch && record.daemon === this.rpc.daemonIdentity
+                    && isRecord(record.request) && record.request.method === 'item/tool/requestUserInput'
+                    && isRecord(record.request.params) && record.request.params.threadId === owner.native.id
+                    && isRecord(record.anchor) && record.anchor.threadId === owner.native.id)
+                    .map(record => ({ ...record, epoch: index.epoch }));
+            }
+        } catch { /* Missing or unverifiable evidence never creates a native request. */ }
+        finally { previous?.close(); }
+        index.edit(owner.session, () => index.cache(NATIVE_PENDING_REQUESTS, records));
+    }
+    private async recoverAsyncQuestions(owner: ThreadOwner, signal: AbortSignal): Promise<void> {
+        const initialized = await this.rpc.connect(signal), index = this.history(owner).index;
+        let state = index.cached<NativeQuestionState>(NATIVE_ASYNC_QUESTIONS);
+        const current = owner.observation.capture(() => this.rpc.currentGeneration, () => owner.history);
+        for (let pageNumber = 0; pageNumber < MAX_NATIVE_PAGES; pageNumber++) {
+            const page = await this.readQuestions({ kind: 'questions', home: initialized.codexHome, threadId: owner.native.id,
+                ...(state ? { after: state.through, coordinates: state.coordinates,
+                    known: [...new Set(state.active.flatMap(row => row.itemId ? [row.itemId] : []))] } : {}) }, signal);
+            if (!current()) throw new SupersededObservation();
+            state = acceptNativeQuestions(state, page);
+            if (!page.more) {
+                owner.asyncQuestions = state;
+                const session = this.descriptor(owner.native);
+                index.edit(session, () => index.cache(NATIVE_ASYNC_QUESTIONS, state));
+                this.metadata(owner, session);
+                return;
+            }
+        }
+        throw new SourceError('HISTORY_UNAVAILABLE', 'Native questions exceeded their source read budget.');
+    }
     private savePending(owner: ThreadOwner, records: CachedPendingApproval[]): void {
         const index = this.history(owner).index;
         index.edit(owner.session, () => { index.cache(NATIVE_PENDING_REQUESTS, records.slice(-64)); });
@@ -961,6 +1027,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     private async recoverPending(owner: ThreadOwner): Promise<void> {
         const daemon = this.rpc.daemonIdentity;
         if (!daemon) return;
+        this.migratePending(owner);
         const index = this.history(owner).index, epoch = index.epoch, generation = this.rpc.currentGeneration;
         const initialized = await this.rpc.connect(this.lifetime.signal), records = this.cachedPending(owner);
         for (const [id, pending] of this.approvals) {
@@ -1011,6 +1078,13 @@ export class DirectCodexAdapter implements SourceAdapter {
     async operate(operation: SourceOperation): Promise<SourceReceipt> {
         this.creations.invalidateProtection();
         this.creations.protectTarget(this.assertScope(operation.sessionId));
+        // A question has one immutable reply identity across Clients and Panes.
+        // A caller cannot bypass the durable receipt by inventing another ID.
+        if (operation.kind === 'approve' && operation.requestId?.startsWith('["request_user_input_async",')) {
+            const target = JSON.stringify([operation.requestId, operation.response?.nativeQuestionRevision]);
+            const expected = `hhpi-control:${createHash('sha256').update(JSON.stringify([operation.sessionId, 'approve', target])).digest('hex')}`;
+            if (operation.operationId !== expected) throw new SourceError('INVALID_REQUEST', 'Use the original native question operation identity.');
+        }
         return this.ledger.run(operation, () => this.perform(operation), receipt => this.reconcile(operation, receipt));
     }
     async receipt(operation: SourceOperation, signal?: AbortSignal): Promise<SourceReceipt | null> {
@@ -1060,6 +1134,13 @@ export class DirectCodexAdapter implements SourceAdapter {
         return owner.history!.index.userMessageSequence(params.clientUserMessageId) !== undefined ? confirmed() : undefined;
     }
     private async reconcile(operation: SourceOperation, receipt: SourceReceipt): Promise<SourceReceipt | undefined> {
+        if (operation.kind === 'approve' && operation.requestId?.startsWith('["request_user_input_async",')) {
+            const owner = await this.owner(operation.sessionId); await this.prepare(owner);
+            const channel = owner.history!.index.cached<{ method: string }>(`native-question-channel:${operation.requestId}`);
+            const admission = channel && await this.reconcileNativeInput(channel.method, { threadId: owner.native.id, clientUserMessageId: operation.operationId });
+            await this.recoverAsyncQuestions(owner, this.lifetime.signal);
+            return admission?.status === 'accepted' ? { ...receipt, status: 'accepted', message: 'The original native question reply confirms admission.' } : undefined;
+        }
         if (operation.kind === 'approve' && operation.requestId) {
             const owner = await this.owner(operation.sessionId); await this.prepare(owner); await this.refresh(owner, true);
             const saved = this.cachedPending(owner).find(record => record.id === operation.requestId);
@@ -1147,6 +1228,32 @@ export class DirectCodexAdapter implements SourceAdapter {
         catch (error) { throw this.preflightFailure(error); }
         const receipt = (status: SourceReceipt['status'], message: string, turnId?: string): SourceReceipt => ({ sessionId: operation.sessionId, operationId: operation.operationId, status, message, ...(turnId ? { turnId } : {}) });
         if (operation.kind === 'approve') {
+            if (operation.requestId?.startsWith('["request_user_input_async",')) {
+                try { await this.prepare(owner); await this.refresh(owner, true, signal); await this.recoverAsyncQuestions(owner, signal); }
+                catch (error) { throw this.preflightFailure(error); }
+                const question = owner.asyncQuestions?.active.find(row => row.id === operation.requestId);
+                if (!question) throw new SourceError('INVALID_REQUEST', 'The original native question is no longer answerable.');
+                if (operation.response?.nativeQuestionRevision !== question.params.revision) throw new SourceError('INVALID_REQUEST', 'The original native question changed. No answer was dispatched.');
+                let text: string;
+                try { text = nativeQuestionReply(question, operation.response); }
+                catch (error) { throw new SourceError('INVALID_REQUEST', error instanceof Error ? error.message : 'Invalid native answer.'); }
+                const index = owner.history!.index, key = `native-question-channel:${operation.requestId}`;
+                const prior = index.cached<{ method: 'turn/steer' | 'thread/queue/add'; operationId: string; turnId?: string; rejected?: boolean }>(key);
+                if (prior && !prior.rejected && prior.operationId !== operation.operationId) throw new SourceError('INVALID_REQUEST', 'The original native question already has a submitted reply.');
+                const turnId = owner.session.activeTurnId;
+                const channel = prior && !prior.rejected ? prior : turnId && owner.native.status.type === 'active'
+                    ? { method: 'turn/steer' as const, operationId: operation.operationId, turnId } : { method: 'thread/queue/add' as const, operationId: operation.operationId };
+                index.edit(owner.session, () => index.cache(key, channel));
+                const nativeOperationId = `${operation.operationId}:${createHash('sha256').update(JSON.stringify([channel.method, channel.turnId])).digest('hex').slice(0, 16)}`;
+                const response = await this.nativeAccess.call({ sourceId: this.id, operationId: nativeOperationId, method: channel.method,
+                    params: { threadId: owner.native.id, clientUserMessageId: operation.operationId,
+                        ...(channel.turnId ? { expectedTurnId: channel.turnId } : {}), input: [{ type: 'text', text, text_elements: [] }] } });
+                if (response.status === 'rejected') index.edit(owner.session, () => index.cache(key, { ...channel, rejected: true }));
+                owner.dirty = true;
+                // Admission does not settle the question. The explicit native
+                // user-message reply owns that transition on the next refresh.
+                return { ...receipt(response.status, response.message), ...(response.status === 'rejected' ? { retryable: true as const } : {}) };
+            }
             if (operation.requestId && !this.approvals.has(operation.requestId)) await this.prepare(owner);
             let pending = operation.requestId ? this.approvals.get(operation.requestId) : undefined;
             if (pending?.recovered) { await this.refresh(owner, true, signal); pending = this.approvals.get(operation.requestId!); }
