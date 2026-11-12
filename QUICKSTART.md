@@ -2,7 +2,7 @@
 
 HHPI 让普通 DSH 与原生 Codex 会话进入同一个 DSH Web 工作区。只访问别人部署的工作区时，直接打开浏览器入口，无需本机安装。
 
-请使用维护者发布的完整 bundle，并让 Host 和每个 Runner 安装同一份扩展集合。已发布变更及验证范围见[发行说明](docs/hhpi-retirement-release-notes.md)。
+从[公开发行页](https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/tag/preview-20261111)下载完整预览版 bundle，并让 Host 和每个 Runner 安装同一份扩展集合。发行页同时提供 `SHA256SUMS`、安装说明与本次验证范围；[项目网站](https://dqtz5vpvj9-create.github.io/hapi-dsh/)展示实际界面与工作流。
 
 ## 安装完整 bundle
 
@@ -12,10 +12,10 @@ HHPI 让普通 DSH 与原生 Codex 会话进入同一个 DSH Web 工作区。只
 npm install --global pnpm@11.28.5 @deepseek-ai/dsh@0.2.2-rc.1
 ```
 
-取得维护者提供的 `hapi-dsh-bundle-VERSION.tgz`，将 `VERSION` 换成实际文件名。解压到长期保留的目录：
+下载 [`hapi-dsh-bundle-0.1.2-preview-20261111.tgz`](https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/download/preview-20261111/hapi-dsh-bundle-0.1.2-preview-20261111.tgz)，按发行页的 `SHA256SUMS` 核对文件后，解压到长期保留的目录：
 
 ```text
-tar -xzf hapi-dsh-bundle-VERSION.tgz
+tar -xzf hapi-dsh-bundle-0.1.2-preview-20261111.tgz
 node package/dist/install.mjs install --profile hapi --role host
 ```
 

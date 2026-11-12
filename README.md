@@ -6,7 +6,11 @@
 
 HHPI 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的 Web 工作区插件，接入**本机 DSH、配对远端 DSH 与原生 Codex**。界面沿用官方 DSH Conversation、编辑器和插件扩展点；任务、工具、队列与审批继续由原来源管理。
 
-[快速上手](#快速上手) · [来源与能力](#来源与能力) · [架构](docs/architecture.md) · [参与开发](#参与开发)
+[项目网站与界面演示](https://dqtz5vpvj9-create.github.io/hapi-dsh/) · [下载预览版](https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/tag/preview-20261111) · [快速上手](#快速上手) · [架构](docs/architecture.md) · [参与开发](#参与开发)
+
+[![HHPI 实际工作区：统一会话侧栏与并排对话窗格，内容为演示数据](site/assets/demo-workspace.webp)](https://dqtz5vpvj9-create.github.io/hapi-dsh/)
+
+*实际界面，演示数据。点击查看三步工作流导览。*
 
 ## 从找到会话，到继续工作
 
@@ -49,17 +53,17 @@ flowchart LR
 
 **访问已有工作区：** 用浏览器打开管理员提供的受信任入口即可，无需在浏览器所在机器安装 HHPI。
 
-**自建工作区：** 使用维护者提供的完整 `hapi-dsh-bundle-VERSION.tgz`。运行环境为 **Node.js 24.x、DSH `0.2.2-rc.1`、`pnpm@11.28.5`**；Host 与每个 Runner 使用同一 bundle 的完整扩展集合。安装需要联网。
+**自建工作区：** 下载 [2026-11-11 预览版完整安装包](https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/download/preview-20261111/hapi-dsh-bundle-0.1.2-preview-20261111.tgz)，校验值与本次验证范围见[发行页](https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/tag/preview-20261111)。运行环境为 **Node.js 24.x、DSH `0.2.2-rc.1`、`pnpm@11.28.5`**；Host 与每个 Runner 使用同一 bundle 的完整扩展集合。安装需要联网。
 
 以下命令用于首次安装；已有实例请保留原配置、机器身份与 profile，按[升级流程](docs/distribution.md)更新。
 
 ```text
 npm install --global pnpm@11.28.5 @deepseek-ai/dsh@0.2.2-rc.1
-tar -xzf hapi-dsh-bundle-VERSION.tgz
+tar -xzf hapi-dsh-bundle-0.1.2-preview-20261111.tgz
 node package/dist/install.mjs install --profile hapi --role host
 ```
 
-将 `VERSION` 换成取得的 bundle 文件名。安装器会打印受管 release 目录；把下方 `RELEASE` 换成这个实际路径，再初始化并启动：
+安装器会打印受管 release 目录；把下方 `RELEASE` 换成这个实际路径，再初始化并启动：
 
 ```text
 node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" init --config-only

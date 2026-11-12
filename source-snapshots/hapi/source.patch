@@ -4896,7 +4896,7 @@ index 3d929f8409f6d5f0721bbf1e3d8736ae10d4282c..7101b432dca82af5cfdc7745bdaa6d16
      unlinkSync,
      writeFileSync,
  } from 'node:fs'
-@@ -46,6 +47,9 @@ const releaseRoot = process.env.HAPI_DEPLOY_RELEASE_ROOT || '/mnt/cache/build-ca
+@@ -46,4 +47,7 @@ const releaseRoot = process.env.HAPI_DEPLOY_RELEASE_ROOT || '/mnt/cache/build-ca
  const stateDirectory = process.env.HAPI_DEPLOY_STATE_ROOT || join(process.env.HOME || '/home/chris', '.local/share/hapi-deploy')
  const statePath = join(stateDirectory, 'current.json')
  const wrapperPath = process.env.HAPI_DEPLOY_WRAPPER || join(process.env.HOME || '/home/chris', '.local/bin/hapi')
@@ -4904,8 +4904,6 @@ index 3d929f8409f6d5f0721bbf1e3d8736ae10d4282c..7101b432dca82af5cfdc7745bdaa6d16
 +const previousDirectory = join(releaseRoot, '.previous')
 +const gatewayRollbackPath = join(releaseRoot, '.gateway-rollback')
  const bunExecutable = process.env.HAPI_DEPLOY_BUN || '/mnt/cache/build-cache/hapi-upstream-toolchain/bun'
- const publicUrl = process.env.HAPI_DEPLOY_PUBLIC_URL || 'https://hapi.tail.lixinrui000.cn'
- const windowsHost = process.env.HAPI_DEPLOY_WINDOWS_HOST || 'win'
 @@ -151,6 +155,10 @@ function testAndBuild(sourceDirectory: string, releaseDirectory: string, compone
      }
      if (components.includes('windows')) {

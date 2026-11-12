@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#173e31">
+  <title>HHPI — 把各台机器上的 Agent，放进一个 DSH 工作区</title>
+  <meta name="description" content="HHPI 是 DeepSeek Harness 的开源 Web 工作区插件。统一查找本机 DSH、配对远端 DSH 与原生 Codex 会话，并排读历史、写草稿，在原来源继续工作。">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:title" content="HHPI — 每台机器的 Agent，在同一个工作区。">
+  <meta property="og:description" content="统一找会话，并排读上下文，回到原来源继续工作。面向 DeepSeek Harness 的开源 Web 工作区插件。">
+  <meta property="og:url" content="https://dqtz5vpvj9-create.github.io/hapi-dsh/">
+  <meta property="og:image" content="https://dqtz5vpvj9-create.github.io/hapi-dsh/assets/demo-workspace.webp">
+  <meta property="og:image:alt" content="HHPI 的统一侧栏和双窗格工作区，使用演示会话数据">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://dqtz5vpvj9-create.github.io/hapi-dsh/">
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="site-header">
+    <a class="brand" href="./" aria-label="HHPI 首页">
+      <svg class="brand-symbol" viewBox="0 0 36 36" fill="none" aria-hidden="true"><rect x="1" y="1" width="34" height="34" rx="9" fill="currentColor"/><path d="M9 10v16m18-16v16M9 18h18M18 10v8m0 0v8" stroke="#F8F9F5" stroke-width="2.2"/><path d="M14.5 14.5h7v7h-7z" fill="currentColor" stroke="#F8F9F5" stroke-width="1.7"/></svg>
+      <span>HHPI</span>
+    </a>
+    <nav class="main-nav" aria-label="主导航">
+      <a href="#demo">产品演示</a>
+      <a href="#how-it-works">工作方式</a>
+      <a href="#install">开始使用</a>
+    </nav>
+    <a class="header-source" href="https://github.com/dqtz5vpvj9-create/hapi-dsh">GitHub <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="main" tabindex="-1">
+    <section class="hero section-shell" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> OPEN SOURCE <span class="eyebrow-separator">/</span> <a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/tag/preview-20261111">PREVIEW 0.1.2 <span aria-hidden="true">↗</span></a></p>
+        <h1 id="hero-title">每台机器的 Agent，<br>在<span class="title-accent">同一个工作区。</span></h1>
+        <p class="hero-description">工作站上的 Codex，另一台机器的 DSH，<br class="desktop-break">还有本机没写完的草稿。现在，一起接着做。</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/download/preview-20261111/hapi-dsh-bundle-0.1.2-preview-20261111.tgz">下载完整 Bundle <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 3v10m-4-4 4 4 4-4M4 15v2h12v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></a>
+          <a class="button button-quiet" href="#demo"><span class="play-icon" aria-hidden="true">▷</span> 看看如何工作</a>
+        </div>
+        <p class="hero-note">自建需 Node.js 24 · 已有工作区？直接打开受信任的访问入口。</p>
+      </div>
+      <div class="hero-side-note" aria-hidden="true">
+        <span class="side-line"></span>
+        <p>Your agents.<br>Your machines.<br><strong>One workspace.</strong></p>
+        <span class="coordinate">HHPI / DSH WEB</span>
+      </div>
+    </section>
+
+    <figure class="hero-product section-shell">
+      <div class="product-frame">
+        <div class="frame-topline"><span><span class="frame-dot" aria-hidden="true"></span> HHPI WORKSPACE</span><span>一处进入，各自继续</span></div>
+        <a class="product-image-link" href="./assets/demo-workspace.webp" target="_blank" rel="noopener" aria-label="在新标签页查看 HHPI 工作区大图">
+          <img src="./assets/demo-workspace.webp" width="1440" height="900" fetchpriority="high" alt="HHPI 实际工作区界面：统一会话侧栏，两个并排的对话窗格，以及独立的草稿输入区；内容为演示数据">
+        </a>
+      </div>
+      <figcaption><span>沿用原生 DSH 界面。把上下文摆在一起，把工作接下去。</span><span class="image-disclosure">实际界面 · 演示数据</span></figcaption>
+    </figure>
+
+    <section class="intro section-shell" aria-labelledby="intro-title">
+      <p class="section-kicker">为跨机器工作而做</p>
+      <div>
+        <h2 id="intro-title">任务分布在各处，<br>注意力留在眼前。</h2>
+        <p>HHPI 是 <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> 的开源 Web 工作区插件。在一个侧栏找到不同机器上的会话，用窗口和分屏组织上下文，再回到对应来源继续任务。</p>
+      </div>
+      <div class="source-list" aria-label="已接入的三类来源">
+        <div><span class="source-mark" aria-hidden="true">↳</span><strong>本机 DSH</strong><span>就在当前 Host</span></div>
+        <div><span class="source-mark" aria-hidden="true">⇄</span><strong>配对远端 DSH</strong><span>接上另一台机器</span></div>
+        <div><span class="source-mark" aria-hidden="true">⌘</span><strong>原生 Codex</strong><span>延续原有 thread</span></div>
+      </div>
+    </section>
+
+    <section class="demo-section" id="demo" aria-labelledby="demo-title">
+      <div class="section-shell">
+        <div class="section-heading">
+          <div><p class="section-kicker">从上下文，到下一步</p><h2 id="demo-title">找到它，摆在一起，继续做。</h2></div>
+          <p class="section-intro">一段三步界面导览。<br>点击任一步，看看工作如何衔接。</p>
+        </div>
+        <div class="demo-layout" data-demo>
+          <div class="demo-controls">
+            <div class="demo-steps" role="group" aria-label="选择演示步骤">
+              <button class="demo-step is-active" type="button" data-step="0" aria-pressed="true" aria-controls="demo-screen">
+                <span class="step-number">01</span><span><strong>找到正在做的事</strong><span>统一侧栏搜索跨机器会话，打开已有任务，接上最新进展。</span></span><span class="step-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button class="demo-step" type="button" data-step="1" aria-pressed="false" aria-controls="demo-screen">
+                <span class="step-number">02</span><span><strong>把上下文摆在一起</strong><span>并排阅读不同对话。每个窗格都有自己的阅读位置和未发送草稿。</span></span><span class="step-arrow" aria-hidden="true">↗</span>
+              </button>
+              <button class="demo-step" type="button" data-step="2" aria-pressed="false" aria-controls="demo-screen">
+                <span class="step-number">03</span><span><strong>在原来源继续工作</strong><span>回到会话所属的机器，继续对话，使用来源支持的文件和终端能力。</span></span><span class="step-arrow" aria-hidden="true">↗</span>
+              </button>
+            </div>
+            <button class="demo-play" type="button" data-demo-play hidden><span class="play-icon" aria-hidden="true">▷</span><span data-play-label>播放三步导览</span></button>
+            <p class="demo-disclosure">画面来自实际产品界面，使用专门准备的演示数据。</p>
+          </div>
+          <figure class="demo-figure" id="demo-screen" aria-label="当前演示画面">
+            <a href="./assets/demo-find-session.webp" target="_blank" rel="noopener" data-demo-image-link aria-label="在新标签页查看当前演示大图">
+              <img src="./assets/demo-find-session.webp" width="1440" height="900" data-demo-image alt="步骤一：在 HHPI 的统一侧栏搜索和找到不同来源的会话；实际界面，演示数据">
+            </a>
+            <figcaption><span data-demo-caption>01 / 统一入口，找到当前任务</span><a href="./assets/demo-find-session.webp" target="_blank" rel="noopener" data-demo-full>查看大图 <span aria-hidden="true">↗</span></a></figcaption>
+            <p class="visually-hidden" role="status" aria-live="polite" data-demo-status></p>
+          </figure>
+        </div>
+        <noscript><p class="noscript-note">查看三步演示：<a href="./assets/demo-find-session.webp">找到会话</a> · <a href="./assets/demo-workspace.webp">并排阅读与草稿</a> · <a href="./assets/demo-source-tools.webp">来源文件与任务</a>。</p></noscript>
+      </div>
+    </section>
+
+    <section class="working-section section-shell" id="how-it-works" aria-labelledby="working-title">
+      <div class="section-heading"><div><p class="section-kicker">一个工作区，清楚的归属</p><h2 id="working-title">熟悉的界面，<br>各自的执行现场。</h2></div><p class="section-intro">HHPI 把会话接进来。<br>任务仍然在原来的机器上运行。</p></div>
+      <div class="architecture" aria-label="本机 DSH、配对远端 DSH、原生 Codex 接入 HHPI DSH Web 工作区，各来源继续管理执行、文件和审批">
+        <div class="architecture-sources"><div><span>01</span> 本机 DSH</div><div><span>02</span> 配对远端 DSH</div><div><span>03</span> 原生 Codex</div></div>
+        <div class="architecture-connector" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="architecture-hub"><svg viewBox="0 0 36 36" fill="none" aria-hidden="true"><rect x="1" y="1" width="34" height="34" rx="9" stroke="currentColor"/><path d="M9 10v16m18-16v16M9 18h18m-9-8v16" stroke="currentColor" stroke-width="1.8"/></svg><strong>HHPI</strong><span>一个 DSH Web 工作区</span></div>
+        <div class="architecture-outcome"><strong>查找 · 阅读 · 继续</strong><span>执行、队列与最终审批<br>继续由原来源管理</span></div>
+      </div>
+      <div class="principles">
+        <article><span class="principle-index">A /</span><h3>延续 DSH 的使用习惯</h3><p>复用官方 Conversation、编辑器与插件扩展点。聊天、阅读与来源能力放进同一套工作区。</p></article>
+        <article><span class="principle-index">B /</span><h3>文件和操作有明确去处</h3><p>会话对应原来源。可用的文件、上传和终端操作，使用对应机器提供的资源与权限。</p></article>
+        <article><span class="principle-index">C /</span><h3>关掉窗格，任务接着跑</h3><p>关闭窗格只释放当前视图。原生执行继续由源端管理，下次再回到已有会话。</p></article>
+      </div>
+      <a class="text-link" href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/architecture.md">阅读架构与来源说明 <span aria-hidden="true">↗</span></a>
+    </section>
+
+    <section class="install-section" id="install" aria-labelledby="install-title">
+      <div class="section-shell install-layout">
+        <div class="install-copy"><p class="section-kicker">从这里开始</p><h2 id="install-title">给你的 Agent，<br>一个共同入口。</h2><p>当前提供开发预览版。自建时请下载完整 Bundle，Host 与每个 Runner 使用同一套扩展。</p><a class="button button-light" href="https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/download/preview-20261111/hapi-dsh-bundle-0.1.2-preview-20261111.tgz">下载 Preview Bundle <span aria-hidden="true">↓</span></a><div class="release-links"><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/tag/preview-20261111">发行内容 ↗</a><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/releases/download/preview-20261111/SHA256SUMS">SHA256 校验文件 ↗</a></div><p class="install-prerequisites">Node.js 24.x<br>pnpm 11.28.5 · DSH 0.2.2-rc.1<br>安装需要联网</p></div>
+        <div class="install-instructions">
+          <div class="install-step"><div class="install-step-heading"><span>01</span><h3>准备环境并安装完整包</h3></div><p>在计划作为 Host 的机器上解压下载文件，然后运行安装器：</p><div class="code-block"><button type="button" class="copy-button" data-copy="install-code" aria-label="复制安装命令" hidden>复制</button><pre><code id="install-code">npm install --global pnpm@11.28.5 @deepseek-ai/dsh@0.2.2-rc.1
+tar -xzf hapi-dsh-bundle-0.1.2-preview-20261111.tgz
+node package/dist/install.mjs install --profile hapi --role host</code></pre></div></div>
+          <div class="install-step"><div class="install-step-heading"><span>02</span><h3>初始化，检查，启动</h3></div><p>安装器会打印 release 目录。将下方 <code>RELEASE</code> 换成这个实际路径：</p><div class="code-block"><button type="button" class="copy-button" data-copy="start-code" aria-label="复制启动命令" hidden>复制</button><pre><code id="start-code">node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" init --config-only
+node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" doctor
+node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" start</code></pre></div></div>
+          <div class="install-step install-final"><div class="install-step-heading"><span>03</span><h3>打开工作区，接入你的来源</h3></div><p>默认入口为 <code>127.0.0.1:3080</code>，使用 DSH 打印的登录链接进入。随后按指南配对远端 DSH 或接入原生 Codex。</p><a class="install-guide" href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/QUICKSTART.md">完整安装与接入指南 <span aria-hidden="true">↗</span></a></div>
+          <p class="install-existing">已有实例请按<a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/distribution.md">升级指南</a>保留配置、机器身份与 profile。</p>
+          <p class="visually-hidden" role="status" aria-live="polite" data-copy-status></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="faq-section section-shell" aria-labelledby="faq-title">
+      <div><p class="section-kicker">一些你可能想知道的事</p><h2 id="faq-title">开始之前。</h2><a class="text-link" href="https://github.com/dqtz5vpvj9-create/hapi-dsh/issues">还有问题？来聊聊 <span aria-hidden="true">↗</span></a></div>
+      <div class="faq-list">
+        <details><summary>我需要在每台用来访问的设备上安装吗？<span aria-hidden="true">+</span></summary><p>访问已有工作区时，只需在浏览器中打开管理员提供的受信任入口。自建时在 Host 安装完整 Bundle；要接入另一台 DSH 机器，再为它配置 Runner。</p></details>
+        <details><summary>目前支持哪些 Agent 和机器？<span aria-hidden="true">+</span></summary><p>当前接入本机 DSH、正式配对的远端 DSH，以及通过原机器 app-server 接入的原生 Codex。其他 Agent 需要各自的来源适配器。每种来源提供的模型、文件、终端与审批等操作，取决于它实际支持的能力。<a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/native-codex.md">查看 Codex 指南 ↗</a></p></details>
+        <details><summary>Preview 版本适合怎样使用？<span aria-hidden="true">+</span></summary><p>这是持续开发中的预览发行，适合愿意反馈问题的自建使用者。请查看对应发行内容与已知限制，保留已有配置和可恢复版本。上面的界面导览使用演示数据，帮助你了解工作方式。</p></details>
+        <details><summary>为什么要下载完整 Bundle？<span aria-hidden="true">+</span></summary><p>完整包同时提供 HHPI、匹配的 DSH 源码扩展、安装器、对应源码与许可。单独的插件 tgz 或 npm 上同名的普通 rc 包不能替代这套安装。它仍需联网获取未修改的依赖。</p></details>
+        <details><summary>HHPI 和 hapi-dsh 是什么关系？<span aria-hidden="true">+</span></summary><p>HHPI 是产品名，技术包名和命令保持为 <code>hapi-dsh</code>，远端插件为 <code>hapi-dsh-runner</code>。项目复用了 HAPI 的部分工作区和输入实现，并保留原作者与来源声明。</p></details>
+        <details><summary>可以自己修改和参与贡献吗？<span aria-hidden="true">+</span></summary><p>欢迎。HHPI 采用 AGPL-3.0-only；DeepSeek Harness 源码采用 MIT 许可。你可以参与来源适配、工作区交互与原生能力接入。开始前阅读<a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/AGENTS.md">开发约定</a>与<a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/architecture.md">当前架构</a>。</p></details>
+      </div>
+    </section>
+
+    <section class="contribute section-shell" aria-labelledby="contribute-title"><div><p class="section-kicker">在开源里，一起接着做</p><h2 id="contribute-title">把你的工作方式，带进来。</h2><p>遇到问题，分享想法，或接入下一个 Agent。</p></div><a class="button button-outline" href="https://github.com/dqtz5vpvj9-create/hapi-dsh">在 GitHub 参与 <span aria-hidden="true">↗</span></a></section>
+  </main>
+
+  <footer class="site-footer section-shell"><div class="footer-main"><a class="brand" href="./"><span>HHPI</span></a><span>Your agents, across machines.<br>One DSH workspace.</span></div><nav aria-label="页脚导航"><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh">源码</a><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/issues">反馈</a><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/LICENSE">AGPL-3.0-only</a><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/NOTICE">来源与许可</a></nav><p>为 DeepSeek Harness 构建的开源插件。<span>PREVIEW / 2026.11</span></p></footer>
+</body>
+</html>

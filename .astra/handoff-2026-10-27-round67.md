@@ -2,7 +2,7 @@
 
 ## Truth as of now
 
-- Real deployment: `https://hapi-dsh.tail.lixinrui000.cn`, Host `127.0.0.1:3090`, Hub `127.0.0.1:3006`.
+- Historical deployment addresses are kept in private maintainer configuration; this handoff does not describe the current runtime.
 - Client-only publishing works: `npm run build:client` + prod rev check (`.tmp/gates/prod-check-version.mjs`). Host was NOT restarted; no token rotation.
 - Latest prod client rev built this session: see `.tmp/build-client-r66c.log` / run prod-check.
 - Worktrees remain uncommitted: `/mnt/cache/src/hapi-dsh` (~150 files), `/mnt/cache/src/dsh-ext` (8).
