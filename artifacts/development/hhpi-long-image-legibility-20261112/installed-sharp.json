@@ -1,0 +1,32 @@
+{
+  "passed": true,
+  "at": "2026-11-12T10:28:39.536Z",
+  "releaseId": "0efce146e47ea0090075bd3dca78e6d5af80c91dd9b84609ec664766ec3aaf6e",
+  "central": {
+    "extRelease": "hhpi-dsh-022-20261107.29",
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.22.1",
+    "sharp": "0.35.5",
+    "vips": "8.18.7",
+    "packagedAttachmentLocalSharpDependency": "0.35.5",
+    "attachmentLocalConsumerLoaded": true,
+    "inMemoryJpegEncodeDecode": true,
+    "hhpiDirectDependency": "0.35.5",
+    "hhpiDirectResolves": true
+  },
+  "windowsOwnedSource": {
+    "extRelease": "hhpi-dsh-022-20261107.29",
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.21.0",
+    "sharp": "0.35.5",
+    "vips": "8.18.7",
+    "packagedAttachmentLocalSharpDependency": "0.35.5",
+    "attachmentLocalConsumerLoaded": true,
+    "inMemoryJpegEncodeDecode": true,
+    "hhpiDirectDependency": "0.35.5",
+    "hhpiDirectResolves": true
+  },
+  "scope": "Exact new installed release runtimes; synthetic in-memory native JPEG encode/decode, no user image or service write."
+}

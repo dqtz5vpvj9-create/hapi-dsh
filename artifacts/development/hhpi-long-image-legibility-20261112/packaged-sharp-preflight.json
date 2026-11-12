@@ -1,0 +1,105 @@
+{
+  "at": "2026-11-12T09:59:06.139Z",
+  "passed": true,
+  "scope": "Read-only actual installed carrier consumers; synthetic in-memory 3x2 JPEG encode/decode, no user image read/build/install/service change.",
+  "central": {
+    "role": "central-local-codex-native",
+    "releaseId": "83bd91924835bd2f28b7ac655d54e535a8544bfccb3de120f0d87d36660e403a",
+    "extRelease": "hhpi-dsh-022-20261107.29",
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v24.22.1",
+    "sharp": "0.35.5",
+    "vips": "8.18.7",
+    "packagedAttachmentLocalSharpDependency": "0.35.5",
+    "attachmentLocalConsumerLoaded": true,
+    "inMemoryJpegEncodeDecode": true,
+    "hhpiDirectDependency": null,
+    "hhpiDirectResolves": true
+  },
+  "windows": {
+    "actualMachineMatched": true,
+    "powershell": "7.6.7",
+    "nativePidAndBirthPreserved": true,
+    "runners": [
+      {
+        "role": "original-ordinary-dsh",
+        "sourceWorkspaces": [
+          {
+            "provider": null,
+            "sourceId": null
+          }
+        ],
+        "releaseId": "dd4fa4126c9c6964343dfa1875c54314e812a346b87c3b0ffa264927b99d3691",
+        "extRelease": "hhpi-dsh-022-20261107.29",
+        "platform": "win32",
+        "arch": "x64",
+        "node": "v24.21.0",
+        "sharp": "0.35.5",
+        "vips": "8.18.7",
+        "packagedAttachmentLocalSharpDependency": "0.35.5",
+        "attachmentLocalConsumerLoaded": true,
+        "inMemoryJpegEncodeDecode": true,
+        "hhpiDirectDependency": null,
+        "hhpiDirectResolves": true
+      },
+      {
+        "role": "windows-native-source",
+        "sourceWorkspaces": [
+          {
+            "provider": "local-system",
+            "sourceId": "win-native"
+          }
+        ],
+        "releaseId": "dd4fa4126c9c6964343dfa1875c54314e812a346b87c3b0ffa264927b99d3691",
+        "extRelease": "hhpi-dsh-022-20261107.29",
+        "platform": "win32",
+        "arch": "x64",
+        "node": "v24.21.0",
+        "sharp": "0.35.5",
+        "vips": "8.18.7",
+        "packagedAttachmentLocalSharpDependency": "0.35.5",
+        "attachmentLocalConsumerLoaded": true,
+        "inMemoryJpegEncodeDecode": true,
+        "hhpiDirectDependency": null,
+        "hhpiDirectResolves": true
+      }
+    ]
+  },
+  "requiredDependencyChange": "Current HHPI manifest has no direct sharp; new direct dependency must be exact 0.35.5 and final packaged HHPI resolve/load checked again after install.",
+  "nativeRestarted": false,
+  "buildStarted": false,
+  "profileSpan": "d213c02b-932b-4b32-a8e7-4b4ab378685c",
+  "probeCorrection": {
+    "initialSpan": "4d9e7d5f-d051-4f0c-906d-a028e690bed7",
+    "result": "Initial probe used a lexical pnpm symlink path for createRequire and failed before loading the consumer. Corrected to the actual realpath, matching Node normal module loading; no production dependency repair was performed."
+  },
+  "deploymentScope": {
+    "sourceHostsToUpdate": [
+      {
+        "role": "central",
+        "sourceId": "codex-native",
+        "owner": "local-system",
+        "reason": "actual local ImageFiles owner enables immutable derived-page plan and native dispatch/history projection"
+      },
+      {
+        "role": "windows-native-source Runner",
+        "sourceId": "win-native",
+        "owner": "local-system",
+        "reason": "actual Windows ImageFiles owner; same source-only code needed for new uploads through this source"
+      }
+    ],
+    "notAffected": [
+      {
+        "role": "original-ordinary-dsh Runner",
+        "reason": "ordinary official DSH attachment provider does not use HHPI CodexUploads derived-page normalizer; .29 SDK unchanged"
+      },
+      {
+        "role": "central remote win-native transport",
+        "reason": "no registered local-system workspace; localImageFiles=false so no local image derivation; not claimed as fixed through the central local owner"
+      }
+    ],
+    "offlinePairedRecords": 2,
+    "route": "Reuse original shipped installer and exact source Host/Runner configuration, stage new carrier, idle/retained-shell gate before display Host or target Runner replacement, compare native PID/birth and config hashes before/after, bounded authenticated readiness and served bytes/WS verification; never restart or replace original Codex app-server."
+  }
+}

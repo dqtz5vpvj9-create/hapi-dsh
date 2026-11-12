@@ -1,0 +1,261 @@
+{
+  "at": "2026-11-12T10:08:39.155Z",
+  "synthetic": true,
+  "sourceOriginals": "Read-only authorized two existing full-resolution JPEG files; all writes/derived plans in owned source",
+  "externalModelCalls": 0,
+  "model": "gpt-6-astra",
+  "modelCatalog": "actual cached Astra metadata; no image feature override",
+  "productionDaemonRestarted": false,
+  "userThreadWrites": 0,
+  "readFrames": [
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004795
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004796
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004795
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004794
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004795
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004795
+    },
+    {
+      "method": "thread/queue/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 14004795
+    },
+    {
+      "method": "thread/items/list",
+      "limit": 1,
+      "bytesWithEnvelopeAllowance": 5004
+    }
+  ],
+  "notifications": [],
+  "nativeRuntime": "hhpi/0.162.0 (Ubuntu 26.4.0; x86_64) dumb (hhpi; 1)",
+  "queueViewBytes": 9874,
+  "twoQueuedOperations": true,
+  "queuePresentationOriginals": 2,
+  "textInterleavingPreserved": true,
+  "nativeQueued": [
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 997660,
+      "sha256": "29a55e4d2cdaa712dee208f50063360dd709384ee430b4d23e50eaa709d3368d",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 957856,
+      "sha256": "11eec89d65ba334a3df14de4ef94c783f27381c931f815135c154e90078dbab0",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 688784,
+      "sha256": "bc4c02f3b2c5c5f8dc5be2c30d254ff1f85649443580d4bcbe59f8ceed1792d5",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 853204,
+      "sha256": "0aad25a2c66df9ae1b06b26782dbc785fb7bb1bfe2cd058d0bd1bfea4b3d6e1b",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 658352,
+      "sha256": "85b20115f363a28c91dacfc33afabb9b4a24f61d4aa3352d635de93b35cd1a23",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 686066,
+      "sha256": "164c512e0d8d99cb4b4ea79e86767b35838dfa915f44e2d2c569db0591282756",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 2454,
+      "bytes": 307466,
+      "sha256": "c78de6d7e0917e0cfd0950a4c8d814bd4359ebe61a07d4d321ec9d9afe96176c",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1187444,
+      "sha256": "798cf64f6a6bb898e986188303cd21c6dff081cc02d4eb9883f99112814c254d",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1192128,
+      "sha256": "53ff046f1eff19b5e1803907981021b499d1cdb2a61c91dc798f5d362f98d3d6",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1000280,
+      "sha256": "9b6520b4413eef90bce06846ea3d5b4cf4ccb9a90902722a0497183a1280de90",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 968468,
+      "sha256": "b65e50b36ed4d265f3fcc1ca65cb8ae59f50e3007982c3d27072e3c7190a4e47",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 915042,
+      "sha256": "e4cc067a0ded58c2b55885f954566a7607ab1c3ed4282830c6c1929dcbce4c8d",
+      "detail": "original"
+    },
+    {
+      "width": 1216,
+      "height": 669,
+      "bytes": 89902,
+      "sha256": "119d1443a4d191285b47524125d0a12c0822706b7c5250b2b2d21071a581631b",
+      "detail": "original"
+    }
+  ],
+  "modelImages": [
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 997660,
+      "sha256": "29a55e4d2cdaa712dee208f50063360dd709384ee430b4d23e50eaa709d3368d",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 957856,
+      "sha256": "11eec89d65ba334a3df14de4ef94c783f27381c931f815135c154e90078dbab0",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 688784,
+      "sha256": "bc4c02f3b2c5c5f8dc5be2c30d254ff1f85649443580d4bcbe59f8ceed1792d5",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 853204,
+      "sha256": "0aad25a2c66df9ae1b06b26782dbc785fb7bb1bfe2cd058d0bd1bfea4b3d6e1b",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 658352,
+      "sha256": "85b20115f363a28c91dacfc33afabb9b4a24f61d4aa3352d635de93b35cd1a23",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 686066,
+      "sha256": "164c512e0d8d99cb4b4ea79e86767b35838dfa915f44e2d2c569db0591282756",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 2454,
+      "bytes": 307466,
+      "sha256": "c78de6d7e0917e0cfd0950a4c8d814bd4359ebe61a07d4d321ec9d9afe96176c",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1187444,
+      "sha256": "798cf64f6a6bb898e986188303cd21c6dff081cc02d4eb9883f99112814c254d",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1192128,
+      "sha256": "53ff046f1eff19b5e1803907981021b499d1cdb2a61c91dc798f5d362f98d3d6",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 1000280,
+      "sha256": "9b6520b4413eef90bce06846ea3d5b4cf4ccb9a90902722a0497183a1280de90",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 968468,
+      "sha256": "b65e50b36ed4d265f3fcc1ca65cb8ae59f50e3007982c3d27072e3c7190a4e47",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 6000,
+      "bytes": 915042,
+      "sha256": "e4cc067a0ded58c2b55885f954566a7607ab1c3ed4282830c6c1929dcbce4c8d",
+      "detail": null
+    },
+    {
+      "width": 1216,
+      "height": 669,
+      "bytes": 89902,
+      "sha256": "119d1443a4d191285b47524125d0a12c0822706b7c5250b2b2d21071a581631b",
+      "detail": null
+    }
+  ],
+  "queuedEditAndRunningSteerPreservePixels": true,
+  "historyReadSingleItem": true,
+  "maxFrameBytesWithAllowance": 14004796,
+  "passed": true,
+  "syntheticModelCalls": 2,
+  "planOrderAndCoverageVerified": true,
+  "originalWidths": [
+    1216,
+    1216
+  ],
+  "originalHeights": [
+    37686,
+    30029
+  ],
+  "totalPagePixels": 84053568,
+  "totalEncodedPageBytes": 10502652,
+  "historyBoundary": "The native single-item sample was a small history item; exact original-image coalescing/resource reads are covered by source-targeted tests, not this sampled frame."
+}

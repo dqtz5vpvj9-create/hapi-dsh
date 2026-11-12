@@ -1,0 +1,185 @@
+{
+  "at": "2026-11-12T10:17:34.958710+00:00",
+  "run": "hhpi-long-image-legibility-20261112",
+  "baseRevision": "1130e8252215edbfae67115ebfcb06dd55fb83b7",
+  "files": [
+    {
+      "path": "NOTICE",
+      "sha256": "80125399329c4e5d862616baf3ddf4a0a07d275bc8613dfb7e444bcbb8a2b538",
+      "bytes": 5943
+    },
+    {
+      "path": "docs/architecture.md",
+      "sha256": "7ca0bc055197f377ced5fe5e271341a8d7c856faeab32d2f7342ec9abc1a85a7",
+      "bytes": 7208
+    },
+    {
+      "path": "docs/adr/hhpi-native-image-pages.md",
+      "sha256": "957ef95a0f650f67ce9044d7449d0650319949ed4e3ec83a1c5fa8271842dca0",
+      "bytes": 3132
+    },
+    {
+      "path": "docs/licenses/SHARP-APACHE-2.0.txt",
+      "sha256": "73ba74dfaa520b49a401b5d21459a8523a146f3b7518a833eea5efa85130bf68",
+      "bytes": 10273
+    },
+    {
+      "path": "package.json",
+      "sha256": "b0e573900d34ede6ac2654afccd6193f62cb8a87e2fc232d0947dc607b2129a0",
+      "bytes": 8566
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "3df1e78f92b706968898a7357e142b97bd9349c90ae318bd9df62fcf33c6079d",
+      "bytes": 530453
+    },
+    {
+      "path": "src/client/remote-native-queue.ts",
+      "sha256": "fe77f8650a6251b5588e214a9ad9279576b02d484fc5a562458c4263c48c8d61",
+      "bytes": 18804
+    },
+    {
+      "path": "src/client/remote-native-task-state.ts",
+      "sha256": "8dc27e51cc1871485303a72213cc197136707028e47cf3b1a2c4636355c5b516",
+      "bytes": 15375
+    },
+    {
+      "path": "src/remote/codex-access-bridge.ts",
+      "sha256": "a16f29463968f4e2febc6b618d8ee18e861eeb920b0b0190e9e016bade0e0f5c",
+      "bytes": 15101
+    },
+    {
+      "path": "src/remote/codex-adapter.ts",
+      "sha256": "17ddc3588aeed6b4b9ecb8023252e48e854cd5c21af80b42bbc0dca3826a1059",
+      "bytes": 109677
+    },
+    {
+      "path": "src/remote/codex-attachments.ts",
+      "sha256": "ce15f479dc136c2b7d4298bf81a44f7eac92540511ec3d571b17d1167270af1e",
+      "bytes": 20152
+    },
+    {
+      "path": "src/remote/codex-image-pages.ts",
+      "sha256": "315ad4e0f3c76597c8ef095df9f54a752f67f2c2a792f5cfcba29d32c22f4b85",
+      "bytes": 4659
+    },
+    {
+      "path": "src/remote/codex-presentation.ts",
+      "sha256": "6806add96fffeab38c17c1b1652324a8218d226d0fe466842dbf41c284d54292",
+      "bytes": 10655
+    },
+    {
+      "path": "src/remote/codex-queue-steer.ts",
+      "sha256": "0240b93e997bce2c8c0e642b9c63e2ea9666751bb8fc755d7e73ec7798b17ec1",
+      "bytes": 16318
+    },
+    {
+      "path": "src/remote/codex-uploads.ts",
+      "sha256": "61731c2c6b590f9ddb45f1de70a529a8e4376cf0f91150e8d76dff7abae88319",
+      "bytes": 17690
+    },
+    {
+      "path": "tests/hhpi-image-pages.test.ts",
+      "sha256": "9ede0bb231bdb7825b8ab633abb71c3803673587cf240fd72b733c57c72f2d29",
+      "bytes": 11639
+    },
+    {
+      "path": "tests/hhpi-structured-session.test.ts",
+      "sha256": "3b72f308111c6bb158b6f7faf32cfd284fef00cd70b7e7be52f4c95b6e46d9b9",
+      "bytes": 53049
+    }
+  ],
+  "checks": {
+    "sourceTargeted": {
+      "passed": 28,
+      "skipped": 1,
+      "failures": 0,
+      "span": "e8cd4503-88d6-421c-9a39-319ecebe2dcc"
+    },
+    "queueConsumer": {
+      "passed": 1,
+      "span": "2adf2f99-bc28-41c6-98be-d546f2deb78b"
+    },
+    "types": {
+      "projects": [
+        "host",
+        "client",
+        "experience"
+      ],
+      "status": "passed",
+      "span": "1d693dd1-406a-4425-8120-288e52924ffc"
+    },
+    "nativeAstraLoopback": {
+      "status": "passed",
+      "durationMs": 43344.139617999994,
+      "span": "41d375a1-49d0-4cb6-ae6b-64845ad5add5"
+    },
+    "knownFixtureBoundary": {
+      "span": "6d46cb05-1b3a-49a2-b106-e7c8e5e1dc85",
+      "failed": 5,
+      "reason": "official-conversation-fixture.ts:54 loads official client.js via require; window is not defined. Independently reproduced by root without any modified HHPI module."
+    }
+  },
+  "releaseScope": [
+    "central local-system codex-native HHPI source+minimal Client consumer",
+    "Windows owned win-native Runner HHPI source+direct sharp dependency; native daemon unchanged"
+  ],
+  "sdkChanged": false,
+  "hhpiProtocolChanged": false,
+  "browserUploadContractChanged": false,
+  "productionAcceptance": {
+    "status": "passed-bounded",
+    "source": "f0272aff25e2f14b861bcaef0b2c74c727cb2163",
+    "release": "0efce146e47ea0090075bd3dca78e6d5af80c91dd9b84609ec664766ec3aaf6e",
+    "hostBuildId": "6d3f77cf5f6350fd95feb64561a4defbf6590fc2f0e636efab1a5bfa683f6a5a",
+    "sdk": "hhpi-dsh-022-20261107.29",
+    "realAstra": {
+      "span": "cc9e6b90-9aef-4c96-91df-d61a5aa5a5e7",
+      "passed": true,
+      "modelTasks": 1,
+      "durationMs": 10943,
+      "allThree20pxMarkersExact": true,
+      "bodyOriginalImages": 1,
+      "resourceShaMatches": true,
+      "scope": "Self-generated 1216x37686 test image; not mattress product OCR"
+    },
+    "scriptBoundary": {
+      "span": "0f35344b-0ce6-4225-8f0a-c249a5f90ca3",
+      "modelTasks": 0,
+      "durationMs": 6247,
+      "reason": "Probe unpacked public {input:[...]} as array before model dispatch; continued same owned session/receipt/operation without reupload"
+    },
+    "desktopReadOnly": {
+      "span": "93f8fa85-0a2a-4100-9ca0-af3091c08838",
+      "durationMs": 7532,
+      "passed": true,
+      "actualInstalledGraph": true,
+      "actualOriginalClick": true,
+      "sourceWrites": 0,
+      "naturalImageDimensions": [
+        1216,
+        37686
+      ],
+      "screenshotLayer": "webshot captures exported actual DOM, not a second live connected browser navigation",
+      "screenshots": {
+        "layer": "webshot of actual exported DOM from the preceding live read-only official graph; not a second connected UI session",
+        "visuallyInspected": true,
+        "body": {
+          "path": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/owned-body.png",
+          "stage": "done",
+          "bytes": 68938,
+          "sha256": "79dc5bce41b7b52b81d39ccb394175eca39aba778547ff45364e64b46fcb3380"
+        },
+        "original": {
+          "path": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/owned-original-pane.png",
+          "stage": "done",
+          "bytes": 92115,
+          "sha256": "93ff21e7a1ec1aeadb0cbbf2982447e502418639c4677c09955e9ea797ab9507",
+          "scope": "Pane crop excludes unrelated sidebar titles"
+        }
+      }
+    },
+    "oldUserImages": "Full-resolution source files retained; accepted old queue/operation and sent small historical images unchanged, no automatic replay",
+    "fullSuite": "Do not claim full pass: publisher owns release-test-boundaries.json with 1723pass/64fail/1cancel/9skip; targeted loader fixes separately recorded"
+  }
+}

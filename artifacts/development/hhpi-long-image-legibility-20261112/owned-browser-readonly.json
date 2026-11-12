@@ -1,0 +1,36 @@
+{
+  "at": "2026-11-12T10:31:40.751Z",
+  "passed": true,
+  "synthetic": true,
+  "sourceWrites": 0,
+  "blocked": [],
+  "pageErrors": [],
+  "scope": "Real owned source only; no user images/threads or composer submissions",
+  "hostBuildId": "6d3f77cf5f6350fd95feb64561a4defbf6590fc2f0e636efab1a5bfa683f6a5a",
+  "bodyOriginalImages": 1,
+  "imageNaturalDimensions": {
+    "width": 1216,
+    "height": 37686
+  },
+  "bodySnapshot": true,
+  "originalEntryOpened": true,
+  "originalSnapshot": true,
+  "durationMs": 7532,
+  "screenshots": {
+    "layer": "webshot of actual exported DOM from the preceding live read-only official graph; not a second connected UI session",
+    "visuallyInspected": true,
+    "body": {
+      "path": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/owned-body.png",
+      "stage": "done",
+      "bytes": 68938,
+      "sha256": "79dc5bce41b7b52b81d39ccb394175eca39aba778547ff45364e64b46fcb3380"
+    },
+    "original": {
+      "path": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/owned-original-pane.png",
+      "stage": "done",
+      "bytes": 92115,
+      "sha256": "93ff21e7a1ec1aeadb0cbbf2982447e502418639c4677c09955e9ea797ab9507",
+      "scope": "Pane crop excludes unrelated sidebar titles"
+    }
+  }
+}

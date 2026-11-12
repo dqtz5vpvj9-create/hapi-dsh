@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-12T10:31:04.411Z",
+  "synthetic": true,
+  "newOwnedThreadOnly": true,
+  "originalUserThreadWrites": 0,
+  "oldAttachmentsRetried": 0,
+  "productionDaemonRestarted": false,
+  "modelTasksSubmitted": 1,
+  "passed": true,
+  "hostBuildId": "6d3f77cf5f6350fd95feb64561a4defbf6590fc2f0e636efab1a5bfa683f6a5a",
+  "model": "gpt-6-astra",
+  "reusedPreparedOwnedOperation": true,
+  "priorProbeModelCalls": 0,
+  "expected": [
+    "02361D6A",
+    "44A75DC6",
+    "9943EBFB"
+  ],
+  "answer": "02361D6A\n44A75DC6\n9943EBFB",
+  "codesMatched": true,
+  "deployedOriginalResourceRead": true,
+  "deployedBodyOriginalImages": 1,
+  "durationMs": 10943
+}

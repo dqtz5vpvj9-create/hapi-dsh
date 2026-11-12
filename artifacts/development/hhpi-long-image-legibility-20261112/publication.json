@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "publishedAt": "2026-11-12T10:29:19.708Z",
+  "sourceCommit": "f0272aff25e2f14b861bcaef0b2c74c727cb2163",
+  "releaseId": "0efce146e47ea0090075bd3dca78e6d5af80c91dd9b84609ec664766ec3aaf6e",
+  "hostBuildId": "6d3f77cf5f6350fd95feb64561a4defbf6590fc2f0e636efab1a5bfa683f6a5a",
+  "clientRevision": "a6187f045414",
+  "providerRevision": "0516b354365f",
+  "bundleSha256": "fff87322aea6ce3a781800629f32aa8e2e8f9026aeba6a20dc1c92200d2d7741",
+  "extRelease": "hhpi-dsh-022-20261107.29",
+  "sdkPackages": 24,
+  "sdkRebuilt": false,
+  "behavior": "New owned-source uploads retain the original and use an immutable derived image-page plan for native model input; official history and HHPI queue presentation keep original attachment identity. Existing user messages and uploads were not replayed.",
+  "deployment": {
+    "updated": [
+      "central local-system codex-native",
+      "Windows owned local-system win-native Runner"
+    ],
+    "centralAndWindowsBuildMatch": true,
+    "actualGraphBytesVerified": true,
+    "reconnectWaitMs": 26739,
+    "ordinaryDshRunner": "unchanged DD4 carrier; same .29 SDK",
+    "centralForwardedWinNative": "no owned local-system filesystem; page derivation not enabled through this transport",
+    "offlinePairedRecordsNotUpgraded": 2
+  },
+  "guards": {
+    "authenticatedHttp": true,
+    "compressedWebSocket": true,
+    "servedMainAndProviderBytes": true,
+    "nativePidAndBirthPreserved": true,
+    "configsPreserved": true,
+    "ordinaryRunnerPidAndBirthPreserved": true,
+    "ordinarySessionsIdle": true,
+    "retainedSourceShells": 0,
+    "rollbackRetained": true
+  },
+  "checks": {
+    "ownerFinalTypes": "1d693dd1-406a-4425-8120-288e52924ffc",
+    "sourceTargeted": "e8cd4503-88d6-421c-9a39-319ecebe2dcc",
+    "queueConsumer": "2adf2f99-bc28-41c6-98be-d546f2deb78b",
+    "sameNativeBinaryAstraSyntheticLoopback": "41d375a1-49d0-4cb6-ae6b-64845ad5add5",
+    "packagedSharpDirectConsumers": "cd476028-5180-44c2-9bfd-79ee250442b8",
+    "carrier": "0a0a0d6b-23ce-452f-b0c4-0c2c6f5a5e9c",
+    "centralActivation": "cdc6f9c2-e85a-48f8-a9f8-2a667eff6e4a",
+    "windowsActivation": "19dba2f8-cc14-40b0-ae43-b65e0bb538df",
+    "actualSourceGraphs": "9517bf3e-ecd3-49fb-902d-dbb513d84b66"
+  },
+  "productionAcceptance": {
+    "status": "passed-bounded-new-owned-image-path",
+    "actualAstraReadback": {
+      "passed": true,
+      "span": "cc9e6b90-9aef-4c96-91df-d61a5aa5a5e7",
+      "modelTasks": 1,
+      "durationMs": 10943,
+      "allThree20pxMarkersExact": true,
+      "bodyOriginalImages": 1,
+      "resourceShaMatches": true,
+      "scope": "Self-generated 1216x37686 test image; not mattress product OCR"
+    },
+    "desktopReadOnly": {
+      "span": "93f8fa85-0a2a-4100-9ca0-af3091c08838",
+      "durationMs": 7532,
+      "passed": true,
+      "actualInstalledGraph": true,
+      "actualOriginalClick": true,
+      "sourceWrites": 0,
+      "naturalImageDimensions": [
+        1216,
+        37686
+      ],
+      "screenshotLayer": "webshot captures exported actual DOM, not a second live connected browser navigation"
+    },
+    "priorProbeBoundary": {
+      "span": "0f35344b-0ce6-4225-8f0a-c249a5f90ca3",
+      "modelTasks": 0,
+      "durationMs": 6247,
+      "reason": "Probe unpacked public {input:[...]} as array before model dispatch; continued same owned session/receipt/operation without reupload"
+    },
+    "fullReleaseTestGate": "failed; original full result and unclassified failures retained separately, not replaced by bounded product-path acceptance"
+  },
+  "releaseTests": "See release-test-boundaries.json. Full Node run failed and was not repeated; no full-gate pass claimed. Targeted official loader fixture compatibility fix is test-only commit0e172ce7b, carrier remains frozen productf0272aff2.",
+  "boundaries": [
+    "No old user image or thread was modified or retransmitted.",
+    "New source normalization does not restore detail already lost before upload.",
+    "Browser upload API/schema and SDK.29 are unchanged.",
+    "No mobile/FPS or repeated 43-second native probe."
+  ]
+}

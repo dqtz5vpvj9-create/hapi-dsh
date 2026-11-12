@@ -1,0 +1,68 @@
+{
+  "fullNode": {
+    "status": "failed",
+    "span": "8a3e3fbd-499b-4ba9-880b-cacb49091363",
+    "sourceCommit": "f0272aff25e2f14b861bcaef0b2c74c727cb2163",
+    "files": 252,
+    "passed": 1723,
+    "failed": 64,
+    "cancelled": 1,
+    "skipped": 9,
+    "durationMs": 161150,
+    "perPhaseTimeoutMs": 300000,
+    "rawStdoutComplete": false,
+    "evidenceGap": "The standard runner retained phase metadata and inherited stdout. Complete raw failure output was not saved and tool output was truncated; no full rerun was performed to reconstruct it.",
+    "repeated": false
+  },
+  "observedFailureClasses": [
+    {
+      "class": "official client module loader",
+      "boundary": "Existing official-conversation-fixture required browser-only api-session-controller/client as a Node module. The same code exists at base1130e8252. Exact allocation of all64failures is unknown."
+    },
+    {
+      "class": "pinned source graph environment",
+      "boundary": "official-browser-library.ts requires HHPI_DSH_SOURCE; full invocation did not set it."
+    },
+    {
+      "class": "offline recovery source root",
+      "boundary": "Standalone stage node_modules was a symlink to the shared dependency root; offline recovery source archive correctly rejected a dependency outside its package root."
+    },
+    {
+      "class": "unclassified remaining Node failures and cancellation",
+      "boundary": "Not enough raw output to classify; not marked as baseline, passed, or caused by the17productfiles."
+    }
+  ],
+  "allDom": {
+    "span": "abc961bd-f90f-45a6-83b3-979a33b608e2",
+    "files": 37,
+    "tests": 209,
+    "passed": 204,
+    "failed": 5,
+    "failureClass": "All five client-turn-share cases failed at the same official client module loader boundary. Complete structured failure details retained in dom-results.json."
+  },
+  "compatibilityFix": {
+    "commit": "0e172ce7b0a57998e470f433338dee42c3b34a21",
+    "files": [
+      "tests/official-conversation-fixture.ts"
+    ],
+    "scope": "Recursive cached actual ModuleLoader bundles; normal ESM/CJS keep Node loading; group-definition fixture exposes the pinned entries contract. No product stubs or compiled-output edits.",
+    "structuredSession": {
+      "passed": 24,
+      "failed": 0,
+      "span": "e86bd49b-17c6-4d61-a6fe-e12162e85f12",
+      "rawLog": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/fixture-loader-current-contract.log"
+    },
+    "turnSharingDom": {
+      "passed": 5,
+      "failed": 0,
+      "span": "60158990-2825-4117-8707-4eaf028e2e89",
+      "rawLog": "/mnt/cache/data-cache/hhpi-long-image-legibility-20261112/turn-share-loader.log"
+    },
+    "earlierIncompleteFixAttempts": [
+      "e54f3f6c-608a-4ec1-b273-45854df82dc4",
+      "b4c5e1d2-ecf9-4858-89af-d37e130b2078",
+      "aad1ef7a-c6e4-422c-be00-0a3dc0131254"
+    ]
+  },
+  "conclusion": "Specific fixed loader cases passed; remaining full-suite gaps are unresolved. No replacement of the failed full result or existing gates."
+}
