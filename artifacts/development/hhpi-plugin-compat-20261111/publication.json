@@ -1,0 +1,111 @@
+{
+  "purpose": "Published reasoning translation compatibility fix; source, deployment, browser fixture and real provider evidence are separate.",
+  "recordedAt": "2026-11-12T04:51:02.425Z",
+  "runtimeSourceCommit": "5aeab9b69b2baca785ea21913d0edef0deba5075",
+  "testOnlyFollowupCommit": "95fa02cdb79a3e0d5d86215eb08659699e8073c6",
+  "extension": {
+    "release": "hhpi-dsh-022-20261107.28",
+    "upstreamVersion": "0.2.2-rc.1",
+    "upstreamCommit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "packages": 24,
+    "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
+    "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940"
+  },
+  "central": {
+    "releaseId": "653d70522f3640cf73f27aa2891d52b8909cd612b426eee9037cb3e3a502e6c7",
+    "hostBuildId": "1f9f56cd0a10fe7b2f02e6ccd113226478853ea94f42c6ae494bbc391f6cdc0c",
+    "mainRevision": "dba237ebe6a4",
+    "providerRevision": "ccd1e9763fca",
+    "bundleSha256": "ae5af1b730a44b7be2c831f47e3aabb0c0edec16d1f8ee4bde5c3e5ccd224402",
+    "bundleBytes": 9493609,
+    "authentication": true,
+    "compressedWebSocket": true,
+    "servedBytesVerified": true,
+    "nativeExecutionIdentityPreserved": true,
+    "configurationPreserved": true
+  },
+  "onlineRunners": {
+    "count": 2,
+    "releaseId": "7635fd2a0efc4199f915c9ed3b683c61b2969d872867bef079e8b94e2ecb653c",
+    "sourceCommit": "91c52815a3e78ced0652891ffad9c40a1194a2a5",
+    "hostBuildId": "d62585d0e2e17bc1cf66c5e4ed03e446ab1b694cee6a32bcf3a6b13004e90f96",
+    "extensionRelease": "hhpi-dsh-022-20261107.28",
+    "packages": 24,
+    "actualConsumersVerified": true,
+    "configurationPreserved": true,
+    "nativeExecutionIdentityPreserved": true,
+    "cotPluginEnabled": false,
+    "finalHostOnlyFixReusedEarlierRunnerEvidence": true
+  },
+  "offlinePairings": {
+    "count": 2,
+    "upgraded": false,
+    "status": "Pending same-version upgrade after reconnection; not accepted as upgraded."
+  },
+  "behavior": {
+    "realProvider": {
+      "passed": true,
+      "provider": "deepseek-official",
+      "syntheticInput": true,
+      "sourceTaskWrites": 0,
+      "codexTasksStarted": 0,
+      "chineseResult": true,
+      "firstMs": 649,
+      "cachedMs": 7,
+      "durableRequestsAdded": 1,
+      "durableResultsAdded": 1,
+      "cacheReadAddedRequests": 0,
+      "preferenceUnchanged": true,
+      "evidenceSpan": "e4742087-3e83-405f-ab08-08a3a583a558"
+    },
+    "browser": {
+      "passed": true,
+      "hostBuildId": "d62585d0e2e17bc1cf66c5e4ed03e446ab1b694cee6a32bcf3a6b13004e90f96",
+      "durationMs": 6004,
+      "sourceAndTranslationRpcFixture": true,
+      "officialReaderAndPluginGraph": true,
+      "twoPaneIsolation": true,
+      "originalToggle": true,
+      "cancellationAndLateResultExclusion": true,
+      "sourceWrites": 0,
+      "workspaceWrites": 0,
+      "pageErrors": 0,
+      "reusedAfterHostOnlyAuthorizationFix": true
+    }
+  },
+  "validation": {
+    "typecheck": "All three product programs passed; final Host-only fix passed Host typecheck.",
+    "sdkBuild": "24 source-built packages passed, existing dependency environment reused.",
+    "carrierBuild": "Full final source-bearing carrier built from runtimeSourceCommit.",
+    "fullNpmTest": {
+      "passed": false,
+      "node": {
+        "passed": 1698,
+        "failed": 64,
+        "cancelled": 1,
+        "skipped": 7
+      },
+      "experienceReached": false,
+      "oldBrowserCarrierBoundaryReports": 62,
+      "testCountAssertionFixedSeparately": true,
+      "otherExistingFailures": "One capability timeout and one source reconnect-backoff failure independently reproduced and attributed to unchanged source/tests."
+    },
+    "separateExperience": {
+      "passed": false,
+      "filesPassed": 36,
+      "filesFailed": 2,
+      "testsPassed": 204,
+      "testsFailed": 5,
+      "suiteLoadFailures": 1,
+      "failures": "Five sharing cases hit the old Node browser-loader boundary; approval suite cannot load the official primitives Host entry because clsx is absent from the development graph."
+    },
+    "fullSuiteClaim": "Full suite remains failed; directed tests, actual browser and real provider success do not replace that result."
+  },
+  "scope": {
+    "centralOnlyFollowup": true,
+    "windowsNativeExecutionRestarted": false,
+    "preferencesChanged": false,
+    "phoneAcceptanceRun": false,
+    "fpsWorkRun": false
+  }
+}
