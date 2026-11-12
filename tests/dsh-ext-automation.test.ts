@@ -237,9 +237,9 @@ test('source changes rebuild the affected dependency closure while lock/toolchai
   assert.equal(f.calls.filter(call => call[2] === 'tsc').at(-1)?.includes('--force'), true);
   await writeFile(join(f.source, 'pnpm-lock.yaml'), 'lockfileVersion: changed\n');
   const lock = await buildExtension(f.source, f.output, f.options);
-  assert.equal(lock.counts.dependencyInstall, 1); assert.equal(lock.counts.bundles, 24);
+  assert.equal(lock.counts.dependencyInstall, 1); assert.equal(lock.counts.bundles, roots.length);
   const tools = await buildExtension(f.source, f.output, { ...f.options, toolchain: { ...toolchain, revision: 2 } });
-  assert.equal(tools.counts.dependencyInstall, 1); assert.equal(tools.counts.bundles, 24);
+  assert.equal(tools.counts.dependencyInstall, 1); assert.equal(tools.counts.bundles, roots.length);
 });
 
 test('missing and corrupted dependencies, generated output, bundles and archives invalidate only usable results', async t => {
