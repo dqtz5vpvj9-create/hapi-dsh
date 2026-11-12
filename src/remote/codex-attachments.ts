@@ -109,7 +109,8 @@ export class CodexAttachments {
     private readonly running = new Map<string, { identity: ImageIdentity; work: Promise<void> }>();
     constructor(private readonly index: SourceEventIndex, private readonly directory: string,
         private readonly readSourceFile: ReadSourceFile, private readonly lifetime: AbortSignal,
-        private readonly onPrepared: (identity: ImageIdentity) => void) {}
+        private readonly onPrepared: (identity: ImageIdentity) => void,
+        private readonly uploadedContent?: (item: NativeItem, prepared?: ContentBlock[]) => ContentBlock[] | undefined) {}
 
     /** Rewrites and source retirement revoke every in-flight byte read. */
     revoke(rewritten = false): void {
@@ -125,7 +126,8 @@ export class CodexAttachments {
         if (this.revision === revision) { this.acceptedRevision = revision; this.rewritten = false; this.pump(); }
     }
     content(turnId: string, item: NativeItem): ContentBlock[] | undefined {
-        return nativeImageContent(this.index, turnId, item);
+        const prepared = nativeImageContent(this.index, turnId, item);
+        return this.uploadedContent?.(item, prepared) ?? prepared;
     }
     /** Reader cancellation never owns preparation or publication. Full indexing does no image IO. */
     schedule(entries: readonly SourceEntry[]): void {

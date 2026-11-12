@@ -1,15 +1,17 @@
 /** Native queue and Goal state. Read refreshes never dispatch writes or replay pending operations. */
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
-import type { CodexCapabilities } from '../remote/codex-access.ts'
+import { QUEUE_VIEW_METHOD, type CodexCapabilities } from '../remote/codex-access.ts'
 import type { SourceSession } from '../remote/protocol.ts'
 import type { NativeActionRecord } from './remote-operation-contracts.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import { boundedSourceRead } from './remote-read-recovery.ts'
+import type { UserMessage } from '@deepseek-ai/dsh-llm/types'
+import { sourceImageAttachmentRefSchema } from '../source-attachment-types.ts'
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 export interface NativeQueueItem { id: string; clientUserMessageId: string; input: readonly Readonly<Record<string, unknown>>[]; delivery?: 'sending' | 'confirming' | 'failed';
-  resumeOperationId?: string; resumeTurnId?: string; transferHeld?: boolean }
+  resumeOperationId?: string; resumeTurnId?: string; transferHeld?: boolean; presentationContent?: UserMessage['content'] }
 export type NativeGoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
 export interface NativeGoal { objective: string; status: NativeGoalStatus; tokenBudget: number | null; tokensUsed: number; timeUsedSeconds: number }
 export interface NativeTaskSnapshot {
@@ -26,6 +28,11 @@ export function nativeQueueItem(value: unknown): NativeQueueItem {
   if (!record(value) || typeof value.id !== 'string' || !value.id || typeof value.clientUserMessageId !== 'string'
     || !Array.isArray(value.input) || value.input.some(input => !record(input) || typeof input.type !== 'string')) throw new Error('The source returned an invalid native queue item.')
   return Object.freeze({ id: value.id, clientUserMessageId: value.clientUserMessageId, input: Object.freeze(value.input.map(input => Object.freeze(structuredClone(input) as Record<string, unknown>))),
+    ...(Array.isArray(value.presentationContent) && value.presentationContent.length <= 256 && value.presentationContent.every(part => record(part)
+      && (part.type === 'text' && typeof part.text === 'string'
+        || part.type === 'image' && sourceImageAttachmentRefSchema.safeParse(part.attachment).success
+        || part.type === 'file' && record(part.attachment) && typeof part.attachment.attachmentId === 'string' && typeof part.attachment.name === 'string' && typeof part.attachment.bytes === 'number'))
+      ? { presentationContent: structuredClone(value.presentationContent) as UserMessage['content'] } : {}),
     ...(['sending', 'confirming', 'failed'].includes(String(value.hhpiDelivery)) ? { delivery: value.hhpiDelivery as NonNullable<NativeQueueItem['delivery']> } : {}),
     ...(typeof value.hhpiResumeOperationId === 'string' && typeof value.hhpiResumeTurnId === 'string' ? {
       resumeOperationId: value.hhpiResumeOperationId, resumeTurnId: value.hhpiResumeTurnId, transferHeld: value.hhpiTransferHeld === true,
@@ -89,7 +96,8 @@ export class RemoteNativeTasks {
     const rows: NativeQueueItem[] = [], cursors = new Set<string>()
     let cursor: string | null = null
     do {
-      const page = await this.read('thread/queue/list', { cursor, limit: 100 })
+      const method = this.snapshot.capabilities?.methods[QUEUE_VIEW_METHOD] === 'read' ? QUEUE_VIEW_METHOD : 'thread/queue/list'
+      const page = await this.read(method, { cursor, limit: 1 })
       if (!record(page) || !Array.isArray(page.data)) throw new Error('The source returned an invalid native queue page.')
       rows.push(...page.data.map(nativeQueueItem))
       cursor = typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null

@@ -220,6 +220,17 @@ test('confirmed input stays in the native QueueDock through queue ownership and 
   assert.equal(f.actions.get(f.session.id, 'composer')?.phase, 'accepted')
 })
 
+test('a restored native QueueDock uses the source originals without inventing local sends', async t => {
+  const writes: CodexCall[] = []
+  const f = await fixture(t, async request => { writes.push(request); return { status: 'accepted', message: 'Native accepted' } }, undefined, { queuedSteer: true })
+  const image = { attachmentId: 'sha256:' + 'a'.repeat(64), bytes: 1000, width: 1216, height: 37686, mediaType: 'image/jpeg' } as never
+  const input = [{ type: 'localImage', path: '/owned/page-1.webp', detail: 'original' }, { type: 'text', text: 'Between originals', text_elements: [] }, { type: 'localImage', path: '/owned/page-2.webp', detail: 'original' }]
+  await f.setQueue([{ id: 'owned-queued', clientUserMessageId: 'owned-client', input, presentationContent: [{ type: 'image', attachment: image }, { type: 'text', text: 'Between originals' }, { type: 'image', attachment: image }] }])
+  assert.deepEqual(queueInbox(f.face)?.['next-turn'][0]?.content.map(part => part.type), ['image', 'text', 'image'])
+  assert.equal(f.face.getSnapshot().pendingSubmissions.length, 0)
+  assert.equal(writes.length, 0)
+})
+
 test('native source observation cannot retire the dock before the submitting official Pane body publishes', async t => {
   const f = await fixture(t, async () => ({ status: 'accepted', message: 'Queued' }))
   const chat = officialChat()

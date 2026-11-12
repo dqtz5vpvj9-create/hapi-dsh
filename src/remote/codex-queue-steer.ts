@@ -85,12 +85,12 @@ export class CodexQueueSteer {
         let cursor: string | null = null;
         const cursors = new Set<string>();
         do {
-            const page = await this.call({ sourceId: this.sourceId, method: 'thread/queue/list', params: { threadId: claim.threadId, limit: 100, cursor } }, false);
+            const page = await this.call({ sourceId: this.sourceId, method: 'thread/queue/list', params: { threadId: claim.threadId, limit: 1, cursor } }, false);
             if (page.status !== 'accepted' || !record(page.result) || !Array.isArray(page.result.data)) throw new SourceError('TARGET_UNAVAILABLE', 'The original queue could not be checked. Nothing was sent.');
             const item = page.result.data.find(item => validItem(item) && item.id === claim.item.id);
             if (validItem(item)) return item;
             cursor = typeof page.result.nextCursor === 'string' && page.result.nextCursor ? page.result.nextCursor : null;
-            if (cursor && cursors.has(cursor)) throw new SourceError('TARGET_UNAVAILABLE', 'The queue cursor did not advance. Nothing was sent.');
+            if (cursor && (cursors.has(cursor) || cursors.size >= 1600)) throw new SourceError('TARGET_UNAVAILABLE', 'The queue cursor did not advance. Nothing was sent.');
             if (cursor) cursors.add(cursor);
         } while (cursor);
         return undefined;

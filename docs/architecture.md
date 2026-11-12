@@ -45,6 +45,8 @@ Workspace route 携带源与资源作用域。源注册明确提供 Files、uplo
 
 源保存和二进制上传复用正式 FileSystem 原子写入，发布前复核权限与版本；Windows 路径保留官方 DACL/ReplaceFile 行为。上传准备完成并持久保存原始 File/Blob 后才传输。取消、迟到结果、换账号或换 binding 不得清空另一份草稿或把附件送给另一会话。
 
+Codex 超长图仅在实际 source owner 内为新发送建立有界图页，保留原宽度与原件；队列与历史显示原附件，旧操作不改写或重发。原生输入与模型请求的两层缩图边界见[源端输入页](adr/hhpi-native-image-pages.md)。
+
 官方 TerminalController 的公开 owner 工厂组合真实 subprocess，客户端继续使用官方 ClientTerminals/body。输出保留独立于 Pane，释放 stream retain 不退出进程。旧 HAPI SessionTerminal 不再提供 attach-or-create 兼容运行时；迁移只对本安装实际引用的旧 owner 核对退出或明确无对象，不能强停无关终端。
 
 ## 账号级服务与本地状态

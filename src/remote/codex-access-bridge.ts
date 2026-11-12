@@ -20,11 +20,12 @@ export class CodexAccessBridge {
     private droppedThrough = 0;
     private readonly stops: Array<() => void>;
     constructor(private readonly sourceId: string, private readonly rpc: CodexRpc, directory: string,
-        private readonly beforeWrite: (method: string, params: Record<string, unknown> | null) => Promise<void>,
+        private readonly beforeWrite: (method: string, params: Record<string, unknown> | null) => Promise<Record<string, unknown> | void>,
         private readonly afterCall: (method: string, params: Record<string, unknown> | null, result: unknown) => void,
         private readonly replyThread: (request: NativeRequest, operationId: string, result: unknown) => Promise<CodexCallResult>,
         private readonly reconcileWrite?: (method: string, params: Record<string, unknown> | null) => Promise<CodexCallResult | undefined>,
-        private readonly sourceRead?: (method: string, params: Record<string, unknown> | null, signal?: AbortSignal) => Promise<CodexCallResult | undefined>) {
+        private readonly sourceRead?: (method: string, params: Record<string, unknown> | null, signal?: AbortSignal) => Promise<CodexCallResult | undefined>,
+        private readonly queuePresentation?: (threadId: string, rows: unknown[]) => unknown[]) {
         this.ledger = new ReceiptLedger(join(directory, 'native-operations'));
         if (this.reconcileWrite) this.queuedSteer = new CodexQueueSteer(sourceId, directory,
             (request, lookup) => this.call(request, lookup, undefined, true),
@@ -120,16 +121,17 @@ export class CodexAccessBridge {
             let cursor: string | null = null;
             do {
                 signal?.throwIfAborted();
-                const page = await this.call({ sourceId: this.sourceId, method: 'thread/queue/list', params: { threadId: request.params.threadId, cursor, limit: 100 } }, false, signal);
+                const page = await this.call({ sourceId: this.sourceId, method: 'thread/queue/list', params: { threadId: request.params.threadId, cursor, limit: 1 } }, false, signal);
                 const result = page.result;
                 if (page.status !== 'accepted') return page;
                 if (!result || typeof result !== 'object' || !('data' in result) || !Array.isArray(result.data)) throw new SourceError('TARGET_UNAVAILABLE', 'The source queue could not be read.');
-                rows.push(...result.data);
+                rows.push(...this.queuePresentation?.(request.params.threadId, result.data) ?? result.data);
                 cursor = 'nextCursor' in result && typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : null;
-                if (cursor && (cursors.has(cursor) || cursors.size >= 16)) throw new SourceError('TARGET_UNAVAILABLE', 'The queue view could not be completed. Nothing was changed.');
+                if (cursor && (cursors.has(cursor) || cursors.size >= 1600)) throw new SourceError('TARGET_UNAVAILABLE', 'The queue view could not be completed. Nothing was changed.');
                 if (cursor) cursors.add(cursor);
             } while (cursor);
-            return { status: 'accepted', message: 'Source queue read.', result: { data: await this.queuedSteer.project(request.params.threadId, rows), nextCursor: null } };
+            const projected = await this.queuedSteer.project(request.params.threadId, rows);
+            return { status: 'accepted', message: 'Source queue read.', result: { data: this.queuePresentation?.(request.params.threadId, projected) ?? projected, nextCursor: null } };
         }
         if (request.method === QUEUED_STEER_METHOD) {
             if (!this.queuedSteer) throw new SourceError('UNSUPPORTED', 'This source has no queued-input transfer owner. Nothing was sent.');
@@ -139,12 +141,15 @@ export class CodexAccessBridge {
         const execute = async (): Promise<CodexCallResult> => {
             try {
                 // Restoring a definitely rejected transfer never resumes another owner.
-                if (mode === 'write') await this.beforeWrite(transferChild && request.method === 'thread/queue/add' ? 'turn/steer' : request.method, request.params);
+                const dispatchParams = mode === 'write' ? await this.beforeWrite(transferChild && request.method === 'thread/queue/add' ? 'turn/steer' : request.method, request.params) ?? request.params : request.params;
                 if (mode === 'read') {
                     const source = await this.sourceRead?.(request.method, request.params, signal);
                     if (source !== undefined) return source;
                 }
-                const result = await this.rpc.request(request.method, request.params, { write: mode === 'write', ...(signal ? { signal } : {}) });
+                let result = await this.rpc.request(request.method, dispatchParams, { write: mode === 'write', ...(signal ? { signal } : {}) });
+                if (transferChild && request.method === 'thread/queue/list' && request.params && typeof request.params.threadId === 'string'
+                    && result && typeof result === 'object' && 'data' in result && Array.isArray(result.data) && this.queuePresentation)
+                    result = { ...result, data: this.queuePresentation(request.params.threadId, result.data) };
                 this.afterCall(request.method, request.params, result);
                 return { status: 'accepted', message: 'Native request accepted.', result };
             } catch (error) {

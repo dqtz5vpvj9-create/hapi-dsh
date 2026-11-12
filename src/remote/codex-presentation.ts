@@ -2,6 +2,8 @@ import type { FileUploadValue, ImageUploadValue } from '@deepseek-ai/dsh-client-
 /** Native display material; execution names and ownership never enter the DSH tool registry. */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { isRecord, nativeText, type NativeItem } from './codex-native.ts';
+import { createHash } from 'node:crypto';
+import type { NativeImagePlan } from './codex-image-pages.ts';
 
 export interface NativeToolPresentation {
     name: string;
@@ -94,12 +96,46 @@ export function nativeOtherContent(item: NativeItem): ContentBlock[] {
 export interface NativeUploadedPart {
     input: { type: 'text'; text: string; text_elements: never[] } | { type: 'localImage'; path: string };
     value?: FileUploadValue | ImageUploadValue;
+    imagePlan?: NativeImagePlan;
+}
+/** Native serialization may omit detail. Byte identity and order, not display
+ * labels or the number of images, correlate retained pages to their receipt. */
+export function nativeImageGroup(content: readonly unknown[], start: number, part: NativeUploadedPart): boolean {
+    return !!part.imagePlan?.pages.length && part.imagePlan.pages.every((page, offset) => {
+        const value = content[start + offset];
+        if (!isRecord(value)) return false;
+        if (value.type === 'localImage') return value.path === page.path;
+        if (value.type !== 'image' || typeof value.url !== 'string') return false;
+        const match = /^data:image\/(?:png|jpeg|webp|gif);base64,([A-Za-z0-9+/]*={0,2})$/.exec(value.url);
+        if (!match) return false;
+        const data = Buffer.from(match[1]!, 'base64');
+        return data.length === page.bytes && createHash('sha256').update(data).digest('hex') === page.sha256;
+    });
 }
 /** A persisted operation + exact native input, never an arbitrary text path, supplies durable file authority. */
 export function nativeUploadedContent(item: NativeItem, parts: readonly NativeUploadedPart[], prepared?: ContentBlock[]): ContentBlock[] | undefined {
-    if (item.type !== 'userMessage' || !Array.isArray(item.content) || !parts.some(part => part.value && 'file' in part.value)) return undefined;
+    if (item.type !== 'userMessage' || !Array.isArray(item.content) || !parts.some(part => part.value)) return undefined;
     const content = [...(prepared ?? nativeUserContent(item))];
     let changed = false;
+    // User image previews have one block per native image. Keep all unrelated
+    // native text/media in place and replace only a complete exact page group.
+    let offset = 0;
+    let unhandledImage = false;
+    const used = new Set<NativeUploadedPart>();
+    for (let i = 0; i < item.content.length; i++) {
+        const part = parts.find(part => !used.has(part) && part.value && 'image' in part.value && nativeImageGroup(item.content as unknown[], i, part));
+        if (part?.imagePlan && part.value && 'image' in part.value) {
+            content.splice(offset, part.imagePlan.pages.length, { type: 'image', attachment: part.value.image });
+            i += part.imagePlan.pages.length - 1;
+            offset++; changed = true; used.add(part);
+        } else {
+            const value = item.content[i];
+            if (isRecord(value) && (value.type === 'image' || value.type === 'localImage')) unhandledImage = true;
+            offset += nativeUserContent({ ...item, content: [value] }).length;
+        }
+    }
+    // Let the existing lazy reader prepare any unrelated image first.
+    if (!prepared && unhandledImage) return undefined;
     for (const part of parts) {
         if (!part.value || !('file' in part.value) || part.input.type !== 'text') continue;
         // Structured references can place receipts between other native inputs. Match only an exact source-issued input.

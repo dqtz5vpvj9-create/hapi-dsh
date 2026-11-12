@@ -90,6 +90,13 @@ docs/licenses/ELEVENLABS-REACT-MIT.txt,
 docs/licenses/ELEVENLABS-CLIENT-MIT.txt and
 docs/licenses/ELEVENLABS-TYPES-MIT.txt.
 
+Source-local image input pages
+------------------------------
+The native source uses unmodified Sharp 0.35.5 through its public image API.
+Copyright 2013-present Lovell Fuller and Sharp contributors.
+Apache-2.0 license: docs/licenses/SHARP-APACHE-2.0.txt.
+Sharp's existing platform dependencies retain their own upstream notices.
+
 Conversation image export
 -------------------------
 The browser artifact bundles unmodified html2canvas-pro 2.2.4, the version

@@ -75,6 +75,7 @@ export class DirectCodexAdapter implements SourceAdapter {
     private readonly rpc: CodexRpc;
     readonly nativeAccess: CodexAccessBridge;
     private readonly imageReader: CodexImageReader;
+    private readonly localImageFiles: boolean;
     private readonly metadataReader: NativeMetadataReader;
     private readonly readMetadata: (request: NativeMetadataRequest, signal: AbortSignal) => Promise<NativeMetadataPage>;
     private readonly readQuestions: (request: NativeQuestionsRequest, signal: AbortSignal) => Promise<NativeQuestionsPage>;
@@ -107,6 +108,7 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.now = options.now ?? Date.now;
         this.random = options.random ?? Math.random;
         this.rpc = options.rpc ?? new CodexRpc(config);
+        this.localImageFiles = options.localImageFiles === true;
         this.imageReader = new CodexImageReader(config, 30_000, options.localImageFiles === true);
         this.metadataReader = new NativeMetadataReader(config);
         this.readMetadata = options.readMetadata ?? ((request, signal) => this.metadataReader.read(request, signal));
@@ -137,6 +139,7 @@ export class DirectCodexAdapter implements SourceAdapter {
                         await this.ensureExecutionOwner(owner, true, true);
                     }
                 }
+                if (params && ['thread/queue/add', 'thread/queue/update', 'turn/steer', 'turn/start'].includes(method)) return this.uploadDispatch(method, params);
             },
             (method, params, response) => {
                 this.creations.invalidateProtection();
@@ -177,6 +180,9 @@ export class DirectCodexAdapter implements SourceAdapter {
                     data.push({ thread: response.thread, snippet: match.snippet });
                 }
                 return { status: 'accepted', message: 'Source history search read.', result: { data, nextCursor: page.nextCursor } };
+            }, (threadId, rows) => {
+                const sessionId = sourceSessionId({ machineId: this.machineId, sourceId: this.id, engine: this.engine, nativeId: threadId });
+                return rows.map(row => this.fileUploads().queueRow(sessionId, row));
             });
         this.stops = [this.rpc.onNotification(value => { this.notification(value); }), this.rpc.onRequest(request => { this.approval(request); }), this.rpc.onDisconnect(() => { this.disconnected(); })];
         // A source lifetime is independent of any Pane. This never cancels its native turn.
@@ -197,13 +203,35 @@ export class DirectCodexAdapter implements SourceAdapter {
         this.timer.unref();
     }
     private uploads?: CodexUploads;
-    private fileUploads(): CodexUploads { return this.uploads ??= new CodexUploads(join(this.directory, 'uploads'), this.nativeAccess); }
+    private fileUploads(): CodexUploads { return this.uploads ??= new CodexUploads(join(this.directory, 'uploads'), this.nativeAccess, this.localImageFiles); }
+    private async uploadDispatch(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+        if (typeof params.threadId !== 'string' || !Array.isArray(params.input)) return params;
+        const sessionId = sourceSessionId({ machineId: this.machineId, sourceId: this.id, engine: this.engine, nativeId: params.threadId });
+        if (method !== 'thread/queue/update') return this.fileUploads().dispatch(sessionId, params, this.lifetime.signal);
+        // Queue edits do not carry clientUserMessageId. Resolve it from the exact
+        // source row; never turn a browser path or a display projection into input.
+        let cursor: string | null = null;
+        const cursors = new Set<string>();
+        do {
+            const page: unknown = await this.rpc.request('thread/queue/list', { threadId: params.threadId, limit: 1, cursor }, { signal: this.lifetime.signal });
+            if (!isRecord(page) || !Array.isArray(page.data)) throw new SourceError('TARGET_UNAVAILABLE', 'The original queue row could not be read. Nothing was changed.');
+            const row = page.data.find(row => isRecord(row) && row.id === params.queuedSubmissionId);
+            if (isRecord(row) && typeof row.clientUserMessageId === 'string') {
+                const dispatch = await this.fileUploads().dispatch(sessionId, { ...params, clientUserMessageId: row.clientUserMessageId }, this.lifetime.signal);
+                return { ...params, input: dispatch.input };
+            }
+            cursor = typeof page.nextCursor === 'string' && page.nextCursor ? page.nextCursor : null;
+            if (cursor && (cursors.has(cursor) || cursors.size >= 1600)) throw new SourceError('TARGET_UNAVAILABLE', 'The original queue row could not be located. Nothing was changed.');
+            if (cursor) cursors.add(cursor);
+        } while (cursor);
+        throw new SourceError('INVALID_REQUEST', 'The original queued message is no longer available.');
+    }
     async upload(request: SourceUploadRequest, signal?: AbortSignal) { return this.fileUploads().upload(await this.resolve(request.sessionId, signal), request, signal); }
     /** Read existing upload receipts under the same native Session; no upload or execution is created. */
     async uploadInputs(sessionId: string, receiptIds: readonly string[], signal?: AbortSignal, clientUserMessageId?: string) {
         await this.resolve(sessionId, signal);
-        const input = await this.fileUploads().inputs(sessionId, receiptIds, signal);
-        if (clientUserMessageId) await this.fileUploads().associate(sessionId, clientUserMessageId, receiptIds, signal);
+        const input = clientUserMessageId ? await this.fileUploads().associate(sessionId, clientUserMessageId, receiptIds, signal)
+            : await this.fileUploads().inputs(sessionId, receiptIds, signal);
         signal?.throwIfAborted();
         return input;
     }
@@ -522,10 +550,10 @@ export class DirectCodexAdapter implements SourceAdapter {
             const attachments = new CodexAttachments(index, join(this.directory, 'images'), this.readImage, this.lifetime.signal, ({ turnId, itemId }) => {
                 const current = owner.history?.itemState(turnId, itemId);
                 if (current) owner.history!.acceptItem(owner.session, current.turnId, current.item, current.completed);
-            });
+            }, (item, prepared) => this.fileUploads().content(owner.session.id, item, prepared));
             owner.attachments = attachments;
             const details = owner.details = new CodexToolDetails(index);
-            history = new CodexHistory(index, { userContent: (turnId, item) => this.fileUploads().content(owner.session.id, item, attachments.content(turnId, item)) ?? attachments.content(turnId, item),
+            history = new CodexHistory(index, { userContent: (turnId, item) => attachments.content(turnId, item),
                 toolContent: (turnId, item) => attachments.content(turnId, item), nativeOrder: true, toolPresentation: (turnId, item, tool) => details.project(turnId, item, tool) });
         }
         owner.history = history;
@@ -625,7 +653,8 @@ export class DirectCodexAdapter implements SourceAdapter {
         await this.prepare(owner, signal);
         if (owner.full) await waitFor(this.refresh(owner, true), signal);
         if (sourceIsOffline(owner.session)) throw new SourceError('TARGET_UNAVAILABLE', 'The native source is offline.');
-        return await (request.path.startsWith('detail:') ? owner.details!.read(request.path) : owner.attachments!.read(request.path, signal));
+        return await (request.path.startsWith('detail:') ? owner.details!.read(request.path)
+            : await this.fileUploads().imageResource(request.sessionId, request.path, signal) ?? owner.attachments!.read(request.path, signal));
         } finally { owner.observers--; owner.touched = this.now(); }
     }
     private refresh(owner: ThreadOwner, full: boolean, callerSignal?: AbortSignal): Promise<void> {
@@ -717,10 +746,11 @@ export class DirectCodexAdapter implements SourceAdapter {
         if (replaced && request.epoch !== undefined) throw new SourceError('STALE_VERSION', 'The native execution history changed.');
         const accepted: Array<{ items: typeof metadata.items; entries: NativeItemEntry[]; terminal: boolean }> = [];
         const ordered = [...metadata.items].sort((a, b) => a.ordinal - b.ordinal);
+        const singleItems = this.fileUploads().hasImagePlans(owner.session.id);
         for (let offset = 0; offset < ordered.length;) {
             const first = ordered[offset]!;
             let end = offset + 1;
-            while (end < ordered.length && ordered[end]!.turnId === first.turnId
+            while (!singleItems && end < ordered.length && ordered[end]!.turnId === first.turnId
                 && ordered[end]!.predecessorId === ordered[end - 1]!.itemId) end++;
             const selected = ordered.slice(offset, end);
             const changed = selected.some(item => index.cached<number>(`source-revision:${item.turnId}:${item.itemId}`) !== item.revision);
@@ -1117,8 +1147,8 @@ export class DirectCodexAdapter implements SourceAdapter {
         // opaque cursors, with a bounded lookup; absence never permits replay.
         const seen = new Set<string>();
         let cursor: string | null = null;
-        for (let pageNumber = 0; method === 'thread/queue/add' && pageNumber < 16; pageNumber++) {
-            const page: unknown = await this.rpc.request('thread/queue/list', { threadId: params.threadId, limit: 100, cursor }, { signal: this.lifetime.signal });
+        for (let pageNumber = 0; method === 'thread/queue/add' && pageNumber < 1600; pageNumber++) {
+            const page: unknown = await this.rpc.request('thread/queue/list', { threadId: params.threadId, limit: 1, cursor }, { signal: this.lifetime.signal });
             if (!isRecord(page) || !Array.isArray(page.data)) throw new SourceError('OUTCOME_UNKNOWN', 'The native queue could not confirm the original input.');
             const queued = page.data.find(item => isRecord(item) && item.clientUserMessageId === params.clientUserMessageId);
             if (isRecord(queued)) return typeof queued.id === 'string' ? { status: 'accepted', message: 'The original native queue item confirms admission.',
@@ -1279,8 +1309,9 @@ export class DirectCodexAdapter implements SourceAdapter {
                 return outcome ? receipt('accepted', 'The native engine resolved the approval request.') : receipt('indeterminate', 'The approval response was sent; native resolution has not been observed. It will not be resent.');
             } finally { timeout.abort(); }
         }
-        const fileInputs = await this.fileUploads().inputs(operation.sessionId, operation.files ?? []);
-        if ((operation.kind === 'send' || operation.kind === 'steer') && operation.files?.length) await this.fileUploads().associate(operation.sessionId, operation.operationId, operation.files, signal);
+        const fileInputs = (operation.kind === 'send' || operation.kind === 'steer') && operation.files?.length
+            ? await this.fileUploads().associate(operation.sessionId, operation.operationId, operation.files, signal)
+            : await this.fileUploads().inputs(operation.sessionId, operation.files ?? []);
         if ((operation.kind === 'send' || operation.kind === 'steer') && !operation.text?.trim() && !operation.images?.length && !operation.files?.length) {
             throw new SourceError('INVALID_REQUEST', 'The source prompt is empty.');
         }
@@ -1294,7 +1325,8 @@ export class DirectCodexAdapter implements SourceAdapter {
                 const input = this.operationInput(operation, fileInputs);
                 if (operation.kind === 'steer') {
                     if (!operation.turnId) throw new SourceError('INVALID_REQUEST', 'Steer requires the exact native active turn.');
-                    const response = await this.rpc.request<{ turnId: string }>('turn/steer', { threadId: owner.native.id, expectedTurnId: operation.turnId, clientUserMessageId: operation.operationId, input }, { write: true });
+                    const params = await this.fileUploads().dispatch(operation.sessionId, { threadId: owner.native.id, expectedTurnId: operation.turnId, clientUserMessageId: operation.operationId, input }, signal);
+                    const response = await this.rpc.request<{ turnId: string }>('turn/steer', params, { write: true });
                     return receipt('accepted', 'The native engine accepted the steering input.', response.turnId);
                 }
                 // turn/start implicitly steers an active native turn. Normal

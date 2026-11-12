@@ -139,7 +139,7 @@ export class RemoteNativeQueue {
                         return { id: row.id as MessageId, role: 'user', source: questionCallIds.has(row.id)
                             ? { kind: 'user-question-reply', callId: questionCallIds.get(row.id)! as ToolCallId, outcome: 'answered', rpcId: row.clientUserMessageId as SessionRequestId }
                             : { kind: 'user', rpcId: row.clientUserMessageId as SessionRequestId },
-                            content: replies.length ? [{ type: 'text', text: replyText }] : row.input.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: String(part.text ?? '') }]
+                            content: replies.length ? [{ type: 'text', text: replyText }] : row.presentationContent ?? row.input.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: String(part.text ?? '') }]
                                 : part.type === 'skill' || part.type === 'mention' ? [{ type: 'text' as const, text: String(part.name ?? '') }]
                                     : local?.attachments.length ? [] : [{ type: 'text' as const, text: 'Image attachment' }]) }
                     })
