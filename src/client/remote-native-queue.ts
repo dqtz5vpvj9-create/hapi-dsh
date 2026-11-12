@@ -1,7 +1,7 @@
 /** Source-owned queue snapshots projected into the official Conversation QueueDock. */
 import type { InboxState } from '@deepseek-ai/dsh-agent/types'
 import type { UserMessage } from '@deepseek-ai/dsh-llm/types'
-import type { MessageId } from '@deepseek-ai/dsh-llm/brand'
+import type { MessageId, ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 import type { SessionRequestId, QueueAction } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 import type { SourceEntry } from '../remote/protocol.ts'
@@ -10,7 +10,8 @@ import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { QUEUED_STEER_METHOD, QUEUE_VIEW_METHOD } from '../remote/codex-access.ts'
 import { boundedSourceRead } from './remote-read-recovery.ts'
-import { nativeQuestionReplies } from '../shared/native-async-questions.ts'
+import { nativeQuestionReplies, sourceQuestion, sourceQuestionCallId } from '../shared/native-async-questions.ts'
+import { sourceControlOperationId } from '../shared/source-operation-policy.ts'
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 interface QueueActions { readonly edit: boolean; readonly remove: boolean; readonly steer: boolean; readonly start?: boolean; readonly editText?: string; readonly delivery?: NativeQueueItem['delivery'] }
@@ -104,6 +105,22 @@ export class RemoteNativeQueue {
                     }
                     this.rows = Object.freeze(rows)
                     this.readError = undefined
+                    // The official question consumer recognizes its typed Inbox
+                    // reply and yields the composer until admission/cancellation.
+                    // Keep the current native question revision and immutable RPC
+                    // identity; plain text or another client's input is not proof.
+                    const questionCallIds = new Map<string, string>()
+                    for (const request of metadata.pendingRequests) {
+                        const question = sourceQuestion(request)
+                        if (!question) continue
+                        const matching = rows.filter(row => row.input.some(part => nativeQuestionReplies(part.type === 'text' ? part.text : undefined)
+                            .some(reply => reply.questionItemId === request.id && reply.question === question.question)))
+                        if (!matching.length) continue
+                        const callId = sourceQuestionCallId(request)
+                        const clientId = await sourceControlOperationId(this.session.sessionId, 'approve', callId)
+                        this.current()
+                        for (const row of matching) if (row.clientUserMessageId === clientId) questionCallIds.set(row.id, callId)
+                    }
                     const actions: Record<string, QueueActions> = {}
                     const messages: UserMessage[] = rows.map(row => {
                         const local = this.session.getSnapshot().pendingSubmissions.find(item => item.requestId === row.clientUserMessageId)
@@ -119,7 +136,9 @@ export class RemoteNativeQueue {
                                 && metadata.capabilities.send && capabilities.methods['thread/queue/start'] === 'write',
                             ...(row.delivery ? { delivery: row.delivery } : {}),
                             editText: replies.length ? replyText : row.input.flatMap(part => part.type === 'text' ? [String(part.text ?? '')] : []).join('') }
-                        return { id: row.id as MessageId, role: 'user', source: { kind: 'user', rpcId: row.clientUserMessageId as SessionRequestId },
+                        return { id: row.id as MessageId, role: 'user', source: questionCallIds.has(row.id)
+                            ? { kind: 'user-question-reply', callId: questionCallIds.get(row.id)! as ToolCallId, outcome: 'answered', rpcId: row.clientUserMessageId as SessionRequestId }
+                            : { kind: 'user', rpcId: row.clientUserMessageId as SessionRequestId },
                             content: replies.length ? [{ type: 'text', text: replyText }] : row.input.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: String(part.text ?? '') }]
                                 : part.type === 'skill' || part.type === 'mention' ? [{ type: 'text' as const, text: String(part.name ?? '') }]
                                     : local?.attachments.length ? [] : [{ type: 'text' as const, text: 'Image attachment' }]) }

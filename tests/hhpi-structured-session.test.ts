@@ -21,6 +21,8 @@ import { NativeActionOwner } from '../src/client/remote-native-actions.ts'
 import type { NativeQueueItem } from '../src/client/remote-native-task-state.ts'
 import { BrowserStorage } from './fixtures/browser-storage.ts'
 import { officialChat } from './official-conversation-fixture.ts'
+import { nativeQuestionReply, questionItemId, sourceQuestionCallId } from '../src/shared/native-async-questions.ts'
+import { sourceControlOperationId } from '../src/shared/source-operation-policy.ts'
 import { memoryOperations } from './fixtures/operation-transactions.ts'
 let Session: typeof RemoteSourceSession
 let Pane: typeof RemotePaneSession
@@ -587,4 +589,43 @@ test('unknown idle queue start is retained and an explicit retry or reconnect ca
   await f.setQueue([])
   assert.equal((await f.face.updateQueue(original.id as never, { kind: 'start' })).ok, false)
   assert.equal(calls.length, 1, 'native consumption never causes an original item to be added or started again')
+})
+
+
+test('exact queued replies carry the official question Inbox identity while native pending survives cancellation and revisions', async t => {
+  const calls: CodexCall[] = []
+  const f = await fixture(t, async request => { calls.push(request); return { status: 'accepted', message: 'Unexpected source write' } }, undefined, { queuedStart: true })
+  const question = { id: questionItemId('owned-question', 0), method: 'request_user_input_async', itemId: 'owned-question', turnId: 'interrupted-turn', params: { index: 0, question: { title: 'Owned native question' }, revision: 36 } }
+  const callId = sourceQuestionCallId(question)
+  const clientId = await sourceControlOperationId(f.face.sessionId, 'approve', callId)
+  f.face.update({ ...f.face.metadata.getSnapshot(), pendingRequests: [question] })
+  const row = { id: 'native-original-question-reply', clientUserMessageId: clientId, input: [{ type: 'text', text: nativeQuestionReply(question, { answers: [{ id: question.id, selected: [], custom: 'Owned queued answer' }] }), text_elements: [] }] }
+  const active = () => f.face.projections.faceOf('userQuestions').getSnapshot()!.active
+  const inboxSource = () => queueInbox(f.face)?.['next-turn'][0]?.source
+  const until = async (read: () => boolean) => {
+    if (read()) return
+    await new Promise<void>((resolve, reject) => {
+      const signal = AbortSignal.timeout(1000)
+      const stop = f.face.projections.faceOf('inbox').subscribe(() => { if (read()) { stop(); signal.removeEventListener('abort', abort); resolve() } })
+      const abort = () => { stop(); reject(new Error('Expected source Inbox projection did not arrive')) }
+      signal.addEventListener('abort', abort, { once: true })
+    })
+  }
+  assert.equal(active().length, 1)
+  await f.setQueue([{ ...row, clientUserMessageId: 'another-client' }])
+  await until(() => { const source = inboxSource(); return !!source && 'rpcId' in source && source.rpcId === 'another-client' })
+  assert.equal(inboxSource()?.kind, 'user', 'same wrapper text with a different native rpcId cannot suppress this question')
+  await f.setQueue([row])
+  await until(() => inboxSource()?.kind === 'user-question-reply')
+  assert.deepEqual(inboxSource(), { kind: 'user-question-reply', callId, outcome: 'answered', rpcId: clientId }, 'the original official consumer can match the typed queued reply')
+  assert.equal(active().length, 1, 'HHPI does not hide/filter native pending; the official Inbox consumer owns card presentation')
+  assert.equal(f.face.metadata.getSnapshot().pendingRequests.length, 1)
+  assert.equal(queueInbox(f.face)?.['next-turn'][0]?.id, row.id)
+  f.face.update({ ...f.face.metadata.getSnapshot(), pendingRequests: [{ ...question, params: { ...question.params, revision: 37 } }] })
+  assert.notEqual(active()[0]!.callId, callId, 'the older admitted reply cannot match the new question revision')
+  f.face.update({ ...f.face.metadata.getSnapshot(), pendingRequests: [question] })
+  await f.setQueue([])
+  await until(() => !inboxSource())
+  assert.equal(active().length, 1, 'source-confirmed cancellation leaves the original question available to its official consumer')
+  assert.equal(calls.length, 0, 'projection and cancellation reconciliation never send or resume anything')
 })
