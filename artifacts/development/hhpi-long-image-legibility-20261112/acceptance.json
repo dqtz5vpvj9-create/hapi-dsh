@@ -181,5 +181,10 @@
     },
     "oldUserImages": "Full-resolution source files retained; accepted old queue/operation and sent small historical images unchanged, no automatic replay",
     "fullSuite": "Do not claim full pass: publisher owns release-test-boundaries.json with 1723pass/64fail/1cancel/9skip; targeted loader fixes separately recorded"
+  },
+  "profile": {
+    "run": "hhpi-long-image-legibility-20261112",
+    "status": "completed",
+    "scope": "New long-image input path only; original observed failure retained as historical observation, old accepted/sent inputs unchanged; unrelated upload-failure run remains incomplete"
   }
 }
