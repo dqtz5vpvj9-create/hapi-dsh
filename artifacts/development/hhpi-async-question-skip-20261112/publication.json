@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "publishedAt": "2026-11-12T11:59:14.821Z",
+  "sourceCommit": "ccbf2646383313d6313c24999ef47df3f7761152",
+  "releaseId": "60dacf1c56e7d0e19713354162118c1da65870ee960f6843546b317be60bc194",
+  "hostBuildId": "7d26c7071ca387b2e6cdf8dfd9d900b37c83729f4bbdcbe6092f4f617c292c59",
+  "clientRevision": "3f84dcd30812",
+  "providerRevision": "89f79aac3d70",
+  "bundleSha256": "f63589b798724779df2d593df520de1e24d00a6ca5fc92d2c2cfefa497cd679e",
+  "behavior": "An accepted async Skip settles its exact question revision in persistent source presentation state. Existing accepted Skip receipts restore the same settlement after restart; stale concurrent refresh cannot revive the card. The native queue and history are not rewritten, and accepted is not claimed as model consumption.",
+  "deployment": {
+    "updated": [
+      "central source adapters (codex-native and forwarded win-native)",
+      "Windows owned win-native source Runner"
+    ],
+    "sameSourceCarrier": true,
+    "actualServedSourceGraphsVerified": true,
+    "windowsProviderRevision": "f514b56bb9a2",
+    "readinessWaitMs": 29,
+    "ordinaryDshRunner": "unchanged DD4 carrier",
+    "offlinePairedRecordsNotUpgraded": 2,
+    "sdk": "hhpi-dsh-022-20261107.29,24packages,unchanged",
+    "clientSourceUnchanged": true,
+    "helperBytesUnchanged": true,
+    "helperSha256": "95e7d5f4a8a498ad4ba8b4bccd3a9d35be4618dd9fa76b3dd64f6cadb35a5a07"
+  },
+  "guards": {
+    "authenticatedHttp": true,
+    "compressedWebSocket": true,
+    "servedMainAndProviderBytes": true,
+    "nativePidAndBirthPreserved": true,
+    "configBytesPreserved": true,
+    "ordinaryRunnerPidAndBirthPreserved": true,
+    "ordinarySessionsIdle": true,
+    "retainedSourceShells": 0,
+    "rollbackRetained": true
+  },
+  "checks": {
+    "targeted22Passed2NativeOptInSkipped": "4b21a7a2-95f0-4a75-948b-09129c774346",
+    "hostTypes": "e90cbfd5-a4f4-469b-98f5-5a7b8c936cb6",
+    "clientSdkOtherApplicableChecks": "Reused unchanged source/dependency environment; no full rerun.",
+    "carrier": "99890db1-e99c-4d66-aab8-1c22cd6e6655",
+    "centralInstall": "0a71058a-ddeb-4e12-9c53-fdb5254120a1",
+    "centralActivation": "411e041f-d3bb-45d0-aea6-95effe8273dd",
+    "windowsInstall": "bf905cc4-5102-472f-8794-ed9808426bf4",
+    "windowsActivation": "26ecfbe5-136b-426c-ba3b-13934c2d2ee4",
+    "sourceGraphBytes": "d873c01c-362d-4583-8b9a-cc650995d04c"
+  },
+  "acceptance": {
+    "originalTarget": {
+      "passed": true,
+      "span": "344c3cc8-b1d0-4588-9715-680bc60e48a7",
+      "durationMs": 6080,
+      "oldPendingBefore": 1,
+      "pendingAfter": 0,
+      "oldCardsAfter": 0,
+      "bodyAndEditorVisible": true,
+      "userSourceWrites": 0,
+      "scope": "First read of the actual original target under the new source; does not claim observation of a long-open user page across deployment."
+    },
+    "ownedOfficialSkip": {
+      "passed": true,
+      "span": "d0fef765-f145-4ad2-a518-d907bc9316a0",
+      "durationMs": 9872,
+      "explicitEmptyAnswerSubmissions": 1,
+      "receipt": "accepted",
+      "afterSubmitRefreshAndReopen": {
+        "pending": 0,
+        "cards": 0
+      },
+      "userSourceWrites": 0,
+      "boundary": "Actual official UI and isolated native Codex0.165 with local synthetic Responses model, not the user source."
+    },
+    "visual": "Owner and root inspected fixed-webshot captures of saved actual DOM. Screenshots remain private temp artifacts."
+  },
+  "fullReleaseTestBoundary": {
+    "status": "historical full run failed and remains unresolved",
+    "evidence": "../hhpi-long-image-legibility-20261112/release-test-boundaries.json",
+    "currentSlice": "No dependency/SDK/client changes; owner targeted checks and exact applicable prior checks reused. No full-pass claim."
+  },
+  "uploadIncident": "Unchanged and still separately incomplete; this source Skip repair does not address it.",
+  "logs": "All publisher baseline/build/install/activation/readiness command stdout/stderr retained under /mnt/cache/data-cache/hhpi-async-question-skip-20261112/release/; private configs/task XML/auth/user content were not copied."
+}

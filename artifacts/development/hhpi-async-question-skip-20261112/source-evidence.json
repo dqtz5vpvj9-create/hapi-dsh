@@ -1,0 +1,14 @@
+{
+  "source": "plugin_compat bounded read-only evidence",
+  "questionIdentityHash": "02d674a887d3",
+  "sameQuestionCount": 1,
+  "revision": 36,
+  "acceptedSkipReceipt": true,
+  "sourceChannel": "thread/queue/add",
+  "currentNativeExplicitReplies": 0,
+  "currentQueueRows": 0,
+  "pendingBefore": 1,
+  "queueDisappearanceCause": "unknown",
+  "userSourceWrites": 0,
+  "proofLocation": "private question-recurrence/{summary,receipt-summary,channel-history-summary}.json"
+}

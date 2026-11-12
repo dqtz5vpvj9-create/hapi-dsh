@@ -1,0 +1,86 @@
+{
+  "release": "60dacf1c56e7d0e19713354162118c1da65870ee960f6843546b317be60bc194",
+  "sourceRevision": "ccbf2646383313d6313c24999ef47df3f7761152",
+  "hostBuildId": "7d26c7071ca387b2e6cdf8dfd9d900b37c83729f4bbdcbe6092f4f617c292c59",
+  "main": "3f84dcd30812",
+  "provider": "89f79aac3d70",
+  "scenes": [
+    {
+      "id": "original-accepted-skip-readonly",
+      "passed": true,
+      "span": "344c3cc8-b1d0-4588-9715-680bc60e48a7",
+      "durationMs": 6080,
+      "scope": "Production exact mattress source, isolated workspace view of the same canonical thread. Read-only; original layout/draft untouched. First read on new release, not an already-open pre-release page.",
+      "pendingBefore": 1,
+      "pendingAfter": 0,
+      "questionCardsAfter": 0,
+      "sourceStatus": "idle",
+      "queueRowsObserved": 0,
+      "userSourceWrites": 0,
+      "submittedAnswers": 0,
+      "blocked": 0,
+      "pageErrors": 0,
+      "bodyNodes": 11,
+      "editorGeometry": {
+        "x": 338,
+        "y": 765,
+        "width": 993,
+        "height": 44
+      },
+      "screenshot": "/mnt/cache/data-cache/hhpi-async-question-skip-20261112/original-skip-final.png",
+      "visualReview": "looked at actual fixed-webshot image; original title, body, two image thumbnails and full editor visible; no continued question card"
+    },
+    {
+      "id": "owned-official-skip-refresh-reopen",
+      "passed": true,
+      "span": "d0fef765-f145-4ad2-a518-d907bc9316a0",
+      "durationMs": 9871.974162999999,
+      "scope": "Published official DSH modules and browser UI; real DirectCodexAdapter and isolated native Codex0.165 app-server, synthetic local Responses model; HTTP/source changes routed only for this owned exact canonical source.",
+      "approveCalls": 1,
+      "exactEmptyAnswer": true,
+      "receipt": "accepted",
+      "afterSkip": {
+        "questionCards": 0,
+        "sourcePending": 0,
+        "editorVisible": true,
+        "modelConsumption": "not asserted"
+      },
+      "afterRefresh": {
+        "questionCards": 0,
+        "editorVisible": true
+      },
+      "afterReopen": {
+        "questionCards": 0,
+        "sourcePending": 0,
+        "editorVisible": true
+      },
+      "userSourceWrites": 0,
+      "blocked": 0,
+      "pageErrors": 0,
+      "screenshot": "/mnt/cache/data-cache/hhpi-async-question-skip-20261112/owned-skip-final.png",
+      "visualReview": "looked at actual fixed-webshot image; official 已跳过 reply, no continued question card, complete editor. Model consumption not asserted."
+    }
+  ],
+  "checks": {
+    "targeted": {
+      "passed": 22,
+      "skipped": 2,
+      "span": "4b21a7a2-95f0-4a75-948b-09129c774346"
+    },
+    "hostTypes": {
+      "passed": true,
+      "span": "e90cbfd5-a4f4-469b-98f5-5a7b8c936cb6"
+    }
+  },
+  "resourceSafe": {
+    "browserClosed": true,
+    "isolatedNativeStopped": true,
+    "isolatedCodexHomeRemoved": true,
+    "userSourceQueueHistoryWritten": false
+  },
+  "limits": [
+    "Historical accepted receipt proves user Skip decision/admission; it does not prove model consumption or why the old queue row disappeared.",
+    "No long-open pre-release browser metadata transition observed; production scene is first read on published release.",
+    "No new SDK/client changes, no user question submission, no native user queue edits."
+  ]
+}
