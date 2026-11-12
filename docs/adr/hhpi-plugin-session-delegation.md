@@ -20,10 +20,12 @@ HHPI 助手包装只调整来源的 disclosure 行为和计划动作，其他渲
 
 `experimental/client-ui-cot-translation` 保留现有 UI、偏好和 reactive 更新，只为 translate Remote 声明其 Session 资源。HHPI 在来源 Host 的私有 `application/translations.sqlite` 中保存翻译，按认证 principal 和完整来源 ID 隔离。缓存读取、请求、外部派发和结果写入均复核真实 gateway 归属与授权。未知或拒绝的 HHPI ID 不回落到普通 DSH writer，也不激活原生任务。关闭 disclosure 取消该读者的请求；另一个 Pane 可独立继续。
 
+调用者 Context 保留 Translator 的 Cordis 定义 fiber，不能借它读取 Translator 未声明的 `remoteAccess` 依赖。HHPI 从声明了该依赖的 storage owner Context 解析服务，并显式携带同一次 Gateway invocation，保留原调用者 principal 与逐次资源授权。直接根 Context 的 mock 会绕过这个注入门禁；回归必须通过独立插件 fiber 和真实 Gateway。
+
 四个 DSH 修改包中，ui-slots/ui-renderer 已在既有集合，translator/cot-translation 新增到统一的 24 包源码发行。源码补丁、锁定基线与上游提案一同归档。其余显式拒绝 child/store 的现有包装保留原边界。
 
 ## 验证边界
 
-`tests/source-translation.test.ts` 检查持久缓存、账号与完整来源隔离、取消后的迟到结果、跨 Pane 继续、缓存读取和外部派发前撤权，以及 ordinary/未知/未认证来源的分派。
+`tests/source-translation.test.ts` 检查持久缓存、账号与完整来源隔离、取消后的迟到结果、跨 Pane 继续、缓存读取和外部派发前撤权，以及 ordinary/未知/未认证来源的分派。真实 Typert Gateway、官方 cot controller 和 translator 分别运行在插件 fiber 中；空合成文本经过实际付费 adapter 的存储分支但不调用模型，核对 owner/单会话非 owner 的权限和零 Agent 激活。
 
 上游源码具名测试覆盖 delegate 的单一声明者、原始注入与子插槽渲染、失效授权，以及真实 native Flash adapter 对外部存储 owner 的使用。图片组件检查官方子插槽被保留，直接内容 Factory 不再绕过插件。官方 Reader/翻译插件的贯穿行为由发布浏览器检查，真实翻译服务调用另行验证；独立 Node 读者 fixture 的 carrier 加载失败不算产品行为通过。发布、实际浏览器和真实服务结果由该轮的独立证据记录，本文不把源码或组件通过当作已上线。

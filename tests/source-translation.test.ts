@@ -4,10 +4,20 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
+import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
+import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
+import Translator from '@deepseek-ai/dsh-experimental-translator'
+import CotTranslationController from '@deepseek-ai/dsh-experimental-client-ui-cot-translation'
+import type { PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 import type { TranslationIdentity, TranslationLog } from '@deepseek-ai/dsh-experimental-translator'
 import type { TranslationStorageProvider } from '@deepseek-ai/dsh-experimental-translator'
 import { SourceTranslationStorage, installSourceTranslation } from '../src/workspace/source-translation.ts'
 import type { SourceGateway } from '../src/remote/gateway.ts'
+
+declare module '@deepseek-ai/dsh-typert-protocol' {
+    interface PrincipalMap { 'translation-runtime': { kind: 'translation-runtime' } }
+}
 
 const identity: TranslationIdentity = { provider: 'deepseek-official', text: 'Synthetic reasoning', sourceLanguage: 'auto', targetLanguage: 'zh', recipe: 'native-flash' }
 const signal = (): AbortSignal => new AbortController().signal
@@ -100,4 +110,45 @@ test('the provider leaves ordinary DSH unchanged and rejects unauthenticated, de
         allowed = true; known = false
         await assert.rejects(provider(source, caller, signal()), /unknown source/)
     } finally { await caller.fiber.dispose(); await ctx.fiber.dispose() }
+})
+
+test('the actual Remote invocation crosses separate plugin dependency fibers without activating an Agent', async () => {
+    const ctx = new Context(), source = SessionId('hhpi:machine:source:codex:native')
+    let authorizations = 0, activations = 0
+    const foreignAccess: boolean[] = []
+    try {
+        await ctx.plugin(TypertRegistry)
+        await ctx.plugin(RemoteAccessService)
+        await ctx.plugin(Translator, {})
+        ctx.reflect.provide('sessionController', { resolveAgent() { activations++; throw new Error('Source translation must not activate an Agent') } } as never)
+        await ctx.plugin(CotTranslationController, { provider: 'deepseek-official', targetLanguage: 'auto' })
+        await ctx.plugin({ name: 'source-storage-runtime', inject: ['translator', 'remoteAccess'], async apply(owner: Context) {
+            await installSourceTranslation(owner, { async resolve(id: string, access: (resource: { kind: 'session'; id: string }) => boolean) {
+                assert.equal(id, source)
+                assert.equal(access({ kind: 'session', id }), true)
+                foreignAccess.push(access({ kind: 'session', id: `${id}-private` }))
+                authorizations++
+                return { id }
+            } } as unknown as SourceGateway, ':memory:')
+        } })
+        const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}))
+        const peer: PeerScope = { id: 'translation-runtime' as PeerScope['id'], ctx, principal: { kind: 'owner' },
+            interactions: 'answer', signal: signal(), dispose: async () => {} }
+        // The official paid adapter retains empty text without preparing or dispatching a model call.
+        const request = { sessionId: source, text: '', sourceLanguage: 'en', targetLanguage: 'zh-CN', provider: 'deepseek-official' }
+        assert.equal(await gateway.invoke({ peer, namespace: 'cotTranslation', method: 'translate', args: { request } }), '')
+        assert.ok(authorizations >= 4, 'the real invocation reaches the scoped owner and rechecks authorization')
+        assert.ok(foreignAccess.every(Boolean), 'the owner invocation retains its owner access')
+        foreignAccess.length = 0
+        ctx.remoteAccess.registerPolicy('translation-runtime', { bindings: () => [{
+            role: { name: 'One translation session', resource: 'session', actions: ['cotTranslation/translate'] },
+            resource: { kind: 'session', id: source },
+        }] })
+        const scopedPeer: PeerScope = { ...peer, principal: { kind: 'translation-runtime' } }
+        assert.equal(await gateway.invoke({ peer: scopedPeer, namespace: 'cotTranslation', method: 'translate', args: { request } }), '')
+        assert.ok(foreignAccess.length >= 4 && foreignAccess.every(value => !value), 'resolving the owner dependency preserves the non-owner invocation grants')
+        await assert.rejects(gateway.invoke({ peer: scopedPeer, namespace: 'cotTranslation', method: 'translate',
+            args: { request: { ...request, sessionId: `${source}-private` } } }), { code: 'remote-access/denied' })
+        assert.equal(activations, 0)
+    } finally { await ctx.fiber.dispose() }
 })

@@ -109,7 +109,9 @@ export function installSourceTranslation(ctx: Context, gateway: SourceGateway, p
             try {
                 const invocation = caller.invocation
                 if (!invocation) throw new Error('Source translation requires an authenticated invocation')
-                const access = caller.remoteAccess as unknown as RemoteAccessService
+                // The Translator's caller view retains its definition fiber. Resolve
+                // our declared dependency in the storage owner's fiber, with the same invocation.
+                const access = owner.extend({ invocation }).remoteAccess as unknown as RemoteAccessService
                 const sourceAccess: SourceAccess = resource => access.allows(resource.kind === 'source'
                     ? { kind: 'hhpiSource', id: resource.id } : { kind: 'session', id: resource.id as SessionId })
                 const authorize = async (operationSignal: AbortSignal): Promise<void> => {
