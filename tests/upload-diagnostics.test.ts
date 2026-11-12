@@ -4,6 +4,11 @@ import test from 'node:test';
 import { uploadFailure, uploadFailureLimit, uploadFailureSchema, type UploadFailure } from '../src/upload-diagnostics.ts';
 import { createComposerUploadFailureObserver, createUploadFailureReporter } from '../src/client/upload-failure-report.ts';
 import { createSourceUploadAppend } from '../src/client/source-upload-transport.ts';
+import { readFileSync } from 'node:fs';
+import { Context } from '@deepseek-ai/cordis';
+import TypertRegistry from '@deepseek-ai/dsh-typert-registry';
+import * as gateway from '@deepseek-ai/dsh-api-gateway/client';
+import { HAPI_REMOTE } from '../src/client-api.ts';
 
 test('attachment diagnostics allow only fixed operational fields and never inspect messages or payloads', () => {
     const report = uploadFailure('draft-checkpoint', 'hhpi', 'development', {
@@ -53,4 +58,32 @@ test('chunk HTTP failures preserve only status/code while retaining the original
         assert.equal((error as { code: string }).code, 'upload/http'); assert.equal((error as { status: number }).status, 503);
         assert.equal(String(error).includes('private response'), false); return true;
     });
+});
+
+test('the actual root Client injection authorizes its captured upload reporter, independently of a child scope', async t => {
+    // The Client entry imports browser-only UI. Read its public dependency list
+    // here and execute that actual namespace boundary against pinned Cordis.
+    const source = readFileSync(new URL('../src/client/index.ts', import.meta.url), 'utf8');
+    const declaration = /export const inject = (\[[^\n]+\])/.exec(source)?.[1];
+    assert.ok(declaration, 'Client public injection declaration is available');
+    const namespaces = [...declaration.matchAll(/'([^']+)'/g)].map(match => match[1]!).filter(name => name === 'remote' || name.startsWith('remote.'));
+    const ctx = new Context(), calls: string[] = [];
+    t.after(() => ctx.fiber.dispose());
+    await ctx.plugin(TypertRegistry);
+    ctx.reflect.provide('connection', { interactions: 'answer', isLoopback: false,
+        generation: { getSnapshot: () => undefined, subscribe: () => () => {} }, state: { getSnapshot: () => undefined, subscribe: () => () => {} },
+        rpc: { call: async (_channel: unknown, endpoint: string) => { calls.push(endpoint); return { ok: true, value: null }; },
+            open() { throw new Error('No streams in this contract'); } },
+        openWebSocket() { throw new Error('No sockets in this contract'); }, reconnect() {}, registerGenerationSource: () => () => {}, start: () => ({ stop() {} }),
+    } as never);
+    await ctx.plugin({ inject: gateway.inject, apply: gateway.apply });
+    await ctx.inject(['remote'], owner => owner.remote.$mount(HAPI_REMOTE));
+    let report: ReturnType<typeof createUploadFailureReporter> | undefined;
+    await ctx.inject(namespaces as never, owner => {
+        report = createUploadFailureReporter(value => owner.remote.hapi.uploadFailure(value));
+    });
+    assert.ok(report);
+    report('image-preparation', 'hhpi', new TypeError('owned invalid image'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, ['hapi/uploadFailure'], 'The root captured callback reaches the real Gateway exactly once');
 });
