@@ -1,0 +1,31 @@
+{
+  "capturedAt": "2026-11-12T10:40:17.070778+00:00",
+  "latestRootDevelopmentReceipt": {
+    "row": 48,
+    "rootDevelopment": true,
+    "receiptModifiedUtc": "2026-11-12T09:30:28.143806+00:00",
+    "state": "finished",
+    "result": "applied",
+    "bytes": 5484728,
+    "received": 5484728
+  },
+  "observation": "At incident capture no newer source transfer than 09:30:28 for the exact development source. No client-side failure cause follows from that absence.",
+  "priorSyntheticReceipt": {
+    "row": 49,
+    "rootDevelopment": false,
+    "receiptModifiedUtc": "2026-11-12T10:29:54.389013+00:00",
+    "state": "finished",
+    "result": "applied",
+    "bytes": 5154526,
+    "received": 5154526
+  },
+  "rawUserPage": {
+    "available": false,
+    "missing": [
+      "executed main-module revision",
+      "original upload error object",
+      "original browser IndexedDB draft and prepared bytes",
+      "original request timeline"
+    ]
+  }
+}

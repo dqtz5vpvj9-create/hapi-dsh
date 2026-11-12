@@ -1,0 +1,250 @@
+{
+  "passed": true,
+  "synthetic": true,
+  "sourceTaskWrites": 0,
+  "sourceUploadWrites": 40,
+  "isolatedWorkspaceWrites": 0,
+  "calls": [
+    {
+      "method": "sourceWorkspace/resolve",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/resolve",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/beginUpload",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/uploadStatus",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/beginUpload",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/uploadStatus",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 262144
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 262144
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 524288
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 524288
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 786432
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 786432
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1048576
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1048576
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1310720
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1310720
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1572864
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1572864
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1835008
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 1835008
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2097152
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2097152
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2359296
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2359296
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2621440
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2621440
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2883584
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 2883584
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3145728
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3145728
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3407872
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3407872
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3670016
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3670016
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3932160
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 3932160
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 4112370
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 4194304
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 4456448
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 4718592
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 4980736
+    },
+    {
+      "method": "hhpi/workspace/uploadChunk",
+      "status": 200,
+      "receivedBytes": 5154526
+    },
+    {
+      "method": "sourceWorkspace/finishUpload",
+      "status": 200,
+      "ok": true,
+      "applied": "applied"
+    },
+    {
+      "method": "sourceWorkspace/finishUpload",
+      "status": 200,
+      "ok": true,
+      "applied": "applied"
+    }
+  ],
+  "pageErrors": [],
+  "blocked": [],
+  "diagnostics": [],
+  "hostBuildId": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+  "appliedReceipt": true,
+  "uploadError": false,
+  "readyPreviews": 2,
+  "dimensions": [
+    [
+      1216,
+      37686
+    ],
+    [
+      1216,
+      30029
+    ]
+  ],
+  "receiptsApplied": 2,
+  "durationMs": 8726
+}

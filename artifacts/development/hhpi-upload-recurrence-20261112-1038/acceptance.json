@@ -1,0 +1,75 @@
+{
+  "run": "hhpi-upload-recurrence-20261112-1038",
+  "priorRun": "hhpi-upload-recurrence-20261112",
+  "status": "incomplete",
+  "originalUserUploadFailure": "unknown; not reproduced or repaired by this diagnostic binding change",
+  "shippedFix": {
+    "source": "16cb3d6fd",
+    "hostBuildId": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+    "release": "eb94c2411d3e5332f1d24c233ac9ba5cd45c30c55cdbdf305ac7233673c01a0e",
+    "change": "The parent client plugin declares remote.hapi, authorizing its captured upload-failure reporter. Child injection alone did not authorize this parent.",
+    "files": [
+      "src/client/index.ts",
+      "tests/upload-diagnostics.test.ts"
+    ]
+  },
+  "checks": {
+    "diagnostics": {
+      "passed": 6,
+      "span": "42c1ac5b-5deb-4cd3-935a-aa05a77426db"
+    },
+    "clientTypes": {
+      "passed": true,
+      "span": "08980383-7c22-450e-80ca-4e5a29dc8755"
+    },
+    "preFixRealInvalidPicker": {
+      "passed": false,
+      "span": "876117a0-f53c-4b4d-bae1-358671ebd7dc",
+      "meaning": "Controlled invalid PNG became error, no diagnostic. Wrapper erroneously exit0; result passed=false remains authoritative."
+    },
+    "preFixTinyValidPicker": {
+      "passed": true,
+      "span": "f89086a7-c6e2-4d40-a61f-d3a7bf6b45a1"
+    },
+    "retainedOldPage": {
+      "passed": true,
+      "totalMs": 79188,
+      "activeAfterActivationMs": 8524,
+      "passiveWaitIncluded": true,
+      "automaticWindowMs": 4000,
+      "automaticReportsInWindow": 0,
+      "explicitSettingsUpdate": true,
+      "originalFileShaAndOperationEqual": true,
+      "sourceTaskWrites": 0,
+      "sourceUploadWrites": 0,
+      "evidence": "retained-page.json"
+    },
+    "dualLongPickerFixtureFailure": {
+      "passed": false,
+      "span": "b1e59bf4-5716-4674-ae6c-3cd7f227847a",
+      "meaning": "Synthetic second file absent; setFiles ENOENT before selection, zero source writes. Initial Sharp import used obsolete lib path; generated owned crop via PIL before the actual dual-image check."
+    },
+    "dualLongPicker": {
+      "passed": true,
+      "span": "fe88c876-e719-4012-9e8c-741ac2cd2c6a",
+      "durationMs": 8726,
+      "wrapperDurationMs": 9757,
+      "evidence": "dual-long-picker.json"
+    },
+    "realClientToStderr": {
+      "passed": true,
+      "currentBuildCount": 2,
+      "eventsAreControlledInvalidPng": true,
+      "otherUserEventsObserved": false,
+      "evidence": "client-sink.json"
+    }
+  },
+  "boundaries": [
+    "The old page emitted no report during the measured four-second automatic window. This does not prove automatic HMR can never occur. Actual explicit Settings save-and-refresh restored the original file/operation and text draft, then produced both real client stage events.",
+    "The 79.188-second retained-page scenario includes passive waiting across deployment; only 8.524 seconds occurred after activation. It is not claimed as a <=60-second total scenario.",
+    "Two synthetic large PNGs passed the desktop actual picker, previews, exact-file checkpoint and source finish. This does not reproduce the original user JPEG/device/page state.",
+    "Client preprocessing still decodes before deciding to reuse original bytes. Its memory risk is code-confirmed, but no evidence establishes OOM as the user failure. No image-preparation change in this release.",
+    "No original user attachment retried, removed or resent. No model call or user source task mutation.",
+    "Prior full-suite failures and release protections are recorded by the publisher; this is not a new full-suite pass."
+  ]
+}

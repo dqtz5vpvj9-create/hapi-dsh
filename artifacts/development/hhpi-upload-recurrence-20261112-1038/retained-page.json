@@ -1,0 +1,80 @@
+{
+  "passed": true,
+  "synthetic": true,
+  "sourceTaskWrites": 0,
+  "sourceUploadWrites": 0,
+  "isolatedWorkspaceWrites": 0,
+  "calls": [
+    {
+      "method": "sourceWorkspace/resolve",
+      "status": 200,
+      "ok": true
+    },
+    {
+      "method": "sourceWorkspace/resolve",
+      "status": 200,
+      "ok": true
+    }
+  ],
+  "pageErrors": [],
+  "blocked": [],
+  "diagnostics": [
+    {
+      "request": {
+        "stage": "image-preparation",
+        "source": "hhpi",
+        "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+        "name": "InvalidStateError",
+        "code": "unknown"
+      },
+      "status": 200,
+      "ok": true
+    },
+    {
+      "request": {
+        "stage": "composer-error",
+        "source": "hhpi",
+        "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+        "name": "unknown",
+        "code": "unknown"
+      },
+      "status": 200,
+      "ok": true
+    }
+  ],
+  "hostBuildId": "6d3f77cf5f6350fd95feb64561a4defbf6590fc2f0e636efab1a5bfa683f6a5a",
+  "uploadError": true,
+  "before": {
+    "draftPreserved": true,
+    "fileCount": 1,
+    "fileBytes": 12,
+    "sourceTaskWrites": 0,
+    "sourceUploadWrites": 0,
+    "diagnostics": 0
+  },
+  "graphBefore": {
+    "version": "0.2.2-rc.1",
+    "commit": "c59d10a"
+  },
+  "activation": {
+    "hostBuildId": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+    "release": "eb94c2411d3e5332f1d24c233ac9ba5cd45c30c55cdbdf305ac7233673c01a0e",
+    "graphRelease": {
+      "version": "0.2.2-rc.1",
+      "commit": "c59d10a"
+    }
+  },
+  "diagnosticsBeforeExplicitUpdate": 0,
+  "errorBeforeExplicitUpdate": 1,
+  "automaticDraftPresent": true,
+  "automaticIdbSame": true,
+  "explicitUpdateAttempted": true,
+  "after": {
+    "draftPresent": true,
+    "fileCount": 1,
+    "idbSame": true,
+    "errorVisible": true
+  },
+  "activeAfterActivationMs": 8524,
+  "durationMs": 79188
+}

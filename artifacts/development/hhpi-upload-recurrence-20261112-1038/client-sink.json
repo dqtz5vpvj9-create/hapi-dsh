@@ -1,0 +1,44 @@
+{
+  "readAt": "2026-11-12T10:58:59.750545+00:00",
+  "sink": "production stderr host.log",
+  "events": [
+    {
+      "stage": "composer-error",
+      "source": "hhpi",
+      "build": "development",
+      "name": "unknown",
+      "code": "unknown"
+    },
+    {
+      "stage": "image-preparation",
+      "source": "hhpi",
+      "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+      "name": "InvalidStateError",
+      "code": "unknown"
+    },
+    {
+      "stage": "composer-error",
+      "source": "hhpi",
+      "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+      "name": "unknown",
+      "code": "unknown"
+    }
+  ],
+  "currentBuildEvents": [
+    {
+      "stage": "image-preparation",
+      "source": "hhpi",
+      "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+      "name": "InvalidStateError",
+      "code": "unknown"
+    },
+    {
+      "stage": "composer-error",
+      "source": "hhpi",
+      "build": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+      "name": "unknown",
+      "code": "unknown"
+    }
+  ],
+  "currentUserFault": "unknown; controlled invalid PNG records are not user events"
+}

@@ -1,0 +1,122 @@
+{
+  "schema": 1,
+  "publishedAt": "2026-11-12T10:57:45.799Z",
+  "sourceCommit": "16cb3d6fd1fd891442d0c6bdccc69c9858de5e01",
+  "releaseId": "eb94c2411d3e5332f1d24c233ac9ba5cd45c30c55cdbdf305ac7233673c01a0e",
+  "hostBuildId": "bfe882f3f3126c9cbf4a786f5f09ddcf881e9ce19030ec8f86d00b5d2a82e1eb",
+  "clientRevision": "c682103accfc",
+  "clientPayloadSha256": "c019a09091c6163bee7dffd20e692f6f0fec21cab71cbf4e9aa4a9bb1b21a02c",
+  "providerRevision": "3fb28ff852b2",
+  "providerPayloadSha256": "b2c3bda0edfc2bc464517ecbc73316b28a4ea2a6cdd9a1765ee19a7c4c3d9250",
+  "bundleSha256": "d48509b2924bdc7404bfa31120ef0dc293a4e6c2433b57161305fb2e61ed7356",
+  "change": "Declare remote.hapi on the root reporter owner, so its captured Context is authorized to report fixed-field upload failures. No preparation, bytes, retry or upload-route behavior changes.",
+  "guardResults": {
+    "authenticatedHttp": true,
+    "servedMainAndProviderBytesMatchFrozenPayload": true,
+    "compressedWebSocket": true,
+    "originalNativePidAndBirthPreserved": true,
+    "configBytesPreserved": true,
+    "ordinaryDshSessionsIdle": true,
+    "retainedHostShells": 0,
+    "rollbackRetained": true
+  },
+  "deploymentScope": {
+    "updated": "central carrier/main only",
+    "sdk": "hhpi-dsh-022-20261107.29 unchanged,24packages",
+    "windowsOwnedSource": "retains0efce146 carrier and sourcef0272aff2",
+    "ordinaryDshRunner": "retainsDD4 carrier and source7895fe022",
+    "offlinePairedRecordsNotUpgraded": 2,
+    "all17LongImageFreezeLeavesUnchanged": true
+  },
+  "dshGraph": {
+    "oldRelease": {
+      "version": "0.2.2-rc.1",
+      "commit": "c59d10a"
+    },
+    "newRelease": {
+      "version": "0.2.2-rc.1",
+      "commit": "c59d10a"
+    },
+    "oldRevision": "c2b6e0e09532",
+    "newRevision": "c85b38a9a773",
+    "scope": "Actual DSH graph version+commit; not inferred from SDK or HHPI carrier release identity."
+  },
+  "checks": {
+    "diagnosticContract6of6": "42c1ac5b-5deb-4cd3-935a-aa05a77426db",
+    "clientTypes": "08980383-7c22-450e-80ca-4e5a29dc8755",
+    "hostAndOtherUnchangedChecks": "Reused exact applicable prior inputs from long-image release; SDK and Host business source unchanged.",
+    "carrierBuild": "c8d0725a-6f68-4ace-a3b6-87c06c5db1c9",
+    "centralInstall": "caac3cbd-ca05-4cad-bd9d-5635f7501b67",
+    "centralActivate": "358709d6-7979-44bb-9251-d41959259ddb",
+    "fullTestBoundary": "../hhpi-long-image-legibility-20261112/release-test-boundaries.json; original failed full result retained, no new full run or full-pass claim."
+  },
+  "oldPageAcceptance": {
+    "passedBounded": true,
+    "ownerReadyBeforeSwitch": true,
+    "waitNoticeToSwitchExceeds10s": true,
+    "samePageAndContext": true,
+    "automaticObservationSeconds": 4,
+    "automaticReportObserved": false,
+    "existingSettingsSafeUpdateUsed": true,
+    "originalFileOperationAndDraftPreserved": true,
+    "actualClientReports": [
+      {
+        "stage": "image-preparation",
+        "name": "InvalidStateError",
+        "httpStatus": 200,
+        "count": 1
+      },
+      {
+        "stage": "composer-error",
+        "httpStatus": 200,
+        "count": 1
+      }
+    ],
+    "sourceUploadWrites": 0,
+    "sourceTaskWrites": 0,
+    "stderrSink": {
+      "passed": true,
+      "currentBuildEvents": 2,
+      "evidence": "client-sink.json",
+      "controlledOnly": true,
+      "naturalUserFailureEventsObserved": 0
+    },
+    "totalAcrossDeploymentMs": 79188,
+    "activeAfterActivationMs": 8524,
+    "durationBoundary": "79.188s includes holding the prepared old page across release; active post-activation portion8.524s."
+  },
+  "originalUserUploadFailure": {
+    "status": "unknown; not fixed",
+    "scope": "Controlled invalid PNG checks diagnostic transport; does not identify the10:38 user error."
+  },
+  "readonlyRouteInvestigation": "Malformed missing-identity chunk requests returned502 with confirmed upstream early-close; current and prior installed Connection bridge and route bytes match. This is separate from the user incident and was not changed in this carrier.",
+  "logs": "Baseline, build/pack, install, activation and push checks in this publisher slice retained complete stdout/stderr under /mnt/cache/data-cache/hhpi-upload-now-20261112/release/recurrence-1038-diag/; private install/config logs were not copied into Git.",
+  "incidentStatus": "incomplete: root-owner diagnostic transport repaired; original user upload failure remains unknown.",
+  "dualLongPickerAcceptance": {
+    "passed": true,
+    "durationMs": 8726,
+    "receiptsApplied": 2,
+    "readyPreviews": 2,
+    "sourceUploadWrites": 40,
+    "sourceTaskWrites": 0,
+    "dimensions": [
+      [
+        1216,
+        37686
+      ],
+      [
+        1216,
+        30029
+      ]
+    ],
+    "evidence": "dual-long-picker.json",
+    "modelTasks": 0,
+    "newOwnedUploadsOnly": true,
+    "sourceUploadWritesBoundary": "40 deliberate upload writes; not claimed as a no-source-write scene."
+  },
+  "profile": {
+    "run": "hhpi-upload-recurrence-20261112-1038",
+    "status": "incomplete",
+    "scope": "Diagnostic reporter binding repaired and controlled paths verified; original user10:38failure unknown."
+  }
+}
