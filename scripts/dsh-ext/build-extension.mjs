@@ -220,7 +220,7 @@ export async function buildExtension(source, output = join(ROOT, '.tmp/hhpi-ext/
       const cwd = join(source, path), input = fingerprint({ environment, source: graph.signatures[path], generated: state.generation.outputs });
       const previous = state.bundles[path];
       if (previous?.input !== input || !await matchesSnapshot(source, previous.outputs)) {
-        const oneFile = INLINE_RUNTIME_PACKAGES.includes(path) || path === 'packages/session/session-persistence' || FILESYSTEM_EXTENSION_PACKAGES.includes(path);
+        const oneFile = INLINE_RUNTIME_PACKAGES.includes(path) || path === 'packages/session/session-persistence' || path === 'packages/experimental/translator' || FILESYSTEM_EXTENSION_PACKAGES.includes(path);
         log(tools.invoke(oneFile ? ['exec', 'tsdown', 'lib/types/index.js', '--no-config', '--out-dir', 'lib', '--format', 'esm', '--platform', 'node', '--target', 'es2024', '--no-dts', '--no-clean', '--logLevel', 'error'] : ['exec', 'tsdown', '--config-loader', 'native'], cwd, 180_000));
         if (oneFile) await rename(join(cwd, 'lib/index.mjs'), join(cwd, 'lib/index.js'));
         const outputs = await snapshot(source, [`${path}/lib`]);

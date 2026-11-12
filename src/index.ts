@@ -26,6 +26,7 @@ import { compressedStreamInjection, mountCompressedStream } from './shared/compr
 import { mountPasswordLogin } from './shared/password-login.ts';
 import { mountVersionedAssets } from './shared/versioned-assets.ts';
 import { mountPluginEvents } from './shared/plugin-events.ts';
+import { installSourceTranslation } from './workspace/source-translation.ts';
 
 export const name = 'hapi-dsh';
 export const inject = ['sessions', 'sessionPersistence', 'typert', 'webServer', 'connection', 'clientModules', 'appReady', 'remoteAccess'];
@@ -59,6 +60,7 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     }), 'hapi-dsh: multiplexed official plugin events');
     // The Host controller publishes one package face containing both namespaces.
     const gateway = installSources(ctx, config.sources ?? [], join(dataDirectory, 'sources'), config.sourceWorkspaces);
+    installSourceTranslation(ctx, gateway, join(dataDirectory, 'application', 'translations.sqlite'));
     const appOrigin = new URL(config.server.publicUrl ?? `http://localhost:${config.server.port}`).origin;
     const appDirectory = join(dataDirectory, 'application');
     const pushTransport = await applicationPushTransport(appDirectory, appOrigin);

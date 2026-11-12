@@ -8,7 +8,11 @@
     "sourceSnapshot": "source-snapshots/dsh-ext/source.patch",
     "additionalSourceSnapshots": [],
     "sourceSnapshotManifest": "source-snapshots/manifest.json",
-    "previousRcSources": "source-snapshots/dsh-ext/releases/0.2.1-rc.3"
+    "previousRcSources": "source-snapshots/dsh-ext/releases/0.2.1-rc.3",
+    "extRelease": "hhpi-dsh-022-20261107.28",
+    "sourcePackageCount": 24,
+    "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
+    "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940"
   },
   "hapi": {
     "repository": "https://github.com/dqtz5vpvj9-create/hapi",

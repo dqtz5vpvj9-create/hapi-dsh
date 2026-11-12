@@ -173,10 +173,11 @@ test('native process → response → process preserves groups, primary plans/im
       attachments.schedule(f.index.read({ sessionId: source.id, limit: 100 }).entries)
       await historicalImagePrepared.promise
     }, () => history.itemState('native-turn', 'historical-user-image')?.presentationContent?.some(block => block.type === 'image') ?? false)
-    const historicalImage = container.querySelector<HTMLButtonElement>('[aria-label="Open source file history-upload.png"]')
-    assert.ok(historicalImage, 'historical native user images keep the official gallery and expose their source original')
-    const historicalOriginal = await readOriginal(historicalImage, 'generated-media')
-    assert.deepEqual(historicalOriginal.bytes, new Uint8Array(Buffer.from(png, 'base64')))
+    const historicalImage = [...container.querySelectorAll<HTMLElement>('[data-chat-flow-kind="user"]')]
+      .find(element => element.textContent?.includes('Historical image upload'))
+    assert.ok(historicalImage?.querySelector('[data-align]'), 'historical native user images use the official gallery')
+    assert.equal(container.querySelector('[aria-label="Open source file history-upload.png"]'), null,
+      'the official gallery keeps its own open/download actions without an extra source-storage action')
     await commit(async () => {
       history.acceptItem(source, 'native-turn', { id: 'generated-image', type: 'imageGeneration', savedPath: '/synthetic/generated.png', status: 'completed' }, true)
       attachments.schedule(f.index.read({ sessionId: source.id, limit: 100 }).entries)
@@ -185,12 +186,9 @@ test('native process → response → process preserves groups, primary plans/im
     const imageRow = [...container.querySelectorAll<HTMLElement>('[data-chat-flow-kind="assistant-step"]')].find(element => element.querySelector('[data-align]'))
     assert.ok(imageRow, 'the actual official gallery must render the prepared native image')
     assert.equal(imageRow.closest('[data-chat-group-key]'), null, 'a generated image is answer material outside the process disclosure')
-    assert.equal(imageRow.querySelectorAll('[data-align]').length, 1, 'adding the original action does not duplicate the official image gallery')
-    const generatedOriginal = imageRow.querySelector<HTMLButtonElement>('.hhpi-source-image-originals button')
-    assert.ok(generatedOriginal, 'the transcript factory path exposes the same exact source-original action as the public image Slot')
-    assert.equal(imageRow.querySelectorAll('.hhpi-source-image-originals').length, 1, 'the transcript renders the original action once')
-    const generated = await readOriginal(generatedOriginal, 'generated-media')
-    assert.deepEqual(generated.bytes, new Uint8Array(Buffer.from(png, 'base64')))
+    assert.equal(imageRow.querySelectorAll('[data-align]').length, 1, 'delegating the image Slot renders the official gallery once')
+    assert.equal(imageRow.querySelector('.hhpi-source-image-originals'), null,
+      'the removed source-original toolbar is not reintroduced by Slot delegation')
     assert.ok(imageReads.some(path => path.startsWith('attachment:')), 'the gallery reads its granted native image through the actual Session attachment method')
     const originalFailure = `Native failure remains readable\n${'Original detailed failure output\n'.repeat(30)}`
     const commandResult = () => [...chat.getSnapshot()!.nodes.values()].flatMap(node => {

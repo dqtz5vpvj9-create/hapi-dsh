@@ -43,7 +43,7 @@ test('verifies the complete source-built package identities and archive checksum
   const { directory } = await fixture(t);
   const result = await verifyExtensionSet(directory);
   assert.deepEqual(result.packages.map(item => item.name), EXTENSION_NAMES);
-  assert.equal(result.packages.length, 22);
+  assert.equal(result.packages.length, 24);
   assert.ok(result.packages.some(item => item.name === '@deepseek-ai/dsh-client-ui-workspace'));
   assert.ok(result.packages.some(item => item.name === '@deepseek-ai/dsh-client-ui-theme'));
 });

@@ -6,6 +6,8 @@
 
 ## 从源码准备、构建和安装
 
+2026-11-11 的插件兼容修复在 `.27` 基线上形成 `.28` 候选，增加 translator 和 cot-translation 两个源码包，共二十四包。四个修改包的职责、默认路径和验证边界见[插件委托 ADR](adr/hhpi-plugin-session-delegation.md)与[上游提案](upstream-pr-plugin-session-delegation.md)。候选源码/构建通过和中央 Host、Runner、浏览器的实际部署分别记录；上文 `.27` 已部署状态不据此改写。
+
 在项目根目录执行。临时输入放 `/mnt/cache/data-cache`，每次使用新的输出目录，保留上一套可回滚产物：
 
 ```sh

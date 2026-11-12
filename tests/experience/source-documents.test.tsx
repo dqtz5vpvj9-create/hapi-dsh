@@ -83,7 +83,7 @@ test('an unavailable source file card retains a visible retry and a closed card 
     await act(async () => reply.resolve(f.context)); expect(f.navigate).not.toHaveBeenCalled()
 })
 
-test.each(['ordinary DSH', 'source without a Files client'] as const)('%s keeps exactly the official image factory without source actions', mode => {
+test.each(['ordinary DSH', 'source without a Files client'] as const)('%s preserves the official image plugin slot without source actions', mode => {
     const f = fixture(), image = { attachmentId: 'native-image', name: 'image.png', bytes: 3, width: 1, height: 1 }
     let Wrapped: ComponentType<Record<string, unknown>> | undefined
     const Official = (props: { renderSlot(name: string, owner: { images: unknown[] }): ReactNode }) => <section>{props.renderSlot('conversation.chat.message.images', { images: [{ attachment: image }] })}</section>
@@ -93,11 +93,12 @@ test.each(['ordinary DSH', 'source without a Files client'] as const)('%s keeps 
     } })
     const stop = installSourceTranscript(f.ctx, mode === 'ordinary DSH' ? f.client : undefined); onTestFinished(stop)
     expect(Wrapped).toBeDefined()
-    const renderFactorySlot = vi.fn(() => <div data-testid="official-gallery">Official gallery</div>)
+    const renderSlot = vi.fn(() => <div data-testid="official-gallery">Official gallery</div>), renderFactorySlot = vi.fn()
     render(createElement(Wrapped!, { sessionId: mode === 'ordinary DSH' ? 'ordinary-dsh-session' : f.sessionId,
-        node: { key: 'assistant-image', data: { status: 'settled', blocks: [] } }, useDisclosure: () => ({}), renderFactorySlot }))
+        node: { key: 'assistant-image', data: { status: 'settled', blocks: [] } }, useDisclosure: () => ({}), renderSlot, renderFactorySlot }))
     expect(screen.getAllByTestId('official-gallery')).toHaveLength(1)
-    expect(renderFactorySlot).toHaveBeenCalledExactlyOnceWith('conversation.images.content', { images: [{ attachment: image }] })
+    expect(renderSlot).toHaveBeenCalledExactlyOnceWith('conversation.chat.message.images', { images: [{ attachment: image }] })
+    expect(renderFactorySlot).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /Open source file/ })).not.toBeInTheDocument()
     expect(f.resolve).not.toHaveBeenCalled()
 })

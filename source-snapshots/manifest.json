@@ -123,7 +123,9 @@
         "packages/client/ui-input-trigger/tests/apply.client.spec.ts",
         "packages/client/ui-plan/src/client/index.ts",
         "packages/client/ui-renderer/README.md",
+        "packages/client/ui-renderer/src/client/registry.ts",
         "packages/client/ui-renderer/src/client/scoped-slots.tsx",
+        "packages/client/ui-renderer/tests/scoped-slots-real-core.client.spec.tsx",
         "packages/client/ui-renderer/tests/scoped-slots.client.spec.tsx",
         "packages/client/ui-session/src/client/index.ts",
         "packages/client/ui-sidebar-files/src/client/FileNavigator.tsx",
@@ -133,6 +135,7 @@
         "packages/client/ui-sidebar-files/tests/navigator-style.client.spec.ts",
         "packages/client/ui-slots/src/index.ts",
         "packages/client/ui-slots/src/renderer.ts",
+        "packages/client/ui-slots/tests/core.client.spec.ts",
         "packages/client/ui-theme/README.i18n.yaml",
         "packages/client/ui-theme/README.md",
         "packages/client/ui-theme/README.zh.md",
@@ -147,6 +150,11 @@
         "packages/client/ui-workspace/src/client/navigation.ts",
         "packages/client/ui-workspace/tests/apply.client.spec.ts",
         "packages/client/ui-workspace/tests/navigation-restoration.client.spec.ts",
+        "packages/experimental/client-ui-cot-translation/src/index.ts",
+        "packages/experimental/translator/src/deepseek.ts",
+        "packages/experimental/translator/src/index.ts",
+        "packages/experimental/translator/src/storage.ts",
+        "packages/experimental/translator/tests/deepseek.spec.ts",
         "packages/fs/fs-local/README.i18n.yaml",
         "packages/fs/fs-local/README.md",
         "packages/fs/fs-local/README.zh.md",
@@ -190,10 +198,10 @@
         "pnpm-lock.yaml"
       ],
       "upstreamVersion": "0.2.2-rc.1",
-      "extRelease": "hhpi-dsh-022-20261107.27",
-      "sourcePackageCount": 22,
-      "patchSha256": "1fe52f1ce105e9e0af549e6ffd2b08c03fb181a69d9ddb3765c034b0bd939627",
-      "patchSetSha256": "0a3533bfbca0e8b17fcb23aa2b0bf4244dccd2ded957edb121e96b0144f58edd",
+      "extRelease": "hhpi-dsh-022-20261107.28",
+      "sourcePackageCount": 24,
+      "patchSha256": "5471d05c4663cf047de5842bb02fa82964e64d15545969e5ab2250fc7d6e3e15",
+      "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
       "reconstruction": "Run scripts/dsh-ext/prepare.mjs from this repository. Apply only this consolidated source.patch to baseCommit; do not replay previousRc increments or historical build transformations.",
       "previousRc": {
         "upstreamVersion": "0.2.1-rc.3",
@@ -263,7 +271,8 @@
             "historicalPatchReference": "dsh-ext/ui-chat-layout.patch"
           }
         ]
-      }
+      },
+      "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940"
     },
     {
       "name": "hapi",

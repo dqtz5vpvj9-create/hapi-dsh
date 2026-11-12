@@ -1,0 +1,9 @@
+# Preserve registered Slot children when decorating native and external Session views
+
+An assistant renderer decorated through its public registration must retain the original registration's child authorizations, injected seats, store, locale and current SessionBinding. Replacing its child dispatch with content factories bypasses optional contributions such as reasoning translation. Redeclaring those children conflicts with SlotCore's single-owner rule.
+
+Add optional `delegate: StoredEntry` to registrations in the same live Slot cell. The renderer resolves the delegate for its standard and injected seats while rendering the decorator component. The original entry retains declarations and stores; the decorator cannot replace those seats. Delegation does not change declaration epochs and cannot authorize rendering after the original entry is disposed. Existing registrations remain unchanged.
+
+For the experimental translator, add an optional lifetime-bound durable storage provider receiving the exact Session ID and caller Context. Returning no owner preserves the existing native Session writer. An admitted external owner provides the translator's existing cache/request/result contract and can recheck authorization immediately before dispatch. This supports native external Session views without creating a DSH execution Agent or modifying their transcripts. The existing DeepSeek paid adapter and accepted provider/language preferences remain authoritative. Declare the translation Remote's addressed Session resource.
+
+Focused contracts cover declaration and disposal, inherited rendering, caller Context, paid audit-before-dispatch without a native writer, and ordinary Session fallback. The HHPI consumer additionally covers principal/source isolation, durable reuse, cancellation, revocation and its actual official Reader/plugin integration. No upstream push is included in this proposal.

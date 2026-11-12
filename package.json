@@ -160,6 +160,7 @@
     "@deepseek-ai/dsh-client-ui-tool": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-workspace": "0.2.2-rc.1",
     "@deepseek-ai/dsh-commands": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-experimental-translator": "0.2.2-rc.1",
     "@deepseek-ai/dsh-file-reference": "0.2.2-rc.1",
     "@deepseek-ai/dsh-file-reference-local": "0.2.2-rc.1",
     "@deepseek-ai/dsh-fs": "0.2.2-rc.1",

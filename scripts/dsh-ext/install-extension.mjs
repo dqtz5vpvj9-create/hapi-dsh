@@ -7,7 +7,7 @@ import { ROOT, run, UPSTREAM_COMMIT, UPSTREAM_VERSION, EXTENSION_PACKAGES, FILES
 import { fingerprint, readJson, snapshot, matchesSnapshot, withLock, writeJson } from './cache.mjs';
 
 export const EXTENSION_NAMES = Object.freeze(EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${NATIVE_EXTENSION_PACKAGES.includes(path) || FILESYSTEM_EXTENSION_PACKAGES.includes(path) ? path.split('/').at(-1) : path.slice('packages/'.length).replaceAll('/', '-')}`));
-export const UI_EXTENSION_NAMES = Object.freeze(UI_EXTENSION_PACKAGES.map(path => `@deepseek-ai/dsh-${path.slice('packages/'.length).replaceAll('/', '-')}`));
+export const UI_EXTENSION_NAMES = Object.freeze([...UI_EXTENSION_PACKAGES, 'packages/experimental/client-ui-cot-translation'].map(path => `@deepseek-ai/dsh-${path.slice('packages/'.length).replaceAll('/', '-')}`));
 const digest = value => createHash('sha256').update(value).digest('hex');
 export function extensionIdentity(manifest, name) {
   return manifest.packageIdentities?.[name] ?? {
