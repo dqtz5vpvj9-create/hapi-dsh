@@ -56,7 +56,7 @@ async function mount() {
 }
 const denied = (error: unknown): boolean => error instanceof RemoteError && ['remote-access/denied', 'hhpi/source'].includes(error.code);
 
-test('real Host registers HHPI and workspace RPCs without a compatibility controller', async () => {
+test('real Host registers HHPI and workspace RPCs without a compatibility controller', async t => {
     const directory = await mkdtemp(join(tmpdir(), 'hhpi-host-contract-'));
     const ctx = new Context();
     try {
@@ -73,11 +73,19 @@ test('real Host registers HHPI and workspace RPCs without a compatibility contro
         assert.equal(catalog.storageScope, sourceStorageScope(join(directory, 'sources')), 'owner bootstrap and authenticated invocation use the same stable installation scope');
         assert.deepEqual(catalog.sources, []);
         assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
+        const warnings: string[] = [], stderr = process.stderr.write;
+        t.mock.method(process.stderr, 'write', function (chunk: string | Uint8Array, ...args: unknown[]) {
+            const text = String(chunk);
+            if (text.startsWith('Attachment upload failure ')) { warnings.push(text); return true; }
+            return Reflect.apply(stderr, process.stderr, [chunk, ...args]) as boolean;
+        });
         const report = { stage: 'draft-checkpoint', source: 'hhpi', build: 'development', name: 'QuotaExceededError', code: 'unknown' };
         assert.equal(await gateway.invoke({ peer, namespace: 'hapi', method: 'uploadFailure', args: { request: report } }), null);
         await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'uploadFailure', args: { request: { ...report, message: 'private' } } }));
         await assert.rejects(gateway.invoke({ peer: { ...peer, principal: { kind: 'hhpi-service-fixture' } }, namespace: 'hapi', method: 'uploadFailure', args: { request: report } }),
             error => error instanceof RemoteError && error.code === 'remote-access/denied');
+        assert.equal(warnings.length, 1, 'only a valid, authorized failure reaches the durable Host stderr sink');
+        assert.deepEqual(JSON.parse(warnings[0]!.slice('Attachment upload failure '.length)), report);
         await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
             args: { request: { hubId: 'saved-legacy-hub', sourceSessionId: 'saved-session' } } }),
         /no active Remote method/,

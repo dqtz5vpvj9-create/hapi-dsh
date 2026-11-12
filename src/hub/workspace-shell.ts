@@ -39,7 +39,9 @@ export class WorkspaceShell extends TypertRemoteService {
     @Remote('uploadFailure')
     uploadFailure(request: UploadFailure): null {
         const report = uploadFailureSchema.parse(request);
-        if (allowUploadFailure()) this.ctx.logger.warn('Attachment upload failure %j', report);
+        // Cordis' default exporter keeps an in-memory buffer. The carrier's
+        // existing stderr is the durable Host log, including without a log UI.
+        if (allowUploadFailure()) process.stderr.write(`Attachment upload failure ${JSON.stringify(report)}\n`);
         return null;
     }
 }
