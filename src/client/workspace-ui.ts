@@ -5,6 +5,8 @@ import { WorkspaceDraftHandoffs } from './draft-handoff.ts'
 import { createSourceFileMutations, type SourceFileMutationJournal } from './source-file-mutation-journal.ts'
 import { WorkspaceApplicationIdentity } from './application-identity.ts'
 import { SourceReadCommits } from './source-reading-commit.ts'
+import { createUploadFailureReporter } from './upload-failure-report.ts'
+import type { UploadFailure, UploadFailureReporter } from '../upload-diagnostics.ts'
 
 /** Microphone ownership is shared explicitly; ordinary plugin stores are not. */
 export interface WorkspaceVoice {
@@ -18,6 +20,7 @@ export interface WorkspaceVoice {
 }
 
 export interface WorkspaceUiScope {
+    readonly reportUploadFailure: UploadFailureReporter
     readonly application: WorkspaceApplicationIdentity
     readonly readCommits: SourceReadCommits
     readonly preferences: WorkspaceUiPreferences
@@ -95,7 +98,9 @@ export function createWorkspaceVoiceCoordinator() {
 
 export function createWorkspaceUiBridge(storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>,
     events?: Pick<Window, 'addEventListener' | 'removeEventListener'>,
-    windowStorage?: Pick<Storage, 'getItem' | 'setItem'>) {
+    windowStorage?: Pick<Storage, 'getItem' | 'setItem'>,
+    sendUploadFailure?: (report: UploadFailure) => Promise<unknown>) {
+    const reportUploadFailure = createUploadFailureReporter(sendUploadFailure)
     const preferences = createWorkspaceUiPreferences(storage, events)
     const coordinator = createWorkspaceVoiceCoordinator()
     // A window's hand-off owner must never be shared through localStorage.
@@ -106,7 +111,7 @@ export function createWorkspaceUiBridge(storage?: Pick<Storage, 'getItem' | 'set
     const handoffs = new WorkspaceDraftHandoffs(shareInbox.owner, undefined, () => updates.checkpoint())
     const sourceFileMutations = createSourceFileMutations({ ...(events ? { events } : {}) })
     updates.register('Conversation draft transfer', () => handoffs.checkpoint())
-    const createScope = (): WorkspaceUiLease => ({ application, readCommits, preferences, shareInbox, handoffs, sourceFileMutations, updates, ...coordinator.createScope() })
+    const createScope = (): WorkspaceUiLease => ({ reportUploadFailure, application, readCommits, preferences, shareInbox, handoffs, sourceFileMutations, updates, ...coordinator.createScope() })
     const root = createScope()
     return { root, createScope, async dispose(): Promise<void> {
         try { await coordinator.dispose() } finally { application.dispose(); readCommits.dispose(); updates.dispose(); handoffs.dispose(); shareInbox.dispose(); sourceFileMutations.dispose(); preferences.dispose() }

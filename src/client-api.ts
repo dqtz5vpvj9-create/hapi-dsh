@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import type { InvocationDescriptor, RemoteResult, TypertRemoteContribution } from '@deepseek-ai/dsh-typert-protocol';
 import { parseWorkspaceState, type WorkspaceState } from './client/model.ts';
+import { uploadFailureSchema, type UploadFailure } from './upload-diagnostics.ts';
 import type { SourceMachineHealth } from './source-machine-types.ts';
 export interface CatalogMachine {
     id: string; label: string; online: boolean; homeDir?: string; workspaceRoots?: string[];
@@ -17,6 +18,7 @@ export interface HapiRemoteApi {
     catalog(): Promise<RemoteResult<HapiCatalog>>;
     workspaceGet(): Promise<RemoteResult<WorkspaceDocument>>;
     workspacePut(request: WorkspaceWrite): Promise<RemoteResult<WorkspaceWriteResult>>;
+    uploadFailure(request: UploadFailure): Promise<RemoteResult<null>>;
 }
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap { hapi: HapiRemoteApi }
@@ -24,6 +26,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
         'hapi/catalog': HapiRemoteApi['catalog'];
         'hapi/workspaceGet': HapiRemoteApi['workspaceGet'];
         'hapi/workspacePut': HapiRemoteApi['workspacePut'];
+        'hapi/uploadFailure': HapiRemoteApi['uploadFailure'];
     }
 }
 const id = z.string().min(1).max(4096);
@@ -35,12 +38,14 @@ const workspaceState = z.unknown().transform((value, ctx) => {
 const workspaceDocument = z.strictObject({ revision: z.number().int().nonnegative(), state: workspaceState.nullable() });
 const inputs: Partial<Record<keyof HapiRemoteApi, z.ZodType>> = {
     workspacePut: z.strictObject({ expectedRevision: z.number().int().nonnegative(), state: workspaceState, operationId: id }),
+    uploadFailure: uploadFailureSchema,
 };
 const outputs: Record<keyof HapiRemoteApi, z.ZodType> = {
     catalog: z.strictObject({ hubId: id, connected: z.boolean(), machines: z.array(z.never()), sessions: z.array(z.never()),
         hosts: z.array(z.strictObject({ id, label: z.string(), online: z.boolean(), basePath: z.string() })), hostsComplete: z.boolean().optional() }),
     workspaceGet: workspaceDocument,
     workspacePut: workspaceDocument.extend({ status: z.enum(['applied', 'conflict']) }),
+    uploadFailure: z.null(),
 };
 const codec = (name: string, schema: z.ZodType) => ({ mode: 'strict' as const, typeSymbol: `hapi-dsh#${name}`, create: () => schema });
 export const HAPI_REMOTE: TypertRemoteContribution = {

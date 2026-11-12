@@ -2009,6 +2009,52 @@ index 00000000..c45c168f
 +      new WindowCommitCoordinator(host),
 +  })
 +}
+diff --git a/packages/api/session-controller/src/commands.ts b/packages/api/session-controller/src/commands.ts
+index 53098723..c788fa4c 100644
+--- a/packages/api/session-controller/src/commands.ts
++++ b/packages/api/session-controller/src/commands.ts
+@@ -383,6 +383,8 @@ export class SessionCommandController {
+    * @returns acknowledgement that the queue mutation was applied.
+    */
+   async updateQueue(request: SessionUpdateQueueRequest): Promise<SessionUpdateQueueValue> {
++    // Source-only capability: reject before resolving or waking an ordinary Agent.
++    if (request.action.kind === 'start') throw new RemoteError('session/steer-unavailable', 'this Session does not support starting queued messages', { itemId: request.itemId })
+     if (request.action.kind === 'edit') {
+       // oxlint-disable-next-line typescript/no-unnecessary-condition -- Remote callers can submit untyped JSON.
+       if (request.action.content.some(block => block.type !== 'text')) {
+diff --git a/packages/api/session-controller/src/types.ts b/packages/api/session-controller/src/types.ts
+index 1d846d4c..30923b12 100644
+--- a/packages/api/session-controller/src/types.ts
++++ b/packages/api/session-controller/src/types.ts
+@@ -147,6 +147,8 @@ export type QueueAction =
+   }
+   | { readonly kind: 'remove' }
+   | { readonly kind: 'steer' }
++  /** Optional source action; ordinary DSH does not start idle queues through this RPC. */
++  | { readonly kind: 'start' }
+ 
+ /** One Session list entry. */
+ export interface SessionSummary {
+diff --git a/packages/api/session-controller/tests/commands-queue-attachment.host.spec.ts b/packages/api/session-controller/tests/commands-queue-attachment.host.spec.ts
+index f5755830..b2ebd997 100644
+--- a/packages/api/session-controller/tests/commands-queue-attachment.host.spec.ts
++++ b/packages/api/session-controller/tests/commands-queue-attachment.host.spec.ts
+@@ -128,6 +128,15 @@ async function expectFailure(operation: Promise<unknown>, code: string): Promise
+ }
+ 
+ describe('Session queue commands', () => {
++  it('rejects source-only idle queue start without resolving or waking an ordinary Agent', async () => {
++    const { ctx, controller, resolveAgent, steer } = await commandHarness()
++    try {
++      await expectFailure(controller.updateQueue({ sessionId: SessionId('cold-ordinary'), itemId: MessageId('original'), action: { kind: 'start' } }), 'session/steer-unavailable')
++      expect(resolveAgent).not.toHaveBeenCalled()
++      expect(steer).not.toHaveBeenCalled()
++    } finally { await ctx.fiber.dispose() }
++  })
++
+   it('edits a blockquote into ordinary text without changing prompt correlation', async () => {
+     const { ctx, controller, agent, inbox } = await commandHarness()
+     try {
 diff --git a/packages/api/session-controller/tests/history-source.client.spec.ts b/packages/api/session-controller/tests/history-source.client.spec.ts
 new file mode 100644
 index 00000000..4c3c6f0b
@@ -11138,7 +11184,7 @@ index f2b52604..7e92aab4 100644
      }
      const { popups } = this.live
 diff --git a/packages/client/ui-conversation/README.md b/packages/client/ui-conversation/README.md
-index 14f54dc2..5a9b40b5 100644
+index 14f54dc2..d0c69f95 100644
 --- a/packages/client/ui-conversation/README.md
 +++ b/packages/client/ui-conversation/README.md
 @@ -13,6 +13,8 @@ Desktop product events use the optional [product analytics service](../product-a
@@ -11150,7 +11196,7 @@ index 14f54dc2..5a9b40b5 100644
  ## Table of Contents
  
  - [Conversation assembly](#conversation-assembly)
-@@ -213,3 +215,17 @@ None; Conversation assembly and browser input state do not alter provider-side p
+@@ -213,3 +215,20 @@ None; Conversation assembly and browser input state do not alter provider-side p
  None.
  
  </details>
@@ -11168,8 +11214,11 @@ index 14f54dc2..5a9b40b5 100644
 +Sources may set optional `delivery` (`sending`, `confirming`, `failed`) for an owner-held queue row or a local pending request ID. QueueDock keeps its text/attachments visible with native progress and omits actions while no mutable queued item exists. Clearing the state restores per-row capabilities. Missing source state preserves ordinary DSH pending presentation.
 +
 +An explicit per-row `steer: true` is final source availability, including continuation of its retained operation while the session is idle. Missing row/projection still uses the ordinary running-session condition. The source validates the original operation and captured turn at action time.
++
++
++The optional `queueActions[rowId].start` enables an explicit idle-source action in QueueDock. It sends `{kind:"start"}` through the retained Session; the source owns selection, queue order, admission and later automatic consumption. It is never inferred from `running=false`. Ordinary Session commands reject this action before resolving an Agent. Missing capability keeps existing Edit/Remove/Steer behavior.
 diff --git a/packages/client/ui-conversation/README.zh.md b/packages/client/ui-conversation/README.zh.md
-index 473e1582..bba3531e 100644
+index 473e1582..1c38491a 100644
 --- a/packages/client/ui-conversation/README.zh.md
 +++ b/packages/client/ui-conversation/README.zh.md
 @@ -13,6 +13,8 @@ kind: "package-reference"
@@ -11181,7 +11230,7 @@ index 473e1582..bba3531e 100644
  ## 目录
  
  - [Conversation 组装](#conversation-assembly)
-@@ -213,3 +215,17 @@ selector 必须是 owner currency 的纯函数。非 null 返回值作为 `match
+@@ -213,3 +215,20 @@ selector 必须是 owner currency 的纯函数。非 null 返回值作为 `match
  无。
  
  </details>
@@ -11199,6 +11248,9 @@ index 473e1582..bba3531e 100644
 +来源可为仍由其持有的队列行，或本机待确认请求 ID，提供可选 `delivery`（`sending`、`confirming`、`failed`）。QueueDock 保留原文和附件并显示原生进度；尚无可变更的排队项时不显示误导性的灰动作。状态清除后恢复逐项能力。缺少来源状态时，普通 DSH 的待发送呈现不变。
 +
 +来源逐项明确声明的 `steer: true` 是该动作的最终可用性，包括会话已空闲时继续其持有的原操作；缺少行或投影时，仍采用普通 DSH 的运行中条件。动作执行时由来源核对原操作和捕获的轮次。
++
++
++可选 `queueActions[rowId].start` 让 QueueDock 提供明确的空闲来源启动操作，经原 Session 传递 `{kind:"start"}`。来源负责原队列项身份、顺序与后续消费；不能从 `running=false` 推断支持。普通 Session 在解析 Agent 之前拒绝该操作；缺少能力声明时沿用原有编辑、删除和插话。
 diff --git a/packages/client/ui-conversation/package.json b/packages/client/ui-conversation/package.json
 index ddfc9e2c..99bc3f6c 100644
 --- a/packages/client/ui-conversation/package.json
@@ -13261,7 +13313,7 @@ index 54825659..f954defd 100644
 +  })).then(build)
  }
 diff --git a/packages/client/ui-conversation/src/client/locales.ts b/packages/client/ui-conversation/src/client/locales.ts
-index 2918c177..1ce3e161 100644
+index 2918c177..e82738e3 100644
 --- a/packages/client/ui-conversation/src/client/locales.ts
 +++ b/packages/client/ui-conversation/src/client/locales.ts
 @@ -366,6 +366,8 @@ export const zh = {
@@ -13273,7 +13325,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': '排队消息图片',
    'queue.file': '排队文件 {name}',
    'queue.edit': '编辑排队消息',
-@@ -756,6 +758,8 @@ export const en = {
+@@ -374,6 +376,8 @@ export const zh = {
+   'queue.cancelEdit': '取消编辑',
+   'queue.remove': '删除排队消息',
+   'queue.steer': '插话发送',
++  'queue.start': '发送此条并继续队列',
++  'queue.startFailed': '未能确认发送结果，请稍后查看。',
+   'queue.steer.unavailable': '仅运行中可插话发送',
+   'error.sessionInUse': '当前会话已被占用，可能是其他正在运行的 DSH 导致的（如其他 dsh web、桌面端），请退出其他正在运行的 DSH 后重试。',
+   'queue.editFailed': '编辑失败：这条消息可能已经开始发送。',
+@@ -756,6 +760,8 @@ export const en = {
    'details.running': 'Running…',
    'queue.count': '{n} queued messages',
    'queue.sending': 'Sending…',
@@ -13282,7 +13343,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'Queued message image',
    'queue.file': 'Queued file {name}',
    'queue.edit': 'Edit queued message',
-@@ -1145,6 +1149,8 @@ export const ja = {
+@@ -764,6 +770,8 @@ export const en = {
+   'queue.cancelEdit': 'Cancel editing',
+   'queue.remove': 'Remove queued message',
+   'queue.steer': 'Steer queued message',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': 'Steering is available only while the agent is running',
+   'error.sessionInUse': 'This session is already in use, possibly by another running DSH instance (such as dsh web or the desktop app). Quit other running DSH instances and try again.',
+   'queue.editFailed': 'Edit failed: this message may have already started sending.',
+@@ -1145,6 +1153,8 @@ export const ja = {
    'details.running': '実行中…',
    'queue.count': '{n}件のキュー済みメッセージ',
    'queue.sending': '送信中…',
@@ -13291,7 +13361,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'キュー済みメッセージの画像',
    'queue.file': 'キュー済みファイル {name}',
    'queue.edit': 'キュー済みメッセージを編集',
-@@ -1527,6 +1533,8 @@ export const es = {
+@@ -1153,6 +1163,8 @@ export const ja = {
+   'queue.cancelEdit': '編集をキャンセル',
+   'queue.remove': 'キュー済みメッセージを削除',
+   'queue.steer': 'キュー内のメッセージを実行中の指示に追加',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': '指示の変更はエージェントの実行中のみ利用できます',
+   'error.sessionInUse': 'このセッションはすでに使用中です。別の実行中のDSHインスタンス（dsh webやデスクトップアプリなど）が使用している可能性があります。他のDSHインスタンスを終了して再試行してください。',
+   'queue.editFailed': '編集に失敗しました。このメッセージはすでに送信が開始されている可能性があります。',
+@@ -1527,6 +1539,8 @@ export const es = {
    'details.running': 'Corriendo…',
    'queue.count': 'Mensajes en cola {n}',
    'queue.sending': 'Enviando…',
@@ -13300,7 +13379,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'Imagen de mensaje en cola',
    'queue.file': 'Archivo en cola {name}',
    'queue.edit': 'Editar mensaje en cola',
-@@ -1916,6 +1924,8 @@ export const fr = {
+@@ -1535,6 +1549,8 @@ export const es = {
+   'queue.cancelEdit': 'Cancelar edición',
+   'queue.remove': 'Eliminar mensaje en cola',
+   'queue.steer': 'Redirigir mensaje en cola',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': 'La dirección solo está disponible mientras el agente está en ejecución',
+   'error.sessionInUse': 'Esta sesión ya está en uso, posiblemente por otra instancia de DSH en ejecución (como la web dsh o la aplicación de escritorio). Salga de otras instancias de DSH en ejecución y vuelva a intentarlo.',
+   'queue.editFailed': 'Error de edición: es posible que este mensaje ya haya comenzado a enviarse.',
+@@ -1916,6 +1932,8 @@ export const fr = {
    'details.running': 'Courir…',
    'queue.count': "Messages en file d'attente {n}",
    'queue.sending': 'Envoi…',
@@ -13309,7 +13397,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': "Image du message en file d'attente",
    'queue.file': "Fichier en file d'attente {name}",
    'queue.edit': "Modifier le message en file d'attente",
-@@ -2305,6 +2315,8 @@ export const de = {
+@@ -1924,6 +1942,8 @@ export const fr = {
+   'queue.cancelEdit': 'Annuler la modification',
+   'queue.remove': "Supprimer le message en file d'attente",
+   'queue.steer': 'Guider avec le message en attente',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': "Le pilotage est disponible uniquement lorsque l'agent est en cours d'exécution",
+   'error.sessionInUse': "Cette session est déjà utilisée, éventuellement par une autre instance DSH en cours d'exécution (telle que le Web dsh ou l'application de bureau). Quittez les autres instances DSH en cours d'exécution et réessayez.",
+   'queue.editFailed': "Échec de la modification : l'envoi de ce message a peut-être déjà commencé.",
+@@ -2305,6 +2325,8 @@ export const de = {
    'details.running': 'Laufen…',
    'queue.count': '{n} Nachrichten in der Warteschlange',
    'queue.sending': 'Senden…',
@@ -13318,7 +13415,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'Nachrichtenbild in der Warteschlange',
    'queue.file': 'Datei in der Warteschlange {name}',
    'queue.edit': 'Bearbeiten Sie die Nachricht in der Warteschlange',
-@@ -2694,6 +2706,8 @@ export const ru = {
+@@ -2313,6 +2335,8 @@ export const de = {
+   'queue.cancelEdit': 'Bearbeitung abbrechen',
+   'queue.remove': 'Entfernen Sie die Nachricht in der Warteschlange',
+   'queue.steer': 'Mit vorgemerkter Nachricht lenken',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': 'Die Steuerung ist nur verfügbar, während der Agent ausgeführt wird',
+   'error.sessionInUse': 'Diese Sitzung wird bereits verwendet, möglicherweise von einer anderen laufenden DSH-Instanz (z. B. dsh Web oder der Desktop-App). Beenden Sie andere laufende DSH-Instanzen und versuchen Sie es erneut.',
+   'queue.editFailed': 'Bearbeitung fehlgeschlagen: Der Versand dieser Nachricht wurde möglicherweise bereits gestartet.',
+@@ -2694,6 +2718,8 @@ export const ru = {
    'details.running': 'Бег…',
    'queue.count': 'Сообщения в очереди {n}',
    'queue.sending': 'Отправка…',
@@ -13327,7 +13433,16 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'Изображение сообщения в очереди',
    'queue.file': 'Файл в очереди {name}',
    'queue.edit': 'Изменить сообщение в очереди',
-@@ -3083,6 +3097,8 @@ export const pt = {
+@@ -2702,6 +2728,8 @@ export const ru = {
+   'queue.cancelEdit': 'Отменить редактирование',
+   'queue.remove': 'Удалить сообщение из очереди',
+   'queue.steer': 'Направить сообщение из очереди',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': 'Управление доступно только во время работы агента.',
+   'error.sessionInUse': 'Этот сеанс уже используется, возможно, другим работающим экземпляром DSH (например, веб-сайтом dsh или настольным приложением). Закройте другие работающие экземпляры DSH и повторите попытку.',
+   'queue.editFailed': 'Не удалось изменить: возможно, это сообщение уже начало отправляться.',
+@@ -3083,6 +3111,8 @@ export const pt = {
    'details.running': 'Correndo…',
    'queue.count': '{n} mensagens na fila',
    'queue.sending': 'Enviando…',
@@ -13336,8 +13451,17 @@ index 2918c177..1ce3e161 100644
    'queue.image': 'Imagem de mensagem na fila',
    'queue.file': 'Arquivo na fila {name}',
    'queue.edit': 'Editar mensagem na fila',
+@@ -3091,6 +3121,8 @@ export const pt = {
+   'queue.cancelEdit': 'Cancelar edição',
+   'queue.remove': 'Remover mensagem na fila',
+   'queue.steer': 'Orientar com mensagem da fila',
++  'queue.start': 'Send this message and continue the queue',
++  'queue.startFailed': 'Could not confirm sending. Check again shortly.',
+   'queue.steer.unavailable': 'A direção está disponível apenas enquanto o agente está em execução',
+   'error.sessionInUse': 'Esta sessão já está em uso, possivelmente por outra instância DSH em execução (como dsh web ou aplicativo de desktop). Saia de outras instâncias DSH em execução e tente novamente.',
+   'queue.editFailed': 'Falha na edição: esta mensagem pode já ter começado a ser enviada.',
 diff --git a/packages/client/ui-conversation/src/client/queue/QueueDock.tsx b/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
-index 6396387a..71c4e371 100644
+index 6396387a..c6a05797 100644
 --- a/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
 +++ b/packages/client/ui-conversation/src/client/queue/QueueDock.tsx
 @@ -10,10 +10,14 @@ import {
@@ -13393,7 +13517,7 @@ index 6396387a..71c4e371 100644
  
    if (rowCount === 0) return null
  
-@@ -190,9 +207,12 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -190,9 +207,15 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
          <ul id={listId} className={css.list} hidden={!listVisible}>
            {listVisible && queue.map((row) => {
              const attachments = queueAttachments(row.content)
@@ -13402,13 +13526,16 @@ index 6396387a..71c4e371 100644
 +            const local = pendingSubmissions.find(item => item.placement === 'queued' && item.requestId === rpcId)
 +            const text = queueActions?.[row.id]?.editText ?? textOf(row.content)
 +            const steerAllowed = queueActions?.[row.id]?.steer ?? running
++            const startAllowed = !running && queueActions?.[row.id]?.start === true
++            const sendAllowed = startAllowed || steerAllowed
++            const sendLabel = t(startAllowed ? 'queue.start' : 'queue.steer')
              return (
 -              <li key={row.id} className={css.row}>
 +              <li key={row.id} className={css.row} data-queue-delivery={queueActions?.[row.id]?.delivery}>
                  {/* Single-item strip has no count header, so the row itself carries the queue glyph. */}
                  {rowCount === 1 && <span className={css.lead} aria-hidden><IconQueueOutlineRegular /></span>}
                  {editing?.id === row.id
-@@ -207,6 +227,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -207,6 +230,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                    )
                    : (
                      <>
@@ -13416,7 +13543,7 @@ index 6396387a..71c4e371 100644
                        {attachments.length > 0 && (
                          <span className={css.attachments}>
                            {attachments.map((item, index) => item.type === 'image'
-@@ -234,7 +255,8 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -234,7 +258,8 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                        })}</span>
                      </>
                    )}
@@ -13426,7 +13553,7 @@ index 6396387a..71c4e371 100644
                    {editing?.id === row.id
                      ? (
                        <>
-@@ -243,7 +265,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -243,7 +268,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                              type="button"
                              className={css.action}
                              aria-label={t('queue.save')}
@@ -13435,7 +13562,7 @@ index 6396387a..71c4e371 100644
                              onClick={() => { void saveEdit() }}
                            >
                              <IconCheckOutlineRegular size={14} />
-@@ -272,7 +294,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -272,7 +297,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                              // Disabled buttons fire no hover events, so the
                              // unsupported hint stays a native title.
                              title={text === null ? t('queue.edit.unsupported') : undefined}
@@ -13444,7 +13571,7 @@ index 6396387a..71c4e371 100644
                              onClick={() => {
                                if (text !== null) setEditing({ id: row.id, text: text })
                              }}
-@@ -285,7 +307,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -285,7 +310,7 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                              type="button"
                              className={css.action}
                              aria-label={t('queue.remove')}
@@ -13453,24 +13580,32 @@ index 6396387a..71c4e371 100644
                              onClick={() => {
                                void applyAction(
                                  row.id,
-@@ -297,13 +319,13 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+@@ -297,18 +322,18 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
                              <IconTrashOutlineRegular size={14} />
                            </button>
                          </Tooltip>
 -                        <Tooltip portal label={t('queue.steer')} side="bottom" delayMs={500} disabled={!running}>
-+                        <Tooltip portal label={t('queue.steer')} side="bottom" delayMs={500} disabled={!steerAllowed}>
++                        <Tooltip portal label={sendLabel} side="bottom" delayMs={500} disabled={!sendAllowed}>
                            <button
                              type="button"
                              className={css.action}
-                             aria-label={t('queue.steer')}
+-                            aria-label={t('queue.steer')}
 -                            title={running ? undefined : t('queue.steer.unavailable')}
 -                            disabled={busy !== null || !running}
-+                            title={steerAllowed ? undefined : t('queue.steer.unavailable')}
-+                            disabled={busy !== null || !steerAllowed}
++                            aria-label={sendLabel}
++                            title={sendAllowed ? undefined : t('queue.steer.unavailable')}
++                            disabled={busy !== null || !sendAllowed}
                              onClick={() => {
                                void applyAction(
                                  row.id,
-@@ -323,35 +345,16 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
+-                                { kind: 'steer' },
+-                                t('queue.steerFailed'),
++                                { kind: startAllowed ? 'start' : 'steer' },
++                                t(startAllowed ? 'queue.startFailed' : 'queue.steerFailed'),
+                               )
+                             }}
+                           >
+@@ -323,35 +348,16 @@ export function QueueDock({ useSession, useProjection, updateQueue, notify, load
            })}
            {listVisible && pendingQueue.map((submission) => {
              return (
@@ -13510,7 +13645,7 @@ index 6396387a..71c4e371 100644
                    <button
                      type="button"
                      className={css.action}
-@@ -399,9 +402,13 @@ export const queueDockEntry = {
+@@ -399,9 +405,13 @@ export const queueDockEntry = {
        id: 'queue',
        order: 20,
        locale: NS,
@@ -13529,10 +13664,10 @@ index 6396387a..71c4e371 100644
          return {
 diff --git a/packages/client/ui-conversation/src/client/queue/queue-actions.ts b/packages/client/ui-conversation/src/client/queue/queue-actions.ts
 new file mode 100644
-index 00000000..7e377f0d
+index 00000000..0ed0dd93
 --- /dev/null
 +++ b/packages/client/ui-conversation/src/client/queue/queue-actions.ts
-@@ -0,0 +1,22 @@
+@@ -0,0 +1,24 @@
 +/** Optional per-occurrence queue action availability supplied by a Session source. */
 +import type {} from '@deepseek-ai/dsh-session-projection/types'
 +
@@ -13544,6 +13679,8 @@ index 00000000..7e377f0d
 +  readonly edit: boolean
 +  readonly remove: boolean
 +  readonly steer: boolean
++  /** Explicitly start this queued item while idle; the source may then consume its remaining queue. */
++  readonly start?: boolean
 +}
 +
 +/** Missing projection or missing row preserves the ordinary DSH queue actions. */
@@ -14722,7 +14859,7 @@ index bf3f83e1..7ddeb669 100644
      const steerQueue = vi.fn()
      const { textarea, sink } = bench({ running: true, queue: [row('q-1')], draft: '插话', steerQueue })
 diff --git a/packages/client/ui-conversation/tests/queue-dock.client.spec.tsx b/packages/client/ui-conversation/tests/queue-dock.client.spec.tsx
-index 44878bbc..e7cc6b38 100644
+index 44878bbc..ed532629 100644
 --- a/packages/client/ui-conversation/tests/queue-dock.client.spec.tsx
 +++ b/packages/client/ui-conversation/tests/queue-dock.client.spec.tsx
 @@ -25,6 +25,7 @@ import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts
@@ -14757,10 +14894,33 @@ index 44878bbc..e7cc6b38 100644
    )) as UseProjection
    return {
      useSession,
-@@ -150,6 +152,23 @@ function imageRow(id: string, refId: string, text = ''): UserMessage {
+@@ -150,6 +152,46 @@ function imageRow(id: string, refId: string, text = ''): UserMessage {
  }
  
  describe('QueueDock', () => {
++  it('starts an explicitly capable idle source row once and keeps ordinary idle queues disabled', async () => {
++    const snapshot = { ...snapshotWith([row('stopped', 'Kept original')]), running: false }
++    const live = liveSession(snapshot)
++    let finish!: () => void
++    const held = new Promise<void>(resolve => { finish = resolve })
++    const kit = kitFor(snapshot, { updateQueue: vi.fn(() => held) })
++    const view = render(<QueueDock {...kit} {...live} />)
++    expect(view.getByRole('button', { name: t('queue.steer') })).toHaveProperty('disabled', true)
++    expect(view.queryByRole('button', { name: t('queue.start') })).toBeNull()
++    expect(kit.updateQueue).not.toHaveBeenCalled()
++    act(() => live.push({ ...snapshot, testQueueActions: { stopped: { edit: true, remove: true, steer: false, start: true } } }))
++    const start = view.getByRole('button', { name: t('queue.start') })
++    expect(start).toHaveProperty('disabled', false)
++    fireEvent.click(start)
++    fireEvent.click(start)
++    expect(kit.updateQueue).toHaveBeenCalledExactlyOnceWith(iid('stopped'), { kind: 'start' })
++    expect(view.getByText('Kept original')).toBeDefined()
++    await act(async () => { finish(); await held })
++    act(() => live.push({ ...snapshot, running: true, testQueueActions: { stopped: { edit: true, remove: true, steer: true, start: false } } }))
++    expect(view.queryByRole('button', { name: t('queue.start') })).toBeNull()
++    expect(view.getByRole('button', { name: t('queue.steer') })).toHaveProperty('disabled', false)
++  })
++
 +  it('keeps native defaults without source restrictions and disables only the named source row actions', async () => {
 +    const snapshot = snapshotWith([row('source', 'Queued source text')])
 +    const live = liveSession(snapshot)
@@ -14781,7 +14941,7 @@ index 44878bbc..e7cc6b38 100644
    it('keeps the same quote preview when a queued echo hands off to Host content', () => {
      const requestId = 'quote-handoff' as SessionSnapshot['pendingSubmissions'][number]['requestId']
      const content = [{ type: 'text' as const, text: '> @literal /review' }]
-@@ -249,6 +268,8 @@ describe('QueueDock', () => {
+@@ -249,6 +291,8 @@ describe('QueueDock', () => {
      expect(view.getAllByText('等待上传')).toHaveLength(1)
      expect(view.container.querySelector('[data-submission-echo]')).toBeNull()
      expect(view.queryByRole('status')).toBeNull()
@@ -14790,7 +14950,7 @@ index 44878bbc..e7cc6b38 100644
      for (const name of ['编辑排队消息', '删除排队消息', '插话发送']) {
        expect((view.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(false)
      }
-@@ -525,6 +546,41 @@ describe('QueueDock', () => {
+@@ -525,6 +569,41 @@ describe('QueueDock', () => {
        .toBe('包含非文本内容，暂不支持编辑')
    })
  
@@ -14832,7 +14992,7 @@ index 44878bbc..e7cc6b38 100644
    it('renders queued image thumbnails from durable references beside the text preview', async () => {
      const loadImage = vi.fn(() => Promise.resolve('blob:thumb-1'))
      const snap = snapshotWith([imageRow('i-img', 'att-9', '带图消息')])
-@@ -797,4 +853,22 @@ describe('QueueDock', () => {
+@@ -797,4 +876,22 @@ describe('QueueDock', () => {
        QueueDock,
      )
    })

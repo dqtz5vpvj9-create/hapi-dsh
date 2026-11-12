@@ -14,12 +14,14 @@ const session = 'hhpi:machine:source:codex:thread' as SessionId
 const binding = { target: { hostId: 'selected-host', sessionId: session }, machineId: 'machine', workspaceId: 'source', root: '/source', pathStyle: 'posix' as const }
 function fixture(service: WorkspaceUploadService, checkpoint?: Parameters<typeof installRemoteFileUpload>[2], resolving?: () => Promise<void>) {
   let provider!: FileUploadProvider, disposed = false
-  const ctx = { fileUpload: { registerProvider(value: FileUploadProvider) { provider = value; return () => { disposed = true } } } } as unknown as Context
+  const failures: unknown[][] = []
+  const ctx = { get: () => ({ reportUploadFailure: (...args: unknown[]) => failures.push(args) }),
+    fileUpload: { registerProvider(value: FileUploadProvider) { provider = value; return () => { disposed = true } } } } as unknown as Context
   const client: SourceFileClient = { async resolve(id, signal) { assert.equal(id, session); signal.throwIfAborted();
     await resolving?.(); signal.throwIfAborted()
     return { owner: { scope: 'account', binding }, services: { binding, uploads: service } as unknown as WorkspaceServices } } }
   const stop = installRemoteFileUpload(ctx, client, checkpoint)
-  return { provider, stop, get disposed() { return disposed } }
+  return { provider, stop, failures, get disposed() { return disposed } }
 }
 function source(events: string[] = []) {
   let transfer: Awaited<ReturnType<WorkspaceUploadService['begin']>>, finished: Awaited<ReturnType<WorkspaceUploadService['finish']>> | undefined
@@ -154,6 +156,7 @@ test('source admission waits for the exact prepared-byte checkpoint and a storag
   const file = new File(['original'], 'test.txt'), pending = f.provider.upload(session, file, file.name)
   await entered.promise; assert.equal(s.operations.length, 0)
   reply.resolve(); await assert.rejects(pending, /storage quota/)
+  assert.equal(f.failures[0]?.[0], 'draft-checkpoint', 'a pre-begin failure records its actual stage');
   assert.equal(s.operations.length, 0); assert.equal(s.commits, 0)
   fail = false; await f.provider.upload(session, file, file.name)
   assert.equal(s.operations.length, 1); assert.equal(s.commits, 1)

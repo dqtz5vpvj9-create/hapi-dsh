@@ -12,3 +12,8 @@ transformations. The remaining old transformation files are historical material;
 the active preparation entry does not replay them over 0.2.2. In particular, the
 native onAccept implementation replaces the former input-acceptance extension.
 See `docs/adr/hhpi-dsh-022-upgrade.md` for the migration and upload ownership rules.
+
+The active complete extension cohort is `hhpi-dsh-022-20261107.29` (24 packages).
+Its optional native queue start action preserves ordinary DSH defaults; see
+`docs/adr/hhpi-native-queue-start.md`. The preceding .28 patch and release identities
+are preserved in `releases/0.2.2-rc.1/hhpi-dsh-022-20261107.28/` as historical inputs.

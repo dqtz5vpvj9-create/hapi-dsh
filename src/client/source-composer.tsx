@@ -1,4 +1,4 @@
-import { createElement, useLayoutEffect, useRef, type ComponentType } from 'react';
+import { createElement, useEffect, useLayoutEffect, useRef, type ComponentType } from 'react';
 import { isSourceSessionId } from '../remote/protocol.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots';
@@ -7,6 +7,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import { inspectComposerAttachments, type ComposerEnterAttachments } from './composer-enter/attachments.ts';
 import { cancelSourceUpload } from './source-upload-intent.ts';
 import { ComposerUploadStatus } from './compact-composer.tsx';
+import { createComposerUploadFailureObserver } from './upload-failure-report.ts';
+import type {} from './workspace-ui.ts';
 
 /** Access the published attachment owner callbacks through their real mounted slot. */
 export interface SourceComposerBridge extends ComposerEnterAttachments {
@@ -43,6 +45,11 @@ export function installSourceComposerBridge(ctx: Context): SourceComposerBridge 
             if (!original || original.children || original.store) return;
             const Official = original.component as ComponentType<ComposerAttachmentsProps>;
             const AttachmentSeat = (props: ComposerAttachmentsProps) => {
+                const observer = useRef<ReturnType<typeof createComposerUploadFailureObserver> | undefined>(undefined);
+                observer.current ??= createComposerUploadFailureObserver((stage, source, error) => {
+                    try { ctx.get?.('hapiWorkspaceUi')?.reportUploadFailure?.(stage, source, error); } catch { /* No effect on the attachment owner. */ }
+                });
+                useEffect(() => observer.current?.(isSourceSessionId(props.sessionId ?? '') ? 'hhpi' : 'ordinary', props.attachments, props.uploads), [props.attachments, props.uploads, props.sessionId]);
                 const addFiles = (files: readonly File[]) => {
                     if (props.sessionId && props.inputActions) for (const file of files) uploadOwners.set(file, { sessionId: props.sessionId, actions: props.inputActions });
                     props.onAddFiles(files);

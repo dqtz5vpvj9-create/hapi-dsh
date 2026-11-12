@@ -203,3 +203,50 @@ test('real native async tool: running steer and idle queue reach the Agent exact
     assert.equal((await source.read({ sessionId })).session.pendingRequests.length, 0);
     nextTurn.reply('Both isolated answers received.');
 });
+
+
+test('real native idle queue: interruption keeps original items and explicit selected start continues their original queue', {
+    skip: !process.env.HHPI_CODEX_QUEUE_START_TEST_COMMAND ? 'Set HHPI_CODEX_QUEUE_START_TEST_COMMAND to the pinned native executable.' : false,
+    timeout: 30_000,
+}, async t => {
+    const home = await mkdtemp('/mnt/cache/data-cache/hhpi-native-queue-start-'), socket = join(home, 'native.sock');
+    const model = new SyntheticResponsesModel(); model.automatic = false; model.captureInput = true; await model.start();
+    await writeFile(join(home, 'config.toml'), model.config().replace('model = "hhpi-fixture"', 'model = "gpt-6.1-sol"'));
+    const child = spawn(process.env.HHPI_CODEX_QUEUE_START_TEST_COMMAND!, ['app-server', '--listen', `unix://${socket}`],
+        { env: { ...process.env, CODEX_HOME: home }, stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.resume(); const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    let source: DirectCodexAdapter | undefined;
+    t.after(async () => { await model.close(); await source?.dispose(); child.kill('SIGTERM');
+        await Promise.race([closed, new Promise(resolve => setTimeout(resolve, 1000))]); if (child.exitCode === null) child.kill('SIGKILL'); await rm(home, { recursive: true, force: true }); });
+    const signal = AbortSignal.timeout(24_000); let physical = '';
+    for (let i = 0; i < 200 && !physical; i++) { try { const path = await realpath(socket); if ((await lstat(path)).isSocket()) physical = path; } catch {} if (!physical) await new Promise(resolve => setTimeout(resolve, 10)); }
+    assert.ok(physical);
+    const config: DirectCodexConfig = { id: 'queue-start-fixture', machineId: 'fixture', engine: 'codex', endpoint: `unix://${physical}`, ownership: 'shared', writerLock: 'native' };
+    source = new DirectCodexAdapter(config, join(home, 'view'), { pollMs: 60_000 });
+    const created = await source.create({ sourceId: source.id, operationId: 'create-idle-queue-fixture', cwd: home }); assert.ok(created.session);
+    const sessionId = created.session.id, threadId = created.session.nativeId;
+    assert.equal((await source.operate({ sessionId, operationId: 'initial-owned-turn', kind: 'send', text: 'Isolated pending request, no tools or files.' })).status, 'accepted');
+    await model.next(signal);
+    const active = (await source.read({ sessionId })).session.activeTurnId; assert.ok(active);
+    const call = (method: string, operationId: string, params: Record<string, unknown>) => source!.nativeAccess.call({ sourceId: source!.id, method, operationId, params: { threadId, ...params } });
+    assert.equal((await call('turn/interrupt', 'stop-owned-turn', { turnId: active })).status, 'accepted');
+    let state = await source.read({ sessionId });
+    for (let i = 0; i < 200 && state.session.status !== 'idle'; i++) { await new Promise(resolve => setTimeout(resolve, 10)); state = await source.read({ sessionId }); }
+    assert.equal(state.session.status, 'idle');
+    const add = async (id: string) => { const result = await call('thread/queue/add', `add-${id}`, { clientUserMessageId: id, input: [{ type: 'text', text: id, text_elements: [] }] }); assert.equal(result.status, 'accepted'); return (result.result as { queuedSubmission: { id: string } }).queuedSubmission.id; };
+    const first = await add('OWNED_QUEUE_FIRST'), selected = await add('OWNED_QUEUE_SELECTED');
+    const rows = async () => { const r = await call('thread/queue/list', 'readonly-list', {}); assert.equal(r.status, 'accepted'); return (r.result as { data: Array<{ id: string; clientUserMessageId: string }> }).data; };
+    assert.deepEqual((await rows()).map(row => row.id), [first, selected]);
+    assert.equal(model.calls, 1, 'interrupted source does not dispatch either queued input on enqueue');
+    assert.equal((await call('thread/queue/start', 'start-selected-owned', { queuedSubmissionId: selected })).status, 'accepted');
+    const selectedRequest = await model.next(signal);
+    const input = JSON.stringify(selectedRequest.input);
+    assert.ok(input.includes('OWNED_QUEUE_SELECTED')); assert.ok(!input.includes('OWNED_QUEUE_FIRST'));
+    assert.deepEqual((await rows()).map(row => row.id), [first]);
+    selectedRequest.reply('Selected queued input received.');
+    const following = await model.next(signal);
+    assert.ok(JSON.stringify(following.input).includes('OWNED_QUEUE_FIRST'), 'normal completion continues the remaining native queue');
+    following.reply('Remaining original queue received.');
+    assert.deepEqual(await rows(), []);
+    t.diagnostic('Codex actual selected-ID start: interrupted no automatic dispatch, selected item once then remaining native queue. Synthetic loopback model only.');
+});

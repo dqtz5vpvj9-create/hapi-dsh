@@ -83,7 +83,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     let preferenceStorage: Storage | undefined, windowStorage: Storage | undefined
     try { preferenceStorage = localStorage } catch { /* Preferences can remain in memory. */ }
     try { windowStorage = sessionStorage } catch { /* A window still has its own share owner. */ }
-    const workspaceUi = createWorkspaceUiBridge(preferenceStorage, window, windowStorage)
+    const workspaceUi = createWorkspaceUiBridge(preferenceStorage, window, windowStorage, report => ctx.remote.hapi.uploadFailure(report))
     const unprovideUi = ctx.reflect.provide('hapiWorkspaceUi', workspaceUi.root)
     let child: ReturnType<Context['inject']> | undefined
     try {

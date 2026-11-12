@@ -73,6 +73,11 @@ test('real Host registers HHPI and workspace RPCs without a compatibility contro
         assert.equal(catalog.storageScope, sourceStorageScope(join(directory, 'sources')), 'owner bootstrap and authenticated invocation use the same stable installation scope');
         assert.deepEqual(catalog.sources, []);
         assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
+        const report = { stage: 'draft-checkpoint', source: 'hhpi', build: 'development', name: 'QuotaExceededError', code: 'unknown' };
+        assert.equal(await gateway.invoke({ peer, namespace: 'hapi', method: 'uploadFailure', args: { request: report } }), null);
+        await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'uploadFailure', args: { request: { ...report, message: 'private' } } }));
+        await assert.rejects(gateway.invoke({ peer: { ...peer, principal: { kind: 'hhpi-service-fixture' } }, namespace: 'hapi', method: 'uploadFailure', args: { request: report } }),
+            error => error instanceof RemoteError && error.code === 'remote-access/denied');
         await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
             args: { request: { hubId: 'saved-legacy-hub', sourceSessionId: 'saved-session' } } }),
         /no active Remote method/,

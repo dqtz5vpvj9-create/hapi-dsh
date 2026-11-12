@@ -36,7 +36,7 @@ before(async () => {
 })
 const queueInbox = (face: RemoteSourceSession) => face.projections.faceOf('inbox').getSnapshot() as InboxState | undefined
 const content: SessionPromptContentPart[] = [{ type: 'text', text: 'Use ' }, { type: 'reference', source: 'hhpi:codex:skill', ref: '/native/skill/SKILL.md', label: 'Review' }]
-async function fixture(t: TestContext, call: (request: CodexCall) => Promise<CodexCallResult>, uploadInputs?: SourceWorkspaceApi['uploadInputs'], options: { outbox?: RemoteOutbox; offline?: boolean; receipt?: (request: CodexCall) => Promise<CodexCallResult>; queuedSteer?: boolean } = {}) {
+async function fixture(t: TestContext, call: (request: CodexCall) => Promise<CodexCallResult>, uploadInputs?: SourceWorkspaceApi['uploadInputs'], options: { outbox?: RemoteOutbox; offline?: boolean; receipt?: (request: CodexCall) => Promise<CodexCallResult>; queuedSteer?: boolean; queuedStart?: boolean } = {}) {
   const session: SourceSession = { id: 'hhpi:machine:source:codex:thread', machineId: 'machine', sourceId: 'source', nativeId: 'thread', engine: 'codex', title: 'Synthetic', cwd: '/native', updatedAt: 1,
     status: 'idle', activeTurnId: null, capabilities: { send: true, steer: true, cancel: true, approve: true, files: true, images: true }, codex: { model: 'fixture' } as SourceSession['codex'], pendingRequests: [] }
   if (options.offline) session.status = 'offline'
@@ -45,7 +45,7 @@ async function fixture(t: TestContext, call: (request: CodexCall) => Promise<Cod
   const history = new RemoteSourceHistory(session.id, { read: async () => page, async *changes() { throw new Error('No mounted reading view') } })
   let queue: readonly NativeQueueItem[] = []
   let queueReadError: Error | undefined
-  const api = { async nativeCapabilities() { return { ok: true, value: { methods: { 'skills/list': 'read', 'thread/queue/add': 'write', 'thread/queue/list': 'read', 'thread/queue/update': 'write', 'thread/queue/delete': 'write', 'turn/steer': 'write' }, ...(options.queuedSteer ? { methods: { 'skills/list': 'read', 'thread/queue/add': 'write', 'thread/queue/list': 'read', 'thread/queue/update': 'write', 'thread/queue/delete': 'write', 'turn/steer': 'write', 'hhpi/queue/steer': 'write', 'hhpi/queue/list': 'read' } } : {}), unavailable: {} } } },
+  const api = { async nativeCapabilities() { return { ok: true, value: { methods: { 'skills/list': 'read', 'thread/queue/add': 'write', 'thread/queue/list': 'read', 'thread/queue/update': 'write', 'thread/queue/delete': 'write', 'turn/steer': 'write' }, ...(options.queuedSteer ? { methods: { 'skills/list': 'read', 'thread/queue/add': 'write', 'thread/queue/list': 'read', 'thread/queue/update': 'write', 'thread/queue/delete': 'write', 'turn/steer': 'write', 'hhpi/queue/steer': 'write', 'hhpi/queue/list': 'read' } } : {}), ...(options.queuedStart ? { methods: { 'skills/list': 'read', 'thread/queue/add': 'write', 'thread/queue/list': 'read', 'thread/queue/update': 'write', 'thread/queue/delete': 'write', 'thread/queue/start': 'write' } } : {}), unavailable: {} } } },
     async nativeCall(request: CodexCall) {
       if ((request.method === 'thread/queue/list' || request.method === 'hhpi/queue/list') && queueReadError) throw queueReadError
       return { ok: true, value: { status: 'accepted', result: (request.method === 'thread/queue/list' || request.method === 'hhpi/queue/list') ? { data: queue, nextCursor: null } : { data: [{ skills: [{ name: 'review', path: '/native/skill/SKILL.md', enabled: true }] }] } } }
@@ -57,9 +57,9 @@ async function fixture(t: TestContext, call: (request: CodexCall) => Promise<Cod
   const face = new Session(session.id as SessionId, session, history, api, outbox, { forSession: () => directory } as unknown as SourceDirectories, actions, uploadInputs ? { uploadInputs } : undefined)
   t.after(() => { face.dispose(); history.dispose(); actions.dispose(); directory.dispose() })
   await face.ready
-  const observe = async (rpcId: string) => {
+  const observe = async (rpcId: string, kind: 'user' | 'user-question-reply' = 'user') => {
     const seq = page.entries.length ? page.entries[0]!.event.seq + 1 : 0
-    const event = { type: 'user/message', seq, time: 1000 + seq, surfaceOp: 'append', data: { id: `native-message-${rpcId}`, role: 'user', source: { kind: 'user', rpcId }, content: [{ type: 'text', text: 'Use Review' }] } } as unknown as SourceEntry['event']
+    const event = { type: 'user/message', seq, time: 1000 + seq, surfaceOp: 'append', data: { id: `native-message-${rpcId}`, role: 'user', source: { kind, rpcId }, content: [{ type: 'text', text: 'Use Review' }] } } as unknown as SourceEntry['event']
     page = { ...page, entries: [{ type: 'event', event } as SourceEntry], before: seq, after: seq }
     await history.page({ around: seq }, new AbortController().signal)
   }
@@ -541,4 +541,50 @@ for (const settlement of ['remove', 'body'] as const) test(`same-draft unknown r
   assert.deepEqual(retired, ['A', 'B'], 'the original removal/body settles every local callback exactly once')
   assert.deepEqual(pane.getSnapshot().pendingSubmissions, [])
   assert.equal(calls.filter(call => call.method === 'thread/queue/add').length, 1)
+})
+
+
+test('an interrupted idle source queue starts only by explicit native action and keeps images and the queued question reply', async t => {
+  const calls: CodexCall[] = []
+  const f = await fixture(t, async request => { calls.push(request); return { status: 'accepted', message: 'Original native queued turn started' } }, undefined, { queuedStart: true })
+  const images = { id: 'original-images', clientUserMessageId: 'original-image-client', input: [{ type: 'image', url: 'data:image/png;base64,AQID', detail: 'original' }, { type: 'image', url: 'data:image/png;base64,BAUG', detail: 'original' }] }
+  const reply = { id: 'original-reply', clientUserMessageId: 'hhpi-control:original-question', input: [{ type: 'text', text: '<send_user_message_question_reply>\n[{"questionItemId":"original-question","question":"Owned question","answer":"Owned answer"}]\n</send_user_message_question_reply>', text_elements: [] }] }
+  await f.setQueue([images, reply])
+  assert.equal(calls.length, 0, 'mount/reconnect and interrupted metadata do not resume native execution')
+  const actions = f.face.projections.faceOf('queueActions').getSnapshot()!
+  assert.equal(actions[images.id]?.start, true); assert.equal(actions[images.id]?.steer, false)
+  assert.equal(actions[reply.id]?.edit, false, 'the typed question owner retains its native answer structure')
+  assert.doesNotMatch(JSON.stringify(queueInbox(f.face)), /send_user_message_question_reply/)
+  assert.match(JSON.stringify(queueInbox(f.face)), /Owned answer/)
+  assert.equal((await f.face.updateQueue(images.id as never, { kind: 'start' })).ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.method, 'thread/queue/start')
+  assert.deepEqual(calls[0]?.params, { threadId: 'thread', queuedSubmissionId: images.id })
+  assert.deepEqual(queueInbox(f.face)?.['next-turn'].map(row => row.source.kind === 'user' && 'rpcId' in row.source ? row.source.rpcId : null), [images.clientUserMessageId, reply.clientUserMessageId])
+  await f.setQueue([reply])
+  assert.ok(queueInbox(f.face)?.['next-turn'].some(row => row.id === images.id), 'native removal cannot create a gap before the same client message body arrives')
+  await f.observe(images.clientUserMessageId)
+  assert.deepEqual(queueInbox(f.face)?.['next-turn'].map(row => row.id), [reply.id])
+  f.face.update({ ...f.face.metadata.getSnapshot(), status: 'running', activeTurnId: 'new-native-turn' })
+  await f.setQueue([reply])
+  assert.equal(f.face.projections.faceOf('queueActions').getSnapshot()?.[reply.id]?.start, false)
+  assert.equal((await f.face.updateQueue(reply.id as never, { kind: 'start' })).ok, false)
+  assert.equal(calls.length, 1, 'a turn that started before click never receives an idle start')
+  await f.observe(reply.clientUserMessageId, 'user-question-reply')
+  assert.deepEqual(queueInbox(f.face)?.['next-turn'], [], 'the typed native question reply also hands off by its exact client ID')
+})
+
+test('unknown idle queue start is retained and an explicit retry or reconnect cannot dispatch it twice', async t => {
+  const calls: CodexCall[] = []
+  const f = await fixture(t, async request => { calls.push(request); return { status: 'indeterminate', message: 'Lost original start acknowledgement' } }, undefined, { queuedStart: true })
+  const original = { id: 'original-stopped', clientUserMessageId: 'original-client', input: [{ type: 'text', text: 'Kept original', text_elements: [] }] }
+  await f.setQueue([original])
+  assert.equal((await f.face.updateQueue(original.id as never, { kind: 'start' })).ok, false)
+  await f.setQueue([original])
+  assert.equal((await f.face.updateQueue(original.id as never, { kind: 'start' })).ok, false)
+  assert.equal(calls.length, 1)
+  assert.equal(queueInbox(f.face)?.['next-turn'][0]?.id, original.id)
+  await f.setQueue([])
+  assert.equal((await f.face.updateQueue(original.id as never, { kind: 'start' })).ok, false)
+  assert.equal(calls.length, 1, 'native consumption never causes an original item to be added or started again')
 })

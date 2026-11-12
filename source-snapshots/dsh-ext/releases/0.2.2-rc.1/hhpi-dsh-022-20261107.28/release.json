@@ -1,0 +1,223 @@
+{
+  "upstreamVersion": "0.2.2-rc.1",
+  "upstreamCommit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+  "extRelease": "hhpi-dsh-022-20261107.28",
+  "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
+  "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940",
+  "compositionVersion": "0.2.2-rc.1+hhpi.20261107.28",
+  "protocol": 2,
+  "capabilities": {
+    "historySource": 1,
+    "mountedChat": 1,
+    "windowCommit": 1
+  },
+  "packages": [
+    {
+      "name": "@deepseek-ai/dsh-api-session-controller",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-api-session-controller-0.2.2-rc.1.tgz",
+      "sha256": "b4c4eeecbd5ec523983c05a6e38a75090033cc963cdcc49a9fe596c0cb36a3b1"
+    },
+    {
+      "name": "@deepseek-ai/dsh-api-terminal-controller",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-api-terminal-controller-0.2.2-rc.1.tgz",
+      "sha256": "38a33dd74f8d1b26f0ce78b4f16dcc3fcc3f76f77992d248a52b64657b4b7f81"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-file-upload",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-file-upload-0.2.2-rc.1.tgz",
+      "sha256": "01ffa2007f181a9c7ef997242d3fac85592a4ee39b1f6547c4443657566b28b8"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-chat",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-chat-0.2.2-rc.1.tgz",
+      "sha256": "f0da2880e9173f58ee306e1f8146649c63e4a7d7d63bd30677ebd382b7f9e7f5"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-commands",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-commands-0.2.2-rc.1.tgz",
+      "sha256": "0691425fc51d25fce351eafa47a5cc52c61d5bda2f760ed26e2933b9cc7efb11"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-conversation",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-conversation-0.2.2-rc.1.tgz",
+      "sha256": "79c4ac139b3c3838877299730217c2ecbf4dde499af95d913fe41f7f1dfed93a"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-input-trigger",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-input-trigger-0.2.2-rc.1.tgz",
+      "sha256": "41b9b883366ff559c6d80e23adf242733d37f39efba376f7402a35abf27415a7"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-plan",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-plan-0.2.2-rc.1.tgz",
+      "sha256": "e13ebb0ed8d8c5cecf85ba7361b4ed3866b35a22655fae79878c5f2567265f1a"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-renderer",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-renderer-0.2.2-rc.1.tgz",
+      "sha256": "110632ab10785cc6647d4bc7b72431d88af09fc7992edcbedfb5c4f627601f3c"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-session",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-session-0.2.2-rc.1.tgz",
+      "sha256": "ed2808ce6ed13b449e232c63670b65f08ca2c778ce35f0f75ef0270c2252293c"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-sidebar-files",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-sidebar-files-0.2.2-rc.1.tgz",
+      "sha256": "b6f6049bbbe782e202e4fd1f2037521462ffa6d2a084332027cd94716cac8867"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-slots",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-slots-0.2.2-rc.1.tgz",
+      "sha256": "109a42ead937837e2a8326e749640a793c0cb4094e0a16ab8c314e7a34f0ef32"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-theme",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-theme-0.2.2-rc.1.tgz",
+      "sha256": "cb5f0aa812759c02d7941474e4d695132454fb7368ee88afa7e5ab4fc7643571"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-tool",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-tool-0.2.2-rc.1.tgz",
+      "sha256": "45bd80dab91fc6eff203c3b778c87ddaa1fb578b07db3df802103c0efdebda54"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-trajectory",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-trajectory-0.2.2-rc.1.tgz",
+      "sha256": "094188945d4bc77d2b84c3099d4652ba647026d61192e9556b18cf8cdd450bd1"
+    },
+    {
+      "name": "@deepseek-ai/dsh-client-ui-workspace",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-client-ui-workspace-0.2.2-rc.1.tgz",
+      "sha256": "bdfe94eac28629e26e42dfe71dfd82ea82fc332ccc8c38c1ab9bc255475db9a1"
+    },
+    {
+      "name": "@deepseek-ai/dsh-experimental-client-ui-cot-translation",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-experimental-client-ui-cot-translation-0.2.2-rc.1.tgz",
+      "sha256": "e20f4ac7679dfb3617d34aba3e622dbd30aec10e03dea71043db47caa9c3743f"
+    },
+    {
+      "name": "@deepseek-ai/dsh-experimental-translator",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-experimental-translator-0.2.2-rc.1.tgz",
+      "sha256": "e2e91e1e876721b527d1a182f7d7a1cd516e84d369498c87be51fbe44cb0ea58"
+    },
+    {
+      "name": "@deepseek-ai/dsh-fs",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-fs-0.2.2-rc.1.tgz",
+      "sha256": "5931289fda6f42a7991125ba2cb894b4a1fdb70205f1956132489c456afdeb42"
+    },
+    {
+      "name": "@deepseek-ai/dsh-fs-local",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-fs-local-0.2.2-rc.1.tgz",
+      "sha256": "3eef163ce7e672534619355fd0a1cb0b09acfee8370b5a28e812fc0401613839"
+    },
+    {
+      "name": "@deepseek-ai/dsh-fs-sandbox",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-fs-sandbox-0.2.2-rc.1.tgz",
+      "sha256": "44ab8a57788d4e270c179dd7ef3c779eec47f9988b0a04be405b4562442d1271"
+    },
+    {
+      "name": "@deepseek-ai/dsh-session-format-v3-to-v4",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-session-format-v3-to-v4-0.2.2-rc.1.tgz",
+      "sha256": "f4b893d8f4e68cd8eda82c5d7e420a73a420b38f673a4fa63bd295b8e20d6f63"
+    },
+    {
+      "name": "@deepseek-ai/dsh-session-persistence",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-session-persistence-0.2.2-rc.1.tgz",
+      "sha256": "dc0da85f62681bbd78d9b16ce581bb0760f6df54228d6c375cfa31be236da0f1"
+    },
+    {
+      "name": "@deepseek-ai/dsh-session-persistence-jsonl",
+      "version": "0.2.2-rc.1",
+      "tarball": "deepseek-ai-dsh-session-persistence-jsonl-0.2.2-rc.1.tgz",
+      "sha256": "24940ec33c0e3907b4dad928cce478e11ed852195e219f0cc3677b3ac6daec0b"
+    }
+  ],
+  "sourceOffer": [
+    "source/source.patch",
+    "source/architecture.md",
+    "source/upstream-pr.md",
+    "source/terminal-owner-architecture.md",
+    "source/terminal-owner-upstream-pr.md",
+    "source/filesystem-checkpoint-architecture.md",
+    "source/filesystem-checkpoint-upstream-pr.md",
+    "source/structured-reference-architecture.md",
+    "source/structured-reference-upstream-pr.md",
+    "source/user-file-slot-architecture.md",
+    "source/user-file-slot-upstream-pr.md",
+    "source/mounted-reader-render-architecture.md",
+    "source/mounted-reader-render-upstream-pr.md",
+    "source/candidate-group-architecture.md",
+    "source/candidate-group-upstream-pr.md",
+    "source/short-tail-room-architecture.md",
+    "source/short-tail-room-upstream-pr.md",
+    "source/dependency-prefix-architecture.md",
+    "source/dependency-prefix-upstream-pr.md",
+    "source/navigator-owner-architecture.md",
+    "source/navigator-owner-upstream-pr.md",
+    "source/interior-reading-range-architecture.md",
+    "source/interior-reading-range-upstream-pr.md",
+    "source/single-window-correction-architecture.md",
+    "source/single-window-correction-upstream-pr.md",
+    "source/text-interaction-area-selection-architecture.md",
+    "source/text-interaction-area-selection-upstream-pr.md",
+    "source/measured-virtual-layout-architecture.md",
+    "source/measured-virtual-layout-upstream-pr.md",
+    "source/batched-virtual-row-measurement-architecture.md",
+    "source/batched-virtual-row-measurement-upstream-pr.md",
+    "source/incremental-window-preparation-architecture.md",
+    "source/incremental-window-preparation-upstream-pr.md",
+    "source/workspace-navigation-ownership-architecture.md",
+    "source/workspace-navigation-ownership-upstream-pr.md",
+    "source/programmatic-live-edge-architecture.md",
+    "source/programmatic-live-edge-upstream-pr.md",
+    "source/input-ack-draft-revision-architecture.md",
+    "source/input-ack-draft-revision-upstream-pr.md",
+    "source/focused-control-modality-architecture.md",
+    "source/focused-control-modality-upstream-pr.md",
+    "source/registry-publication-recovery-architecture.md",
+    "source/registry-publication-recovery-upstream-pr.md",
+    "source/root-registration-recovery-architecture.md",
+    "source/root-registration-recovery-upstream-pr.md",
+    "source/public-history-complete-window-architecture.md",
+    "source/public-history-complete-window-upstream-pr.md",
+    "source/native-queued-input-architecture.md",
+    "source/native-queue-actions-upstream-pr.md",
+    "source/plugin-session-delegation-architecture.md",
+    "source/plugin-session-delegation-upstream-pr.md",
+    "source/prepare.mjs.txt",
+    "source/build-extension.mjs.txt",
+    "source/cache.mjs.txt",
+    "source/install-extension.mjs.txt",
+    "source/create-release.mjs.txt",
+    "source/inputs.json",
+    "source/packages-source.tgz"
+  ],
+  "licenses": [
+    "licenses/DSH-MIT.txt"
+  ]
+}

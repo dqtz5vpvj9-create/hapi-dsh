@@ -6,6 +6,8 @@ import { isSourceSessionId } from '../remote/protocol.ts'
 import { prepareSourceImageBlob } from './source-image-preparation.ts'
 import { sourceFileAccess, type SourceFileClient } from './source-workspace-provider.ts'
 import { sourceUploadIntent, registerSourceUploadCancellation } from './source-upload-intent.ts'
+import type {} from './workspace-ui.ts'
+import type { UploadFailure } from '../upload-diagnostics.ts'
 
 type Data = Blob | Uint8Array | ReadableStream<Uint8Array>
 interface Intent { operationId: string; prepared?: Blob; transfer?: WorkspaceUploadTransfer }
@@ -34,7 +36,7 @@ export function installRemoteFileUpload(ctx: Context, client: SourceFileClient,
   const upload = async (sessionId: string, data: Data, name: string, mediaType: string, image: boolean,
     signal?: AbortSignal, progress?: (value: { loaded: number; total?: number }) => void): Promise<FileUploadValue | ImageUploadValue> => {
     signal?.throwIfAborted()
-    let stage = 'source-and-image-preparation'
+    let stage: UploadFailure['stage'] = 'source-and-image-preparation'
     try {
       const saved = sourceUploadIntent(data, sessionId)
       // Decoding local bytes does not depend on a source address. Resolve the
@@ -107,6 +109,9 @@ export function installRemoteFileUpload(ctx: Context, client: SourceFileClient,
       progress?.({ loaded: blob.size, total: blob.size })
       return result.value.value
     } catch (error) {
+      if (!signal?.aborted) {
+        try { ctx.get?.('hapiWorkspaceUi')?.reportUploadFailure?.(stage, 'hhpi', error) } catch { /* Diagnostics cannot change the failure. */ }
+      }
       const label = (value: unknown): string => typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9_/-]{0,79}$/.test(value) ? value : 'unknown'
       if (!signal?.aborted) ctx.logger?.warn('Source attachment upload failed at %s (%s/%s)', stage,
         label(error instanceof Error ? error.name : undefined),

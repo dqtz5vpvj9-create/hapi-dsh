@@ -10,9 +10,10 @@ import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import { QUEUED_STEER_METHOD, QUEUE_VIEW_METHOD } from '../remote/codex-access.ts'
 import { boundedSourceRead } from './remote-read-recovery.ts'
+import { nativeQuestionReplies } from '../shared/native-async-questions.ts'
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
-interface QueueActions { readonly edit: boolean; readonly remove: boolean; readonly steer: boolean; readonly editText?: string; readonly delivery?: NativeQueueItem['delivery'] }
+interface QueueActions { readonly edit: boolean; readonly remove: boolean; readonly steer: boolean; readonly start?: boolean; readonly editText?: string; readonly delivery?: NativeQueueItem['delivery'] }
 export interface SourceQueueSnapshot { readonly inbox: InboxState; readonly actions: Readonly<Record<string, QueueActions>> }
 
 export class RemoteNativeQueue {
@@ -20,6 +21,7 @@ export class RemoteNativeQueue {
     private readonly assertAuthorization: () => void
     private rows: readonly NativeQueueItem[] = []
     private readonly consumed = new Set<string>()
+    private readonly starting = new Map<string, NativeQueueItem>()
     private snapshot: SourceQueueSnapshot | undefined
     private boundarySeq = -1
     private readFlight: Promise<void> | undefined
@@ -38,7 +40,11 @@ export class RemoteNativeQueue {
         for (const { event } of entries) if (event.type === 'user/message') {
             boundary = Math.max(boundary, event.seq)
             const source = event.data.source
-            if (source.kind === 'user' && 'rpcId' in source && typeof source.rpcId === 'string' && !this.consumed.has(source.rpcId)) { this.consumed.add(source.rpcId); changed = true }
+            if ('rpcId' in source && typeof source.rpcId === 'string' && !this.consumed.has(source.rpcId)) {
+                this.consumed.add(source.rpcId)
+                for (const [id, row] of this.starting) if (row.clientUserMessageId === source.rpcId) this.starting.delete(id)
+                changed = true
+            }
         } else if (event.type === 'turn/start' || event.type === 'turn/end') boundary = Math.max(boundary, event.seq)
         if (changed && this.snapshot) this.emit(this.snapshot)
         if (boundary > this.boundarySeq) { this.boundarySeq = boundary; void this.refresh() }
@@ -88,21 +94,33 @@ export class RemoteNativeQueue {
                         if (cursor && cursors.has(cursor)) throw new Error('The source queue cursor did not advance.')
                         if (cursor) cursors.add(cursor)
                     } while (cursor)
+                    // Native start removes its item before the live body reaches this
+                    // Session. Keep that original input in the native dock, without
+                    // adding it back to the source queue or forging a body receipt.
+                    for (const [id, row] of this.starting) if (!this.consumed.has(row.clientUserMessageId) && !rows.some(item => item.clientUserMessageId === row.clientUserMessageId)) {
+                        const action = this.session.nativeActions!.get(this.session.sessionId, queueIntent(id))
+                        if (action?.phase === 'rejected') this.starting.delete(id)
+                        else rows.push({ ...row, delivery: action?.phase === 'confirming' ? 'confirming' : 'sending' })
+                    }
                     this.rows = Object.freeze(rows)
                     this.readError = undefined
                     const actions: Record<string, QueueActions> = {}
                     const messages: UserMessage[] = rows.map(row => {
                         const local = this.session.getSnapshot().pendingSubmissions.find(item => item.requestId === row.clientUserMessageId)
+                        const replies = row.input.flatMap(part => nativeQuestionReplies(part.type === 'text' ? part.text : undefined))
+                        const replyText = replies.map(reply => `${reply.question}\n${reply.answer}`).join('\n')
                         if (local) this.session.updateQueuedSubmissionText(row.clientUserMessageId, row.input.flatMap(part =>
                             part.type === 'text' ? [String(part.text ?? '')] : part.type === 'skill' || part.type === 'mention' ? [String(part.name ?? '')] : []).join(''))
-                        actions[row.id] = { edit: !row.delivery && !row.resumeOperationId && capabilities.methods['thread/queue/update'] === 'write',
+                        actions[row.id] = { edit: replies.length === 0 && !row.delivery && !row.resumeOperationId && capabilities.methods['thread/queue/update'] === 'write',
                             remove: !row.delivery && !row.resumeOperationId && capabilities.methods['thread/queue/delete'] === 'write',
                             steer: !row.delivery && capabilities.methods[QUEUED_STEER_METHOD] === 'write'
                                 && (!!row.resumeOperationId && !!row.resumeTurnId || metadata.capabilities.steer && !!metadata.activeTurnId),
+                            start: !row.delivery && !row.resumeOperationId && metadata.status === 'idle' && !metadata.activeTurnId
+                                && metadata.capabilities.send && capabilities.methods['thread/queue/start'] === 'write',
                             ...(row.delivery ? { delivery: row.delivery } : {}),
-                            editText: row.input.flatMap(part => part.type === 'text' ? [String(part.text ?? '')] : []).join('') }
+                            editText: replies.length ? replyText : row.input.flatMap(part => part.type === 'text' ? [String(part.text ?? '')] : []).join('') }
                         return { id: row.id as MessageId, role: 'user', source: { kind: 'user', rpcId: row.clientUserMessageId as SessionRequestId },
-                            content: row.input.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: String(part.text ?? '') }]
+                            content: replies.length ? [{ type: 'text', text: replyText }] : row.input.flatMap(part => part.type === 'text' ? [{ type: 'text' as const, text: String(part.text ?? '') }]
                                 : part.type === 'skill' || part.type === 'mention' ? [{ type: 'text' as const, text: String(part.name ?? '') }]
                                     : local?.attachments.length ? [] : [{ type: 'text' as const, text: 'Image attachment' }]) }
                     })
@@ -123,6 +141,13 @@ export class RemoteNativeQueue {
     }
     async update(itemId: MessageId, action: QueueAction): Promise<void> {
         this.current()
+        if (action.kind === 'start' && this.starting.has(itemId)) {
+            const prior = await this.session.nativeActions!.recover(this.session.sessionId, queueIntent(itemId))
+            this.current(); await this.refresh()
+            if (prior?.phase === 'accepted') return
+            if (prior?.phase !== 'rejected') throw new Error('The original send result is not confirmed yet.')
+            this.starting.delete(itemId)
+        }
         const original = this.rows.find(row => row.id === itemId)
         if (!original || this.consumed.has(original.clientUserMessageId)) throw new Error('This message has already left the source queue.')
         await this.refresh(); this.current()
@@ -134,12 +159,16 @@ export class RemoteNativeQueue {
         if (current.resumeOperationId && action.kind !== 'steer') throw new Error('Continue sending this original message before changing it.')
         const metadata = this.session.metadata.getSnapshot(), directory = this.session.sourceDirectory()
         if (sourceIsOffline(metadata) || !directory) throw new Error('The source queue is offline.')
-        const method = action.kind === 'steer' ? QUEUED_STEER_METHOD : action.kind === 'remove' ? 'thread/queue/delete' : 'thread/queue/update'
+        const method = action.kind === 'steer' ? QUEUED_STEER_METHOD : action.kind === 'start' ? 'thread/queue/start' : action.kind === 'remove' ? 'thread/queue/delete' : 'thread/queue/update'
         const capabilities = await directory.capabilities(this.lifetime.signal); this.current()
         if (capabilities.methods[method] !== 'write') throw new Error('The source does not support this queue action.')
         if (action.kind === 'steer' && (capabilities.methods[QUEUED_STEER_METHOD] !== 'write'
             || !(current.resumeOperationId && current.resumeTurnId) && (!metadata.capabilities.steer || !metadata.activeTurnId)))
             throw new Error('The source running turn is not available for this queued message.')
+        if (action.kind === 'start' && (metadata.status !== 'idle' || metadata.activeTurnId || !metadata.capabilities.send))
+            throw new Error('The source is no longer idle. Its queued messages were kept.')
+        if (action.kind === 'edit' && current.input.some(part => nativeQuestionReplies(part.type === 'text' ? part.text : undefined).length))
+            throw new Error('This answer belongs to its original question.')
         if (action.kind === 'edit' && !action.content.some(part => part.text.trim())) throw new Error('Enter text for this queued message.')
         // The native owner retains every attachment, skill and mention. Only the
         // text edited by QueueDock is replaced; display labels never become input.
@@ -152,13 +181,19 @@ export class RemoteNativeQueue {
             return [{ ...part, text: editedText, text_elements: [] }]
         })
         if (!inserted) input.unshift({ type: 'text', text: editedText, text_elements: [] })
+        if (action.kind === 'start') this.starting.set(itemId, current)
         const result = await this.session.nativeActions!.submit({ sessionId: this.session.sessionId,
             intent: current.resumeOperationId && action.kind === 'steer' ? `${queueIntent(itemId)}:resume:${current.resumeOperationId}` : queueIntent(itemId), kind: 'queue', newAttempt: true,
             request: { sourceId: metadata.sourceId, method, params: { threadId: metadata.nativeId, queuedSubmissionId: itemId,
                 ...(action.kind === 'steer' ? { expectedTurnId: current.resumeTurnId ?? metadata.activeTurnId, clientUserMessageId: current.clientUserMessageId, input: current.input,
                     ...(current.resumeOperationId ? { resumeOperationId: current.resumeOperationId } : {}) } : {}),
-                ...(action.kind === 'edit' ? { input } : {}) } } })
+                ...(action.kind === 'edit' ? { input } : {}) } } }).catch(error => {
+                const saved = this.session.nativeActions!.get(this.session.sessionId, queueIntent(itemId))
+                if (action.kind === 'start' && (saved?.request.method !== 'thread/queue/start' || saved.phase === 'prepared')) this.starting.delete(itemId)
+                throw error
+            })
         this.current()
+        if (action.kind === 'start' && result.phase === 'rejected') this.starting.delete(itemId)
         await this.refresh()
         if (result.phase !== 'accepted') throw new Error(result.outcome?.message ?? 'The original queue action is waiting for confirmation.')
         if (action.kind === 'remove') {

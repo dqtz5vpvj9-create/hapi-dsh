@@ -771,7 +771,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
         const navigationAllowed = (): boolean => !disposed && !retired && workspace.store.getSnapshot().windows
             .flatMap(window => panes(window.root)).some(pane => pane.id === paneId && pane.resource.kind !== 'empty' && pane.resource.sessionId === resourceId)
         const navigation: WorkspacePaneNavigation = {
-            application: ui.application, readCommits: ui.readCommits,
+            application: ui.application, readCommits: ui.readCommits, reportUploadFailure: ui.reportUploadFailure,
             paneId, hostId: host.id, preferences: ui.preferences, voice: ui.voice,
             shareInbox: ui.shareInbox, handoffs: ui.handoffs, sourceFileMutations: ui.sourceFileMutations, updates: ui.updates,
             registerCloseGuard: guard => workspace.registerPaneCloseGuard(paneId, guard),

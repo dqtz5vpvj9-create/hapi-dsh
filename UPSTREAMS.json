@@ -9,10 +9,11 @@
     "additionalSourceSnapshots": [],
     "sourceSnapshotManifest": "source-snapshots/manifest.json",
     "previousRcSources": "source-snapshots/dsh-ext/releases/0.2.1-rc.3",
-    "extRelease": "hhpi-dsh-022-20261107.28",
+    "extRelease": "hhpi-dsh-022-20261107.29",
     "sourcePackageCount": 24,
-    "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
-    "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940"
+    "patchSetSha256": "0e990b1f4aad81f9c27c84e713a7bf8e63518e180aab06eb21de6799517e810a",
+    "packageSetSha256": "d8d87b9f6b105d25ffe26724864a68145344877202ba1f672b743aed1025d74a",
+    "previousExtensionSources": "source-snapshots/dsh-ext/releases/0.2.2-rc.1/hhpi-dsh-022-20261107.28"
   },
   "hapi": {
     "repository": "https://github.com/dqtz5vpvj9-create/hapi",
