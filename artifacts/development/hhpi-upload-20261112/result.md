@@ -1,0 +1,15 @@
+# Central image-original preservation release
+
+Published source `0c2c3cc44c7f86223edb6ea72887dedd70cb85d5` to the central Host at 2026-11-12T05:20:32.853Z. Release `e1ae4f4be4c74e3acd970480b3c4ae6cd7eb0083f00d89713eeeac48a04840f5`, host build `fcfee5281ab15055a43323400df6893bb34eb58304811f3918a32bd828b458a2`, client `ac7e66eddefe`, provider `36f5ca5e28e5`. The existing .28 / 24-package SDK was reused. See [publication.json](publication.json) for bundle checksum, source identities and protection checks, and [acceptance.json](acceptance.json) for individual evidence statuses.
+
+The change preserves valid image originals within a 20 MiB byte budget, 65535-pixel long edge and 64M total pixels. A fresh production upload of a synthetic 480×40000 PNG was applied; its receipt resolved to the original native input file with the same 4,256,608 bytes and SHA256 `9c8ee892ec2fba09453832ff3e1b79cca567acb0bbbfd0bf5b74be0923a49aeb`. No model message or native execution was started. The independent production byte-readback check passed.
+
+The old page held open across the actual publication successfully uploaded three synthetic images and restored all three receipts after refresh without repeated chunks or finish calls. Its old preparation code still reduced the long raster to 98×8192; this scenario does not establish new clarity behavior. Report: `/mnt/cache/data-cache/hhpi-upload-20261112/browser-upload-across-release-result.json`.
+
+The fresh-page browser script remains **failed**: an inherited readiness selector incorrectly expected a filename in image-button text and timed out. The actual upload was applied; saved DOM contained the ready image and remove controls with no upload-error state, and the separate native-byte check passed. The temporary selector was corrected for future reuse and syntax checked, with no rerun. Report: `/mnt/cache/data-cache/hhpi-upload-20261112/fresh-clarity-browser-result.json`; independent proof: `/mnt/cache/data-cache/hhpi-upload-20261112/published-image-preservation.json`.
+
+**The user's original upload UI errors remain unresolved.** Internal stage/name/code diagnostics were added without UI, retry or authority changes. Synthetic successes do not explain those failures.
+
+This publication covers the central local-system Codex source. Two online paired Hosts and two offline pairings were not updated; their HHPI source owners retain their installed policies. Ordinary DSH attachments use each Host's official provider. Existing prepared blobs remain authoritative on retry. Codex history preview output remains separately bounded to 4M pixels, 8192 long edge and 2 MiB.
+
+Reused 27 passing directed tests and passing Host/Client typechecks, then performed one carrier build, normal bundle/install/activation, authentication, compressed official WebSocket and served-byte checks. Native PID/birth and configuration bytes remained unchanged; previous central release/config/unit were retained for rollback. No full-suite, SDK, remote Host, phone or model-task validation was added in this increment.

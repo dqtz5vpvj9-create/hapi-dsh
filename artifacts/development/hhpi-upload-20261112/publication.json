@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "run": "hhpi-upload-20261112",
+  "publishedAt": "2026-11-12T05:20:32.853Z",
+  "status": "published-central-only",
+  "sourceCommit": "0c2c3cc44c7f86223edb6ea72887dedd70cb85d5",
+  "sourceFiles": [
+    {
+      "path": "src/client/remote-file-upload.ts",
+      "sha256": "99a315ace2f0ba653b4c69e9fb569b4435cacb895c5ffaaef6097eb45106b829"
+    },
+    {
+      "path": "src/client/source-image-preparation.ts",
+      "sha256": "865a8b12df54b1f282cb59e3bd2d95993b83ebdc9c2a22f31e103f4b45fae103"
+    },
+    {
+      "path": "src/shared/source-image-limits.ts",
+      "sha256": "0f1d83aeef3c3b76176cff8b30a6e9602d3edf20f5af3c6c5251b679c36a34ae"
+    },
+    {
+      "path": "tests/client-source-image-preparation.test.ts",
+      "sha256": "dae2c5ccaa34a64339d95b4f28a6fa3f8959f19d1860a1699e92417de774e8cf"
+    },
+    {
+      "path": "tests/client-source-workspace-client.test.ts",
+      "sha256": "acff48c4384285b830734a2d1facc80d1d09dacba86736a300a94ce448734201"
+    },
+    {
+      "path": "tests/hhpi-file-upload-client.test.ts",
+      "sha256": "6734d980704481a0bfa6d42998904e12f0d41e5249dccb0209153bea6a2a203b"
+    }
+  ],
+  "releaseId": "e1ae4f4be4c74e3acd970480b3c4ae6cd7eb0083f00d89713eeeac48a04840f5",
+  "hostBuildId": "fcfee5281ab15055a43323400df6893bb34eb58304811f3918a32bd828b458a2",
+  "clientRevision": "ac7e66eddefe",
+  "providerRevision": "36f5ca5e28e5",
+  "bundle": {
+    "filename": "hapi-dsh-bundle-0.1.2.tgz",
+    "sha256": "2b60f5885a604ff7ff0d11cb1f2c1bd900acf6bbe890b2d33b12233bd9c9f089",
+    "bytes": 9494720,
+    "sourceOfferCommit": "0c2c3cc44c7f86223edb6ea72887dedd70cb85d5"
+  },
+  "sdk": {
+    "release": "hhpi-dsh-022-20261107.28",
+    "packageCount": 24,
+    "rebuilt": false,
+    "upstreamVersion": "0.2.2-rc.1",
+    "upstreamCommit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
+    "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940"
+  },
+  "change": {
+    "originalImageLongEdgeLimit": 65535,
+    "originalImageByteBudget": 20971520,
+    "totalPixelLimit": 64000000,
+    "validOriginalsSkipCanvasAndLossyEncoding": true,
+    "existingPreparedBlobAndOperationPreserved": true,
+    "uploadDiagnostics": "Internal stage/name/code only; no new UI, retry, authority, or execution behavior."
+  },
+  "deploymentScope": {
+    "updated": [
+      "central Host; central local-system Codex source"
+    ],
+    "notUpdated": {
+      "onlinePairedHosts": 2,
+      "offlinePairedHosts": 2,
+      "policy": "Their HHPI source owners keep their installed image limits. A central update does not replace a remote source Host policy."
+    },
+    "ordinaryDshAttachments": "Use each Host official attachment provider; not this HHPI image preparation.",
+    "existingOpenPages": "Retain the previously loaded preparation code until refreshed. Previously prepared blobs are retained for operation continuity."
+  },
+  "protection": {
+    "authentication": true,
+    "officialCompressedWebSocket": true,
+    "servedClientAndProviderBytesVerified": true,
+    "centralConfigBytesUnchanged": true,
+    "nativePidAndBirthUnchanged": true,
+    "nativeExecutionAndPreferencesUnchanged": true,
+    "remoteHostOrRunnerRestarted": false,
+    "rollbackPreviousReleaseId": "653d70522f3640cf73f27aa2891d52b8909cd612b426eee9037cb3e3a502e6c7",
+    "rollbackConfigAndUnitCapturedPrivately": true
+  },
+  "unresolved": [
+    "The original three user upload UI errors were not reproduced or fixed. Finished/applied server state does not establish the missing UI failure cause.",
+    "Codex history preview remains separately bounded to 4M pixels, 8192 long edge and 2 MiB; original-byte preservation is not a claim of unbounded history preview."
+  ],
+  "profileSpans": {
+    "commit": "f5cf9fd4-888a-45b1-8fa1-d67eb2f2b4ee",
+    "push": "1d060720-229d-4ee2-a19b-cc13fd45989f",
+    "build": "e7ef1894-4590-4584-9d83-82cb897e39ad",
+    "pack": "25fc7e1b-ee0a-4fcc-b56c-5329e245b590",
+    "protectedBackup": "1f76988e-9472-4f72-ac65-491a6c109310",
+    "install": "63bfef6e-e2bb-4461-b779-787ebe3208d4",
+    "activate": "80b961be-af08-4e07-8091-4ef98b320681"
+  },
+  "evidenceBoundary": "This record excludes credentials, private configuration, user conversations and attachments, session identities, native file paths, raw HTML and authentication logs."
+}

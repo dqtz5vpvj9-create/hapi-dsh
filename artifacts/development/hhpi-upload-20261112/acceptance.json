@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "run": "hhpi-upload-20261112",
+  "sourceCommit": "0c2c3cc44c7f86223edb6ea72887dedd70cb85d5",
+  "hostBuildId": "fcfee5281ab15055a43323400df6893bb34eb58304811f3918a32bd828b458a2",
+  "reusedDirectedTests": {
+    "passed": 27,
+    "failed": 0,
+    "span": "cae39d12-0cb8-4e0c-80cb-c9925f9c60c9",
+    "files": [
+      "tests/client-source-image-preparation.test.ts",
+      "tests/hhpi-file-upload-client.test.ts",
+      "tests/client-source-workspace-client.test.ts",
+      "tests/workspace-source-upload-composition.test.ts"
+    ]
+  },
+  "reusedTypecheck": {
+    "passed": true,
+    "projects": [
+      "tsconfig.host.json",
+      "tsconfig.client.json"
+    ],
+    "span": "bbcea551-6a71-4a18-8dfd-ec4ca7171ac4"
+  },
+  "build": {
+    "passed": true,
+    "elapsedMs": 20946,
+    "span": "e7ef1894-4590-4584-9d83-82cb897e39ad",
+    "sdkRebuilt": false,
+    "fullTestSuiteRerun": false
+  },
+  "predeploymentOriginalPreservation": {
+    "passed": true,
+    "span": "e3c3305a-5d74-4ffa-a659-85419fd0ab18",
+    "report": "image-preservation.json",
+    "width": 480,
+    "height": 40000,
+    "bytes": 4256608,
+    "sameBlob": true,
+    "sameSourceStoreSha256": true,
+    "nativeExecutionCalls": 0
+  },
+  "oldPageAcrossRelease": {
+    "passed": true,
+    "report": "browser-upload-across-release-result.json",
+    "elapsedMs": 5932,
+    "sameOldDocument": true,
+    "unsentSyntheticDraftPreserved": true,
+    "readyImagesBeforeAndAfterRefresh": 3,
+    "sameOperationsAfterRefresh": true,
+    "repeatedChunksOrFinishOnRestore": 0,
+    "retries": 0,
+    "pageErrors": 0,
+    "sourceTaskWrites": 0,
+    "workspaceWrites": 0,
+    "oldPreparedLongImage": {
+      "width": 98,
+      "height": 8192,
+      "bytes": 287086
+    },
+    "boundary": "Old page retained the old preparation policy. This verifies upload and restoration across the actual release, not the new clarity policy."
+  },
+  "freshPageBrowserProbe": {
+    "passed": false,
+    "report": "fresh-clarity-browser-result.json",
+    "span": "994615f6-7ba6-415e-816f-b01f7c52979f",
+    "failure": "Readiness wait looked for filename textContent in image buttons; the image buttons have no filename text. Timeout after 10000ms. This inherited invalid selector was an execution reuse defect.",
+    "actualNetworkEvidence": {
+      "uploadApplied": true,
+      "sourceUploadWrites": 19,
+      "sourceTaskWrites": 0,
+      "workspaceWrites": 0,
+      "pageErrors": 0,
+      "blockedRequests": 0
+    },
+    "savedDomEvidence": {
+      "report": "fresh-clarity-dom.json",
+      "imagePreviewBusy": false,
+      "imageRemoveControlPresent": true,
+      "uploadErrorElements": 0,
+      "uploadingElements": 0,
+      "inspection": "DOM parsed from the saved page; no screenshot or visual acceptance claimed."
+    },
+    "scriptCorrection": "Temporary selector changed to accessible remove label plus ready preview. Syntax checked only, not rerun. The original failed report is retained unchanged.",
+    "boundary": "Browser script as a whole failed. Applied upload, saved ready DOM, and independent native-byte proof are separately reported; they do not turn this script green."
+  },
+  "publishedOriginalPreservation": {
+    "passed": true,
+    "synthetic": true,
+    "hostBuildId": "fcfee5281ab15055a43323400df6893bb34eb58304811f3918a32bd828b458a2",
+    "width": 480,
+    "height": 40000,
+    "bytes": 4256608,
+    "sha256": "9c8ee892ec2fba09453832ff3e1b79cca567acb0bbbfd0bf5b74be0923a49aeb",
+    "receiptApplied": true,
+    "receiptResolvesOriginalNativePath": true,
+    "originalBytesPreserved": true,
+    "sourceTaskWrites": 0,
+    "nativeExecutionWrites": 0,
+    "messageSent": false,
+    "modelCalls": 0,
+    "scope": "central local-system Codex source; original upload and native input receipt, not bounded history preview",
+    "span": "0a1cadef-7f0f-4131-b432-ffced9ccac54",
+    "elapsedMs": 191.79,
+    "report": "published-image-preservation.json",
+    "method": "Authenticated read-only sourceWorkspace/uploadInputs resolves the applied receipt. Read the stored synthetic PNG and compare SHA256 and IHDR dimensions with the original."
+  },
+  "unresolved": "The user reported upload UI failure remains unresolved. These synthetic cases do not establish its cause or fix.",
+  "evidenceRoot": "/mnt/cache/data-cache/hhpi-upload-20261112",
+  "retention": "Temporary detailed reports may expire. This persisted summary records their results and limits; private receipts, identities, raw responses, attachment paths, HTML, auth and configuration are excluded."
+}
