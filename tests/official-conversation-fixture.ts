@@ -20,7 +20,7 @@ interface EventRegistry extends Registry { registerFallback(value: unknown): () 
 interface BrowserModule {
     ConversationEventRegistry: new (ctx: Context) => EventRegistry
     ConversationViewRegistry: new (ctx: Context) => Registry
-    ConversationNodeAssembler: new (events: EventRegistry, views: Registry, groups: { forTarget(target: string): unknown }) => OfficialChatAssembler
+    ConversationNodeAssembler: new (events: EventRegistry, views: Registry, groups: { entries(): readonly unknown[]; forTarget(target: string): unknown }) => OfficialChatAssembler
 }
 export interface OfficialChatNode {
     key: string; kind: string; anchorSeq: number
@@ -41,7 +41,10 @@ export interface OfficialChatAssembler {
     grouped(target: string): { entries: readonly { kind: 'node' | 'group'; key: string; groupPart?: string }[] } | undefined
 }
 
+const browserModules = new Map<string, Record<string, unknown>>()
 function browserModule(name: string): Record<string, unknown> {
+    const cached = browserModules.get(name)
+    if (cached) return cached
     assert.equal((require(`${name}/package.json`) as { version: string }).version, '0.2.2-rc.1')
     let registration: { id: string; factory(resolve: (id: string) => unknown): Record<string, unknown> } | undefined
     new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({
@@ -51,7 +54,29 @@ function browserModule(name: string): Record<string, unknown> {
     const unusedBrowserPrimitive = new Proxy({}, { get(_target, key) {
         return () => { throw new Error(`Conversation assembly unexpectedly rendered browser primitive ${String(key)}`) }
     } })
-    return registration!.factory(Object.assign((id: string) => id === '@deepseek-ai/dsh-client-ui-primitives' ? unusedBrowserPrimitive : require(id), { asset: (reference: string) => reference }))
+    const exports: Record<string, unknown> = {}
+    browserModules.set(name, exports)
+    try {
+        Object.assign(exports, registration!.factory(Object.assign((id: string) => {
+            if (id === '@deepseek-ai/dsh-client-ui-primitives') return unusedBrowserPrimitive
+            if (id.startsWith('@deepseek-ai/dsh-')) {
+                const browserName = id.endsWith('/client') ? id.slice(0, -'/client'.length) : id
+                let clientPath: string
+                try { clientPath = require.resolve(`${browserName}/client`) }
+                catch (error) {
+                    if (!['MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+                    return require(id)
+                }
+                if (!readFileSync(clientPath, 'utf8').includes('window.__ModuleLoader__.load(')) return require(id)
+                return browserModule(browserName)
+            }
+            return require(id)
+        }, { asset: (reference: string) => reference })))
+        return exports
+    } catch (error) {
+        browserModules.delete(name)
+        throw error
+    }
 }
 
 /** Register the real Chat business definitions through its public plugin entry.
@@ -73,7 +98,7 @@ export function officialChat(options: { trajectory?: boolean } = {}): { assemble
         }), error => error === registered)
     }
     assert.ok(events.entries().length >= 15)
-    const assembler = new core.ConversationNodeAssembler(events, views, { forTarget: target => groups.find(value => value.target === target) })
+    const assembler = new core.ConversationNodeAssembler(events, views, { entries: () => groups, forTarget: target => groups.find(value => value.target === target) })
     return { assembler, close: () => ctx.fiber.dispose() }
 }
 
