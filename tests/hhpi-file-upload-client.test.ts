@@ -60,10 +60,10 @@ test('retry after a lost chunk reply resumes its durable offset and does not pub
   await f.provider.upload(session, data, 'test.txt')
   assert.equal(s.operations.length, 1); assert.equal(s.commits, 1); assert.equal(Buffer.concat(s.chunks).length, data.size)
 })
-test('a small-byte tall screenshot is resized locally before any upload starts', async t => {
+test('a tall screenshot inside source limits uploads its exact original without a canvas resize', async t => {
   const events: string[] = [], s = source(events), f = fixture(s.service)
   const oldBitmap = Object.getOwnPropertyDescriptor(globalThis, 'createImageBitmap'), oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
-  Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, value: async () => { events.push('local decode'); return { width: 400, height: 10000, close() {} } } })
+  Object.defineProperty(globalThis, 'createImageBitmap', { configurable: true, value: async () => { events.push('local decode'); return { width: 400, height: 40000, close() {} } } })
   let canvas: { width: number; height: number }
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { createElement() { return canvas = { width: 0, height: 0,
     getContext() { return { clearRect() {}, drawImage() {} } }, toBlob(done: (value: Blob) => void) { events.push('local encode'); done(new Blob([Uint8Array.of(1, 2, 3)], { type: 'image/png' })) } } as typeof canvas } } })
@@ -72,8 +72,8 @@ test('a small-byte tall screenshot is resized locally before any upload starts',
   } })
   const original = new Blob([new Uint8Array(100)], { type: 'image/png' })
   const result = await f.provider.uploadImage!(session, original, 'image/png', 'shot.png')
-  assert.deepEqual(events, ['local decode', 'local encode', 'begin upload'])
-  assert.deepEqual(s.chunks, [Uint8Array.of(1, 2, 3)]); assert.equal(canvas!.height, 8192); assert.equal(canvas!.width, 327)
+  assert.deepEqual(events, ['local decode', 'begin upload'])
+  assert.deepEqual(s.chunks, [new Uint8Array(100)]); assert.equal(canvas!, undefined)
   assert.equal(result.ok && result.value.receiptId, 'receipt'); assert.equal(original.size, 100)
 })
 test('restoring durable attachment bytes after a refresh resumes the original source operation', async () => {
@@ -88,6 +88,19 @@ test('restoring durable attachment bytes after a refresh resumes the original so
   assert.equal(s.operations.length, 2); assert.equal(new Set(s.operations).size, 1)
   assert.equal(s.commits, 1); assert.equal(Buffer.concat(s.chunks).length, original.size)
   assert.notEqual(captureSourceUploadIntents(restored, 'another-session').find(([id]) => id === 'another-session')![1].operationId, s.operations[0])
+})
+test('an image retry preserves older prepared bytes and an acknowledged prefix after preparation policy changes', async () => {
+  const s = source(), f = fixture(s.service), original = new File(['retained original image'], 'original.png', { type: 'image/png' })
+  const prepared = new Blob([new Uint8Array(300_000).fill(17)], { type: 'image/webp' }), operationId = crypto.randomUUID()
+  restoreSourceUploadIntents(original, [[session, { operationId, prepared }]])
+  s.loseAppend()
+  await assert.rejects(f.provider.uploadImage!(session, original, original.type, original.name), /reply lost/)
+  await f.provider.uploadImage!(session, original, original.type, original.name)
+  assert.equal(new Set(s.operations).size, 1)
+  assert.equal(s.operations[0], operationId)
+  assert.deepEqual(Buffer.concat(s.chunks), Buffer.from(await prepared.arrayBuffer()), 'resuming never replaces an existing prefix with a new encoding')
+  assert.equal(s.commits, 1)
+  assert.equal(await original.text(), 'retained original image')
 })
 test('only explicit attachment removal cancels staged source bytes', async () => {
   const s = source(), f = fixture(s.service), original = new File([new Uint8Array(300_000)], 'test.txt')

@@ -8,6 +8,8 @@ export const SOURCE_INPUT_IMAGE_LIMITS: Readonly<ImageAttachmentLimits> = Object
   maxMessageImageBytes: 200 * 1024 * 1024,
   maxImagesPerMessage: SOURCE_IMAGE_COUNT_LIMIT,
   maxImagePixels: 64_000_000,
-  maxImageDimension: 8192,
+  // Match the official raster admission ceiling. A long screenshot must not
+  // lose most of its width merely to fit the default preview long-edge cap.
+  maxImageDimension: 65535,
   mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const,
 })

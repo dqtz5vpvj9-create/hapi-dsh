@@ -97,6 +97,20 @@ test('uploads use the graph fetch and translate returned transfer and attachment
     assert.deepEqual(f.requests.find(value => value.kind === 'finish')?.target, { hostId: 'local', sessionId });
 })
 
+test('a late applied upload reply keeps the same owner but cannot cross an account replacement', async () => {
+    for (const revoked of [false, true]) {
+        const f = fixture(), context = await f.client.resolve(sessionId, signal()), access = sourceFileAccess(context.owner, signal())
+        const entered = deferred<void>(), reply = deferred<void>(), finish = f.api.finishUpload
+        f.api.finishUpload = async (...args) => { const result = await finish(...args); entered.resolve(); await reply.promise; return result }
+        const completed = context.services.uploads!.finish({ target: context.owner.binding.target, uploadId: 'original-upload' }, access)
+        await entered.promise
+        if (revoked) f.swap()
+        reply.resolve()
+        if (revoked) await assert.rejects(completed)
+        else assert.equal((await completed).status, 'applied', 'a delayed same-owner receipt is accepted without replacing its binding')
+    }
+})
+
 test('resolver cancellation belongs to resolution and does not poison a retained service used by a fresh view', async () => {
     const f = fixture(), resolution = new AbortController(), context = await f.client.resolve(sessionId, resolution.signal); resolution.abort();
     assert.equal((await context.services.files.stat('/same-path/file', sourceFileAccess(context.owner, signal()))).version, 'host-one');

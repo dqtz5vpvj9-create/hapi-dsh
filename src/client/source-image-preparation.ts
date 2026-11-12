@@ -58,7 +58,7 @@ async function canvasSrgbWebp(blob: Blob): Promise<Blob> {
   return new Blob([riff, ...chunks], { type: 'image/webp' })
 }
 /** Binary attachment uploads do not make a base64 copy of the selected file. */
-export async function prepareSourceImageBlob(input: Blob, signal?: AbortSignal, byteBudget = 2 * 1024 * 1024): Promise<PreparedSourceImage> {
+export async function prepareSourceImageBlob(input: Blob, signal?: AbortSignal, byteBudget = SOURCE_INPUT_IMAGE_LIMITS.maxImageBytes): Promise<PreparedSourceImage> {
   signal?.throwIfAborted()
   const bitmap = await createImageBitmap(input)
   try {
