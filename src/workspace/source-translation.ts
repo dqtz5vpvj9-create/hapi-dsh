@@ -91,20 +91,41 @@ export function installSourceTranslation(ctx: Context, gateway: SourceGateway, p
     return ctx.inject(['translator', 'remoteAccess'], owner => {
         const storage = new SourceTranslationStorage(path)
         owner.effect(() => () => storage.close(), 'hhpi: durable source translations')
+        const failed = (stage: string, error: unknown): void => {
+            const label = (value: unknown): string => typeof value === 'string' && /^[a-zA-Z][a-zA-Z0-9_/-]{0,79}$/.test(value) ? value : 'unknown'
+            const frames = error instanceof Error ? (error.stack ?? '').split('\n').slice(1, 7).flatMap(line => {
+                const location = /([a-zA-Z0-9_.-]+\.(?:[cm]?js|tsx?)):(\d+):(\d+)\)?$/.exec(line)
+                if (!location) return []
+                const method = /^\s+at ((?:async )?[a-zA-Z0-9_.$<>]+)(?: \(| )/.exec(line)?.[1] ?? 'anonymous'
+                return [`${method}@${location[1]}:${location[2]}:${location[3]}`]
+            }).join(' <- ') : ''
+            owner.logger.warn('Source translation failed at %s (%s/%s) [%s]', stage,
+                label(error instanceof Error ? error.name : undefined),
+                label(error && typeof error === 'object' && 'code' in error ? error.code : undefined), frames)
+        }
         owner.translator.registerStorageProvider(async (id: SessionId, caller: Context, signal: AbortSignal) => {
             if (!isSourceSessionId(id)) return undefined
-            const invocation = caller.invocation
-            if (!invocation) throw new Error('Source translation requires an authenticated invocation')
-            const access = caller.remoteAccess as unknown as RemoteAccessService
-            const sourceAccess: SourceAccess = resource => access.allows(resource.kind === 'source'
-                ? { kind: 'hhpiSource', id: resource.id } : { kind: 'session', id: resource.id as SessionId })
-            const authorize = async (operationSignal: AbortSignal): Promise<void> => {
-                operationSignal.throwIfAborted()
-                const source = await gateway.resolve(id, sourceAccess, operationSignal)
-                if (source.id !== id) throw new Error('The translation source identity changed')
-            }
-            await authorize(signal)
-            return storage.owner(sourceStorageScope(path, principalOf(invocation)), id, authorize)
+            let stage = 'invocation'
+            try {
+                const invocation = caller.invocation
+                if (!invocation) throw new Error('Source translation requires an authenticated invocation')
+                const access = caller.remoteAccess as unknown as RemoteAccessService
+                const sourceAccess: SourceAccess = resource => access.allows(resource.kind === 'source'
+                    ? { kind: 'hhpiSource', id: resource.id } : { kind: 'session', id: resource.id as SessionId })
+                const authorize = async (operationSignal: AbortSignal): Promise<void> => {
+                    operationSignal.throwIfAborted()
+                    const source = await gateway.resolve(id, sourceAccess, operationSignal)
+                    if (source.id !== id) throw new Error('The translation source identity changed')
+                }
+                stage = 'source-authorization'
+                await authorize(signal)
+                const admitted = storage.owner(sourceStorageScope(path, principalOf(invocation)), id, authorize)
+                return { run: async (...args) => {
+                    try { return await admitted.run(...args) }
+                    catch (error) { failed('translation-operation', error); throw error }
+                } } satisfies TranslationStorageOwner
+            } catch (error) { failed(stage, error); throw error }
         })
+        owner.logger.info('Source translation storage provider registered')
     })
 }
