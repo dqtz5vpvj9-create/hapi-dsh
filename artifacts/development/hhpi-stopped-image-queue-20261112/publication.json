@@ -119,5 +119,7 @@
   },
   "scope": "Targeted checks and applicable prior results reused; no new full suite, mobile/FPS or unrelated platform matrix. CLI synthetic loopback, failed real original-target read-only UI and owned start UI are separate evidence layers.",
   "remainingPresentationGap": "Observed in the official queue before start: two image fallback labels render as concatenated Image attachment text. Start reachability, exact execution and completed state passed; full attachment UI visual quality is not claimed.",
-  "deliveryStatus": "Explicit retained native queue start delivered and verified on owned native/synthetic official UI; original-target whole-composer availability check remains failed."
+  "deliveryStatus": "Explicit retained native queue start delivered and verified on owned native/synthetic official UI; original-target whole-composer availability check remains failed.",
+  "profileStatus": "incomplete",
+  "profileReason": "Original-target browser acceptance remains failed/unverified despite published implementation and passed isolated start behavior; existing requirements and gates unchanged."
 }
