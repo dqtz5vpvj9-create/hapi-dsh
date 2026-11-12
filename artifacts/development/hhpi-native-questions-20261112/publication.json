@@ -1,0 +1,125 @@
+{
+  "schema": 1,
+  "run": "hhpi-native-questions-20261112",
+  "publishedAt": "2026-11-12T06:57:31.221Z",
+  "sourceCommit": "1ed555958bc920063a2f94f1d158c6527f81edec",
+  "sourceDigest": "83f264b08f2c44fefb87a3473c825a4f749e12d464fadb070b691800f00095fe",
+  "sourceFileCount": 21,
+  "releaseId": "4cdacbc776c56ede4142d0a619f1357110b82d8dc355c901e9f1bfd101f4a936",
+  "hostBuildId": "1125cb4cbc61d8e56bdf9f6cb1f94fec3fb627c6c1c465dee880057fca91b83a",
+  "clientRevision": "0a8a3a6e338b",
+  "providerRevision": "5ef500f62601",
+  "bundle": {
+    "filename": "hapi-dsh-bundle-0.1.2.tgz",
+    "sha256": "9d5fc9b60a5ef986a178cef67b59458cbbddbea5c2d53e0fc690f5386a68d12b",
+    "bytes": 9528870,
+    "sourceOfferCommit": "1ed555958bc920063a2f94f1d158c6527f81edec"
+  },
+  "sdk": {
+    "release": "hhpi-dsh-022-20261107.28",
+    "packageCount": 24,
+    "rebuilt": false
+  },
+  "scope": "Central HHPI adapter and official question UI; configured Windows source read-only metadata helper only. No paired Host/Runner package rollout or native execution restart.",
+  "behavior": "Project typed native async questions into official DSH question cards; use existing approve operation and native steer/queue replies. Preserve source identity, blocking-question migration and explicit Skip. No HHPI protocol change.",
+  "centralProtection": {
+    "authentication": true,
+    "compressedWebSocket": true,
+    "servedMainAndProviderBytesVerified": true,
+    "nativePidAndBirthPreserved": true,
+    "configBytesUnchanged": true,
+    "ordinaryDshIdleBeforeSwitch": true,
+    "retainedHostShells": 0,
+    "rollbackReleaseId": "e1ae4f4be4c74e3acd970480b3c4ae6cd7eb0083f00d89713eeeac48a04840f5",
+    "previousConfigAndUnitCapturedPrivately": true
+  },
+  "windowsHelper": {
+    "artifact": "dist/remote/codex-metadata.mjs",
+    "sha256": "95e7d5f4a8a498ad4ba8b4bccd3a9d35be4618dd9fa76b3dd64f6cadb35a5a07",
+    "atomicallyInstalled": true,
+    "oldBytesRetainedForRollback": true,
+    "readOnlyQuestionsQueryPassed": true,
+    "queryUsedSyntheticAbsentThread": true,
+    "nativePidAndBirthPreserved": true,
+    "runnerConfigBytesUnchanged": true,
+    "nativeOrRunnerRestarted": false,
+    "sourceConfigChanged": false,
+    "retiredStaleReadOnlyHelperWorkers": 2,
+    "reloadBoundary": "Only the exact helper workers were retired after PID/birth/path checks so existing readers reconnect to new bytes. Native daemon and Runner processes were not targeted."
+  },
+  "reusedChecks": {
+    "sourceRegressions": {
+      "passed": 32,
+      "explicitGatedSkips": 2,
+      "span": "98ed3ea6-3ec1-43b6-b253-2e9107699ed9"
+    },
+    "projectionAndNamespace": {
+      "passed": 5,
+      "explicitGatedSkip": 1,
+      "span": "6c714362-bc63-4733-afa3-6a624a0a88c5"
+    },
+    "migrationAndSkip": {
+      "passed": 4,
+      "span": "0fd3c0b4-53c1-433a-946d-3719bf9f7ff2"
+    },
+    "hostAndClientTypes": {
+      "passed": true,
+      "span": "4a5362a1-4d77-4592-a3cb-aa989fa5ae8b"
+    },
+    "realNativeCliLoopback": {
+      "passed": true,
+      "cli": "0.165.0",
+      "span": "d2a80e80-5032-4c5c-808d-61335aee3e45",
+      "boundary": "Real native CLI async tool delivery and Agent receipt with a loopback Responses model; not production model acceptance."
+    },
+    "candidateOfficialGraphBrowser": {
+      "passed": true,
+      "elapsedMs": 9619,
+      "span": "01e70b74-3c53-4f5d-8e7d-7bac00889443",
+      "boundary": "Installed official graph and candidate HHPI bytes; synthetic source/read/operate boundary. Option/custom/reload exercised; no real user write."
+    }
+  },
+  "productionReadOnlyUi": {
+    "passed": true,
+    "elapsedMs": 3884,
+    "span": "9eb7872d-9eea-4387-9658-bcc5ae88f4a0",
+    "officialQuestionCardVisible": true,
+    "sourceWrites": 0,
+    "submittedAnswers": 0,
+    "pageErrors": 0,
+    "screenshotViewed": true,
+    "report": "live-browser-result.json",
+    "privateScreenshot": "live-question-card.png"
+  },
+  "actualUserSkipResult": {
+    "actor": "User; root observed native reply deliveries. Verification only read native state.",
+    "explicitSkips": 5,
+    "matchingPendingRemaining": 0,
+    "inspectedThreadAsyncPendingRemaining": 0,
+    "emptyAnswerMeaning": "Explicit Skip, never approval",
+    "verificationSubmissions": 0,
+    "newModelTasksByVerification": 0,
+    "span": "131af8f0-3641-4c6d-90a5-53f09299234a",
+    "report": "user-skip-native-result.json"
+  },
+  "publicationSpans": {
+    "commit": "843202fa-d1fe-4e45-95c2-96dd9774e63d",
+    "push": "459cd73f-38a1-4e61-b085-2eb1abf42f6f",
+    "build": "7cde91fd-4f4a-41e5-a80a-2dc4f5a1293e",
+    "pack": "13903250-2583-4251-aea0-0167f6a3e76f",
+    "backup": "a0039dcb-5e0b-4ba2-8e6c-5c6584291d28",
+    "install": "8f099204-00ba-4ac1-a893-cbe3d6fa38e4",
+    "activate": "ca4bd7c2-2d84-49f7-a93c-90d658126425",
+    "windowsIdentity": "f24d2194-483b-4502-bcd3-c08097c4c610",
+    "windowsHelperInstall": "d869e2e3-97d7-412e-9ec4-46f16ce07295",
+    "windowsReadOnlyQuery": "bdb55150-8d71-4144-8951-fa1791c64ae3",
+    "windowsHelperWorkersReload": "0b0e4506-0d84-451b-a484-8643c25b6596"
+  },
+  "operatorScriptFailures": {
+    "helperGuardFirstAttempt": "Rejected before file change because PowerShell parsed JSON timestamp as DateTime; normalized timestamp comparison after independent native/config/old-byte check.",
+    "helperReloadFirstAttempt": "Escaped pattern rejected before process action; replaced pattern with literal normalized-path comparison.",
+    "productSourceChangedAfterFreeze": false
+  },
+  "boundary": "No new full-suite, SDK, phone, FPS or model task validation. Separate upload UI/queue issues were not fixed by this release. Production question text, call IDs, credentials, source identities, native paths, raw HTML and private configuration are excluded.",
+  "temporaryEvidenceRoot": "/mnt/cache/data-cache/hhpi-native-questions-20261112"
+}
