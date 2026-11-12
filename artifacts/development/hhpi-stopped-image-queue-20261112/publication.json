@@ -1,0 +1,123 @@
+{
+  "schema": 1,
+  "publishedAt": "2026-11-12T08:17:46.661Z",
+  "behavior": "Explicitly send a selected retained native queue item and continue its queue; exact admitted typed replies use the official question Inbox consumer. No automatic start or user-source probe write.",
+  "central": {
+    "sourceCommit": "d3241a83b7cd362f47a7bb32b0bf2c70ad14989a",
+    "releaseId": "83bd91924835bd2f28b7ac655d54e535a8544bfccb3de120f0d87d36660e403a",
+    "hostBuildId": "faba20d64fb2765c73543e060c84504f2acbfacd053248e080cee57473fea26f",
+    "clientRevision": "167041130c66",
+    "providerRevision": "fb3e665f7b93",
+    "bundleSha256": "2eaedfe1ac102f116b223070d7fa1d2e85d1499bde34872a60ad704f552cea1a"
+  },
+  "sdk": {
+    "extRelease": "hhpi-dsh-022-20261107.29",
+    "packages": 24,
+    "upstreamCommit": "66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db",
+    "patchSetSha256": "0e990b1f4aad81f9c27c84e713a7bf8e63518e180aab06eb21de6799517e810a",
+    "packageSetSha256": "d8d87b9f6b105d25ffe26724864a68145344877202ba1f672b743aed1025d74a"
+  },
+  "pairedHosts": {
+    "onlineUpgraded": 2,
+    "sourceCommit": "7895fe022d0ee35c6ad29b17bb6390c9174b4b06",
+    "releaseId": "dd4fa4126c9c6964343dfa1875c54314e812a346b87c3b0ffa264927b99d3691",
+    "hostBuildId": "238973bf73e2f897ac12c3831ee34af71da0e03445b2ff87111175241d0b5939",
+    "sameSdk": true,
+    "cotEnabled": false,
+    "configAndNativeIdentityPreserved": true,
+    "servedGraphBytesVerified": true,
+    "offlineNotUpgraded": 2,
+    "finalCentralOnlyPatch": "question Inbox projection and stderr sink; SDK unchanged, no repeated Runner deployment"
+  },
+  "guards": {
+    "authenticatedHttp": true,
+    "compressedWebSocket": true,
+    "servedMainAndProviderBytes": true,
+    "originalNativePidAndBirth": true,
+    "configBytes": true,
+    "ordinarySessionIdle": true,
+    "retainedHostShells": 0,
+    "rollbackRetained": true
+  },
+  "evidence": {
+    "sdkSpecs": "81150afb-dcae-4218-8df5-df2c33e3620c",
+    "native0165SyntheticLoopback": "0f639e67-d581-4138-bd00-f4d2206cbb0d",
+    "questionInboxCases": "319e2da0-3f50-4969-b2a9-903f03423458",
+    "combinedThreeProgramTypes": "f0f6740d-21de-4fe4-803b-f175c84a324f",
+    "finalHostSinkTypes": "39e440f3-c1c7-420a-9bae-9a790a348088",
+    "finalClientExperienceTypes": "3929afbc-0280-4ead-8dec-e46f9595309c",
+    "finalCarrier": "760012c7-f133-4085-85df-dc5d9f1b3716",
+    "finalActivation": "04889f6e-0f62-49a1-a16b-7d4acf879847",
+    "ui": {
+      "ownedNativeSyntheticOfficialUi": {
+        "passed": true,
+        "span": "bba845d4-f325-4329-8f67-f62214aff1c7",
+        "interactionMs": 8471,
+        "exactNativeQueueStartCalls": 1,
+        "queuedImages": 2,
+        "pendingQuestionsAfter": 0,
+        "queueAfter": 0,
+        "originalClientInBody": 1,
+        "editorVisibleAfter": true,
+        "pageErrors": 0,
+        "blockedRequests": 0,
+        "userSourceWrites": 0,
+        "visualScope": "Root and owner inspected before/final captures. Queue/input reachability and final state verified; image placeholder presentation remains a known gap."
+      },
+      "realOriginalTargetReadOnly": {
+        "passed": false,
+        "span": "0152f464-3150-4df5-8df0-e2a1b847fab0",
+        "reason": "plain editor remained hidden until 25s timeout",
+        "sourceWrites": 0,
+        "subsequentSourceRead": {
+          "queue": 0,
+          "status": "idle",
+          "pendingQuestions": 1,
+          "originalImageClientInCurrentBody": 1,
+          "typedReplyInCurrentPage": 0,
+          "hasBefore": true
+        },
+        "boundary": "No loss inference from a bounded page; original user queue was not modified or started by the probe."
+      }
+    },
+    "publicAcceptance": "acceptance.json"
+  },
+  "retainedFailures": [
+    {
+      "stage": "first cohort activation",
+      "result": "failed: immediate 158ms snapshot classified reconnecting Runners as unavailable; original failure retained",
+      "span": "ee5e1e36-992b-4e81-9ed2-50d2a84e1639"
+    },
+    {
+      "stage": "rollback readiness",
+      "result": "stale private launch was reused after restart; actual prior release restored and authenticated bytes verified",
+      "span": "75cd1676-b65b-4720-bd9a-000d690a4a76"
+    },
+    {
+      "stage": "cohort reactivation",
+      "result": "passed: bounded 45s readiness retries only recoverable offline/502/503/504; identity/build mismatch still fails; actual reconnect5080ms, reactivation29910ms",
+      "span": "6a2eaf98-9795-494c-b99c-bd77f0f9938a"
+    },
+    {
+      "stage": "first published queue UI",
+      "result": "failed: official question card hid composer and QueueDock; exact typed Inbox projection fixed in final central source",
+      "span": "22a95e2e-eb29-4551-aa4b-11453721ce08"
+    },
+    {
+      "stage": "unpublished sink carrier",
+      "result": "b3efab49088c89bf335787beb288e722d67a0dde8ffbfcac81e66450a6884319 built but never installed or activated; final frozen question fix combined before central switch"
+    }
+  ],
+  "uploadDiagnostic": {
+    "sourceCommit": "b411894b45110c580697dc129dc8b81d7775918c",
+    "includedInFinalCentral": true,
+    "firstSyntheticIngress": "HTTP200/ok, stderr sink absent; retained failed",
+    "finalSyntheticIngress": "HTTP200/ok/null and exactly one fixed development JSON line in existing Host log; one request, 15ms",
+    "sourceWrites": 0,
+    "userUploadFailure": "unknown; not fixed",
+    "runStatus": "incomplete"
+  },
+  "scope": "Targeted checks and applicable prior results reused; no new full suite, mobile/FPS or unrelated platform matrix. CLI synthetic loopback, failed real original-target read-only UI and owned start UI are separate evidence layers.",
+  "remainingPresentationGap": "Observed in the official queue before start: two image fallback labels render as concatenated Image attachment text. Start reachability, exact execution and completed state passed; full attachment UI visual quality is not claimed.",
+  "deliveryStatus": "Explicit retained native queue start delivered and verified on owned native/synthetic official UI; original-target whole-composer availability check remains failed."
+}

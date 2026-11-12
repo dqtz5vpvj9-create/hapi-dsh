@@ -1,0 +1,33 @@
+{
+  "at": "2026-11-12T08:11:16.539Z",
+  "hostRestartAloneGuaranteesClientUpgrade": false,
+  "primaryUpgrade": "Official client-hmr consumes graph/rebuilt frames; same-release gate and changed entry revision must pass, and entry replacement must finish. Native EventSource can reconnect, but original page completion is not observable from the Host.",
+  "paneOnlyUpgrade": false,
+  "paneReason": "Pane graph excludes hapi-dsh. HHPI source-composer/provider installers are imported once by the primary bundle; refreshing an official pane graph does not itself replace them.",
+  "explicitUpdate": "SourceNotificationsRuntime.applyUpdate saves checkpoints, activates a waiting worker if any, then calls location.reload. It is bound to explicit Settings buttons, not forced by Host deployment.",
+  "oldError": {
+    "ifPreservedInLiveConversation": "First new observer mount reports composer-error once using existing reason only; never reconstructs a prior provider stage.",
+    "ifInputRebuilt": "IndexedDB retains File/operation/prepared bytes, not error/name/code. Existing restoration can re-add the retained File and run its original provider operation; only a subsequent real failure supplies a stage."
+  },
+  "missingOriginalPageEvidence": [
+    "executed primary HHPI revision",
+    "original live upload error/reason object",
+    "original source generation and captured account lifetime",
+    "IndexedDB checkpoint result/quota/conflict state",
+    "selected File decode failure"
+  ],
+  "noUserActionRequested": true,
+  "rootCause": "unknown",
+  "code": [
+    "src/client/source-notifications/runtime.ts:193",
+    "src/client/source-notifications/index.tsx:49",
+    "src/client/federation.tsx:146",
+    "src/client/federation.tsx:853",
+    "src/client/surface/pane-graph.ts:36",
+    "src/client/source-composer.tsx:47",
+    "src/client/upload-failure-report.ts:18",
+    "src/client/composer-attachment-recovery.tsx:16",
+    "node_modules/@deepseek-ai/dsh-client-hmr/lib/client.js:267",
+    "node_modules/@deepseek-ai/dsh-client-modules/lib/client.js:407"
+  ]
+}

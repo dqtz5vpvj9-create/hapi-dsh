@@ -1,0 +1,15 @@
+{
+  "at": "2026-11-12T08:18:04.011Z",
+  "passed": true,
+  "hostBuildId": "faba20d64fb2765c73543e060c84504f2acbfacd053248e080cee57473fea26f",
+  "syntheticDiagnostic": true,
+  "syntheticBuild": "development",
+  "rpcCalls": 1,
+  "httpStatus": 200,
+  "hostLogMatches": 1,
+  "sourceTaskWrites": 0,
+  "userAttachmentWrites": 0,
+  "uploadsRetried": 0,
+  "elapsedMs": 15,
+  "evidenceBoundary": "Only authenticated diagnostic ingress and Host log sink; original user upload failure remains unknown."
+}

@@ -1,0 +1,16 @@
+{
+  "at": "2026-11-12T08:02:16.548Z",
+  "passed": false,
+  "syntheticDiagnostic": true,
+  "syntheticBuild": "development",
+  "hostBuildId": "238973bf73e2f897ac12c3831ee34af71da0e03445b2ff87111175241d0b5939",
+  "rpcCalls": 1,
+  "httpStatus": 200,
+  "remoteResultOk": true,
+  "hostStdoutMatches": 0,
+  "cause": "Pinned Cordis logger defaults to an in-memory buffer; the configured Host has no stdout exporter.",
+  "userAttachmentWrites": 0,
+  "sourceTaskWrites": 0,
+  "uploadsRetried": 0,
+  "originalUserFailure": "unknown"
+}

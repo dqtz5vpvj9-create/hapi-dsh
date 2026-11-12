@@ -1,0 +1,150 @@
+{
+  "run": "hhpi-upload-recurrence-20261112",
+  "frozenAt": "2026-11-12T07:36:42.129Z",
+  "owner": "plugin_compat",
+  "productStatus": "upload failure cause remains unknown; diagnostic collection only",
+  "scope": "fixed attachment failure facts to the existing authenticated hapi namespace and existing Host logger; no upload/preparation/retry changes",
+  "files": [
+    {
+      "path": "src/upload-diagnostics.ts",
+      "sha256": "8771d45a8afc34f16485987d06184b0880de71b689c0b5c8913f5534a0511d2f"
+    },
+    {
+      "path": "src/client/upload-failure-report.ts",
+      "sha256": "ea8de6720e317d86d2aa36649d1698fd72bdeefba404dd473fbf7cba851b6ac8"
+    },
+    {
+      "path": "src/client-api.ts",
+      "sha256": "708a140f07015f3b26c1cd9c86325acdfb555408d98d86e91d266247aba79a5a"
+    },
+    {
+      "path": "src/hub/workspace-shell.ts",
+      "sha256": "6036b1c45c72566ed0ead3d5dd6cdb73c38d7f01f790b866e466ad3bb6bf0254"
+    },
+    {
+      "path": "src/client/workspace-ui.ts",
+      "sha256": "82160622bf0b06809c9036faf418bd9dc8fd231bb6ede746c5b2d2c0cc5260cd"
+    },
+    {
+      "path": "src/client/index.ts",
+      "sha256": "d3fc37688a80d12ed169e718e302faea1f4b614e46fa95d6adfaf7bd244e33f4"
+    },
+    {
+      "path": "src/client/federation.tsx",
+      "sha256": "0ac114e324354b6ecf0437d88469b1e6592143153698ebafea6313c97ce3485a"
+    },
+    {
+      "path": "src/client/remote-file-upload.ts",
+      "sha256": "3ddb55c3046a78ce7f6f97b1da168ee6248f47a39fc2bc151bf49a55becdb73e"
+    },
+    {
+      "path": "src/client/source-composer.tsx",
+      "sha256": "9af286b45bdef970e65e832a04657b76cc9f66217fc0cb97ac8924ed28a81663"
+    },
+    {
+      "path": "src/client/source-upload-transport.ts",
+      "sha256": "176701b25b7a76cea94feb90fd28b3bfb6389a7e5ca83a2e17c9ad1b90e0fbda"
+    },
+    {
+      "path": "tests/upload-diagnostics.test.ts",
+      "sha256": "a868e790dd1e6323277399195152431fb7eee2d5111185fc0724456c6b222ac0"
+    },
+    {
+      "path": "tests/hhpi-file-upload-client.test.ts",
+      "sha256": "aa1ba98026e735edd154b5131308e994c70a64dc61734c763b090a3b5f4fd11a"
+    },
+    {
+      "path": "tests/hhpi-remote-service.test.ts",
+      "sha256": "f59dc01cdd476c6cc7c43727d9e763ec95bfa72b71bfc419d16f15ea1753e9fe"
+    }
+  ],
+  "tests": [
+    {
+      "span": "01d91aeb-5cb7-4948-9a7d-d6c5f8667c51",
+      "result": "26/26 Node passed",
+      "command": "node --import tsx --test tests/upload-diagnostics.test.ts tests/hhpi-file-upload-client.test.ts tests/hhpi-remote-service.test.ts tests/workspace-ui-bridge.test.ts"
+    },
+    {
+      "span": "d646d514-9cab-403e-bb20-f8cc8e2cb46a",
+      "result": "4/4 existing composer behavior passed",
+      "command": "npm run test:experience -- tests/experience/composer-upload-checkpoint.test.tsx tests/experience/composer-attachment-owner.test.tsx"
+    }
+  ],
+  "typecheck": {
+    "result": "passed with exact applicable reuse",
+    "host": {
+      "span": "39e440f3-c1c7-420a-9bae-9a790a348088",
+      "reason": "final d324 Host inputs match sink b411 Host inputs"
+    },
+    "clientAndExperience": {
+      "span": "3929afbc-0280-4ead-8dec-e46f9595309c",
+      "durationMs": 35190,
+      "source": "d324 isolation stage with SDK .29"
+    },
+    "firstNonReusableSpan": "9f39ccef-e4bc-4bc8-b499-ff37bd6dd721",
+    "earlierCombinedSpan": "f0f6740d-21de-4fe4-803b-f175c84a324f"
+  },
+  "productionEvidence": "/mnt/cache/data-cache/hhpi-upload-now-20261112/current-thread-transfer-summary.json",
+  "incident": {
+    "reportedAt": "2026-11-12T07:16:31Z",
+    "source": "current development thread on local codex-native",
+    "latestSourceReceipt": "2026-11-12T07:01:00.178Z",
+    "lastSourceRead": "2026-11-12T07:35:08.168Z",
+    "newBeginObserved": false,
+    "httpOrRpcFailureCode": null,
+    "cause": "unknown; source resolution/local preparation/draft checkpoint or an already-failed attachment before any new begin"
+  },
+  "privacy": {
+    "fields": [
+      "stage",
+      "source",
+      "build",
+      "name",
+      "code",
+      "status"
+    ],
+    "no": [
+      "user IDs",
+      "session IDs",
+      "file names",
+      "contents",
+      "messages",
+      "paths",
+      "URLs",
+      "credentials"
+    ],
+    "pageLimitPerMinute": 6,
+    "hostLimitPerMinute": 30,
+    "reportingFailures": "silent; never awaited by upload"
+  },
+  "savedFailures": {
+    "indexedDb": "Existing attachment drafts retain original/prepared bytes and operation intents, but no saved error/name/code. No retrospective stage can be reconstructed.",
+    "liveComposer": "Only each mounted existing error occurrence is reported once as composer-error, never as an invented provider stage."
+  },
+  "acceptance": {
+    "node": "passed",
+    "dom": "passed",
+    "types": "passed with above reuse",
+    "published": true,
+    "browser": "not run; no visible UI change",
+    "realFailureFixed": false,
+    "hostDiagnosticLog": "passed: one development synthetic record, zero real records at 08:18:56.587Z read"
+  },
+  "postdeploy": "One synthetic authenticated uploadFailure RPC with build=development can verify Host log ingestion without touching attachments or sessions; do not classify it as a user incident or an upload success.",
+  "originalPageEvidence": "unavailable; actual root control surface had apps=[] and browsers=[]",
+  "release": {
+    "source": "d3241a83b7cd362f47a7bb32b0bf2c70ad14989a",
+    "releaseId": "83bd91924835bd2f28b7ac655d54e535a8544bfccb3de120f0d87d36660e403a",
+    "hostBuildId": "faba20d64fb2765c73543e060c84504f2acbfacd053248e080cee57473fea26f",
+    "extRelease": "hhpi-dsh-022-20261107.29"
+  },
+  "firstLiveProbe": {
+    "result": "failed sink; HTTP200 only",
+    "evidence": "live-diagnostic-ingress-first.json"
+  },
+  "finalLiveProbe": {
+    "result": "passed diagnostic ingress + durable stderr",
+    "evidence": "live-diagnostic-ingress.json"
+  },
+  "faultStatus": "unknown/incomplete"
+}

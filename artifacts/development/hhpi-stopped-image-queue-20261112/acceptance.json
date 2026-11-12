@@ -1,0 +1,64 @@
+{
+  "run": "hhpi-stopped-image-queue-20261112",
+  "release": "83bd91924835bd2f28b7ac655d54e535a8544bfccb3de120f0d87d36660e403a",
+  "hostBuildId": "faba20d64fb2765c73543e060c84504f2acbfacd053248e080cee57473fea26f",
+  "main": "167041130c66",
+  "provider": "fb3e665f7b93",
+  "sdk": ".29",
+  "originalTarget": {
+    "browserSpan": "0152f464-3150-4df5-8df0-e2a1b847fab0",
+    "browserPassed": false,
+    "failureRetained": "Plain editor visibility timeout; no blocked requests or page errors.",
+    "sourceWrites": 0,
+    "laterReadonlyState": {
+      "status": "idle",
+      "activeTurnId": null,
+      "nativeQueueCount": 0,
+      "pendingQuestionCount": 1,
+      "originalImageClientBodyOccurrencesInCurrentPage": 1,
+      "originalTypedReplyClientBodyOccurrencesInCurrentPage": 0,
+      "hasBefore": true,
+      "typedReplyWholeHistoryConsumption": "unknown"
+    },
+    "conclusion": "Original queued reproduction no longer existed at final observation; retained pending question can legitimately own the input. No user item was replayed or changed.",
+    "previousProductFailureSpans": [
+      "22a95e2e-eb29-4551-aa4b-11453721ce08",
+      "63b3984c-6b57-4f71-a088-b6304ad914d1"
+    ]
+  },
+  "ownedOfficialUi": {
+    "span": "bba845d4-f325-4329-8f67-f62214aff1c7",
+    "passed": true,
+    "interactionDurationMs": 8471.14975,
+    "profileDurationMs": 11884.625849,
+    "boundary": "Production official browser UI; only owned source transport is routed to actual isolated Codex0.165.0/DirectCodexAdapter and local synthetic Responses model.",
+    "officialInboxReleasedInput": true,
+    "exactOriginalQueueStartCalls": 1,
+    "selectedInputImagesReceived": 2,
+    "selectedOriginalClientBodyOccurrences": 1,
+    "nativeFollowingReplyConsumed": true,
+    "finalPendingQuestions": 0,
+    "finalNativeQueueCount": 0,
+    "officialQueueDockRetired": true,
+    "finalEditorVisible": true,
+    "pageErrors": 0,
+    "blockedRequests": 0,
+    "userSourceWrites": 0,
+    "externalModelCalls": 0,
+    "browserReleasedSafe": true
+  },
+  "visual": {
+    "method": "Fixed webshot command over actual interaction DOM/CSS snapshots, then personally viewed.",
+    "before": "/mnt/cache/data-cache/hhpi-stopped-image-queue-20261112/owned-idle-before.png",
+    "after": "/mnt/cache/data-cache/hhpi-stopped-image-queue-20261112/owned-idle-final.png",
+    "reviewed": true,
+    "beforeImagePreviewBoundary": "Observed remaining UI gap: two image attachment placeholders are concatenated as Image attachmentImage attachment; initial queue thumbnails and attachment presentation are not visually complete.",
+    "afterResult": "Two owned blue image tiles, readable queued reply and both confirmation bodies; queue/card gone and full editor visible."
+  },
+  "remainingBoundaries": [
+    "Queue image thumbnails remain a presentation follow-up: two Image attachment placeholders concatenate in the initial queue row. This start-path pass does not close the attachment UI gap.",
+    "Original user typed reply consumption outside the current page remains unknown; no further deep history scan or user write.",
+    "No frame-by-frame continuity or new bad-network browser scenario was run.",
+    "Synthetic model proves actual native input payload and sequence, not external-model image understanding."
+  ]
+}

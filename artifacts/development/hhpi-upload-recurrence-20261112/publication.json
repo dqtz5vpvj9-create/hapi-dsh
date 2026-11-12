@@ -1,0 +1,30 @@
+{
+  "at": "2026-11-12T08:18:56.583Z",
+  "source": "d3241a83b7cd362f47a7bb32b0bf2c70ad14989a",
+  "hostBuildId": "faba20d64fb2765c73543e060c84504f2acbfacd053248e080cee57473fea26f",
+  "diagnosticCollectionPublished": true,
+  "realHostLogIngestionPassed": true,
+  "syntheticDiagnosticOnly": true,
+  "firstProbeFailedEvidence": "live-diagnostic-ingress-first.json",
+  "finalProbePassedEvidence": "live-diagnostic-ingress.json",
+  "originalUploadFailureResolved": false,
+  "originalFailureStatus": "unknown",
+  "originalPageControl": "root reported apps=[]/browsers=[]; no original page execution revision, live error object or IndexedDB checkpoint outcome available",
+  "scope": "No user upload/retry/remove/send or model task was performed.",
+  "releaseId": "83bd91924835bd2f28b7ac655d54e535a8544bfccb3de120f0d87d36660e403a",
+  "extRelease": "hhpi-dsh-022-20261107.29",
+  "diagnosticTypeChecks": {
+    "result": "passed with exact applicable reuse",
+    "host": {
+      "span": "39e440f3-c1c7-420a-9bae-9a790a348088",
+      "reason": "final d324 Host inputs match sink b411 Host inputs"
+    },
+    "clientAndExperience": {
+      "span": "3929afbc-0280-4ead-8dec-e46f9595309c",
+      "durationMs": 35190,
+      "source": "d324 isolation stage with SDK .29"
+    },
+    "firstNonReusableSpan": "9f39ccef-e4bc-4bc8-b499-ff37bd6dd721",
+    "earlierCombinedSpan": "f0f6740d-21de-4fe4-803b-f175c84a324f"
+  }
+}

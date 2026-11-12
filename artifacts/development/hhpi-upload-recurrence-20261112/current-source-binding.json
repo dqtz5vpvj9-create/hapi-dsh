@@ -1,0 +1,15 @@
+{
+  "at": "2026-11-12T08:06:12.258Z",
+  "hostBuildId": "238973bf73e2f897ac12c3831ee34af71da0e03445b2ff87111175241d0b5939",
+  "readOnly": true,
+  "method": "sourceWorkspace/resolve",
+  "httpStatus": 200,
+  "ok": true,
+  "code": null,
+  "exactTarget": true,
+  "localOwner": true,
+  "uploadsRegistered": true,
+  "elapsedMs": 14,
+  "userDataWrites": 0,
+  "exclusion": "Fresh authenticated source resolve only; does not observe original page generation, local decoding, IndexedDB, or checkpoint state."
+}
