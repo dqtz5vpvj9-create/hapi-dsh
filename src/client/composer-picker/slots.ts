@@ -11,5 +11,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
         'hapi.source.composer-details': { kind: 'list'; scope: 'session' }
         'hapi.source.composer-actions': { kind: 'single'; scope: 'session'; owner: SourceComposerActionsProps }
+        'hapi.source.composer-navigation': { kind: 'list'; scope: 'session'; owner: Pick<SourceComposerActionsProps, 'source' | 'onClose'> }
+        'hapi.source.composer-tools': { kind: 'list'; scope: 'session'; owner: Pick<SourceComposerActionsProps, 'source'> }
     }
 }

@@ -1,11 +1,12 @@
 import { CodexUploads } from '../src/remote/codex-uploads.ts';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 /** Production native carrier/ledger; only Codex RPC is synthetic. */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CodexAccessBridge } from '../src/remote/codex-access-bridge.ts';
+import { CodexQueueSteer } from '../src/remote/codex-queue-steer.ts';
 import { CodexRpcError, type CodexRpc, type NativeNotification, type NativeRequest } from '../src/remote/codex-rpc.ts';
 import { SourceError } from '../src/remote/errors.ts';
 import { SourceGateway } from '../src/remote/gateway.ts';
@@ -16,18 +17,18 @@ async function fixture(t: test.TestContext) {
     t.after(() => rm(root, { recursive: true, force: true }));
     const notifications = new Set<(value: NativeNotification) => void>(), requests = new Set<(value: NativeRequest) => void>(), disconnects = new Set<() => void>();
     const calls: Array<{ method: string; params: unknown; write?: boolean }> = [];
-    let behavior: () => unknown = () => ({ secret: 'fixture-only-token' });
+    let behavior: (method: string, params: unknown) => unknown = () => ({ secret: 'fixture-only-token' });
     const rpc = { currentGeneration: 1, online: true,
         connect: async () => ({ userAgent: 'synthetic Codex 0.165.0' }),
         onNotification: (listener: (value: NativeNotification) => void) => { notifications.add(listener); return () => notifications.delete(listener); },
         onRequest: (listener: (value: NativeRequest) => void) => { requests.add(listener); return () => requests.delete(listener); },
         onDisconnect: (listener: () => void) => { disconnects.add(listener); return () => disconnects.delete(listener); },
-        request: async (method: string, params: unknown, options: { write?: boolean }) => { calls.push({ method, params, ...options }); return behavior(); },
+        request: async (method: string, params: unknown, options: { write?: boolean }) => { calls.push({ method, params, ...options }); return behavior(method, params); },
         respond: async () => { calls.push({ method: '$reply', params: {} }); },
     };
-    const make = () => new CodexAccessBridge('source', rpc as unknown as CodexRpc, root, async () => {}, () => {}, async () => ({ status: 'accepted', message: 'owned thread reply' }));
+    const make = (reconcile?: (method: string, params: Record<string, unknown> | null) => Promise<import('../src/remote/codex-access.ts').CodexCallResult | undefined>) => new CodexAccessBridge('source', rpc as unknown as CodexRpc, root, async () => {}, () => {}, async () => ({ status: 'accepted', message: 'owned thread reply' }), reconcile);
     const bridge = make(); t.after(() => bridge.dispose());
-    return { root, bridge, make, calls, rpc, notifications, requests, disconnects, behave: (fn: () => unknown) => { behavior = fn; } };
+    return { root, bridge, make, calls, rpc, notifications, requests, disconnects, behave: (fn: (method: string, params: unknown) => unknown) => { behavior = fn; } };
 }
 
 test('native writes are exactly identified, never retried after loss, and do not persist result credentials', async t => {
@@ -82,7 +83,7 @@ test('native event overflow announces a reset and stale-generation replies canno
 test('a session grant cannot invoke source-wide Codex APIs', async t => {
     const f = await fixture(t);
     const adapter = { id: 'source', machineId: 'machine', engine: 'codex', nativeAccess: f.bridge, dispose() {} } as SourceAdapter;
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     t.after(() => gateway.dispose());
     assert.throws(() => gateway.nativeAccess('source', grant => grant.kind === 'session'), /not granted/);
     assert.equal(gateway.nativeAccess('source', grant => grant.kind === 'source' && grant.id === 'source'), f.bridge);
@@ -152,10 +153,176 @@ test('upload routing checks the addressed session before dispatch and again afte
     const f = await fixture(t);
     let calls = 0, allowed = true;
     const adapter = { id: 'source', machineId: 'machine', engine: 'codex', dispose() {}, async upload() { calls++; allowed = false; return { receiptId: randomUUID(), file: { attachmentId: randomUUID(), name: 'file', bytes: 0 } }; } } as unknown as SourceAdapter;
-    const gateway = new SourceGateway([adapter], false); t.after(() => gateway.dispose());
+    const gateway = new SourceGateway([adapter]); t.after(() => gateway.dispose());
     const request = { sessionId: 'hhpi:machine:source:codex:thread', operationId: randomUUID(), name: 'file', data: '' };
     await assert.rejects(gateway.upload(request, () => false), /not granted/);
     assert.equal(calls, 0);
     await assert.rejects(gateway.upload(request, resource => allowed && resource.kind === 'session' && resource.id === request.sessionId), /not granted/);
     assert.equal(calls, 1);
+});
+
+
+const queuedSteerRequest = {
+    sourceId: 'source', method: 'hhpi/queue/steer', operationId: 'original-queue-transfer',
+    params: { threadId: 'thread', expectedTurnId: 'exact-running-turn', queuedSubmissionId: 'original-native-item',
+        clientUserMessageId: 'original-native-client', input: [{ type: 'text', text: 'original input', text_elements: [] }, { type: 'localImage', path: '/source/owned.png' }] },
+};
+const originalQueuedItem = () => ({ id: queuedSteerRequest.params.queuedSubmissionId, clientUserMessageId: queuedSteerRequest.params.clientUserMessageId, input: structuredClone(queuedSteerRequest.params.input) });
+
+test('queued steering persists the full original input before taking the native item and keeps it visible until body confirmation', async t => {
+    const f = await fixture(t);
+    let body = false, rows: unknown[] = [originalQueuedItem()];
+    const reconcile = async () => body ? { status: 'accepted' as const, message: 'Exact native client ID in history' } : undefined;
+    const bridge = f.make(reconcile); t.after(() => bridge.dispose());
+    f.behave(async (method, params) => {
+        if (method === 'thread/queue/list') return { data: rows, nextCursor: null };
+        if (method === 'thread/queue/delete') {
+            const names = await readdir(join(f.root, 'queue-steer-inputs'));
+            const saved = await readFile(join(f.root, 'queue-steer-inputs', names.find(name => name.endsWith('.json'))!), 'utf8');
+            assert.ok(saved.includes('original input') && saved.includes('/source/owned.png'), 'full exact input is durable before removal');
+            rows = []; return { deleted: true };
+        }
+        if (method === 'turn/steer') {
+            assert.deepEqual(params, { threadId: 'thread', expectedTurnId: 'exact-running-turn', clientUserMessageId: 'original-native-client', input: queuedSteerRequest.params.input });
+            return { turnId: 'exact-running-turn' };
+        }
+        throw new Error(`Unexpected native method ${method}`);
+    });
+    assert.equal((await bridge.capabilities()).methods['hhpi/queue/steer'], 'write');
+    assert.equal((await bridge.call(queuedSteerRequest)).status, 'accepted');
+    const list = () => bridge.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } });
+    assert.deepEqual((await list()).result, { data: [{ ...originalQueuedItem(), hhpiDelivery: 'sending' }], nextCursor: null });
+    assert.deepEqual((await bridge.call({ sourceId: 'source', method: 'thread/queue/list', params: { threadId: 'thread' } })).result, { data: [], nextCursor: null }, 'the original native RPC does not contain adapter-held rows');
+    const restarted = f.make(reconcile); t.after(() => restarted.dispose());
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.method === 'turn/steer').length, 1, 'restart reads the original child receipt');
+    body = true;
+    assert.deepEqual((await list()).result, { data: [], nextCursor: null });
+    assert.equal((await bridge.call(queuedSteerRequest)).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.write).length, 2);
+});
+
+test('native consumption between the exact read and deletion cannot send the queued input a second time', async t => {
+    const f = await fixture(t);
+    let body = false, unavailable = false, rows: unknown[] = [originalQueuedItem()];
+    const bridge = f.make(async () => body ? { status: 'accepted', message: 'Consumed by native queue' } : undefined); t.after(() => bridge.dispose());
+    f.behave(method => {
+        if (method === 'thread/queue/list') return { data: rows, nextCursor: null };
+        if (method === 'thread/queue/delete') { rows = []; return { deleted: false }; }
+        throw new Error(`Unexpected native method ${method}`);
+    });
+    assert.equal((await bridge.call(queuedSteerRequest)).status, 'rejected');
+    assert.equal(f.calls.filter(call => call.method === 'turn/steer').length, 0);
+    const restarted = f.make(async () => { if (unavailable) throw new SourceError('TARGET_UNAVAILABLE', 'Superseded live body observation'); return body ? { status: 'accepted', message: 'Consumed by native queue' } : undefined }); t.after(() => restarted.dispose());
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'rejected', 'deleted=false survives sanitized receipt persistence');
+    unavailable = true;
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'rejected', 'an unavailable body read never becomes accepted or a second send');
+    const view = { sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } };
+    assert.deepEqual((await restarted.call(view)).result, { data: [{ ...originalQueuedItem(), hhpiDelivery: 'confirming' }], nextCursor: null }, 'the retained original remains visible while body confirmation is unavailable');
+    unavailable = false; body = true;
+    assert.deepEqual((await restarted.call(view)).result, { data: [], nextCursor: null }, 'exact body confirmation retires the retained occurrence');
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.write).length, 1);
+});
+
+for (const missing of ['delete', 'steer'] as const) test(`unknown queued ${missing} remains visible and restart/recheck never retries a write`, async t => {
+    const f = await fixture(t);
+    let body = false, unavailable = false, rows: unknown[] = [originalQueuedItem()];
+    const reconcile = async () => { if (unavailable) throw new SourceError('TARGET_UNAVAILABLE', 'Superseded live body observation'); return body ? { status: 'accepted' as const, message: 'Exact original input in history' } : undefined };
+    const bridge = f.make(reconcile); t.after(() => bridge.dispose());
+    f.behave(method => {
+        if (method === 'thread/queue/list') return { data: rows, nextCursor: null };
+        if (method === 'thread/queue/delete') { rows = []; if (missing === 'delete') throw new SourceError('OUTCOME_UNKNOWN', 'Lost deletion response'); return { deleted: true }; }
+        if (method === 'turn/steer') throw new SourceError('OUTCOME_UNKNOWN', 'Lost steer response');
+        throw new Error(`Unexpected native method ${method}`);
+    });
+    assert.equal((await bridge.call(queuedSteerRequest)).status, 'indeterminate');
+    const writes = f.calls.filter(call => call.write).length;
+    const restarted = f.make(reconcile); t.after(() => restarted.dispose());
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'indeterminate');
+    assert.equal((await restarted.call({ ...queuedSteerRequest, operationId: 'another-click' })).status, 'indeterminate');
+    unavailable = true;
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'indeterminate');
+    const page = await restarted.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } });
+    assert.deepEqual(page.result, { data: [{ ...originalQueuedItem(), hhpiDelivery: 'confirming' }], nextCursor: null });
+    assert.equal((await restarted.call({ sourceId: 'source', method: 'thread/queue/update', operationId: 'stale-edit', params: { threadId: 'thread', queuedSubmissionId: 'original-native-item', input: [{ type: 'text', text: 'unsafe replacement' }] } })).status, 'rejected');
+    assert.equal(f.calls.filter(call => call.write).length, writes);
+    unavailable = false; body = true;
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.write).length, writes);
+});
+
+test('a definitely changed turn restores the original native parts and client alias once', async t => {
+    const f = await fixture(t);
+    let rows: unknown[] = [originalQueuedItem()], steerAttempts = 0;
+    const bridge = f.make(async () => undefined); t.after(() => bridge.dispose());
+    f.behave((method, params) => {
+        if (method === 'thread/queue/list') return { data: rows, nextCursor: null };
+        if (method === 'thread/queue/delete') { rows = []; return { deleted: true }; }
+        if (method === 'turn/steer') { if (++steerAttempts === 1) throw new CodexRpcError(-32600, 'Expected turn changed'); return { turnId: 'new-running-turn' }; }
+        if (method === 'thread/queue/update') { rows = [{ ...originalQueuedItem(), id: 'restored-native-item', input: (params as { input: unknown[] }).input }]; return { queuedSubmission: rows[0] }; }
+        if (method === 'thread/queue/add') {
+            assert.deepEqual(params, { threadId: 'thread', clientUserMessageId: 'original-native-client', input: queuedSteerRequest.params.input });
+            rows = [{ ...originalQueuedItem(), id: 'restored-native-item' }];
+            return { queuedSubmission: rows[0] };
+        }
+        throw new Error(`Unexpected native method ${method}`);
+    });
+    const response = await bridge.call(queuedSteerRequest);
+    assert.equal(response.status, 'rejected');
+    assert.deepEqual(response.result, { queueRestored: true });
+    assert.equal((await bridge.call(queuedSteerRequest, true)).status, 'rejected');
+    assert.deepEqual((await bridge.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } })).result, { data: rows, nextCursor: null });
+    assert.equal(f.calls.filter(call => call.method === 'thread/queue/add').length, 1);
+    const restarted = f.make(async () => undefined); t.after(() => restarted.dispose());
+    const input = [{ type: 'text', text: 'edited after restoration', text_elements: [] }, queuedSteerRequest.params.input[1]!];
+    assert.equal((await restarted.call({ sourceId: 'source', method: 'thread/queue/update', operationId: 'edit-restored', params: { threadId: 'thread', queuedSubmissionId: 'restored-native-item', input } })).status, 'accepted');
+    // Reproduce the adverse journal iteration order, rather than relying on an
+    // accidental filesystem/hash order that projects the successor first.
+    const claimHash = (operationId: string) => createHash('sha256').update(JSON.stringify(['source', operationId])).digest('hex');
+    let successor = 'steer-restored', suffix = 0;
+    while (claimHash(successor) < claimHash(queuedSteerRequest.operationId)) successor = `steer-restored-${++suffix}`;
+    assert.equal((await restarted.call({ ...queuedSteerRequest, operationId: successor, params: { ...queuedSteerRequest.params, queuedSubmissionId: 'restored-native-item', expectedTurnId: 'new-running-turn', input } })).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.method === 'thread/queue/add').length, 1, 'restored original is not enqueued again when edited/steered after restart');
+    assert.equal(steerAttempts, 2);
+    const finalView = { data: [{ id: 'restored-native-item', clientUserMessageId: 'original-native-client', input, hhpiDelivery: 'sending' }], nextCursor: null };
+    assert.deepEqual((await restarted.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } })).result, finalView,
+        'confirmed restoration hands off to its successor claim instead of resurrecting the old native ID');
+    const afterSecondRestart = f.make(async () => undefined); t.after(() => afterSecondRestart.dispose());
+    assert.deepEqual((await afterSecondRestart.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } })).result, finalView);
+});
+
+
+for (const point of ['before-delete', 'before-steer'] as const) test(`queued transfer crash ${point} exposes an explicit continuation without replaying attempted steps`, async t => {
+    const f = await fixture(t);
+    let rows: unknown[] = [originalQueuedItem()];
+    const bridge = f.make(async () => undefined); t.after(() => bridge.dispose());
+    f.behave(method => {
+        if (method === 'thread/queue/list') return { data: rows, nextCursor: null };
+        if (method === 'thread/queue/delete') { rows = []; return { deleted: true }; }
+        if (method === 'turn/steer') return { turnId: 'exact-running-turn' };
+        throw new Error(`Unexpected native method ${method}`);
+    });
+    // Only the transport boundary simulates abrupt process loss, before it creates
+    // a native attempt marker. The production claim and child ledgers stay real.
+    const first = new CodexQueueSteer('source', f.root, async (request, lookup) => {
+        if (!lookup && request.method === (point === 'before-delete' ? 'thread/queue/delete' : 'turn/steer')) throw new Error('fixture process crashed before native attempt');
+        return bridge.call(request, lookup, undefined, true);
+    }, async () => false);
+    await assert.rejects(first.run(queuedSteerRequest, false), /process crashed/);
+    const writes = f.calls.filter(call => call.write).length;
+    assert.equal(writes, point === 'before-delete' ? 0 : 1);
+    const restarted = f.make(async () => undefined); t.after(() => restarted.dispose());
+    assert.equal((await restarted.call(queuedSteerRequest, true)).status, 'indeterminate');
+    const page = await restarted.call({ sourceId: 'source', method: 'hhpi/queue/list', params: { threadId: 'thread' } });
+    const held = (page.result as { data: Array<Record<string, unknown>> }).data[0]!;
+    assert.equal(held.hhpiResumeOperationId, queuedSteerRequest.operationId);
+    assert.equal(held.hhpiResumeTurnId, 'exact-running-turn');
+    assert.equal(held.hhpiDelivery, undefined, 'never-attempted steps are actionable, not permanently confirming');
+    assert.equal(f.calls.filter(call => call.write).length, writes, 'page restore and receipt lookup are read-only');
+    const resumed = { ...queuedSteerRequest, operationId: 'explicit-continue', params: { ...queuedSteerRequest.params, resumeOperationId: queuedSteerRequest.operationId } };
+    assert.equal((await restarted.call(resumed)).status, 'accepted');
+    assert.equal((await restarted.call(resumed, true)).status, 'accepted');
+    assert.equal(f.calls.filter(call => call.method === 'thread/queue/delete').length, 1);
+    assert.equal(f.calls.filter(call => call.method === 'turn/steer').length, 1);
 });

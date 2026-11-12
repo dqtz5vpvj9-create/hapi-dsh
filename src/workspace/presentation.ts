@@ -5,8 +5,10 @@
  */
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
 import { panes, type PaneNode, type WorkspaceState, type WorkspaceWindow } from '../client/model.ts'
-import type { HapiProjection } from '../codex/projection-types.ts'
-import type { HapiObservedProjection } from '../hapi-agent/projection-types.ts'
+import type { SourceSession } from '../remote/protocol.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
+import type {} from '../client/remote-sessions.ts'
+import type {} from '@deepseek-ai/dsh-agent'
 import { documentName } from './documents.ts'
 import { dshPaneTitle } from './dsh-view.ts'
 
@@ -14,41 +16,33 @@ export type ActivityKind = 'error' | 'permission' | 'input' | 'running' | 'backg
 export type SessionActivity = { kind: ActivityKind; running: boolean; pending: boolean; compacting: boolean }
 export const activityPriority: Record<ActivityKind, number> = { error: 6, permission: 5, input: 4, running: 3, background: 2, completed: 1.5, idle: 1, offline: 0 }
 
-export function nativeProjection(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): HapiProjection {
-    const value: unknown = row?.projectionValues && Reflect.get(row.projectionValues, 'hapi')
-    return value && typeof value === 'object' && Reflect.get(value, 'engine') === 'codex' ? value as HapiProjection : null
+type SourceRow = Pick<WorkspaceCatalogRow, 'projectionValues' | 'sourceSessionId'>
+
+/** A projection belongs to the original session, including on a federated Host. */
+export function sourceProjection(row: SourceRow | undefined): SourceSession | undefined {
+    const source = row?.projectionValues?.hhpiSource
+    return source?.id === row?.sourceSessionId ? source : undefined
 }
 
-export function observedProjection(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): HapiObservedProjection {
-    const value: unknown = row?.projectionValues && Reflect.get(row.projectionValues, 'hapiObserved')
-    return value && typeof value === 'object' && Reflect.get(value, 'ownership') === 'hapi-runner' ? value as HapiObservedProjection : null
+export function sessionModel(row: SourceRow | undefined): string | null {
+    const source = sourceProjection(row)
+    if (source) return source.codex?.model ?? null
+    const selection = row?.projectionValues?.modelSelection
+    return (selection?.next ?? selection?.lastUsed)?.model ?? null
 }
 
-/** A source completion timestamp is evidence; a quiet connection alone is not. */
-export function sessionCompletedAt(row: Pick<WorkspaceCatalogRow, 'projectionValues'> | undefined): number | undefined {
-    const native = nativeProjection(row), execution = native?.execution
-    return execution?.status === 'idle' && !native?.error && execution.completedAt !== null
-        && execution.completedAt >= (execution.startedAt ?? 0) ? execution.completedAt : undefined
-}
-
-export function sessionActivity(row: Pick<WorkspaceCatalogRow, 'running' | 'projectionValues' | 'hostOnline' | 'sourceRowState'> | undefined): SessionActivity {
-    const native = nativeProjection(row)
-    const observed = observedProjection(row)
-    const requests = native?.pendingRequests ?? observed?.pendingRequests ?? []
-    const pending = requests.length > 0 || (row?.sourceRowState?.pendingRequestsCount ?? 0) > 0
-    if (!row || row.hostOnline === false || (native && (native.nativeConnection !== 'attached' || native.execution?.status === 'disconnected')) || (observed && (observed.connection === 'disconnected' || !observed.active))) {
+export function sessionActivity(row: SourceRow & Pick<WorkspaceCatalogRow, 'running' | 'hostOnline'> | undefined): SessionActivity {
+    const source = sourceProjection(row)
+    const requests = source?.pendingRequests ?? []
+    const pending = requests.length > 0
+    if (!row || row.hostOnline === false || (source && sourceIsOffline(source))) {
         return { kind: 'offline', running: false, pending, compacting: false }
     }
-    const blocking = requests.filter(request => request.blocking)
-    const waiting = native?.execution?.waitingOn ?? []
-    const input = (tool: string): boolean => /request.?user.?input|ask.?user.?question/i.test(tool)
-    const kind: ActivityKind = native?.execution?.status === 'systemError' || observed?.error ? 'error'
-        : waiting.includes('approval') || blocking.some(request => !input(request.tool)) ? 'permission'
-        : waiting.includes('input') || blocking.some(request => input(request.tool)) ? 'input'
-        : (native?.execution ? native.execution.status === 'active' : observed ? observed.thinking : row.running) ? 'running'
-        : (row.sourceRowState?.backgroundTaskCount ?? 0) > 0 ? 'background'
-        : !pending && sessionCompletedAt(row) !== undefined ? 'completed' : 'idle'
-    return { kind, running: kind === 'running' || kind === 'background', pending, compacting: native?.execution?.compacting === true }
+    const input = (method: string): boolean => method === 'item/tool/requestUserInput' || method === 'mcpServer/elicitation/request'
+    const kind: ActivityKind = requests.some(request => !input(request.method)) ? 'permission'
+        : pending || source?.status === 'waiting' ? 'input'
+        : (source ? source.status === 'running' : row.running) ? 'running' : 'idle'
+    return { kind, running: kind === 'running', pending, compacting: false }
 }
 
 export function windowAlias(window: WorkspaceWindow, position: number): string {
@@ -101,9 +95,9 @@ export function stableSessionOrder(previous: readonly string[], rows: readonly P
 
 /** Same path on two machines remains two distinct folders. */
 export function sessionFolder(row: WorkspaceCatalogRow): { key: string; path: string; machine: string } {
-    const native = nativeProjection(row) ?? observedProjection(row)
-    const machine = native?.machineName ?? native?.machineId ?? row.hostLabel
-    const identity = native ? `${native.hubId}:${native.machineId ?? row.hostId}` : row.hostId
-    const path = row.sourceWorktree?.basePath ?? row.cwd ?? ''
+    const source = sourceProjection(row)
+    const machine = source?.machineId ?? row.hostLabel
+    const identity = source ? JSON.stringify([row.hostId, source.machineId]) : row.hostId
+    const path = source?.cwd ?? row.cwd ?? ''
     return { key: JSON.stringify([identity, path]), path, machine }
 }

@@ -27,6 +27,19 @@ test('pane graph drops chrome rows and hapi-dsh but keeps the conversation closu
     assert.equal(PANE_GRAPH_EXCLUDE.has('hapi-dsh'), true)
 })
 
+test('plugin panes retain the source provider through initial boot and graph updates', () => {
+    const provider = { id: 'hapi-dsh-session-provider', url: 'source-provider.js', rev: 'source-1' }
+    const sourceGraph = { ...graph, entries: [...graph.entries, provider], batches: [...graph.batches,
+        { phase: 'bootstrap' as const, url: provider.url, rev: provider.rev, entries: [provider.id] }] }
+    const projected = PANE_GRAPH_POLICY.transform(sourceGraph)
+    assert.ok(projected.entries.some(row => row.id === provider.id))
+    assert.ok(projected.batches.some(batch => batch.entries.includes(provider.id)))
+    const update = JSON.parse(filterPluginEventData(JSON.stringify({ type: 'graph', graph: sourceGraph }))!)
+    assert.ok(update.graph.entries.some((row: { id: string }) => row.id === provider.id))
+    const rebuilt = JSON.stringify({ type: 'rebuilt', id: provider.id, rev: 'source-2' })
+    assert.equal(filterPluginEventData(rebuilt), rebuilt)
+})
+
 test('pane graph retains ui-deliverables: present tool renderer and changes-review rightbar tab', () => {
     // Pinned client.js:2299-2310 registers tool.call.toolview "present" and the
     // changes-review sidebar.right.pane.tab; both are conversation/right-column

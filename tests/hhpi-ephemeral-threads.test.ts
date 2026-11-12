@@ -43,7 +43,7 @@ async function fixture(t: TestContext, options: { unmaterialized?: boolean; late
         },
     } as unknown as CodexRpc;
     const adapter = new DirectCodexAdapter({ id: identity.sourceId, machineId: identity.machineId, engine: 'codex', ownership: 'shared', writerLock: 'native' }, directory, { rpc, readMetadata: nativeMetadataFixture(() => options.unmaterialized ? [] : [{ turn: { id: 'turn', status: 'completed', startedAt: 1, completedAt: 2 }, items: [{ id: 'answer', type: 'agentMessage', text: 'Available ordinary history' }] }]) });
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     t.after(async () => { await gateway.dispose(); await rm(directory, { recursive: true, force: true }); });
     return { adapter, gateway, calls };
 }

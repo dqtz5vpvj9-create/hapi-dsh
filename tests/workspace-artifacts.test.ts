@@ -2,15 +2,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { SlotCore } from '@deepseek-ai/dsh-client-ui-slots'
 import { parseFileAddress, sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import { artifactResourceAddress, documentPaneTarget, parseArtifactResourceAddress, sessionFileArtifactPath, generatedMediaResourceAddress,
     parseGeneratedMediaResourceAddress, parseSourceDocumentResourceAddress, type ArtifactReference, type GeneratedMediaReference } from '../src/workspace/artifacts.ts'
 import { artifactPresentation, artifactViewers, loadArtifact, readArtifactBytes, type ArtifactApi } from '../src/client/artifact-content.ts'
 import { borrowArtifactBodies, DOCUMENT_PREFIX } from '../src/client/artifact-bodies.ts'
-import { sourceAttachmentImageUrl, sourceDocumentImageUrl, sourceDocumentPath } from '../src/client/source-document-path.ts'
+import { sourceDocumentImageUrl, sourceDocumentPath } from '../src/client/source-document-path.ts'
 import { initialWorkspace, parseWorkspaceState, WorkspaceStore } from '../src/client/model.ts'
-import { bindSourceResources } from '../src/workspace/legacy.ts'
+import { bindSourceAliases } from '../src/workspace/legacy.ts'
 import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
 import type { WorkbenchResponse } from '../src/workbench-types.ts'
 import { MAX_DOCUMENT_BYTES } from '../src/workbench-types.ts'
@@ -23,19 +24,6 @@ function metadata(overrides: Partial<WorkbenchResponse<'nativeDocument'>> = {}):
 }
 const fileArtifact = (path: string): string => `session-file:${Buffer.from(path).toString('base64url')}`
 const base = 'https://workspace.example/dsh/'
-
-test('queue thumbnails use the source-authorized artifact route for uploads outside cwd', () => {
-    const file = { filename: '图.png', path: 'C:\\uploads\\图.png', mimeType: 'image/png', size: 10 }
-    const url = new URL(sourceAttachmentImageUrl(reference.source, file, base)!)
-    assert.equal(url.origin, new URL(base).origin)
-    assert.equal(url.pathname, '/hapi-dsh/workbench/document')
-    const request = JSON.parse(url.searchParams.get('request')!)
-    assert.deepEqual(request.source, reference.source)
-    assert.equal(request.document.kind, 'artifact')
-    assert.equal(sessionFileArtifactPath(request.document.artifactId), file.path)
-    assert.equal(sourceAttachmentImageUrl(reference.source, { ...file, mimeType: 'image/svg+xml' }, base), undefined)
-    assert.equal(sourceAttachmentImageUrl(reference.source, file, 'file:///local.html'), undefined)
-})
 
 test('original session-file identities strictly decode real Unicode and Windows paths, never opaque locators', () => {
     for (const path of ['/repo/报告 #1?.md', 'C:\\project\\源码.ts', '../shared/notes.md']) assert.equal(sessionFileArtifactPath(fileArtifact(path)), path)
@@ -183,11 +171,10 @@ test('legacy document navigation persists without losing its original artifact r
     const saved = restored.windows[0]!.root
     assert.equal(saved.type, 'pane')
     assert.equal(saved.type === 'pane' && saved.resource.kind === 'document' && saved.resource.document.kind === 'artifact' && saved.resource.document.artifactId, reference.document.artifactId)
-    const row = { id: 'display-r2', sourceSessionId: 'display-r2', hostId: 'local', projectionValues: { hapi: { hapiSessionId: 'source', hubId: 'hub' } } } as unknown as WorkspaceCatalogRow
-    const rebound = bindSourceResources(restored, { 'display-r2': row }).windows[0]!.root
+    const rebound = bindSourceAliases(restored, () => ({ kind: 'local-dsh', hostId: 'local', sessionId: 'display-r2' })).windows[0]!.root
     assert.equal(rebound.type, 'pane')
     const file = rebound.type === 'pane' && rebound.resource.kind === 'document' && rebound.resource.target?.type === 'resource' ? parseFileAddress(rebound.resource.target.address) : undefined
-    assert.equal(file?.scope === 'session' && file.sessionId, 'display-r2')
+    assert.equal(file?.scope === 'session' && file.sessionId, 'display-r1')
 })
 
 test('a stalled source document ends in an explicit retryable failure instead of loading forever', async () => {

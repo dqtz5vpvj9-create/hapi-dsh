@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { CLIENT_CHUNKS } from '../src/shared/client-artifacts.ts';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -24,7 +25,7 @@ if (!pack || typeof pack.filename !== 'string' || basename(pack.filename) !== pa
 const paths = new Set(pack.files.map(file => file.path));
 const required = [
     'package.json', 'README.md', 'QUICKSTART.md', 'LICENSE', 'NOTICE', 'dist/index.js', 'dist/client.js',
-    ...['voice', 'capture', 'native-panels', 'session-panels', 'administration'].map(name => `dist/client.${name}.js`),
+    ...CLIENT_CHUNKS.map(name => `dist/${name}`),
     'dist/cli.js', 'dist/session-controller.js', 'dist/remote/codex-metadata.mjs',
     'dist/runner/index.js', 'dist/runner/package.json', 'dist/runner/cordis.patch.yml',
     'dist/types/index.d.ts', 'dist/types/client/index.d.ts', 'dist/types/cli/index.d.ts',
@@ -38,6 +39,9 @@ for (const path of await readdir('src', { recursive: true })) {
 }
 for (const path of required) if (!paths.has(path)) throw new Error(`Required runtime or attribution file is absent: ${path}`);
 for (const path of paths) {
+    if (/^dist\/(?:client\.(?:native-panels|session-panels|administration)\.js|types\/(?:hapi|hapi-agent|codex)\/)/.test(path)) {
+        throw new Error(`Retired HAPI runtime artifact remains in the package: ${path}. Build in a clean staging directory.`);
+    }
     if (/(^|\/)(?:node_modules|test-results|playwright-report|\.git|\.env(?:\.[^/]*)?|runner-pairings\.json|runner\.json|config\.json)(?:\/|$)/.test(path)) {
         throw new Error(`Private or transient file must not be distributed: ${path}`);
     }

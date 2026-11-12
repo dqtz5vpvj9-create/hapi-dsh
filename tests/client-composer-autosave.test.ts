@@ -3,7 +3,26 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { CommandClaim, InputActions, InputState, SessionInput } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { ComposerAutosaves, composerDraftKey } from '../src/client/composer-autosave.ts'
+import { ComposerAutosaves, composerDraftKey, accountComposerDraftKey, composerDraftSnapshot, copySourceRouteDraft, readComposerRecoveries, writeComposerRecoveries, hasStoredComposerAttachments } from '../src/client/composer-autosave.ts'
+
+test('catalog omission preserves an attachment-only account draft or unknown storage with one readonly exact-key read', async () => {
+    const key = accountComposerDraftKey('account', 'original-host', 'native-session'), modes: string[] = [], keys: string[] = []
+    let entry: unknown = { version: 1, revision: 'r1', value: { version: 1, text: '', mode: 'draft', files: [{ name: 'unsent.png' }] } }, closed = 0
+    const database = { objectStoreNames: { contains: (name: string) => name === 'drafts' }, close() { closed++ },
+        transaction(_name: string, mode: string) { modes.push(mode); return { objectStore() { return { get(found: string) {
+            keys.push(found); const request = { result: entry, onsuccess: undefined as (() => void) | undefined }
+            queueMicrotask(() => request.onsuccess?.()); return request
+        } } } } } }
+    const factory = { databases: async () => [{ name: 'hapi-dsh-composer-attachments' }], open() {
+        const request = { result: database, onsuccess: undefined as (() => void) | undefined }
+        queueMicrotask(() => request.onsuccess?.()); return request
+    } } as unknown as IDBFactory
+    assert.equal(await hasStoredComposerAttachments(key, factory), true, 'file bytes need no text draft to protect their entry')
+    entry = { version: 1, revision: 'r2', value: null }
+    assert.equal(await hasStoredComposerAttachments(key, factory), false, 'an explicit empty tombstone permits directory cleanup')
+    assert.deepEqual(modes, ['readonly', 'readonly']); assert.deepEqual(keys, [key, key]); assert.equal(closed, 2)
+    assert.equal(await hasStoredComposerAttachments(key, { databases: async () => { throw new Error('unavailable') } } as unknown as IDBFactory), true)
+})
 
 function fixture(text = '') {
     const state = createSnapshotStore<InputState>({ draft: text, draftRev: 0, occurrences: [], attachmentIds: [], phase: 'plain', queue: [] })
@@ -226,4 +245,92 @@ test('storage failure keeps live text, reports once, and the next edit can save 
     input.edit('saved after recovery')
     assert.equal(s.saved().text, 'saved after recovery')
     stop()
+})
+
+test('update checkpoint rejects storage failure without dropping text and saves after storage recovers', () => {
+    const s = setup(), input = fixture(), stop = s.bind(input), setItem = s.storage.setItem
+    try {
+        s.storage.setItem = () => { throw new Error('quota exhausted') }
+        input.edit('不能丢的更新前草稿')
+        assert.throws(() => s.manager.checkpoint(), /quota exhausted/)
+        assert.equal(input.composer.state.getSnapshot().draft, '不能丢的更新前草稿')
+        s.storage.setItem = setItem; s.manager.checkpoint()
+        assert.equal(s.saved().text, '不能丢的更新前草稿')
+    } finally { s.storage.setItem = setItem; stop() }
+})
+
+test('update preserves every conflicting live generation and another browser backup without overwriting them', () => {
+    const s = setup(), first = fixture('first'), firstStop = s.bind(first), second = fixture('second initial'), secondStop = s.bind(second)
+    try {
+        second.edit('new generation'); first.edit('older editor still has local changes')
+        s.data.set(s.key, JSON.stringify({ version: 1, draft: { text: 'another browser', references: [] } }))
+        s.manager.checkpoint()
+        assert.equal(s.saved().text, 'another browser')
+        assert.deepEqual(readComposerRecoveries(s.storage, s.key).map(value => value.text), ['first', 'older editor still has local changes', 'new generation'])
+        s.manager.checkpoint()
+        assert.equal(readComposerRecoveries(s.storage, s.key).length, 3, 'repeat preparation does not duplicate recovery copies')
+    } finally { secondStop(); firstStop() }
+})
+
+test('update cannot overwrite a reclaimed backup or proceed during submission or damaged recovery', () => {
+    const s = setup(), first = fixture('older'), firstStop = s.bind(first), next = fixture(), nextStop = s.bind(next)
+    next.edit('latest original backup'); nextStop()
+    try {
+        s.manager.checkpoint(); assert.equal(s.saved().text, 'latest original backup')
+        assert.ok(readComposerRecoveries(s.storage, s.key).some(value => value.text === 'older'))
+        first.composer.state.set({ ...first.composer.state.getSnapshot(), phase: 'submitting' })
+        assert.throws(() => s.manager.checkpoint(), /submission to settle/)
+        first.composer.state.set({ ...first.composer.state.getSnapshot(), phase: 'plain' })
+    } finally { firstStop() }
+    const bad = setup(); bad.data.set(bad.key, 'invalid-json')
+    const broken = fixture(), close = bad.bind(broken)
+    try { assert.throws(() => bad.manager.checkpoint()); assert.equal(bad.data.get(bad.key), 'invalid-json') } finally { close() }
+})
+
+test('checkpoint revisions track editor membership and forbid one input crossing source keys', () => {
+    const s = setup(), first = fixture(), close = s.bind(first), previous = s.manager.revision()
+    const second = fixture(), secondClose = s.bind(second)
+    assert.notEqual(s.manager.revision(), previous)
+    assert.throws(() => s.bind(first, { key: 'another-source' }), /earlier authenticated draft/)
+    secondClose(); close()
+})
+
+
+test('ordinary recovery and checkpoint preserve optional dictation ownership without replacing another saved copy', () => {
+    const s = setup(), original = { text: 'Original recovery', references: [] }
+    const transcript = { text: 'Retained words', references: [], retention: { kind: 'dictation' as const, id: 'original-run', insertedDraft: 'Original retained words' } }
+    writeComposerRecoveries(s.storage, s.key, [original, transcript])
+    const input = fixture('Current draft'), close = s.bind(input)
+    try {
+        s.data.set(s.key, JSON.stringify({ version: 1, draft: { text: 'Another tab draft', references: [] } }))
+        s.manager.checkpoint()
+        const copies = readComposerRecoveries(s.storage, s.key)
+        assert.deepEqual(copies.slice(0, 2), [original, transcript])
+        assert.equal(copies[2]?.text, 'Current draft')
+        assert.equal(s.saved().text, 'Another tab draft')
+    } finally { close() }
+})
+
+
+test('same-native route draft copy uses exact authenticated keys and never overwrites a target or an older source owner', () => {
+    const s = setup(), input = fixture('Unsent original text'), session = 'hhpi:windows:source:codex:thread'
+    const source = accountComposerDraftKey('account/source-central', 'local', session)
+    const target = accountComposerDraftKey('account/source-original', 'windows', session)
+    const draft = composerDraftSnapshot(input.composer.state.getSnapshot()), raw = JSON.stringify({ version: 1, draft })
+    s.data.set(source, raw)
+    assert.equal(copySourceRouteDraft(s.storage, source, target, draft), true)
+    assert.equal(s.data.get(target), raw); assert.equal(s.data.get(source), raw)
+    const restored = fixture(), stop = s.manager.retain({ key: target, storage: s.storage, ...restored, report: error => s.errors.push(error) })
+    assert.equal(restored.composer.state.getSnapshot().draft, draft.text); stop()
+    const another = JSON.stringify({ version: 1, draft: { text: 'Existing target text', references: [] } })
+    s.data.set(target, another)
+    assert.equal(copySourceRouteDraft(s.storage, source, target, draft), false)
+    assert.equal(s.data.get(target), another); assert.equal(s.data.get(source), raw)
+    s.data.set(target, JSON.stringify({ version: 1, draft: { text: '', references: [] } }))
+    s.data.set(source, another)
+    assert.equal(copySourceRouteDraft(s.storage, source, target, draft), false)
+    assert.equal(s.data.get(source), another)
+    s.data.set(source, raw); writeComposerRecoveries(s.storage, source, [{ text: 'Retained unsent copy', references: [] }])
+    assert.equal(copySourceRouteDraft(s.storage, source, target, draft), false)
+    assert.deepEqual(s.errors, [])
 })

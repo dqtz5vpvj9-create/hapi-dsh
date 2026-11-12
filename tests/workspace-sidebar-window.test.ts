@@ -7,6 +7,7 @@ import { sidebarBranchFacts } from '../src/workspace/sidebar-sections.ts'
 import { sidebarWindowRange } from '../src/workspace/sidebar-range.ts'
 import { createProgrammaticScrollObserver } from '../src/workspace/programmatic-scroll.ts'
 import type { VirtualizerOptions } from '@tanstack/react-virtual'
+import { sourceSessionId } from '../src/remote/protocol.ts'
 
 const row = (id: string, parentId?: string): WorkspaceCatalogRow => ({ id: id as WorkspaceCatalogRow['id'], displayTitle: id,
     updatedAt: 1, running: false, retainedBy: {}, blank: false, hostId: 'local', hostLabel: 'DSH', hostOnline: true,
@@ -29,6 +30,16 @@ test('cyclic or orphan source parents cannot hide any identity and do not steal 
         { ...row('remote-child', 'a'), hostId: 'remote' }])
     assert.deepEqual(roots.map(branch => branch.row.id), ['a', 'b', 'child', 'orphan', 'remote-child'])
     assert.equal(projectSidebarRows(roots, () => true).length, 5)
+})
+
+test('native parent lineage does not attach an equal thread ID from another source machine', () => {
+    const id = (machineId: string, nativeId: string) => sourceSessionId({ machineId, sourceId: 'codex', engine: 'codex', nativeId })
+    const a = id('machine-a', 'parent'), b = id('machine-b', 'parent')
+    const good = id('machine-a', 'child'), wrong = id('machine-a', 'other-child')
+    const roots = sidebarTree([row(a), row(b), row(good, a), row(wrong, b)])
+    assert.deepEqual(roots.map(branch => branch.row.id), [a, b, wrong])
+    assert.deepEqual(roots[0]!.children.map(branch => branch.row.id), [good])
+    assert.deepEqual(roots[1]!.children, [])
 })
 
 test('virtual DOM budget is independent of total catalog size and retains only explicit row pins', () => {

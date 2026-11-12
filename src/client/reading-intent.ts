@@ -1,6 +1,6 @@
 /** Deliberate navigation, separate from focus, source updates and history I/O. */
 export type PaneReadingTarget = { readonly kind: 'latest' }
-    | { readonly kind: 'message'; readonly messageId: string; readonly origin: 'search' | 'link' | 'notification' }
+    | { readonly kind: 'message'; readonly messageId: string; readonly epoch?: string; readonly origin: 'search' | 'link' | 'notification' }
     | { readonly kind: 'approval'; readonly requestId: string }
     | { readonly kind: 'delivery'; readonly localId: string }
 

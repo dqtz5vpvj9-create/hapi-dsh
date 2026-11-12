@@ -11,7 +11,7 @@ export type ClientErrorKind = 'cancel' | 'transient' | 'auth' | 'operation'
 
 const CANCELLED = /was (aborted|cancelled)|gateway\/cancelled|abort(ed)?\b/i
 const AUTH = /\b401\b|\b403\b|unauthori[sz]ed|forbidden|token|credential|auth/i
-const TRANSIENT = /disconnect|connect(ion)? (failed|lost)|network|fetch failed|ECONN|socket|reconnect|timed? ?out|timeout/i
+const TRANSIENT = /disconnect|connect(ion)? (failed|lost)|network|fetch failed|transport failure|HTTP\s+5\d\d\b|ECONN|socket|reconnect|timed? ?out|timeout/i
 
 /**
  * Classify one client failure by its code and message, not by endpoint name.
@@ -35,12 +35,24 @@ export function classifyClientError(error: unknown): ClientErrorKind {
 /** Operations whose failures are retried in the background on the user's behalf. */
 const BACKGROUND_OPERATION = /^hapi\/(source(ReadStates|DisplayLease|SessionResolve|History|Display|Machine|Catalog|Companion|Legacy|Window|Attachment)|nativeTerminal|observed|native(?!Settings|Fork))/
 
+/** Background catalog faults belong to connection details, never a raw global notice. */
+export function catalogFailureText(error: unknown, language: string): string {
+    const chinese = language.startsWith('zh')
+    if (classifyClientError(error) === 'auth') return chinese
+        ? '来源列表认证失败，请检查登录和访问权限后重试。'
+        : 'Source list access failed. Check your sign-in and permissions, then retry.'
+    return chinese ? '来源列表暂时无法更新，正在自动重试。已加载的内容会保留。'
+        : 'The source list could not update. Retrying automatically; loaded content is preserved.'
+}
+
 /** HAPI keeps a reconnect banner off screen for this long before showing it. */
 export const TRANSIENT_NOTICE_DELAY_MS = 4_000
 
 /** A user-facing message without internal Remote endpoint names. */
 export function noticeText(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error)
+    if (/transport failure for|\/api\/|HTTP\s+\d{3}\b/i.test(message)) return classifyClientError(error) === 'auth'
+        ? '连接认证失败，请检查登录或访问权限。' : '连接暂时不可用，请稍后重试。'
     // The gateway prefixes every failure with its internal endpoint. Strip the
     // whole "client api: …" segment before any user sees it.
     const stripped = message

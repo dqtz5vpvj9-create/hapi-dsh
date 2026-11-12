@@ -1,0 +1,14 @@
+{
+  "id": "synthetic-harness-smoke",
+  "repetitions": 2,
+  "budgetMs": 30000,
+  "timeoutMs": 3000,
+  "objective": { "metric": "passRate", "minGain": 0.5 },
+  "harness": { "root": ".", "files": ["worker.mjs"], "editable": ["worker.mjs"] },
+  "agentCommand": ["node", "{harness}/worker.mjs"],
+  "verifyCommand": ["node", "{suiteDir}/verify.mjs"],
+  "cases": [
+    { "id": "simple", "split": "development", "checks": ["normalized"], "input": { "items": [" alpha "] } },
+    { "id": "multiline", "split": "holdout", "checks": ["normalized"], "input": { "items": [" beta\n", "\tgamma "] } }
+  ]
+}

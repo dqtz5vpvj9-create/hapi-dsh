@@ -7,6 +7,7 @@ import { createRequire } from 'node:module'
 import { runInNewContext } from 'node:vm'
 import { initialWorkspace, WorkspaceStore } from '../src/client/model.ts'
 import { deferWorkspaceEntry, workspaceBootInjections, WORKSPACE_BOOT_SCRIPT } from '../src/shared/workspace-boot.ts'
+import { COMPACT_WORKSPACE_QUERY } from '../src/shared/workspace-presentation.ts'
 
 const require = createRequire(import.meta.url)
 // Exact transitive dependency already present in package-lock through turndown.
@@ -14,7 +15,7 @@ const { createWindow } = require('@mixmark-io/domino') as { createWindow(html: s
 const entry = '<script type="module" crossorigin="anonymous" nonce="fixture-nonce" src="./assets/index-fixture.js"></script>'
 const injected = (scripts = entry): string => `<!doctype html><html><head>${scripts}</head><body><script>${WORKSPACE_BOOT_SCRIPT}</script></body></html>`
 
-function boot(options: { saved?: unknown; raw?: string; href?: string; hidden?: boolean; deniedStorage?: boolean } = {}) {
+function boot(options: { saved?: unknown; raw?: string; href?: string; hidden?: boolean; deniedStorage?: boolean; compact?: boolean } = {}) {
     const href = options.href ?? 'https://fixture.invalid/app/'
     const document = createWindow(deferWorkspaceEntry(injected()), href).document
     const originalCreate = document.createElement.bind(document)
@@ -49,6 +50,7 @@ function boot(options: { saved?: unknown; raw?: string; href?: string; hidden?: 
     const saved = options.raw ?? (options.saved === undefined ? null : JSON.stringify(options.saved))
     runInNewContext(WORKSPACE_BOOT_SCRIPT, {
         document, location, URL, navigator: { language: 'en' },
+        matchMedia(query: string) { assert.equal(query, COMPACT_WORKSPACE_QUERY); return { matches: options.compact ?? false } },
         localStorage: { getItem(key: string) { storageReads.push(key); if (options.deniedStorage) throw new Error('denied'); return saved } },
         performance: { mark(name: string) { marks.push(name) } },
         requestAnimationFrame(callback: () => void) { frames.push(callback); return frames.length },
@@ -158,6 +160,26 @@ test('boot honors the saved zoomed pane and falls back for broken or unavailable
         assert.match(result.root()!.textContent!, /Your workspace is starting/)
         assert.equal(result.document.querySelectorAll('script[type="module"]').length, 1)
     }
+})
+
+test('compact boot starts at the saved focused pane and keeps every window available without drawing its splits', () => {
+    const store = layout()
+    store.split('horizontal', { kind: 'chat', sessionId: 'synthetic-d' })
+    store.split('horizontal', { kind: 'chat', sessionId: 'synthetic-e' })
+    const focused = store.focusedPane().id
+    store.createWindow('Another task')
+    const first = store.getSnapshot().windows[0]!
+    store.selectWindow(first.id)
+    const saved = store.getSnapshot(), before = JSON.stringify(saved)
+    const result = boot({ saved, compact: true })
+    assert.equal(result.document.querySelectorAll('[data-boot-pane]').length, 1)
+    assert.equal(result.document.querySelector('[data-boot-pane]')?.getAttribute('data-boot-pane-id'), focused)
+    assert.equal(result.document.querySelectorAll('[data-boot-split]').length, 0)
+    assert.equal(result.document.querySelectorAll('footer span').length, 2)
+    assert.equal(result.document.querySelector('footer [aria-current=true]')?.textContent, first.name)
+    assert.equal(result.document.querySelector('header strong')?.textContent, 'HHPI')
+    assert.equal(JSON.stringify(saved), before, 'projection does not rewrite saved split resources or selection')
+    assert.equal(boot({ saved }).document.querySelectorAll('[data-boot-pane]').length, 5, 'wide layout retains the same saved splits')
 })
 
 test('boot stays for a hidden workspace, then removes itself once the actual workspace has geometry', () => {

@@ -1,149 +1,76 @@
-# 单 tgz 分发包（hapi-dsh-bundle）
+# HHPI 完整分发包（技术名 hapi-dsh-bundle）
 
-这里实现 spec 第 5 节的分发层：一个 `hapi-dsh-bundle-<version>.tgz`，装一次即可用，
-不需要源码构建，也不使用私有 registry。未修改的官方依赖仍在安装时从公共 registry 解析，
-所以这是**单包入口**，不是离线安装。
+`hapi-dsh-bundle-VERSION.tgz` 把 HHPI 插件、匹配的 DSH 源码扩展、安装器、许可与对应源码放在一个安装入口。未修改的依赖仍在安装时通过公开 registry 解析，因此不是离线单文件二进制。当前 Windows 原源 Runner、真机与最终同版发布仍待验收，本文描述安装契约。
 
-## 布局
+## 内容与身份
 
 ```text
 package/
-  dist/install.mjs            # 安装入口，只 import Node 内置模块和随包的 ./lib/*.mjs
-  dist/lib/*.mjs              # 安装器、release 状态机、overrides、tar
-  payload/hapi-dsh.tgz        # hapi-dsh 构建产物（含 dist/runner）
-  payload/dsh-ext/*.tgz       # 仅被补丁修改的官方包
-  manifest.json               # 发布身份、payload 哈希、能力集合、releaseId
-  SHA256SUMS                  # 除自身外每个包的哈希
-  LICENSES/                   # 本项目、上游 DSH、HAPI 及第三方许可
-  SOURCE-OFFER/README.md      # 对应源码地址与版本
-  SOURCE-OFFER/PROVENANCE.json
+  dist/install.mjs
+  dist/lib/*.mjs
+  payload/hapi-dsh.tgz
+  payload/dsh-ext/*.tgz
+  manifest.json
+  SHA256SUMS
+  LICENSES/
+  SOURCE-OFFER/
 ```
 
-`manifest.json` 里的 `releaseId` 是「身份 + 全部 payload 哈希」的内容地址；
-安装器把它重新算一遍，不一致就拒绝安装。release 目录名是 `r-<releaseId 前 16 位>`。
+active 上游是 DSH `0.2.2-rc.1`、提交 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`。当前准备中的源码发行是 `hhpi-dsh-022-20261107.25`，新增空输入提示、键盘与操作时的 queueActions 一致检查，保留 typed draft steering 和缺少投影的默认行为。`.24` 新增 QueueDock 可选逐行 queueActions 与原提交者附件预览交接；缺少投影或行时保留普通 DSH 行为。`.23` 在 `.22` 草稿修订隔离基础上，合入注册表候选失败保留有效正文、root 注册间隙恢复与公开 historySource 整窗/代际选择修复；该 `.23` 批次十三叶输入及来源身份先于正式 SDK 构建冻结；安装及实际路径验收另行记录。二十二包完整集合、每包身份与补丁输入由源 release 的 `release.json` / package manifest 定义；不能只比较相同的 rc 字符串。`.15` 的 purity 构建失败记录独立保留；`.16` 的显式模块请求和工作区导航所有权开关保留；`.17` 的动态主题焦点局部样式保留；`.18` 的等估值尺寸修订修复保留；`.19` 的 range-only 与非读者布局滚动保护保留；`.20` 修复布局快照改写 reading pin 的反馈环；本版修复已观察到的尺寸偏移误判和 pending reader 保存中间态，真实阅读采样、确切导航和待完成采样各保留其 semantic owner。来源契约已通过，实际搜索/Zoom及阅读待验；正式 390px 的 100ms 仍未归因。已有阅读性能负证据保留，不能把源码构建当成 80ms 通过。更早 rc 的材料独立归档。
 
-## 命令
+安装器沿用现有 releaseId、清单、payload 和源码身份检查，不接受改变同名不可变 release。源码 offer 包含补丁、实际包源码、锁文件、构建输入、ADR、上游 PR 草稿和许可。用于 source extension 的 manifest protocol 与 HHPI wire v1 是不同的契约。
 
-首次安装（此时 hapi-dsh 还不存在）：
+## 准备真实 bundle
 
-```bash
-tar -xzf hapi-dsh-bundle-<version>.tgz
+按[源码扩展流程](../../docs/hhpi-extension-install.md)准备完整 source-bearing release，完成当前代码检查与构建，再执行：
+
+```text
+npm run bundle:pack -- --ext-release ABSOLUTE_EXT_RELEASE_DIRECTORY
+```
+
+`--fixture` 只验证安装器结构与故障行为，不能发布原生能力。需要指定可写的 fixture 临时根时使用 `/mnt/cache/data-cache` 下的新目录。正式 source release 的实际版本号、包列表和源码 offer 来自输入清单，不手写另一套版本。
+
+## 初次安装与受管路径
+
+在 Node 24.x、固定 DSH 和 pnpm 已可执行的环境中解压真实发行：
+
+```text
+tar -xzf hapi-dsh-bundle-VERSION.tgz
 node package/dist/install.mjs install --profile hapi --role host
-node package/dist/install.mjs install --profile hapi-runner --role runner
 ```
 
-升级用同一个入口；也可以装好之后用 CLI：
+在源机器安装 Runner 时，使用其原 DSH home、profile 和角色：
 
-```bash
+```text
+node package/dist/install.mjs install --dsh-home DSH_HOME --profile hapi-runner --role runner
+```
+
+参数中的占位符替换为实际路径/文件。已有实例使用其真实 profile，不新建另一进程冒充升级。配置和官方配对见[安装指南](../../docs/install.md)。`--dry-run` 只生成计划，不激活 profile 或移动指针。
+
+受管根为 `DSH_HOME/hapi-dsh/releases/r-RELEASE/`。Host link 指向其中的 `runtime/node_modules/hapi-dsh`；Runner link 指向同一 runtime 的 `runtime/node_modules/hapi-dsh/dist/runner`。原始解包 `package/dist/runner` 不是受管运行依赖入口。安装器核对真实 Host、Runner 与 DSH consumer 的解析，防止扩展只装在无人使用的目录。
+
+## 激活、失败与回滚
+
+已有状态机保持 `downloaded → verified → staged → doctor-passed → waiting-idle → activating → healthy`。校验失败不激活；普通 DSH 仍执行时停在 idle gate。激活前保存 profile manifest/lock，安装使用官方 DSH plugin 命令并保留其他插件和 override。健康检查核对解析、扩展身份、DSH 单例及配置的真实 endpoint。
+
+检查通过不等于进程已经重启。服务管理器仍需监督原 CLI、避免双实例，并确认新 runtime 真正运行。Windows 任务显示 Ready 不证明 Runner 在运行；实际 Session 0 app-server、文件和 PTY 要另验收。
+
+失败恢复 profile 备份与原 lock，保留旧 active。至少保留两个先前 release，`--keep-previous` 不能小于 2。回滚恢复软件与依赖，不改原生日志、队列或审批结果，不重发未知写操作。现有 CLI 提供：
+
+```text
 hapi-dsh bundle status
 hapi-dsh bundle verify
-hapi-dsh bundle upgrade --tgz hapi-dsh-bundle-<version>.tgz --role host
+hapi-dsh bundle upgrade --tgz hapi-dsh-bundle-VERSION.tgz --role host
 hapi-dsh bundle rollback
-hapi-dsh bundle prune
+hapi-dsh bundle prune --keep-previous 2
 ```
 
-`--dry-run` 会完成校验、解包、overrides 规划和资格检查，打印将要执行的官方命令，
-但不改 profile、不移动 release 指针。
+自定义实例使用对应私有配置。Runner 使用其源机器、原 Runner 配置与角色的 standalone 安装/监督流程，不能把主 Host 配置误当 Runner 配置。
 
-## 安装流程
+## 状态与检查边界
 
-1. **verified**：校验 manifest schema、releaseId、SHA256SUMS、payload tarball 的身份
-   （hapi-dsh 包名/版本，ext 包名/版本），以及 `dist/install.mjs` 的 import 白名单。
-2. **解包**：把 bundle 复制到 `<DSH_HOME>/hapi-dsh/releases/r-<hash>/`，并把
-   `payload/hapi-dsh.tgz` 解到同目录 `package/`。目录按内容命名，已存在且内容一致就复用，
-   内容不同直接失败（不可变 release）。
-3. **overrides**：在 profile 的 `pnpm.overrides` 里写入指向 release 内 tarball 的 `file:`
-   引用（相对 profile 目录解析，但目标必须落在 release 根内）。只改 hapi-dsh 自己记录过的
-   key；用户其他 override 原样保留；遇到 hapi-dsh 没写过的同名 key 立即失败，不覆盖。
-4. **官方命令**：profile 缺失时先 `dsh --profile <p> --from-default-profile web`，然后
-   `dsh plugin --profile <p> add link:<release>/package`（runner 用 `.../package/dist/runner`），
-   最后 `--dump-config` 确认插件行存在。安装器不自己解析插件依赖。
-5. **doctor-passed**：Node ≥ 24、pnpm ≥ 11、官方 launcher 版本、许可与 source-offer 齐全。
-6. **waiting-idle**：读 `<DSH_HOME>/hapi-dsh/runtime.json`（由 Host/Runner 写）。有普通
-   DSH 会话时停在 waiting-idle，不强制重启；`--wait-idle-timeout` 可以等，默认直接报告。
-7. **activating**：加锁、备份 profile 的 `package.json`/`pnpm-lock.yaml`、写 staging
-   overrides、调官方插件命令。
-8. **healthy**：30 秒健康门（解析路径、ext 版本、DSH 单例、可选 `--health-url`、可选
-   `--dump-config`）。通过后 release 指针才移动；失败则恢复 profile 备份、按原 lockfile
-   重装依赖，旧 active 保持不变。
-9. 成功后才清理超出保留窗口的旧 release。**至少保留两个上一版本**（`--keep-previous`
-   不能小于 2）；`rollback` 只恢复 release 指针、profile manifest/lock 和客户端资源，
-   不回滚会话日志、队列或审批，也不重发不确定请求。
+`DSH_HOME/hapi-dsh/state.json` 保存每个 profile 的 active/previous、managed override 与激活尝试；`runtime.json` 是实际 Host/Runner 的 PID、身份与 busy session 快照。快照缺失如实记录，不根据缺文件推定进程退出，也不把旧机器上的无关 HAPI PTY 当作本次迁移对象强停。
 
-幂等：同一 `manifest` 再装一次，若指针、overrides、link 依赖都指向该 release，安装器
-直接返回 `changed: false`，连 `state.json` 都不写。
+现有 `file:` override 不适配某环境时可使用 `--style dir` 的正式解包目录路径，再执行相同解析和健康检查。混载依赖仍然失败，不通过放宽版本、跳过解析或删除旧数据绕过。
 
-## `file:` overrides 的退路
-
-若 `file:` tarball overrides 在 pnpm 下没有生效（原版与扩展版混载），用
-`--style directory`：安装器把 ext tarball 解到
-`<DSH_HOME>/hapi-dsh/unpacked/r-<hash>/<pkg>/`，overrides 改指解包目录，重复同一套解析
-检查。仍出现混载时安装失败、不启动，旧 active 保留。
-
-## 对接真实 dsh-ext 产物
-
-ext 仓库发布后，给它一个 release 目录（例如 `dsh-ext/ext/releases/<tag>/`）：
-
-```json
-{
-  "upstreamVersion": "0.2.2-rc.1",
-  "upstreamCommit": "1f81c047fc48fa190a683e469daa699857e9afe8",
-  "extRelease": "0.2.2-rc.1.ext.1",
-  "patchSetSha256": "<64 hex>",
-  "compositionVersion": "1",
-  "protocol": 2,
-  "capabilities": { "historySource": 1, "mountedChat": 1, "windowCommit": 1 },
-  "packages": [
-    { "name": "@deepseek-ai/dsh-client-ui-chat", "version": "0.2.2-rc.1.ext.1", "tarball": "dsh-client-ui-chat-0.2.2-rc.1.ext.1.tgz" }
-  ],
-  "licenses": ["LICENSE"],
-  "sourceOffer": ["patches/0001-history-source.patch"]
-}
-```
-
-然后：
-
-```bash
-npm run bundle:pack -- --ext-release /path/to/that/release-dir
-npm run bundle:pack:fixture -- --tmp /var/tmp   # 宿主 TMPDIR 只读时用 --tmp 指定可写目录
-```
-
-`pack.mjs` 会核对每个 tarball 内的 `package/package.json` 名称与版本，再计算
-`packageSetSha256` 和 `releaseId`。没有真实 payload 时用 `--fixture`：
-`scripts/bundle/fixtures/ext-release/` 里是**占位**包（未修改的官方包结构，`fixture: true`），
-只能证明布局、安装、overrides、回滚和 doctor 机制，不能当作 ext 产物或验收证据。
-
-## 状态文件
-
-`<DSH_HOME>/hapi-dsh/state.json`：
-
-```json
-{
-  "version": 1,
-  "profiles": {
-    "hapi": {
-      "role": "host",
-      "active": { "releaseId": "...", "manifestSha256": "...", "treeDigest": "...", "managedOverrides": {} },
-      "previous": []
-    }
-  },
-  "releases": { "<releaseId>": { "dirName": "r-...", "manifestSha256": "...", "identity": {} } },
-  "attempt": null,
-  "history": []
-}
-```
-
-升级尝试严格按 `downloaded → verified → staged → doctor-passed → waiting-idle →
-activating → healthy` 前进；任一步失败把 attempt 标成 `failed` 并保留旧 active。
-`runtime.json` 是 Host/Runner 的可选快照（`role`、`pid`、`busySessions`、`identity`），
-doctor 用它做实时 release identity 比对；文件不存在时该项如实标为 warning。
-
-## 测试
-
-```bash
-npm run test:bundle
-```
-
-测试里的官方 launcher 与 pnpm 都是 fake（`tests/host-bundle-support.test.ts`），
-覆盖：bundle 布局与哈希、幂等、overrides 合并冲突、升级保留窗口、回滚指针、
-健康门失败自动回滚、waiting-idle 与恢复、doctor 各项检查与脱敏。
+最终发布须核对当前 artifact 的安装、完整源码/许可、普通 DSH 委托、真实源 owner、浏览器与设备证据。历史安装器测试只能证明其注明的边界。

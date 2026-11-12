@@ -3,8 +3,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import { createScope } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionBinding, SessionFace, SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConversationHistoryViewV1 } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { UserMessageNode, SteeringMessageNode } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { RemoteSourceSession } from './remote-sessions.ts'
-import type { SourceWindowProgress } from '../shared/source-frames.ts'
+import type { SourceWindowProgress } from './source-session-types.ts'
+import type { AcceptedReadingPosition, RemoteReadingIntent } from './remote-history.ts'
+import type { SourceReceipt } from '../remote/protocol.ts'
 
 const paneScope = Symbol('hhpi.reading-occurrence')
 interface PaneTag { binding?: SessionBinding }
@@ -12,12 +16,14 @@ interface PaneTag { binding?: SessionBinding }
 /** The official reader owns navigation/assembly. All mutations retain their canonical native owner. */
 export class RemotePaneSession implements SessionFace {
   readonly inputCommitPolicy = 'after-acceptance' as const
+  get sourceEpoch(): string { return this.owner.history.sourceEpoch }
   readonly sessionId: SessionFace['sessionId']
   readonly projections: SessionFace['projections']
   readonly historyRead: RemoteSourceSession['historyRead']
   readonly metadata: RemoteSourceSession['metadata']
   readonly deliveries: RemoteSourceSession['deliveries']
   readonly controlStatus: RemoteSourceSession['controlStatus']
+  readonly nativeActions: RemoteSourceSession['nativeActions']
   readonly ready: Promise<void>
   /** Direct sources use accepted-page cache sharing; no speculative prefetch is advertised. */
   readonly prefetchOlderPage?: () => Promise<void>
@@ -26,11 +32,14 @@ export class RemotePaneSession implements SessionFace {
   private readonly listeners = new Set<() => void>()
   private readonly progressListeners = new Set<() => void>()
   private readonly stopOwner: () => void
+  private readonly stopDeliveryReader: () => void
   private stopWindow: () => void = () => {}
   private window: ConversationHistoryViewV1 | undefined
   private state: SessionSnapshot
   private disposed = false
   private cacheId: string
+  private openingIntent: RemoteReadingIntent = { kind: 'latest' }
+  private savedReading: { epoch: string; seq: number } | undefined
   private olderRevision = 0
   private olderRead: { abort: AbortController; promise: Promise<void> } | undefined
   private progress: SourceWindowProgress & { hasMoreAfter: boolean } = { before: null, hasMoreAfter: false }
@@ -47,24 +56,42 @@ export class RemotePaneSession implements SessionFace {
     this.sessionId = owner.sessionId
     this.projections = owner.projections
     this.historyRead = { version: 1, openView: (id, budget, signal) => {
-      this.assertLive(); return owner.historyRead.openView(id, budget, signal, this.cacheId)
+      this.assertLive(); return owner.historyRead.openView(id, budget, signal, this.cacheId, this.openingIntent)
     } }
     this.metadata = owner.metadata
     this.deliveries = owner.deliveries
     this.controlStatus = owner.controlStatus
+    this.nativeActions = owner.nativeActions
     this.state = { ...owner.getSnapshot(), openState: 'loading', hasMore: false, loadingOlder: false }
     this.stopOwner = owner.subscribe(() => { this.publish() })
+    this.stopDeliveryReader = owner.registerDeliveryReader((nativeId, position) => this.bodyPublished(nativeId) || this.consumedBeforeWindow(position))
     this.ready = Promise.all([ownerReady, this.opened.promise]).then(() => { this.assertLive() })
     void this.ready.catch(() => {})
   }
 
   get readingView(): ConversationHistoryViewV1 | undefined { return this.window }
+  /** Coordinates and time belong to this accepted Pane window's source generation. */
+  readingWindowPosition(version: string, seq: number): AcceptedReadingPosition | undefined {
+    if (this.disposed || !this.window) return undefined
+    const reading = this.window.snapshot.getSnapshot()
+    if (reading.phase !== 'ready' || reading.busy || reading.version !== version) return undefined
+    return this.owner.history.acceptedReadingPosition(this.window.viewId, version, seq)
+  }
   get readingCacheId(): string { return this.cacheId }
-  bindReadingCache(paneId: string): void {
+  get resumeReadingTarget(): number | undefined {
+    if (this.window?.snapshot.getSnapshot().version == null) return undefined
+    return this.openingIntent.kind === 'latest' && this.savedReading?.epoch === this.owner.history.sourceEpoch ? this.savedReading.seq : undefined
+  }
+  bindReadingCache(paneId: string, intent: RemoteReadingIntent = { kind: 'latest' }): void {
     if (this.window) throw new Error('Reading cache identity must be bound before the official window opens.')
     this.cacheId = paneId
+    this.openingIntent = intent
+    this.savedReading = this.owner.history.savedAnchor(paneId)
   }
   checkpointReading(): void { if (!this.disposed) this.owner.history.persist() }
+  sourceDirectory(): ReturnType<RemoteSourceSession['sourceDirectory']> { this.assertLive(); return this.owner.sourceDirectory() }
+  get promptReferences(): RemoteSourceSession['promptReferences'] { return this.owner.promptReferences }
+  retrySubmission(operationId: string): void { this.assertLive(); this.owner.retrySubmission(operationId) }
   discardSubmission(operationId: string): void { this.owner.discardSubmission(operationId) }
   readonly getSnapshot = (): SessionSnapshot => this.state
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -80,6 +107,7 @@ export class RemotePaneSession implements SessionFace {
     const update = (): void => {
       if (this.disposed) return
       this.publish()
+      this.owner.reconcilePublishedSubmissions()
       const state = view.snapshot.getSnapshot()
       if (state.phase === 'ready') this.opened.resolve()
       if (state.phase === 'error') this.opened.reject(new Error(`Source reader failed: ${state.failure}`))
@@ -164,7 +192,33 @@ export class RemotePaneSession implements SessionFace {
     return true
   }
   beginSubmission(...args: Parameters<SessionFace['beginSubmission']>): ReturnType<SessionFace['beginSubmission']> {
-    this.assertLive(); return this.owner.beginSubmission(...args)
+    this.assertLive(); return this.owner.beginSubmission(args[0], nativeId => this.bodyPublished(nativeId))
+  }
+  private bodyPublished(nativeId: string): boolean {
+    if (this.disposed) return true
+    const entry = this.window?.snapshot.getSnapshot().entries.find(entry => entry.event.type === 'user/message'
+      && entry.event.data.source.kind === 'user' && 'rpcId' in entry.event.data.source && entry.event.data.source.rpcId === nativeId)
+    if (!entry || entry.event.type !== 'user/message') return false
+    const content = entry.event.data.content
+    // The official assembled payload, rather than an arriving source page,
+    // owns the queue-to-body handoff for the submitting occurrence.
+    return this.window?.reads.get('chat')?.nodes.values().some(node => {
+      if (node.visibility !== 'visible' || node.kind !== 'user' && node.kind !== 'steering') return false
+      const data = node.data as UserMessageNode | SteeringMessageNode
+      const source = data.source as { kind?: string; rpcId?: string } | undefined
+      return source?.kind === 'user' && source.rpcId === nativeId && data.seq === entry.event.seq
+        && JSON.stringify(data.content) === JSON.stringify(content)
+    }) ?? false
+  }
+  /** A restored, source-confirmed old message need not be scrolled into view again. */
+  private consumedBeforeWindow(position: SourceReceipt['observed']): boolean {
+    const view = this.window, state = view?.snapshot.getSnapshot()
+    if (this.disposed || !position || !view || state?.phase !== 'ready' || state.busy || state.version == null) return false
+    const nodes = view.reads.get('chat')?.nodes.values().filter(node => node.visibility === 'visible') ?? []
+    const head = Math.min(...nodes.map(node => node.anchorSeq))
+    if (!Number.isSafeInteger(head) || position.seq >= head) return false
+    const accepted = this.readingWindowPosition(state.version, head)
+    return accepted?.epoch === position.epoch
   }
   async prompt(...args: Parameters<SessionFace['prompt']>): ReturnType<SessionFace['prompt']> {
     // Conversation yields a paint after durable admission. Releasing this
@@ -194,7 +248,8 @@ export class RemotePaneSession implements SessionFace {
     if (this.disposed) return
     this.disposed = true
     this.abort.abort()
-    this.stopWindow(); this.stopOwner()
+    this.stopWindow(); this.stopOwner(); this.stopDeliveryReader()
+    this.owner.reconcilePublishedSubmissions()
     this.opened.reject(new Error('The reading occurrence was released.'))
     this.listeners.clear(); this.progressListeners.clear()
   }

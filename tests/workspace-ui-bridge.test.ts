@@ -52,30 +52,18 @@ test('failed cleanup retains truthful ownership, can be explicitly retried, and 
     await coordinator.dispose()
 })
 
-test('original note migration can only read the exact source key and shares declared voice preferences', async () => {
-    const data = new Map<string, string>([['hapi.scratchlist.v1.source-session', '{"notes":["original"]}'], ['dsh-private', 'private']])
+test('workspace scopes share declared preferences without reading old source data', async () => {
+    const values = new Map<string, string>([['hapi.scratchlist.v1.original', 'kept']])
     const read: string[] = []
-    const bridge = createWorkspaceUiBridge({ getItem(key) { read.push(key); return data.get(key) ?? null },
-        setItem(key, value) { data.set(key, value) }, removeItem(key) { data.delete(key) } })
+    const bridge = createWorkspaceUiBridge({ getItem(key) { read.push(key); return values.get(key) ?? null },
+        setItem(key, value) { values.set(key, value) }, removeItem(key) { values.delete(key) } })
     const alpha = bridge.createScope(), beta = bridge.createScope()
-    assert.equal(alpha.readLegacyScratchlist('source-session'), '{"notes":["original"]}')
-    assert.equal(alpha.readLegacyScratchlist('dsh-private'), null)
-    assert.deepEqual(read, ['hapi.scratchlist.v1.source-session', 'hapi.scratchlist.v1.dsh-private'])
-    assert.throws(() => alpha.readLegacyScratchlist(''), /Invalid original/)
-    assert.throws(() => alpha.readLegacyScratchlist('bad\nidentity'), /Invalid original/)
-    alpha.preferences.setItem('hapi-voice-backend', 'gemini')
-    assert.equal(beta.preferences.getItem('hapi-voice-backend'), 'gemini')
+    alpha.preferences.setItem('hapi-voice-backend', 'browser-local')
+    assert.equal(beta.preferences.getItem('hapi-voice-backend'), 'browser-local')
     assert.throws(() => alpha.preferences.getItem('provider-secret' as never), /not a shared/)
-    assert.equal(data.get('hapi.scratchlist.v1.source-session'), '{"notes":["original"]}')
+    assert.equal(read.some(key => key.startsWith('hapi.scratchlist')), false)
+    assert.equal(values.get('hapi.scratchlist.v1.original'), 'kept')
     await bridge.dispose()
-})
-
-test('unavailable original note storage is reported, never mistaken for absent user data', async () => {
-    const unavailable = createWorkspaceUiBridge()
-    assert.throws(() => unavailable.root.readLegacyScratchlist('source'), /unavailable/)
-    const rejected = createWorkspaceUiBridge({ getItem() { throw new Error('Storage blocked') }, setItem() {}, removeItem() {} })
-    assert.throws(() => rejected.root.readLegacyScratchlist('source'), /Storage blocked/)
-    await unavailable.dispose(); await rejected.dispose()
 })
 
 test('share hand-off has one coordinator per root and a window-scoped persisted owner', async () => {

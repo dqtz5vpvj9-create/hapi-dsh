@@ -1,6 +1,30 @@
 /** Live editor cache; durable recovery is handled by native-document-journal. */
 import type { NativeDocumentRef, WorkbenchResponse, WorkbenchSource } from '../workbench-types.ts';
 import { documentKey } from '../workspace/documents.ts';
+import type { WorkspaceDocumentRef } from '../workbench-types.ts';
+import type { WorkspaceDocument } from '../workspace/service-types.ts';
+import type { SourceFileOwner } from './source-file-mutation-journal.ts';
+
+export interface SourceTextSelection { start: number; end: number; direction: 'forward' | 'backward' | 'none' }
+export interface SourceDocumentDraft {
+    base: WorkspaceDocument; text: string; uncertain: boolean;
+    pending: { operationId: string; text: string; baselineVersion: string } | null;
+    selection?: SourceTextSelection | undefined;
+}
+const sourceDrafts = new Map<string, SourceDocumentDraft>();
+export function sourceDocumentDraftKey(owner: SourceFileOwner, document: WorkspaceDocumentRef): string {
+    const { binding } = owner;
+    return JSON.stringify([owner.scope, binding.target.hostId, binding.target.sessionId, binding.machineId, binding.workspaceId, document]);
+}
+export function sourceDocumentDraft(owner: SourceFileOwner, document: WorkspaceDocumentRef): SourceDocumentDraft | undefined {
+    return sourceDrafts.get(sourceDocumentDraftKey(owner, document));
+}
+export function rememberSourceDocumentDraft(owner: SourceFileOwner, document: WorkspaceDocumentRef, draft: SourceDocumentDraft): void {
+    const key = sourceDocumentDraftKey(owner, document);
+    if (draft.text === draft.base.text && !draft.uncertain && !draft.pending) sourceDrafts.delete(key);
+    else sourceDrafts.set(key, draft);
+}
+export function discardSourceDocumentDraft(owner: SourceFileOwner, document: WorkspaceDocumentRef): void { sourceDrafts.delete(sourceDocumentDraftKey(owner, document)); }
 
 export interface NativeDocumentDraft { base: WorkbenchResponse<'nativeDocument'>; text: string; uncertain: boolean }
 const drafts = new Map<string, NativeDocumentDraft>();

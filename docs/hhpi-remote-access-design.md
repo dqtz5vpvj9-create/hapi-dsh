@@ -1,3 +1,11 @@
+# 设计历史与当前实现入口
+
+下文保留 HHPI 原始目标方案及落地顺序。当前已经实施的来源、公开扩展与退役边界以[当前架构](architecture.md)为准；HAPI 不再是产品运行时的可选来源。原生 DSH 走原 Host 协议，Codex 走原 app-server，其他引擎仍需适配器。
+
+Windows 原源 Runner、物理设备和最终同版发布的验收尚未完成，设计目标不能替代这些证据。
+
+---
+
 # HHPI 远程接入架构
 
 状态：目标方案，尚未完成实现。现有包名与技术标识仍为 `hapi-dsh`；本次澄清不触发包、配置、数据目录或接口重命名。V4 当前实现见 [源消息窗口](source-view-architecture.md)，当前阅读问题及验收边界见 [连续历史设计](continuous-history-design.md)。

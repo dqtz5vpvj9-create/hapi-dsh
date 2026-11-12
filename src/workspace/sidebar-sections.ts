@@ -3,7 +3,8 @@
  * Copyright HAPI contributors. SPDX-License-Identifier: AGPL-3.0-only
  */
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
-import { nativeProjection, observedProjection, sessionActivity } from './presentation.ts'
+import { sourceProjection, sessionActivity } from './presentation.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { SidebarBranch } from './sidebar-tree.ts'
 
 export const DEFAULT_SESSION_PREVIEW_LIMIT = 8
@@ -13,11 +14,9 @@ export function normalizeSessionPreviewLimit(value: number): number {
 
 export function sidebarSessionActive(row: WorkspaceCatalogRow): boolean {
     if (!row.hostOnline) return false
-    if (typeof row.sourceActive === 'boolean') return row.sourceActive
-    const observed = observedProjection(row), native = nativeProjection(row)
-    if (observed) return observed.active
-    if (native) return native.nativeConnection === 'attached' && native.execution?.status !== 'disconnected'
-    // Ordinary DSH has no HAPI socket-active concept. Only its published agent
+    const source = sourceProjection(row)
+    if (source) return !sourceIsOffline(source)
+    // Only an ordinary DSH session's published agent
     // activity or a retained view establishes an active official conversation.
     return row.running || Object.values(row.retainedBy).some(count => typeof count === 'number' && count > 0)
 }
@@ -61,7 +60,7 @@ export function sidebarActivityBuckets(roots: readonly SidebarBranch[], enabled:
     for (const branch of roots) {
         if (pinned.has(branch.row.id) || !sidebarSessionActive(branch.row)) continue
         const activity = sessionActivity(branch.row)
-        buckets[activity.running ? 'working' : activity.pending ? 'pending' : branch.row.sourceLifecycleState === 'idle' ? 'idle' : 'active'].push(branch)
+        buckets[activity.running ? 'working' : activity.pending ? 'pending' : sourceProjection(branch.row)?.status === 'idle' ? 'idle' : 'active'].push(branch)
     }
     return buckets
 }

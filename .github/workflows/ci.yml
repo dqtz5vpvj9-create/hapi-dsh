@@ -49,6 +49,12 @@ jobs:
       - run: npm run build
       - name: Check and pack distribution
         run: node scripts/distribution-pack.mjs
+      - uses: ./.github/actions/prepare-data-cache
+      - name: Pack the independent offline recovery archive
+        run: npm run recovery:pack
+      - name: Include the matching source extensions
+        run: |
+          node -e "require('node:fs').cpSync('.tmp/hhpi-ci/packages', 'artifacts/extensions', { recursive: true })"
       - name: Upload verified package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -57,6 +63,8 @@ jobs:
             artifacts/*.tgz
             artifacts/SHA256SUMS
             artifacts/INSTALL.md
+            artifacts/extensions/
+            artifacts/recovery/
           if-no-files-found: error
           retention-days: 14
   install-platforms:
@@ -82,4 +90,4 @@ jobs:
       - name: Install the same tarball through native npm shims and boot the official Host
         env:
           HAPI_DSH_TEST_ROOT: ${{ runner.temp }}/hapi-dsh-package
-        run: node scripts/distribution-smoke.mjs
+        run: node scripts/distribution-smoke.mjs artifacts/extensions

@@ -22,6 +22,14 @@ export interface FederationMount {
 
 interface RunnerState { machine: FederatedMachine; tunnel: Tunnel; credentialHash: string }
 interface HttpChannel { owner: Tunnel; request: IncomingMessage; response: ServerResponse; writer: ResponseWriter; timer: ReturnType<typeof setTimeout>; done: boolean }
+export interface ApplicationReadResponse { status: number; body: Uint8Array<ArrayBuffer> }
+interface ApplicationChannel {
+    owner: Tunnel; machineId: string; status?: number; chunks: Buffer[]; bytes: number;
+    resolve(value: ApplicationReadResponse): void; reject(error: unknown): void;
+    timer: ReturnType<typeof setTimeout>; cleanup(): void;
+}
+const APPLICATION_MAX_BYTES = 1024 * 1024;
+const APPLICATION_PATHS = new Set(['catalog', 'poll', 'authorize', 'locate', 'request'].map(name => `/hapi-dsh/application/attention/${name}`));
 interface SocketChannel {
     owner: Tunnel;
     request: IncomingMessage;
@@ -84,6 +92,7 @@ export class FederationHub {
     private readonly runners = new Map<string, RunnerState>();
     private readonly previous = new Map<string, FederatedMachine>();
     private readonly http = new Map<string, HttpChannel>();
+    private readonly application = new Map<string, ApplicationChannel>();
     private readonly sockets = new Map<string, SocketChannel>();
     private readonly listeners = new Set<() => void>();
     private readonly runnerServer = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES });
@@ -99,7 +108,7 @@ export class FederationHub {
 
     private readonly identity: RuntimeIdentityV1;
 
-    constructor(private readonly options: { credentialsFile: string; httpIdleTimeoutMs?: number; identity?: RuntimeIdentityV1 }) {
+    constructor(private readonly options: { credentialsFile: string; httpIdleTimeoutMs?: number; applicationTimeoutMs?: number; identity?: RuntimeIdentityV1 }) {
         this.identity = options.identity ?? runtimeIdentity({ dshVersion: DSH_VERSION });
     }
 
@@ -211,7 +220,40 @@ export class FederationHub {
     }
 
     private channels(owner: Tunnel): number {
-        return [...this.http.values(), ...this.sockets.values()].filter((channel) => channel.owner === owner).length;
+        return [...this.http.values(), ...this.application.values(), ...this.sockets.values()].filter((channel) => channel.owner === owner).length;
+    }
+
+    private applicationOwner(machineId: string): RunnerState {
+        const state = this.runners.get(machineId), paired = this.paired.get(machineId);
+        if (this.closed || !state || !paired || paired.tokenHash !== state.credentialHash || !state.tunnel.isOpen) throw new Error('The paired source Runner is unavailable or no longer authorized.');
+        return state;
+    }
+    /** Host-internal, read-only application requests over the already paired Runner transport. */
+    async readApplication(machineId: string, path: string, signal: AbortSignal): Promise<ApplicationReadResponse> {
+        signal.throwIfAborted();
+        const safePath = validateUpstreamPath(path), address = new URL(safePath, 'http://dsh.local');
+        if (!APPLICATION_PATHS.has(address.pathname)) throw new Error('This path is not a read-only source attention application endpoint.');
+        const state = this.applicationOwner(machineId);
+        if (this.channels(state.tunnel) >= MAX_CHANNELS) throw new Error('The Runner channel limit has been reached.');
+        const id = randomUUID();
+        return new Promise<ApplicationReadResponse>((resolve, reject) => {
+            const cancel = (error: unknown): void => {
+                this.failApplication(id, error);
+                void state.tunnel.send({ type: 'http-cancel', id }).catch(() => {});
+            };
+            const abort = (): void => cancel(signal.reason);
+            const timer = setTimeout(() => cancel(new Error('The source attention request exceeded its deadline.')), Math.min(this.options.applicationTimeoutMs ?? 25_000, 25_000));
+            timer.unref();
+            const channel: ApplicationChannel = { owner: state.tunnel, machineId, chunks: [], bytes: 0, resolve, reject, timer,
+                cleanup: () => signal.removeEventListener('abort', abort) };
+            this.application.set(id, channel); signal.addEventListener('abort', abort, { once: true });
+            if (signal.aborted) { abort(); return; }
+            void (async () => {
+                if (!this.application.has(id)) return;
+                await state.tunnel.send({ type: 'http-open', id, method: 'GET', path: safePath, headers: [['accept', 'application/json']] });
+                if (this.application.has(id)) await state.tunnel.send({ type: 'http-end', id, lane: 'request' });
+            })().catch(error => cancel(error));
+        });
     }
 
     private async proxyHttp(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -340,8 +382,31 @@ export class FederationHub {
     private async handleRunnerFrame(owner: Tunnel, frame: FederationFrame): Promise<void> {
         if (!('id' in frame) || !validIdentifier(frame.id)) { owner.close(1002); return; }
         const http = this.http.get(frame.id);
+        const application = this.application.get(frame.id);
         const socket = this.sockets.get(frame.id);
-        if (http && http.owner !== owner || socket && socket.owner !== owner) { owner.close(1008); return; }
+        if (http && http.owner !== owner || application && application.owner !== owner || socket && socket.owner !== owner) { owner.close(1008); return; }
+        if (application) {
+            try {
+                if (this.applicationOwner(application.machineId).tunnel !== owner) throw new Error('The source Runner connection was replaced.');
+                if (frame.type === 'http-head') {
+                    if (application.status !== undefined) throw new Error('The source application sent duplicate response headers.');
+                    application.status = frame.status;
+                } else if (frame.type === 'data' && frame.lane === 'response') {
+                    if (application.status === undefined) throw new Error('The source application sent bytes before response headers.');
+                    if (application.bytes + Buffer.byteLength(frame.data, 'base64') > APPLICATION_MAX_BYTES) throw new Error('The source attention response exceeded 1 MiB.');
+                    const data = Buffer.from(frame.data, 'base64'); application.bytes += data.length; application.chunks.push(data);
+                } else if (frame.type === 'http-end' && frame.lane === 'response') {
+                    if (application.status === undefined) throw new Error('The source application ended without response headers.');
+                    const channel = this.removeApplication(frame.id)!;
+                    channel.resolve({ status: application.status, body: new Uint8Array(Buffer.concat(application.chunks, application.bytes)) });
+                } else if (frame.type === 'http-error') throw new Error(`The source application request failed (${frame.code}).`);
+                else throw new Error('Unexpected source application response frame.');
+            } catch (error) {
+                this.failApplication(frame.id, error);
+                void owner.send({ type: 'http-cancel', id: frame.id }).catch(() => {});
+            }
+            return;
+        }
         if (frame.type === 'http-head' && http && !http.response.headersSent) {
             http.timer.refresh();
             const headers = filterHeaders(frame.headers, 'response').map(([name, value]): [string, string] => {
@@ -381,6 +446,13 @@ export class FederationHub {
         return channel;
     }
 
+    private removeApplication(id: string): ApplicationChannel | undefined {
+        const channel = this.application.get(id);
+        if (channel) { clearTimeout(channel.timer); channel.cleanup(); this.application.delete(id); }
+        return channel;
+    }
+    private failApplication(id: string, error: unknown): void { this.removeApplication(id)?.reject(error); }
+
     private failHttp(id: string, status: number): void {
         const channel = this.removeHttp(id);
         if (!channel) return;
@@ -390,12 +462,14 @@ export class FederationHub {
 
     private endChannels(owner: Tunnel): void {
         for (const [id, channel] of this.http) if (channel.owner === owner) this.failHttp(id, 502);
+        for (const [id, channel] of this.application) if (channel.owner === owner) this.failApplication(id, new Error('The source Runner disconnected. The original attention cursor is retained.'));
         for (const [id, channel] of this.sockets) if (channel.owner === owner) this.failSocket(id, 502);
     }
 
     async close(): Promise<void> {
         if (this.closed) return;
         this.closed = true;
+        for (const id of this.application.keys()) this.failApplication(id, new Error('The source federation closed.'));
         this.watcher?.close();
         if (this.refreshTimer) clearInterval(this.refreshTimer);
         for (const dispose of this.disposers.reverse()) dispose();

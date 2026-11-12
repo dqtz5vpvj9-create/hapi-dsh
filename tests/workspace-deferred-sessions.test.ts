@@ -5,6 +5,7 @@ import type { SessionBinding, SessionListState, SessionReference } from '@deepse
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
 import { parseWorkspaceState, type PaneNode, type WorkspaceState } from '../src/client/model.ts'
+import { workspaceViewportPolicy } from '../src/shared/workspace-presentation.ts'
 
 const tick = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
@@ -104,4 +105,42 @@ test('legacy default keeps the original eager lease behavior', async () => {
     const f = fixture(), controller = new WorkspaceController({ ...f.options, deferHiddenSessions: false })
     try { await tick(); assert.equal(f.refs.length, 13) }
     finally { controller.dispose() }
+})
+
+test('compact restore acquires only the focused reader and switching presentation preserves retained bindings', async () => {
+    const media = Object.assign(new EventTarget(), { matches: true })
+    let subscriptions = 0
+    const policy = workspaceViewportPolicy(media)
+    const viewport = { getSnapshot: policy.getSnapshot, subscribe(listener: () => void) {
+        subscriptions++
+        const stop = policy.subscribe(listener)
+        return () => { subscriptions--; stop() }
+    } }
+    const state = layout(); state.focused['window-0'] = 'pane-2'
+    const f = fixture(state), controller = new WorkspaceController({ ...f.options, viewport })
+    const change = async (compact: boolean): Promise<void> => { media.matches = compact; media.dispatchEvent(new Event('change')); await tick() }
+    const savedResources = JSON.stringify(controller.store.getSnapshot().windows)
+    try {
+        await tick()
+        assert.deepEqual(f.refs.map(ref => ref.id), ['session-2'], 'hidden siblings never start a reading owner on restore')
+        assert.equal(controller.getSnapshot().leases.has('pane-0'), false)
+        const original = controller.getSnapshot().leases.get('pane-2')!.reference
+        controller.store.focus('pane-1'); await tick()
+        assert.deepEqual(f.refs.map(ref => ref.id), ['session-2', 'session-1'])
+        controller.store.selectWindow('window-1'); await tick()
+        assert.deepEqual(f.refs.map(ref => ref.id), ['session-2', 'session-1', 'session-4'])
+        await change(false)
+        assert.equal(f.refs.length, 6, 'wide presentation acquires only the newly visible siblings of the active window')
+        await change(true)
+        controller.store.selectWindow('window-0'); controller.store.focus('pane-2'); await tick()
+        assert.equal(controller.getSnapshot().leases.get('pane-2')!.reference, original)
+        assert.equal(f.refs.length, 6, 'shrinking and returning do not reacquire or open hidden siblings')
+        assert.ok(f.refs.every(ref => ref.releases === 0), 'retained readers and their input owners survive presentation changes')
+        assert.equal(JSON.stringify(controller.store.getSnapshot().windows), savedResources)
+        assert.equal(subscriptions, 1)
+    } finally { controller.dispose() }
+    assert.equal(subscriptions, 0, 'leaving the workspace removes the media listener')
+    await change(false)
+    assert.equal(f.refs.length, 6)
+    assert.ok(f.refs.every(ref => ref.releases === 1))
 })

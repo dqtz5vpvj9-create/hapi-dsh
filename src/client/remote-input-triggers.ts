@@ -4,8 +4,14 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ClientSessionContext, CommandClaim, InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import type { SourceSession } from '../remote/protocol.ts'
-import type { CodexCall } from '../remote/codex-access.ts'
+import type { NativeActionKind } from './remote-operation-contracts.ts'
+import { sourceIsOffline } from '../shared/source-connectivity.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
+import { CODEX_SKILL_REFERENCE, CODEX_PLUGIN_REFERENCE, readNativeReferences, nativeReferencePart } from './remote-structured-input.ts'
+import { SourceSessionReferences } from './source-session-references.ts'
+import type { WorkspaceController } from './controller.ts'
+import type {} from './workspace-ui.ts'
+import type {} from './source-workspace-client.ts'
 
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 const commands = {
@@ -14,11 +20,11 @@ const commands = {
   plan: ['切换计划 / 执行模式', 'Switch plan / execution mode'],
   model: ['设置模型', 'Set model'], effort: ['设置推理强度', 'Set reasoning effort'],
 } as const
-export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) => SourceSession | undefined, zh: () => boolean): InputTriggerSource[] {
+export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) => SourceSession | undefined, zh: () => boolean, ownerOf: (id: SessionId) => RemoteSourceSession | undefined = () => undefined, references?: SourceSessionReferences): InputTriggerSource[] {
   // A missing reply pins the original request. A repeated submit reads its receipt,
   // and a changed draft cannot silently replace that unresolved native operation.
-  const metadataOf = (session: ClientSessionContext) => (session.binding?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot() ?? sourceOf(session.sessionId)
-  const pending = new Map<string, { text: string; request: CodexCall; busy: boolean }>()
+  const metadataOf = (session: ClientSessionContext) => session.binding ? (session.binding.session as RemoteSourceSession).metadata?.getSnapshot() : sourceOf(session.sessionId)
+  const ownerFor = (session: ClientSessionContext) => (session.binding?.session as RemoteSourceSession | undefined) ?? ownerOf(session.sessionId)
   const claimOf = (session: ClientSessionContext, name: string): CommandClaim | undefined => {
     const id = session.sessionId
     if (!(name in commands) || !metadataOf(session)?.codex) return undefined
@@ -27,13 +33,14 @@ export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) 
         const source = metadataOf(session)
         if (!source?.codex || !api.nativeCall) return { kind: 'error', text: '原 Codex 会话不可用。草稿已保留。' }
         if (attachments.length) return { kind: 'error', text: '此命令不接受附件，请先移除附件。' }
-        const text = JSON.stringify([name, args]), saved = pending.get(id)
-        if (saved && (saved.busy || saved.text !== text)) return { kind: 'error', text: '上一条命令仍待确认，请保留原命令并检查其结果。' }
+        const sessionOwner = ownerFor(session), owner = sessionOwner?.nativeActions
+        if (!owner || !sessionOwner) return { kind: 'error', text: '原生操作服务尚未接通，草稿已保留。' }
+        if (sourceIsOffline(source)) return { kind: 'error', text: '来源离线，草稿已保留。' }
         const value = args.trim(); let method: string, params: Record<string, unknown>
         if (name === 'rename') { if (!value) return { kind: 'error', text: '请输入新的会话名称。' }; method = 'thread/name/set'; params = { name: value } }
         else if (name === 'model' || name === 'effort') {
           if (!value) return { kind: 'error', text: name === 'model' ? '请输入模型 ID，或使用输入框的模型选择器。' : '请输入推理强度，或使用输入框的推理强度选择器。' }
-          method = 'thread/settings/update'; params = { [name === 'model' ? 'model' : 'reasoningEffort']: value }
+          method = 'thread/settings/update'; params = { [name === 'model' ? 'model' : 'effort']: value }
         } else if (name === 'plan') {
           const mode = record(source.codex.settings?.collaborationMode) ? source.codex.settings.collaborationMode.mode : undefined
           if (value && !['plan', 'default'].includes(value)) return { kind: 'error', text: '可选值为 plan 或 default。' }
@@ -43,19 +50,47 @@ export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) 
           method = name === 'compact' ? 'thread/compact/start' : name === 'review' ? 'review/start' : 'thread/fork'
           params = name === 'review' ? { target: { type: 'uncommittedChanges' }, delivery: 'inline' } : name === 'fork' ? { excludeTurns: true } : {}
         }
-        const entry = saved ?? { text, request: { sourceId: source.sourceId, method, params: { threadId: source.nativeId, ...params }, operationId: crypto.randomUUID() }, busy: false }
-        pending.set(id, entry); entry.busy = true
+        const kind: NativeActionKind = name === 'model' || name === 'effort' ? 'settings' : name as NativeActionKind
+        const intent = kind === 'plan' ? 'settings' : kind
         try {
-          const response = saved ? await api.nativeReceipt?.(entry.request) : await api.nativeCall(entry.request)
-          if (!response?.ok) return { kind: 'error', text: response && !response.ok ? response.error.message : '结果待确认，请再次检查原命令。' }
-          if (response.value.status === 'indeterminate') return { kind: 'error', text: response.value.message }
-          pending.delete(id)
-          return { kind: response.value.status === 'accepted' ? 'success' : 'error', text: response.value.message }
-        } catch (error) { return { kind: 'error', text: `${error instanceof Error ? error.message : String(error)}；原请求已保留，不会自动重发。` } }
-        finally { entry.busy = false }
+          await owner.restore()
+          const original = owner.get(id, intent)
+          const directory = sessionOwner.sourceDirectory()
+          const capabilities = await directory?.capabilities()
+          if (capabilities?.methods[method] !== 'write') return { kind: 'error', text: capabilities?.unavailable[method] ?? '来源未提供此命令，草稿已保留。' }
+          // An implicit /plan toggle must retain its original meaning after metadata changes.
+          if (original?.kind === 'plan' && original.request.params && !value && !['accepted', 'rejected'].includes(original.phase)) params = original.request.params
+          let result = await owner.submit({ sessionId: id, intent, kind, newAttempt: true,
+            request: { sourceId: source.sourceId, method, params: { threadId: source.nativeId, ...params } } })
+          if (original && !['accepted', 'rejected', 'prepared'].includes(original.phase)) result = await owner.recover(id, intent) ?? result
+          return { kind: result.phase === 'accepted' ? 'success' : 'error', text: result.outcome?.message ?? '原请求已保留，等待源端确认。' }
+        } catch (error) { return { kind: 'error', text: `${error instanceof Error ? error.message : String(error)}；草稿与原请求已保留。` } }
       },
     }
   }
+  const referenceSource = (trigger: '/' | '@', name: string, namespace: string): InputTriggerSource => ({ trigger, name, order: -40,
+    async candidates(session, request) {
+      const metadata = metadataOf(session), directory = ownerFor(session)?.sourceDirectory()
+      if (!metadata?.codex || !directory || sourceIsOffline(metadata)) return []
+      const references = await readNativeReferences(directory, metadata, namespace, request.signal)
+      const query = request.query.toLowerCase()
+      return references.filter(row => `${row.name} ${row.label} ${row.description}`.toLowerCase().includes(query))
+        .map(row => ({ name: row.name, label: row.label, value: row.ref, description: row.description }))
+    },
+    onPick: pick => pick.candidate.value ? { insert: { source: name, ref: pick.candidate.value, label: pick.candidate.label ?? pick.candidate.name,
+      clipboardText: `${trigger}${pick.candidate.name}` } } : undefined,
+    codec: { clipboardText: ref => `${trigger}${ref}`,
+      async serialize(ref, signal, session) {
+        if (!session) throw new Error('The exact reference Session is unavailable. Your draft has been kept.')
+        const metadata = metadataOf(session), directory = ownerFor(session)?.sourceDirectory()
+        if (!metadata?.codex || !directory) throw new Error('The native reference source is unavailable. Your draft has been kept.')
+        const references = await readNativeReferences(directory, metadata, namespace, signal)
+        const selected = references.find(row => row.ref === ref)
+        if (!selected) throw new Error('The selected skill or plugin is no longer available. Your draft has been kept.')
+        return nativeReferencePart(selected)
+      },
+    },
+  })
   return [{ trigger: '/', name: 'codex-native', order: -50,
     candidates: async (session, request) => metadataOf(session)?.codex && request.position === 'leading'
       ? Object.entries(commands).filter(([name, labels]) => `${name} ${labels.join(' ')}`.toLowerCase().includes(request.query.toLowerCase())).map(([name, labels]) => ({ name, description: labels[zh() ? 0 : 1] })) : [],
@@ -88,12 +123,29 @@ export function codexInputSources(api: HhpiRemoteApi, sourceOf: (id: SessionId) 
     },
     onPick: pick => pick.candidate.value ? { insert: { source: 'codex-files', ref: pick.candidate.value, label: pick.candidate.name, appearance: 'file', clipboardText: `@${JSON.stringify(pick.candidate.value)}` } } : undefined,
     codec: { clipboardText: ref => `@${JSON.stringify(ref)}`, serialize: async (ref, signal) => { signal.throwIfAborted(); return `Referenced workspace path: ${JSON.stringify(ref)}` } },
+  }, referenceSource('/', 'codex-skills', CODEX_SKILL_REFERENCE), referenceSource('@', 'codex-plugins', CODEX_PLUGIN_REFERENCE), {
+    trigger: '@', name: 'source-sessions', order: -30, showGroupTitle: false,
+    async candidates(session, request) {
+      return metadataOf(session)?.codex && references ? references.candidates(session.sessionId, request.query, request.signal)
+        .map(row => ({ ...row, section: zh() ? '会话' : 'Conversations', icon: 'session' as const })) : []
+    },
+    onPick: pick => pick.candidate.value ? { insert: { source: 'source-sessions', ref: pick.candidate.value,
+      label: pick.candidate.label ?? pick.candidate.name, appearance: 'session', clipboardText: `@${JSON.stringify(pick.candidate.label ?? pick.candidate.name)}` } } : undefined,
+    codec: { clipboardText: () => '@conversation', async serialize(ref, signal, session) {
+      if (!references || !session || !metadataOf(session)?.codex) throw new Error('The original conversation reference service is unavailable. Your draft has been kept.')
+      return references.serialize(session.sessionId, ref, signal)
+    } },
   }]
 }
-export function installRemoteInputTriggers(ctx: Context, api: HhpiRemoteApi): () => void {
+export function installRemoteInputTriggers(ctx: Context, api: HhpiRemoteApi, workspace?: WorkspaceController, hostId?: string): () => void {
   const sessions = ctx.sessions, locale = ctx.locale
   const fiber = ctx.inject(['inputTriggers'], owner => {
-    const sources = codexInputSources(api, id => (sessions.binding(id)?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot(), () => locale.getSnapshot().active.startsWith('zh'))
+    const authority = ctx.get('hhpiSessions'), ui = ctx.get('hapiWorkspaceUi')
+    // The primary shell has no per-graph transport service. The navigation
+    // owner supplies this graph's actual Host instead of inferring it here.
+    const references = workspace && hostId && authority && ui ? new SourceSessionReferences({ hostId,
+      workspace, application: ui.application, capture: id => authority.captureWorkspaceAccess(id) }) : undefined
+    const sources = codexInputSources(api, id => (sessions.binding(id)?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot(), () => locale.getSnapshot().active.startsWith('zh'), id => sessions.binding(id)?.session as RemoteSourceSession | undefined, references)
     const stops = sources.map(source => owner.inputTriggers.registerSource(source))
     return () => { for (const stop of stops) stop() }
   })

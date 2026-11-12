@@ -12,14 +12,11 @@ algorithms, source header preferences, bulk session actions and Web Share
 transfer compatibility also adapt the pinned HAPI source. Copyright HAPI
 contributors. The source references in the
 adapted files are preserved.
-The Cursor model catalog and CLI SKU picker helpers in src/client/cursor-models
-also retain the pinned source's exact model identity and variant semantics.
-The machine health field schema, thresholds and uptime formatting adapt
-shared/src/schemas.ts and web/src/lib/machineHealth.ts from the same baseline.
-The shared-content preview and fixed share-picker snapshot preserve the source
-behavior in web/src/routes/share/index.tsx, web/src/lib/sharePickerSessions.ts
-and web/src/components/SessionList.tsx. Original Enter and external-link
-preferences retain the source keys and input/navigation meaning.
+Original Enter and external-link preferences retain the source keys and
+input/navigation meaning. Earlier releases also adapted HAPI's Cursor model
+catalog and CLI SKU picker, machine health schema and formatting, and Companion
+share-picker behavior. Those runtime entries are retired; their attribution and
+historical source snapshots remain for provenance and explicit offline recovery.
 
 Pinned fork: https://github.com/dqtz5vpvj9-create/hapi
 Revision: 55166cf8d87814ccfb383b538a8e8c55283bed81
@@ -31,20 +28,25 @@ third-party component has been copied into this plugin.
 
 DeepSeek Harness
 ----------------
-Official @deepseek-ai/dsh and its official plugin packages are used as unchanged
-dependencies and runtime services. They are not forked or patched by this
-project. DeepSeek Harness is licensed under the MIT License.
+The project uses official @deepseek-ai/dsh runtime services together with a
+source-built set of 22 modified DSH packages. The current complete extension
+release is hhpi-dsh-022-20261107.27. Its consolidated patch, contract tests and
+source references are in source-snapshots/dsh-ext/source.patch and the matching
+source manifest; build and reconstruction instructions are in
+docs/hhpi-extension-install.md. The corresponding source, lockfile, build tools
+and original license accompany each extension release. DeepSeek Harness and
+these modified packages retain the MIT License.
 
 Copyright (c) 2026 DeepSeek
 Source: https://github.com/deepseek-ai/deepseek-harness
-Version: 0.2.1-rc.3
-Source reference: 1f81c047fc48fa190a683e469daa699857e9afe8
+Version: 0.2.2-rc.1
+Source reference: 66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
 The unmodified upstream license is included in docs/licenses/DSH-MIT.txt.
 
 Federated Client store runtime
 ------------------------------
 The browser artifact also bundles the unmodified official
-@deepseek-ai/dsh-client-store 0.2.1-rc.3 source with its unchanged store-engine
+@deepseek-ai/dsh-client-store 0.2.2-rc.1 source with its unchanged store-engine
 dependencies. Each Client graph evaluates that factory with its own browser
 storage capability; no upstream implementation is patched.
 
@@ -72,15 +74,18 @@ Revision: 0e0cec40284130a5a91a259354d96fe92eb1fd53
 Original MIT license: docs/licenses/TERMBEAM-MIT.txt.
 Detailed source mappings: src/client/source-terminal/HAVEN.md and UPSTREAM.md.
 
-Speech and voice adapters
--------------------------
-The original HAPI voice protocol, personality, prompt/context formatting,
-browser-local eligibility, audio conversion and provider lifecycle modules are
-adapted under AGPL-3.0-only. Per-file original source paths are preserved;
-the pinned revision and integration changes are recorded in src/voice/UPSTREAM.md.
+Speech and historical voice adapters
+--------------------------------------
+The browser-local speech eligibility and dictation behavior retain HAPI-derived
+code under AGPL-3.0-only. Current dictation uses the browser's explicitly
+supported local speech recognition capability.
 
-The browser artifact uses the unmodified ElevenLabs React and client SDKs
-0.13.0 under the MIT License. Original notices are included in
+Earlier releases also adapted HAPI voice protocols, personality, context
+formatting, audio conversion and provider lifecycle modules, and used the
+unmodified ElevenLabs React and client SDKs 0.13.0 under the MIT License.
+Those remote voice integrations are retired and the current browser artifact
+does not load ElevenLabs SDKs. Historical provenance remains in
+src/voice/UPSTREAM.md. Original notices are retained in
 docs/licenses/ELEVENLABS-REACT-MIT.txt,
 docs/licenses/ELEVENLABS-CLIENT-MIT.txt and
 docs/licenses/ELEVENLABS-TYPES-MIT.txt.
@@ -93,10 +98,11 @@ of the official DSH Conversation DOM. It does not replace a chat renderer.
 Copyright (c) 2024-present yorickshan and html2canvas-pro contributors.
 Original MIT license: docs/licenses/HTML2CANVAS-PRO-MIT.txt.
 
-Local Companion QR encoding
-----------------------------
-The browser artifact bundles unmodified qrcode 1.5.4, the encoder used by
-the original HAPI Companion pairing feature. QR pixels are generated locally;
-the credential-bearing payload is never sent to an external QR service.
+Historical Local Companion QR encoding
+---------------------------------------
+Earlier browser artifacts used unmodified qrcode 1.5.4 for the HAPI Companion
+pairing feature. That product entry is retired. The dependency declaration and
+original notice remain for distribution provenance; current browser code does
+not load the Companion QR encoder.
 Copyright (c) 2012 Ryan Day. MIT License.
 Original license: docs/licenses/QRCODE-MIT.txt.

@@ -7,6 +7,24 @@ import type { DirectCodexConfig } from '../src/remote/protocol.ts';
 
 const source: DirectCodexConfig = { id: 'source', machineId: 'fixture', engine: 'codex' };
 
+test('source helper batches precise lifecycle absence and preserves unfamiliar rollout layouts', async () => {
+    const { NativeMetadataReader } = await import('../src/remote/codex-metadata.ts');
+    const { DatabaseSync } = await import('node:sqlite');
+    const { mkdir } = await import('node:fs/promises');
+    const { join, resolve } = await import('node:path');
+    const home = await mkdtemp('/mnt/cache/data-cache/hhpi-lifecycle-channel-');
+    const db = new DatabaseSync(join(home, 'state_5.sqlite')); db.exec('CREATE TABLE threads (id TEXT PRIMARY KEY)'); db.close();
+    const createdAt = 1794351600, clock = (createdAt * 1000).toString(16).padStart(12, '0');
+    const threadId = `${clock.slice(0, 8)}-${clock.slice(8)}-7000-8000-000000000001`;
+    const reader = new NativeMetadataReader({ ...source, historyMetadata: { command: process.execPath, args: [resolve('src/remote/codex-metadata-helper.mjs')] } });
+    const request = { kind: 'lifecycle' as const, home, candidates: [{ threadId, createdAt }] };
+    try {
+        assert.deepEqual(await reader.lifecycles(request, new AbortController().signal), { absent: [threadId] });
+        await mkdir(join(home, 'archived_sessions', 'unfamiliar-nested-layout'), { recursive: true });
+        assert.deepEqual(await reader.lifecycles(request, new AbortController().signal), { absent: [] }, 'unknown layouts cannot authorize omission');
+    } finally { await reader.dispose(); await rm(home, { recursive: true, force: true }); }
+});
+
 test('an unavailable native index is a history-capability failure, never an access revocation', async () => {
     const home = await mkdtemp('/mnt/cache/data-cache/hhpi-missing-metadata-');
     try {

@@ -1,11 +1,9 @@
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
 import type { PaneReadingTarget } from '../client/reading-intent.ts'
-import { nativeProjection, observedProjection } from './presentation.ts'
+import { sourceProjection } from './presentation.ts'
 
 export function pendingTarget(row: WorkspaceCatalogRow): PaneReadingTarget {
-    const source = nativeProjection(row) ?? observedProjection(row)
+    const source = sourceProjection(row)
     const request = source?.pendingRequests[0]
-    if (request) return { kind: 'approval', requestId: request.requestId }
-    const delivery = source?.delivery.find(value => value.state === 'rejected' || value.state === 'indeterminate')
-    return delivery ? { kind: 'delivery', localId: delivery.localId } : { kind: 'latest' }
+    return request ? { kind: 'approval', requestId: request.id } : { kind: 'latest' }
 }

@@ -6,9 +6,9 @@
  */
 import type { WorkspaceCatalog, WorkspaceCatalogRow } from '../client/controller.ts'
 import { sessionLocation } from '../client/controller.ts'
-import type { CatalogMachine, CatalogSession } from '../client-api.ts'
+import type { CatalogMachine } from '../client-api.ts'
 import { shareTargetKey, type SharePayload, type ShareTarget } from '../client/share-transfer.ts'
-import { isSourceChild, sourceIdentity } from './legacy.ts'
+import { sourceRoute } from '../shared/source-capability.ts'
 import { sessionFolder } from './presentation.ts'
 import { collectSidebarSearchFields, scoreSidebarSearch, type SidebarSearchFields } from './sidebar-search.ts'
 import { normalizeSessionPreviewLimit, sidebarSessionActive } from './sidebar-sections.ts'
@@ -28,8 +28,6 @@ export interface SharePickerCandidate {
     readonly updatedAt: number
     readonly active: boolean
     readonly pinned: boolean
-    readonly globallyPinned: boolean
-    readonly sourceListFacts: CatalogSession['sourceListFacts'] | null
     readonly fields: Readonly<{ [K in keyof SidebarSearchFields]: readonly string[] }>
 }
 export interface SharePickerSnapshot {
@@ -37,42 +35,13 @@ export interface SharePickerSnapshot {
     readonly activityDates: ReadonlySet<string>
 }
 
-/** A cold HAPI display must never fall back to a normal DSH delivery identity. */
+/** Resolve only the actual original route; cold legacy display IDs cannot become DSH sessions. */
 export function shareTargetForRow(row: WorkspaceCatalogRow): ShareTarget | null {
-    if (isSourceChild(row)) return null
-    const source = sourceIdentity(row)
-    if (source) return source.hubId && source.sessionId ? { kind: 'hapi', hubId: source.hubId, sessionId: source.sessionId } : null
-    if (/^(?:hapi-codex-|hapi-observed-)/u.test(row.sourceSessionId)) return null
-    return { kind: 'dsh', hostId: row.hostId, sessionId: row.sourceSessionId }
+    try { return sourceRoute(row.hostId, row.sourceSessionId, 'local') }
+    catch { return null }
 }
-
-/** Official ids are the Host's catalog membership; retained fallback rows are not new targets. */
 export function listedShareRows(catalog: WorkspaceCatalog): WorkspaceCatalogRow[] {
-    return [...new Set(catalog.ids)].flatMap(id => {
-        const row = catalog.byId[id]
-        return row && !isSourceChild(row) ? [row] : []
-    })
-}
-
-function nativeGroup(candidate: SharePickerCandidate): string | null {
-    const facts = candidate.sourceListFacts, target = candidate.target
-    if (target?.kind !== 'hapi' || !facts?.agentSessionId?.trim()) return null
-    const identity = facts.flavor === 'codex'
-        ? ['codex', candidate.machineId, facts.codexStoreId, facts.agentSessionId.trim()]
-        : [facts.flavor ?? 'unknown', facts.agentSessionId.trim()]
-    // Original HAPI preparation runs within one Hub. The unified picker must
-    // not merge separate Hubs or serving graph identities with coincident IDs.
-    return JSON.stringify([candidate.hostId, target.hubId, ...identity])
-}
-function preferred(left: SharePickerCandidate, right: SharePickerCandidate): number {
-    return Number(right.active) - Number(left.active) || Number(right.globallyPinned) - Number(left.globallyPinned)
-        || Number(right.pinned) - Number(left.pinned) || right.updatedAt - left.updatedAt
-}
-function emptySourceStub(candidate: SharePickerCandidate): boolean {
-    const facts = candidate.sourceListFacts
-    if (candidate.target?.kind !== 'hapi' || !facts || facts.hasConversationContent !== false) return false
-    if (candidate.active || candidate.pinned || candidate.globallyPinned || facts.agentSessionId?.trim() || facts.hasTitleSignal) return false
-    return true
+    return [...new Set(catalog.ids)].flatMap(id => catalog.byId[id] ? [catalog.byId[id]!] : [])
 }
 
 /** Clone the published fields once. Live titles, activity and metadata cannot
@@ -80,33 +49,22 @@ function emptySourceStub(candidate: SharePickerCandidate): boolean {
 export function captureSharePicker(catalog: WorkspaceCatalog, machines: readonly CatalogMachine[] = []): SharePickerSnapshot {
     const labels = new Map(machines.map(machine => [machine.id, machine.label]))
     const candidates = listedShareRows(catalog).map((row): SharePickerCandidate => {
-        const source = sourceIdentity(row), location = sessionLocation(row)
-        const machineLabel = source && row.hostId === 'local' && location.machineId
+        const location = sessionLocation(row)
+        const machineLabel = row.hostId === 'local' && location.machineId
             ? labels.get(location.machineId) ?? location.machineName ?? location.machineId
             : location.machineName ?? location.machineId ?? row.hostLabel
         const fields = collectSidebarSearchFields(row, { ...location, machineName: machineLabel })
         if (!fields.machine.includes(row.hostLabel)) fields.machine.push(row.hostLabel)
-        const sourceTime = source ? row.sourceLastActiveAt : undefined
         return Object.freeze({ id: row.id, hostId: row.hostId, hostLabel: row.hostLabel,
             sourceSessionId: row.sourceSessionId, target: shareTargetForRow(row),
             title: row.displayTitle, directory: sessionFolder(row).path, machineId: location.machineId ?? null,
             machineLabel, engine: location.engine,
-            updatedAt: typeof sourceTime === 'number' && Number.isFinite(sourceTime) ? sourceTime : row.updatedAt,
-            active: sidebarSessionActive(row), pinned: row.pinned, globallyPinned: row.sourcePinMode === 'global',
-            sourceListFacts: row.sourceListFacts ? Object.freeze({ ...row.sourceListFacts }) : null,
+            updatedAt: row.updatedAt,
+            active: sidebarSessionActive(row), pinned: row.pinned,
             fields: Object.freeze(Object.fromEntries(Object.entries(fields).map(([key, values]) => [key, Object.freeze([...values])])) as SharePickerCandidate['fields']),
         })
     })
-    const grouped = new Map<string, number>(), prepared: SharePickerCandidate[] = []
-    for (const candidate of candidates) {
-        const key = nativeGroup(candidate)
-        const index = key ? grouped.get(key) : undefined
-        if (index === undefined) { if (key) grouped.set(key, prepared.length); prepared.push(candidate) }
-        else if (preferred(candidate, prepared[index]!) < 0) prepared[index] = candidate
-    }
-    // The source preparation filters duplicate placeholders before choosing a
-    // preview. Unknown content facts and normal DSH rows always survive.
-    const selected = prepared.filter(candidate => !emptySourceStub(candidate))
+    const selected = candidates.filter(candidate => candidate.target !== null)
         .sort((left, right) => right.updatedAt - left.updatedAt)
     return Object.freeze({ candidates: Object.freeze(selected), activityDates: new Set(selected.map(candidate => localDayKey(candidate.updatedAt))) })
 }

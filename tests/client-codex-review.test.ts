@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import type { ConversationMatch, ConversationNodeContext, ConversationStartMatch } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { sourceReviewDefinition as definition, SOURCE_REVIEW_DATA, type SourceReviewTurn } from '../src/client/codex-review-conversation.ts'
-import type { SourceCodexReviewRecord } from '../src/hapi-agent/codex-review.ts'
+import type { SourceCodexReviewRecord } from '../src/shared/codex-review.ts'
 
 function record(messageId: string, surfaceSeq: number): SourceCodexReviewRecord {
     return { messageId, sourceRowId: `source-${messageId}`, surfaceSeq, turn: 1, step: surfaceSeq,

@@ -25,6 +25,16 @@ export const composerPickerStyles = String.raw`
 .hapi-source-permission,.hapi-source-collaboration {display:inline-flex;align-items:center;min-height:28px;padding:2px 6px;color:var(--dsw-alias-label-secondary,#65717b);font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .hapi-picker-popover {position:fixed;z-index:10030;box-sizing:border-box;overflow:auto;overscroll-behavior:contain;border:1px solid var(--dsw-alias-border-l2,#d8dedf);border-radius:12px;padding:8px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#22272c);box-shadow:0 8px 28px rgb(0 0 0 / 12%);font:13px/1.45 var(--dsw-font-family,system-ui,sans-serif);text-align:left;overflow-wrap:anywhere}
 .hapi-picker-popover[hidden] {display:none}
+/* Measured placement remains a complete fallback, including native popovers
+   without anchor positioning. Override their UA centering only in that path. */
+.hapi-picker-popover[popover][data-picker-positioning="geometry"] {inset:auto;margin:0}
+@supports (position-area:block-start span-all) and (left:clamp(12px,anchor(left),calc(100% - 332px))) and (position-try-fallbacks:flip-block) {
+ .hapi-picker-popover[data-picker-positioning="anchor"] {
+  inset:auto;position-area:block-start span-all;position-try-fallbacks:flip-block;align-self:end;margin:0 0 8px;
+  left:clamp(max(12px,calc(anchor(var(--hhpi-picker-pane-anchor) left) + 12px)),anchor(left),min(calc(100% - 332px),calc(anchor(var(--hhpi-picker-pane-anchor) right) - 332px)));
+  width:320px;max-width:calc(100% - 24px);max-height:min(480px,70dvh,100%);
+ }
+}
 .hapi-picker-popover[data-picker-layout="bottom"] {border-radius:18px;padding-bottom:max(8px,env(safe-area-inset-bottom,0px))}
 .hapi-picker-popover button {font:inherit;color:inherit;cursor:pointer}
 .hapi-picker-popover button:disabled {opacity:.45;cursor:default}

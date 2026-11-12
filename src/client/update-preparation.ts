@@ -1,16 +1,53 @@
 /** Public embedding contract: editors finish durable writes before a page update. */
+export type WorkspaceCheckpointKind = 'message' | 'attachment' | 'document' | 'reading' | 'workspace';
+export interface WorkspaceCheckpointParticipant {
+    kind: WorkspaceCheckpointKind;
+    label: string;
+    /** A draft/reader revision, not source metadata or an operation receipt comparison. */
+    revision(): string | number;
+    current(): boolean;
+    /** Sample the actual owner before freezing the revision; ordinary saves omit this. */
+    capture?(signal: AbortSignal): void | Promise<void>;
+    save(signal: AbortSignal): void | Promise<void>;
+}
 export interface WorkspaceUpdatePreparations {
     register(label: string, prepare: () => void | Promise<void>, phase?: 'prepare' | 'verify'): () => void;
     checkpoint(): Promise<void>;
+    registerCheckpoint(participant: WorkspaceCheckpointParticipant): () => void;
 }
 export function createWorkspaceUpdatePreparations(options: { timeoutMs?: number } = {}): WorkspaceUpdatePreparations & { dispose(): void } {
-    const entries = new Set<{ label: string; prepare: () => void | Promise<void>; phase: 'prepare' | 'verify' }>();
+    const entries = new Set<{ label: string; prepare: (signal: AbortSignal) => void | Promise<void>; phase: 'prepare' | 'verify' }>();
+    const lifetime = new AbortController();
     let running: Promise<void> | undefined, disposed = false;
     const timeoutMs = options.timeoutMs ?? 15_000;
+    const register = (label: string, prepare: (signal: AbortSignal) => void | Promise<void>, phase: 'prepare' | 'verify' = 'prepare') => {
+        if (disposed) return () => {};
+        const entry = { label, prepare, phase }; entries.add(entry); return () => { entries.delete(entry); };
+    };
     return {
         register(label, prepare, phase = 'prepare') {
-            if (disposed) return () => {};
-            const entry = { label, prepare, phase }; entries.add(entry); return () => { entries.delete(entry); };
+            return register(label, prepare, phase);
+        },
+        registerCheckpoint(participant) {
+            let prepared: string | number | undefined;
+            const validate = () => {
+                if (!participant.current()) throw new Error('The original source or account changed. The page has not been updated.');
+                if (prepared !== participant.revision()) throw new Error('The draft or reading position changed while saving. Review it and try the update again.');
+            };
+            const prepare = register(participant.label, async signal => {
+                prepared = undefined;
+                if (!participant.current()) throw new Error('The original source or account changed. The page has not been updated.');
+                if (participant.capture) {
+                    await participant.capture(signal);
+                    signal.throwIfAborted();
+                    if (!participant.current()) throw new Error('The original source or account changed. The page has not been updated.');
+                }
+                prepared = participant.revision();
+                await participant.save(signal);
+                signal.throwIfAborted(); validate();
+            });
+            const verify = register(participant.label, validate, 'verify');
+            return () => { prepare(); verify(); };
         },
         checkpoint() {
             if (running) return running;
@@ -20,9 +57,10 @@ export function createWorkspaceUpdatePreparations(options: { timeoutMs?: number 
                 for (const phase of ['prepare', 'verify'] as const) {
                     const outcomes = await Promise.allSettled(snapshot.filter(entry => entry.phase === phase).map(async entry => {
                         let timer: ReturnType<typeof setTimeout> | undefined;
+                        const attempt = new AbortController();
                         try {
-                            await Promise.race([Promise.resolve().then(() => entry.prepare()), new Promise<never>((_, reject) => {
-                                timer = setTimeout(() => reject(new Error('Saving has not finished. The current page and editors remain open; try again after the plugin responds.')), timeoutMs);
+                            await Promise.race([Promise.resolve().then(() => entry.prepare(AbortSignal.any([lifetime.signal, attempt.signal]))), new Promise<never>((_, reject) => {
+                                timer = setTimeout(() => { attempt.abort(); reject(new Error('Saving has not finished. The current page and editors remain open; try again after the plugin responds.')); }, timeoutMs);
                             })]);
                         } catch (error) { throw new Error(`${entry.label}: ${error instanceof Error ? error.message : String(error)}`); }
                         finally { clearTimeout(timer); }
@@ -34,6 +72,6 @@ export function createWorkspaceUpdatePreparations(options: { timeoutMs?: number 
             })().finally(() => { running = undefined; });
             return running;
         },
-        dispose() { disposed = true; entries.clear(); },
+        dispose() { disposed = true; lifetime.abort(); entries.clear(); },
     };
 }

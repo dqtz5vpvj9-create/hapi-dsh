@@ -12,6 +12,7 @@ export class HostBootQueue {
         this.pending.set(id, start)
         this.schedule()
     }
+    remove(id: string): void { this.pending.delete(id) }
     prioritize = (): void => { this.schedule() }
     private schedule(delay = 0): void {
         if (this.disposed || this.active.size >= 2 || this.timer !== undefined || !this.pending.size) return
@@ -29,4 +30,18 @@ export class HostBootQueue {
         try { await task() } finally { this.active.delete(id); this.schedule() }
     }
     dispose(): void { this.disposed = true; this.pending.clear(); clearTimeout(this.timer) }
+}
+import { isSourceSessionId, parseSourceSessionId } from '../../remote/protocol.ts'
+
+/** A canonical's paired original machine is a foreground discovery demand,
+ * even while its saved Pane still points at the central read-only shadow.
+ * This schedules its catalog only; exact row/access validation still owns routing. */
+export function preferredSourceBootHost(address: { hostId: string; sessionId: string },
+    hosts: readonly { id: string; online: boolean }[]): string {
+    if (address.hostId !== 'local' || !isSourceSessionId(address.sessionId)) return address.hostId
+    try {
+        const { machineId } = parseSourceSessionId(address.sessionId)
+        if (hosts.some(host => host.id === machineId && host.id !== 'local' && host.online)) return machineId
+    } catch { /* Invalid identities keep their existing failed local route. */ }
+    return address.hostId
 }

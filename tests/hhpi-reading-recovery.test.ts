@@ -2,6 +2,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
+import { MessageId } from '@deepseek-ai/dsh-llm'
+import { SessionSeq } from '@deepseek-ai/dsh-session'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
 import { RemoteSourceHistory, type RemoteHistoryTransport } from '../src/client/remote-history.ts'
 import type { SourceChanges, SourceChangesRequest, SourceEntry, SourcePage, SourceSession } from '../src/remote/protocol.ts'
 
@@ -9,8 +12,8 @@ const session: SourceSession = { id: 'hhpi:machine:source:codex:thread', machine
   title: 'Synthetic recovery', cwd: '/synthetic', updatedAt: 1, status: 'idle', activeTurnId: null, pendingRequests: [],
   capabilities: { send: true, steer: false, cancel: false, approve: false, files: false } }
 const budget = { events: 5000, bytes: 12 * 1024 * 1024, nodes: 2000 }
-function entry(seq: number): SourceEntry { return { type: 'event', event: { type: 'user/message', seq, time: 1,
-  data: { id: `message-${seq}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: `body-${seq}` }] } } } as SourceEntry }
+function entry(seq: number, text = `body-${seq}`): SourceEntry { return { type: 'event', event: { type: 'user/message', seq: SessionSeq(seq), time: 1, surfaceOp: 'append',
+  data: { id: MessageId(`message-${seq}`), role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] } } } }
 function page(version = 1): SourcePage { return { session, epoch: 'epoch', version, entries: [entry(version)], before: version, after: version,
   hasBefore: false, hasAfter: false, context: [] } }
 const unavailable = (): RemoteError<'hhpi/source'> => new RemoteError('hhpi/source', 'Source temporarily unavailable', { sourceCode: 'TARGET_UNAVAILABLE', outcome: 'rejected' })
@@ -73,7 +76,7 @@ test('a temporary domain failure resumes live updates from the accepted source c
   assert.deepEqual(requests[1], requests[0])
   update.resolve()
   const accepted = await next
-  assert.deepEqual(accepted.value?.snapshot?.entries.map(value => value.event.seq), [1, 2])
+  assert.deepEqual(accepted.value?.snapshot?.entries.map((value: SessionEventLikeEntry) => value.event.seq), [1, 2])
   abort.abort(); await stream.return?.()
 })
 
@@ -122,15 +125,16 @@ test('a source read that ignores cancellation cannot keep a foreground opener pe
   assert.equal(owner.sourceVersion, 0, 'late timed-out transport results cannot become accepted history')
 })
 
-test('a returned page cannot wait forever for a disconnected source version stream', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] })
+test('an authoritative target is readable while the disconnected source version stream is behind', async t => {
   let calls = 0
   const owner = new RemoteSourceHistory(session.id, { read: async () => page(++calls), changes: idle })
   t.after(() => owner.dispose())
   const feed = await owner.openView('pane', budget)
-  const failed = assert.rejects(feed.read({ kind: 'around', target: { key: 'message-2', seq: 2 as never } }, budget, new AbortController().signal), { code: 'TARGET_UNAVAILABLE' })
-  await turn(); t.mock.timers.tick(30_000); await failed
-  assert.equal(feed.initial.entries[0]?.event.seq, 1, 'a stalled version catchup leaves the already accepted body mounted')
+  const target = await feed.read({ kind: 'around', target: { key: 'message-2', seq: 2 as never } }, budget, new AbortController().signal)
+  assert.equal(target.entries[0]?.event.seq, 2)
+  assert.equal(owner.sourceVersion, 1, 'target navigation does not advance the shared stream or conceal its gap')
+  feed.publication!.accept(target.version)
+  assert.equal(owner.acceptedReadingPosition('pane', target.version, 2)?.seq, 2)
 })
 
 test('same-epoch replay expiry revalidates the whole retained interval without jumping to latest', async t => {
@@ -154,9 +158,63 @@ test('same-epoch replay expiry revalidates the whole retained interval without j
   reset.resolve({ session, epoch: 'epoch', base: 1, version: 2, reset: true, upserts: [], removed: [] })
   await revalidated.promise
   const restored = await next
-  const seqs = restored.value!.snapshot!.entries.map(value => value.event.seq)
+  const seqs = restored.value!.snapshot!.entries.map((value: SessionEventLikeEntry) => value.event.seq)
   assert.ok(seqs.includes(680)); assert.ok(seqs.includes(999))
   assert.ok(!seqs.includes(700), 'authoritative deletion in a missed journal range is respected')
   assert.ok(restored.value!.snapshot!.hasAfter, 'recovery remains in the historic interval')
+  abort.abort(); await stream.return?.()
+})
+
+
+test('retained-range recovery extends the live revision already published during its read', async t => {
+  const reset = Promise.withResolvers<void>(), recovering = Promise.withResolvers<void>()
+  const live = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), later = Promise.withResolvers<void>()
+  let version = 1, reads = 0
+  const revised = entry(1, 'revision accepted during recovery')
+  const owner = new RemoteSourceHistory(session.id, {
+    read: async request => {
+      ++reads
+      const snapshot = { ...page(version), entries: [entry(1)], before: 1, after: 1, hasBefore: true }
+      if (request.after !== undefined) { recovering.resolve(); await release.promise }
+      return snapshot
+    },
+    async *changes(request, signal) {
+      await reset.promise
+      if (signal?.aborted) return
+      yield { session, epoch: 'epoch', base: version, version: ++version, reset: true, upserts: [], removed: [] }
+      await live.promise
+      if (signal?.aborted) return
+      yield { session, epoch: 'epoch', base: version, version: ++version, reset: false, upserts: [revised], removed: [] }
+      await later.promise
+      if (signal?.aborted) return
+      yield { session, epoch: 'epoch', base: version, version: ++version, reset: false, upserts: [entry(2)], removed: [] }
+      yield* idle(request, signal)
+    },
+  })
+  const abort = new AbortController()
+  t.after(() => { abort.abort(); release.resolve(); reset.resolve(); live.resolve(); later.resolve(); owner.dispose() })
+  const feed = await owner.openView('same-mounted-pane', budget)
+  feed.publication!.accept(feed.initial.version)
+  const stream = feed.changes(feed.initial.version, abort.signal)[Symbol.asyncIterator]()
+  const next = stream.next()
+  reset.resolve(); await recovering.promise
+  live.resolve()
+  const updated = (await next).value!
+  assert.equal(updated.snapshot!.entries[0], revised, 'live body is published before recovery finishes')
+  assert.equal(updated.snapshot!.hasBefore, true)
+  feed.publication!.accept(updated.version)
+  const recovered = stream.next()
+  release.resolve()
+  const replacement = (await recovered).value!
+  assert.equal(replacement.base, updated.version, 'recovery continues the current published chain, rather than its old start')
+  assert.equal(replacement.snapshot!.entries[0], revised, 'the stale read is replayed through the accepted live revision')
+  feed.publication!.accept(replacement.version)
+  const following = stream.next()
+  later.resolve()
+  const appended = (await following).value!
+  assert.equal(appended.base, replacement.version, 'the same reader continues its live subscription after recovery')
+  assert.deepEqual(appended.snapshot!.entries.map((value: SessionEventLikeEntry) => value.event.seq), [1, 2])
+  assert.equal(appended.snapshot!.entries[0], revised)
+  assert.equal(reads, 2, 'one retained-range read recovers without another latest read or reconnect')
   abort.abort(); await stream.return?.()
 })

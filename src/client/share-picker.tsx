@@ -81,7 +81,7 @@ export function ShareTargetPicker({ controller, busy, language, t, onSelect }: {
         {!snapshot && <p role="status">{tr('Loading the first conversation snapshot…', '正在加载首次会话快照…')}
             {hasLoadedHost && <button type="button" disabled={busy} onClick={capture}>{tr('Use loaded conversations', '使用已加载的会话')}</button>}</p>}
         {(discovery.source === 'unavailable' || unavailable.length > 0) && <p className="hapi-share-catalog-status" role="status">
-            {discovery.source === 'unavailable' && <span>{tr('The original HAPI Hub is unavailable. Loaded conversations are still selectable.', '原 HAPI Hub 当前不可用，仍可选择已加载的会话。')}{discovery.sourceError ? ` ${discovery.sourceError}` : ''}</span>}
+            {discovery.source === 'unavailable' && <span>{tr('An original source is unavailable. Loaded conversations are still selectable.', '原始来源当前不可用，仍可选择已加载的会话。')}{discovery.sourceError ? ` ${discovery.sourceError}` : ''}</span>}
             {unavailable.length > 0 && <span>{tr('Unavailable Hosts', '不可用的 Host')}: {unavailable.map(host => host.label).join(', ')}</span>}
         </p>}
         {results && <>

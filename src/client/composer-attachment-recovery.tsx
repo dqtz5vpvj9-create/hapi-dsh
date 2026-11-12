@@ -1,25 +1,45 @@
 import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 /** Durable bytes around the published official composer attachment owner. */
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { composerDraftKey } from './composer-autosave.ts';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import type {} from './composer-picker/slots.ts';
+import { accountComposerDraftKey, composerDraftSnapshot, copySourceRouteDraft, type ComposerAuthenticatedIdentity } from './composer-autosave.ts';
+import { useComposerIdentity, type ComposerIdentity } from './composer-identity.ts';
 import { DraftOwnership } from './draft-ownership.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { InboxState } from '@deepseek-ai/dsh-agent/types';
 import type { SourceComposerBridge } from './source-composer.tsx';
 import type {} from './workspace-ui.ts';
+import { captureSourceUploadIntents, restoreSourceUploadIntents, validSourceUploadIntents, type SavedSourceUploadIntents } from './source-upload-intent.ts';
 
-interface SavedFile { name: string; type: string; lastModified: number; blob: Blob }
+interface SavedFile { name: string; type: string; lastModified: number; blob: Blob; uploads?: SavedSourceUploadIntents }
 interface SavedCopy { text: string; files: SavedFile[]; savedAt: number; requestIds?: string[] }
 interface SavedAttachments extends SavedCopy { version: 1; mode: 'draft' | 'pending'; previous?: SavedCopy[] }
 interface AttachmentEntry { version: 1; revision: string; value: SavedAttachments | null }
+const sameIds = (left: readonly string[] = [], right: readonly string[] = []) => left.length === right.length && left.every((id, index) => id === right[index]);
+function sameCopy(left: SavedCopy, right: SavedCopy): boolean {
+    return left.text === right.text && sameIds(left.requestIds, right.requestIds) && left.files.length === right.files.length
+        && left.files.every((file, index) => {
+            const next = right.files[index]!;
+            return file.blob === next.blob && file.name === next.name && file.type === next.type && file.lastModified === next.lastModified
+                && (file.uploads?.length ?? 0) === (next.uploads?.length ?? 0) && (file.uploads ?? []).every(([id, intent], uploadIndex) => {
+                    const other = next.uploads![uploadIndex]!;
+                    return id === other[0] && intent.operationId === other[1].operationId && intent.prepared === other[1].prepared && intent.removed === other[1].removed;
+                });
+        });
+}
+function sameAttachments(left: SavedAttachments | null, right: SavedAttachments | null): boolean {
+    return left === right || !!left && !!right && left.mode === right.mode && sameCopy(left, right)
+        && (left.previous?.length ?? 0) === (right.previous?.length ?? 0)
+        && (left.previous ?? []).every((copy, index) => sameCopy(copy, right.previous![index]!));
+}
 function decodeEntry(raw: unknown): AttachmentEntry | null {
     if (raw == null) return null;
     const entry = raw as Partial<AttachmentEntry>, value = entry.value;
     const validCopy = (copy: SavedCopy) => copy && typeof copy.text === 'string' && Number.isFinite(copy.savedAt) && Array.isArray(copy.files)
         && (copy.requestIds === undefined || Array.isArray(copy.requestIds) && copy.requestIds.every(id => typeof id === 'string'))
-        && copy.files.every(file => file && typeof file.name === 'string' && typeof file.type === 'string' && Number.isFinite(file.lastModified) && file.blob instanceof Blob);
+        && copy.files.every(file => file && typeof file.name === 'string' && typeof file.type === 'string' && Number.isFinite(file.lastModified) && file.blob instanceof Blob && validSourceUploadIntents(file.uploads));
     if (entry.version !== 1 || typeof entry.revision !== 'string' || value === undefined || value !== null && (value.version !== 1 || !validCopy(value)
         || !['draft', 'pending'].includes(value.mode) || value.previous !== undefined && (!Array.isArray(value.previous) || !value.previous.every(validCopy)))) {
         throw new Error('The saved attachment draft cannot be decoded; its bytes have been retained.');
@@ -73,29 +93,44 @@ const pendingWrites = new Map<string, Promise<void>>();
 type InputProps = PropsRuntime<'conversation.input.dock'>;
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
-export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceComposerBridge): () => void {
+export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceComposerBridge,
+    authenticatedIdentity?: ComposerAuthenticatedIdentity): () => void {
     const style = document.createElement('style');
     style.textContent = '.hapi-attachment-recovery{font-size:12px;padding:8px 12px;border:1px solid var(--border-secondary,#8885);border-radius:8px;overflow-wrap:anywhere}.hapi-attachment-recovery p{margin:4px 0 8px}.hapi-attachment-recovery button{font:inherit;border:1px solid var(--border-secondary,#8885);background:var(--bg-secondary,Canvas);color:inherit;border-radius:5px;padding:4px 8px;margin:2px;cursor:pointer}.hapi-attachment-recovery button:disabled{opacity:.5;cursor:default}.hapi-attachment-recovery pre{white-space:pre-wrap;max-height:120px;overflow:auto}.hapi-attachment-recovery [role=alert]{color:var(--text-error,#d45d62)}';
     document.head.append(style);
+    const inputAccounts = new WeakMap<InputProps['inputActions'], string>();
     const scope = ctx.inject(['hapiWorkspaceUi', 'sessions'], owner => {
-        const Recovery = ({ props, identity, legacyIdentity }: { props: InputProps; identity: string; legacyIdentity: string }) => {
-            const state = props.useInput(value => value), pending = props.useSession(value => value.pendingSubmissions), current = useRef(props); current.current = props;
+        const Recovery = ({ props, identity, credential }: { props: InputProps; identity: string; credential: ComposerIdentity }) => {
+            const pane = useWorkspacePane(owner);
+            const state = props.useInput(value => value), pending = props.useSession(value => value.pendingSubmissions);
             const [backup, setBackup] = useState<SavedAttachments | null>(null), [error, setError] = useState<string | null>(null);
             const [loading, setLoading] = useState(true), [review, setReview] = useState(false);
-            const lifecycle = useMemo(() => new AbortController(), [identity]);
+            const lifecycle = useMemo(() => new AbortController(), [identity, credential.signal, props.sessionBinding]);
+            const initialization = useRef<Promise<void>>(Promise.resolve());
+            const restoration = useRef<Promise<void> | undefined>(undefined);
             const saved = useRef<SavedAttachments | null>(null), ready = useRef(false), blocked = useRef(false), restoring = useRef(false);
             const latest = useRef<SavedAttachments | null>(null);
+            const queued = useRef<SavedAttachments | null>(null);
             const writes = useRef(pendingWrites.get(identity) ?? Promise.resolve()), persistenceError = useRef<Error | null>(null), revision = useRef(0);
-            const storedRevision = useRef<string | null>(null), prepared = useRef<string | null>(null);
+            const storedRevision = useRef<string | null>(null);
+            const detailView = useMemo(() => ({ value: null as ReactNode, listeners: new Set<() => void>() }), []);
             const tr = (en: string, zh: string) => owner.locale.getSnapshot().active.startsWith('zh') ? zh : en;
+            const assertIdentity = () => {
+                credential.signal.throwIfAborted(); lifecycle.signal.throwIfAborted();
+                if (!credential.current()) throw new Error('The authenticated draft account changed. Its saved bytes are retained.');
+                const previous = inputAccounts.get(props.inputActions);
+                if (previous !== undefined && previous !== identity) throw new Error('This attachment input belongs to an earlier account. Reopen the conversation; its saved files are retained.');
+                inputAccounts.set(props.inputActions, identity);
+            };
             const live = () => {
-                const binding = owner.sessions.binding(props.sessionId);
-                if (!binding) throw new Error('The original composer is no longer open.');
+                assertIdentity();
+                const binding = (props.sessionBinding ?? owner.sessions.binding(props.sessionId));
+                if (!binding || owner.sessions.ownsBinding?.(binding) === false) throw new Error('The original composer is no longer open.');
                 return owner.conversation.input.for(binding.ctx).state.getSnapshot();
             };
-            const pendingNow = () => owner.sessions.binding(props.sessionId)?.session.getSnapshot().pendingSubmissions ?? [];
+            const pendingNow = () => (props.sessionBinding ?? owner.sessions.binding(props.sessionId))?.session.getSnapshot().pendingSubmissions ?? [];
             const admitted = (): ReadonlySet<string> => {
-                const binding = owner.sessions.binding(props.sessionId), result = new Set<string>();
+                const binding = (props.sessionBinding ?? owner.sessions.binding(props.sessionId)), result = new Set<string>();
                 if (!binding) return result;
                 for (const entry of binding.eventSource.getSnapshot().entries) {
                     if (entry.type !== 'event' || entry.event.type !== 'user/message') continue;
@@ -109,12 +144,14 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                 return result;
             };
             const confirmed = (copy: SavedCopy, ids: ReadonlySet<string>) => Boolean(copy.requestIds?.length && copy.requestIds.every(id => ids.has(id)));
-            const fingerprint = () => { const input = live(); return JSON.stringify([input.draftRev, input.phase, input.attachmentIds, pendingNow().map(value => value.requestId)]); };
+            const fingerprint = () => { const input = live(); return JSON.stringify([input.draftRev, input.phase, input.attachmentIds, pendingNow().map(value => value.requestId),
+                bridge.captureFiles(props.sessionId, input.attachmentIds, props.inputActions).map(({ file }) =>
+                    captureSourceUploadIntents(file, props.sessionId).map(([id, intent]) => [id, intent.operationId, intent.prepared?.size, intent.prepared?.type]))]); };
             const persist = async () => {
                 if (!ready.current || blocked.current || restoring.current) throw new Error('The original attachment draft needs review before this page can update.');
                 const input = live();
-                current.current.inputActions.persistDraft();
-                const files = bridge.captureFiles(props.sessionId, input.attachmentIds);
+                props.inputActions.persistDraft();
+                const files = bridge.captureFiles(props.sessionId, input.attachmentIds, props.inputActions);
                 const base = latest.current;
                 if (!files.length && !base?.files.length && !base?.previous?.length) return;
                 const flights = pendingNow(), detached = flights.length > 0, admittedIds = admitted();
@@ -125,15 +162,24 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                 const sameFiles = base?.files.length === files.length && files.every(({ file }, index) => file === base.files[index]!.blob);
                 if (files.length && unresolved && !sameFiles) previous.push({ text: base.text, files: base.files, savedAt: base.savedAt, ...(base.requestIds ? { requestIds: base.requestIds } : {}) });
                 const value: SavedAttachments | null = files.length ? { version: 1, text: input.draft,
-                    mode: ['submitting', 'adjudicating'].includes(input.phase) ? 'pending' : 'draft', savedAt: Date.now(),
-                    files: files.map(({ file }) => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file })), previous }
+                    mode: detached || ['submitting', 'adjudicating'].includes(input.phase) ? 'pending' : 'draft', savedAt: Date.now(),
+                    ...(flights.length ? { requestIds: flights.map(value => value.requestId) } : {}),
+                    files: files.map(({ file }) => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file, uploads: captureSourceUploadIntents(file, props.sessionId) })), previous }
                     : (detached || unresolved) && base?.files.length ? { ...base, mode: 'pending', previous,
                         requestIds: [...new Set([...(base.requestIds ?? []), ...flights.map(value => value.requestId)])] }
                     : previous.length ? { version: 1, text: input.draft, files: [], mode: 'draft', previous, savedAt: Date.now() } : null;
-                latest.current = value;
+                // Session and history streams also publish unrelated progress.
+                // Wait for a matching durable write instead of queueing the
+                // same original/prepared Blobs again for every such update.
+                if (!persistenceError.current && sameAttachments(queued.current, value)) {
+                    await writes.current;
+                    if (persistenceError.current) throw persistenceError.current;
+                    return;
+                }
+                latest.current = queued.current = value;
                 const expected = ++revision.current;
                 writes.current = writes.current.then(async () => {
-                    try { const stored = await attachmentStore.write(identity, storedRevision.current, value); storedRevision.current = stored.revision; saved.current = value; persistenceError.current = null;
+                    try { assertIdentity(); const stored = await attachmentStore.write(identity, storedRevision.current, value); storedRevision.current = stored.revision; saved.current = value; persistenceError.current = null;
                         if (!lifecycle.signal.aborted && expected === revision.current) { setBackup(value); setError(null); }
                     } catch (reason) { persistenceError.current = new Error(message(reason)); if (!lifecycle.signal.aborted) setError(message(reason)); }
                 });
@@ -147,61 +193,107 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                 if (restoring.current || lifecycle.signal.aborted) return;
                 const before = live();
                 if (['adjudicating', 'submitting'].includes(before.phase) || before.attachmentIds.length || !explicit && (value.mode !== 'draft' || value.text !== before.draft)) {
-                    blocked.current = true; setReview(true); return;
+                    if (!explicit) {
+                        const previous = [...value.previous ?? [], { text: value.text, files: value.files, savedAt: value.savedAt,
+                            ...(value.requestIds ? { requestIds: value.requestIds } : {}) }];
+                        latest.current = { version: 1, mode: 'draft', text: before.draft, files: [], previous, savedAt: Date.now() };
+                        setBackup(latest.current); blocked.current = false; setReview(false);
+                    } else setReview(true);
+                    return;
                 }
                 restoring.current = true; setLoading(true); setError(null);
+                const restored = Promise.withResolvers<void>(); restoration.current = restored.promise;
                 try {
-                    const files = value.files.map(file => new File([file.blob], file.name, { type: file.type, lastModified: file.lastModified }));
-                    const undo = await bridge.addFiles(props.sessionId, files, lifecycle.signal);
+                    const files = value.files.map(file => {
+                        const restored = new File([file.blob], file.name, { type: file.type, lastModified: file.lastModified });
+                        restoreSourceUploadIntents(restored, file.uploads); return restored;
+                    });
+                    const undo = await bridge.addFiles(props.sessionId, files, lifecycle.signal, props.inputActions);
                     const after = live();
                     if (after.draftRev !== before.draftRev || ['adjudicating', 'submitting'].includes(after.phase)) { undo(); throw new Error('The composer changed while restoring files. The original bytes are retained for review.'); }
-                    latest.current = { ...value, mode: 'draft', text: after.draft, files: files.map(file => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file })) };
+                    // Explicit recovery restores the accompanying text only into
+                    // an empty draft. Never replace text written since sending.
+                    if (explicit && !after.draft && value.text) {
+                        const binding = props.sessionBinding ?? owner.sessions.binding(props.sessionId);
+                        owner.conversation.input.for(binding!.ctx).setDraft(value.text);
+                    }
+                    latest.current = { ...value, mode: 'draft', text: live().draft, files: files.map(file => ({ name: file.name, type: file.type, lastModified: file.lastModified, blob: file, uploads: captureSourceUploadIntents(file, props.sessionId) })) };
                     blocked.current = false; setReview(false);
                 } catch (reason) { blocked.current = true; setReview(true); setError(message(reason)); }
-                finally { restoring.current = false; if (!lifecycle.signal.aborted) setLoading(false); }
+                finally { restoring.current = false; restoration.current = undefined; restored.resolve(); if (!lifecycle.signal.aborted) setLoading(false); }
             };
             useEffect(() => {
-                void writes.current.then(async () => {
-                    const entry = await attachmentStore.read(identity);
-                    if (entry) return entry;
-                    const legacy = await attachmentStore.read(legacyIdentity);
-                    return legacy?.value ? attachmentStore.write(identity, null, legacy.value) : null;
+                initialization.current = writes.current.then(async () => {
+                    assertIdentity(); return attachmentStore.read(identity);
                 }).then(async entry => {
                     if (lifecycle.signal.aborted) return;
                     const value = entry?.value ?? null; storedRevision.current = entry?.revision ?? null;
-                    saved.current = latest.current = value; setBackup(value); ready.current = true;
-                    if (value?.files.length && !(value.mode === 'pending' && confirmed(value, admitted()))) await restore(value, false);
+                    saved.current = latest.current = queued.current = value; setBackup(value); ready.current = true;
+                    if (value?.files.length && value.mode === 'draft') await restore(value, false);
                 }).catch(reason => { blocked.current = true; setError(message(reason)); }).finally(() => { if (!lifecycle.signal.aborted) setLoading(false); });
-                const stop = owner.hapiWorkspaceUi.updates.register('Conversation draft and attachments', async () => {
-                    prepared.current = null;
-                    if (['adjudicating', 'submitting'].includes(live().phase) || pendingNow().length) throw new Error('Wait for the current submission to settle.');
-                    await persist();
-                    for (;;) { const pending = writes.current; await pending; if (pending === writes.current) break; }
-                    if (persistenceError.current) throw persistenceError.current;
-                    prepared.current = fingerprint();
+                const stop = owner.hapiWorkspaceUi.updates.registerCheckpoint({ kind: 'attachment', label: 'Conversation draft and attachments',
+                    revision: fingerprint,
+                    current: () => {
+                        const binding = props.sessionBinding ?? owner.sessions.binding(props.sessionId);
+                        return !lifecycle.signal.aborted && credential.current() && !!binding && owner.sessions.ownsBinding?.(binding) !== false;
+                    },
+                    async save(signal) {
+                        signal.throwIfAborted();
+                        if (['adjudicating', 'submitting'].includes(live().phase) || pendingNow().length) throw new Error('Wait for the current submission to settle.');
+                        await initialization.current; await restoration.current; await persist();
+                        for (;;) { const pending = writes.current; await pending; if (pending === writes.current) break; }
+                        signal.throwIfAborted(); assertIdentity();
+                        if (persistenceError.current) throw persistenceError.current;
+                    },
                 });
-                const verify = owner.hapiWorkspaceUi.updates.register('Conversation draft and attachments', () => {
-                    if (prepared.current !== fingerprint()) throw new Error('The conversation changed while saving. Review it and try the update again.');
-                }, 'verify');
-                return () => { lifecycle.abort(); stop(); verify(); };
-            }, [identity]);
+                return () => { lifecycle.abort(); stop(); };
+            }, [identity, lifecycle]);
+            // Wait for this exact input's durable attachment restoration before moving its Host route.
+            useEffect(() => pane?.registerSourceRouteCheckpoint?.({ sessionId: props.sessionId, transfer(target) {
+                if (loading || !ready.current || blocked.current || restoring.current || persistenceError.current || !credential.current()) return false;
+                const input = live(), backup = latest.current;
+                if (input.phase !== 'plain' || input.attachmentIds.length || input.queue.length || pendingNow().length
+                    || backup?.files.length || backup?.previous?.length) return false;
+                props.inputActions.persistDraft();
+                return copySourceRouteDraft(window.localStorage, identity,
+                    accountComposerDraftKey(target.scope, target.hostId, props.sessionId), composerDraftSnapshot(input));
+            } }), [pane, identity, credential, loading, props.sessionId, props.inputActions, lifecycle]);
+            useEffect(() => bridge.registerUploadCheckpoint(props.inputActions, async () => {
+                await initialization.current; await restoration.current; assertIdentity(); await persist();
+            }), [identity, lifecycle, props.inputActions]);
             useEffect(() => {
                 if (!ready.current || blocked.current || restoring.current || loading) return;
                 void persist().catch(reason => { if (!lifecycle.signal.aborted) setError(message(reason)); });
-            }, [identity, state.draftRev, state.phase, state.attachmentIds, pending, loading]);
+            }, [identity, state.draftRev, state.phase, state.attachmentIds, pending, loading, lifecycle]);
+            // Observe admission at the owner boundary, before React can combine
+            // a fast pending→observed transition into one render. History alone
+            // retires saved copies; a receipt or an empty editor does not.
+            useEffect(() => {
+                const binding = props.sessionBinding ?? owner.sessions.binding(props.sessionId);
+                const changed = () => {
+                    if (!ready.current || blocked.current || restoring.current || lifecycle.signal.aborted) return;
+                    void persist().catch(reason => { if (!lifecycle.signal.aborted) setError(message(reason)); });
+                };
+                const stops = [binding?.session.subscribe?.(changed), binding?.eventSource.subscribe?.(changed)];
+                return () => { for (const stop of stops) stop?.(); };
+            }, [identity, lifecycle, props.sessionBinding]);
+            useEffect(() => owner.slots.register({ name: 'hapi.source.composer-details', id: `attachments:${identity}`, order: 20 }, detailProps => {
+                const view = useSyncExternalStore(listener => { detailView.listeners.add(listener); return () => { detailView.listeners.delete(listener); }; }, () => detailView.value);
+                return detailProps.inputActions === props.inputActions ? view : null;
+            }), [identity, props.inputActions, detailView]);
+            useEffect(() => { for (const listener of detailView.listeners) listener(); });
             const download = (file: SavedFile) => {
                 const url = URL.createObjectURL(file.blob), anchor = document.createElement('a'); anchor.href = url; anchor.download = file.name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
             };
-            if (!error && !review && !backup?.previous?.length) return null;
-            return <div className="hapi-attachment-recovery" role="status">
+            detailView.value = !error && !review && !backup?.previous?.length && backup?.mode !== 'pending' ? null : <div className="hapi-attachment-recovery">
                 {error && <p role="alert">{error}</p>}
                 {error && <button type="button" disabled={loading} onClick={() => {
                     setLoading(true); void writes.current.then(() => attachmentStore.read(identity)).then(entry => {
-                        storedRevision.current = entry?.revision ?? null; saved.current = latest.current = entry?.value ?? null; ready.current = true;
+                        storedRevision.current = entry?.revision ?? null; saved.current = latest.current = queued.current = entry?.value ?? null; ready.current = true;
                         setBackup(saved.current); blocked.current = Boolean(saved.current); setReview(blocked.current); persistenceError.current = null; setError(null);
                     }).catch(reason => setError(message(reason))).finally(() => setLoading(false));
                 }}>{tr('Review latest saved copy', '检查最新保存副本')}</button>}
-                {review && <><p>{tr('Saved attachment bytes are available. Review the current draft and source history before restoring them; no message will be sent.', '已保留附件原始内容。请核对当前草稿和源历史后恢复，不会自动发送消息。')}</p>
+                {(review || backup?.mode === 'pending') && <><p>{tr('Saved attachments', '已保存的附件')}</p>
                     {backup?.files.map((file, index) => <button type="button" key={index} onClick={() => download(file)}>{tr('Save original', '保存原件')} · {file.name}</button>)}
                     <button type="button" disabled={loading || state.attachmentIds.length > 0} onClick={() => { if (saved.current) void restore(saved.current, true); }}>{tr('Restore saved attachments', '恢复已保存附件')}</button>
                     <button type="button" disabled={loading} onClick={() => {
@@ -210,33 +302,34 @@ export function installComposerAttachmentRecovery(ctx: Context, bridge: SourceCo
                             const value: SavedAttachments | null = latest.current?.previous?.length ? { version: 1, text: live().draft, files: [], mode: 'draft', previous: latest.current.previous, savedAt: Date.now() } : null;
                             return attachmentStore.write(identity, storedRevision.current, value);
                         }).then(entry => {
-                            storedRevision.current = entry.revision; saved.current = latest.current = entry.value; blocked.current = false; persistenceError.current = null; setBackup(entry.value); setReview(false); setError(null);
+                            storedRevision.current = entry.revision; saved.current = latest.current = queued.current = entry.value; blocked.current = false; persistenceError.current = null; setBackup(entry.value); setReview(false); setError(null);
                         }).catch(reason => setError(message(reason))).finally(() => setLoading(false));
                     }}>{tr('Discard saved copy', '丢弃保存副本')}</button></>}
-                {!!backup?.previous?.length && <details><summary>{tr('Earlier attachment submissions need review', '较早提交的附件需要核对')} · {backup.previous.length}</summary>
-                    <p>{tr('These bytes remain until their exact request is observed in source history or you discard the saved copies. Nothing is resent automatically.', '原始内容会保留，直到在源历史中确认对应请求，或你明确丢弃副本。不会自动重发。')}</p>
+                {!!backup?.previous?.length && <details><summary>{tr('Saved attachments', '已保存的附件')} · {backup.previous.length}</summary>
                     {backup.previous.map((copy, index) => <div key={index}><pre>{copy.text}</pre>{copy.files.map((file, fileIndex) => <button type="button" key={fileIndex} onClick={() => download(file)}>{tr('Save original', '保存原件')} · {file.name}</button>)}</div>)}
                     <button type="button" disabled={loading} onClick={() => {
                         if (!window.confirm(tr('Discard earlier saved attachment copies? Check source history first. Current draft attachments are kept.', '丢弃较早保存的附件副本？请先核对源历史，当前草稿附件会保留。'))) return;
                         setLoading(true); void writes.current.then(async () => {
                             const value = latest.current ? { ...latest.current, previous: [] } : null;
                             const entry = await attachmentStore.write(identity, storedRevision.current, value);
-                            storedRevision.current = entry.revision; saved.current = latest.current = value; setBackup(value);
+                            storedRevision.current = entry.revision; saved.current = latest.current = queued.current = value; setBackup(value);
                         }).catch(reason => setError(message(reason))).finally(() => setLoading(false));
                     }}>{tr('Discard earlier saved copies', '丢弃较早的保存副本')}</button>
                 </details>}
             </div>;
+            // Normal confirmation and retained backup bytes are internal state.
+            // Recovery remains available in More without taking transcript space.
+            return null;
         };
         const Seat = (props: InputProps) => {
-            const pane = useWorkspacePane(owner), native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
-            const eligible = pane && !observed?.sidechain && (source || !/^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId));
-            const identity = eligible ? composerDraftKey(pane.hostId, props.sessionId, source ?? undefined) : '';
+            const pane = useWorkspacePane(owner);
+            const credential = useComposerIdentity(owner, props.sessionId, authenticatedIdentity);
+            const identity = pane && credential && !credential.signal.aborted ? accountComposerDraftKey(credential.scope, pane.hostId, props.sessionId) : '';
             const token = useMemo(() => ({}), [identity]);
             useEffect(() => identity ? ownership.retain(identity, token) : undefined, [identity, token]);
             const currentOwner = useSyncExternalStore(ownership.subscribe, () => ownership.owner(identity));
-            if (!eligible || currentOwner !== token) return null;
-            const legacyIdentity = JSON.stringify([pane.hostId, pane.paneId, source?.hubId ?? 'dsh', source?.hapiSessionId ?? props.sessionId]);
-            return <Recovery key={identity} props={props} identity={identity} legacyIdentity={legacyIdentity}/>;
+            if (!identity || !credential || currentOwner !== token) return null;
+            return <Recovery key={identity} props={props} identity={identity} credential={credential}/>;
         };
         return owner.slots.inject('conversation.input.dock', () => owner.slots.register({ name: 'conversation.input.dock', id: 'hapi.attachment-recovery', order: -90 }, Seat));
     });

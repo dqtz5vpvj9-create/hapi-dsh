@@ -8,10 +8,12 @@
  * controller resolves the control from the element it is acting on.
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client';
 
 /** Read-side facts published by one mounted Chat view. */
 export interface MountedChatReadingV1 {
     readonly revision: number;
+    readonly renderRevision?: number;
     readonly anchor: { readonly key: string; readonly top: number } | null;
     readonly following: boolean;
     readonly hasOlder: boolean;
@@ -28,10 +30,14 @@ export interface MountedChatTargetV1 {
 export interface MountedChatControlV1 {
     readonly version: 1;
     read(): MountedChatReadingV1;
+    /** Original payload acknowledged by a real official Node seat's layout effect. */
+    renderedNode?(key: string): ChatConversationViewNode | undefined;
     subscribe(listener: () => void): () => void;
     loadOlder(signal?: AbortSignal): Promise<void>;
     /** Sample the official reader immediately before source history publishes. */
     preparePageCommit?(): void;
+    /** Capture and save a fresh semantic position through this official reader. */
+    checkpointReading?(): void;
     reveal(target: MountedChatTargetV1, signal?: AbortSignal): Promise<void>;
     toLatest(signal?: AbortSignal): Promise<void>;
 }
@@ -53,6 +59,7 @@ const MOUNTED_CHAT_DATASET_KEY = 'hapiMountedChat';
 interface RegisteredControl { control: MountedChatControlV1; readLatest: boolean }
 const controls = new Map<string, RegisteredControl>();
 const tokens = new WeakMap<object, string>();
+const registrations = new WeakMap<object, Set<() => void>>();
 let sequence = 0;
 
 /** Minimal Pane element surface the registry needs. */
@@ -75,6 +82,7 @@ export function publishPaneMountedChat(pane: MountedChatPane, control: MountedCh
     if (control === null || control === undefined) {
         if (key !== undefined) { controls.delete(key); tokens.delete(pane); }
         delete pane.dataset[MOUNTED_CHAT_DATASET_KEY];
+        for (const listener of [...registrations.get(pane) ?? []]) listener();
         return;
     }
     let token = key;
@@ -85,6 +93,18 @@ export function publishPaneMountedChat(pane: MountedChatPane, control: MountedCh
     }
     controls.set(token, { control, readLatest });
     pane.dataset[MOUNTED_CHAT_DATASET_KEY] = token;
+    for (const listener of [...registrations.get(pane) ?? []]) listener();
+}
+
+/** Observe late mount, replacement and unmount of this occurrence's official reader. */
+export function subscribePaneMountedChat(pane: MountedChatPane, listener: () => void): () => void {
+    let listeners = registrations.get(pane);
+    if (!listeners) registrations.set(pane, listeners = new Set());
+    listeners.add(listener);
+    return () => {
+        if (!listeners.delete(listener)) return;
+        if (!listeners.size) registrations.delete(pane);
+    };
 }
 
 /**

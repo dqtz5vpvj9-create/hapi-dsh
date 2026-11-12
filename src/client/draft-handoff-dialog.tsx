@@ -1,3 +1,5 @@
+import { sourceRoute } from '../shared/source-capability.ts';
+import { isSourceDisplayId } from '../shared/source-display-id.ts';
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import { sessionResourceId, type WorkspaceController } from './controller.ts';
@@ -35,7 +37,9 @@ export function installDraftHandoff(ctx: Context, controller: WorkspaceControlle
                 await handoffs.prepare(from, to, paneId);
                 // Only an untouched, same-window 'ready' share may follow this
                 // backend-confirmed new original source identity.
-                await inbox.retargetPending(from, to);
+                if (!isSourceDisplayId(from.displayId) && !isSourceDisplayId(to.displayId)) {
+                    await inbox.retargetPending(sourceRoute(from.hostId, from.displayId, 'local'), sourceRoute(to.hostId, to.displayId, 'local'));
+                }
                 controller.openSession(sessionResourceId(to.hostId, to.displayId));
             } catch (error) { handoffs.report(error); throw error; }
         });

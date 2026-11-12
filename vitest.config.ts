@@ -17,7 +17,7 @@ export default defineConfig({
   }] : [],
   esbuild: { jsx: 'automatic' },
   test: {
-    include: ['tests/experience/**/*.test.tsx'],
+    include: ['tests/experience/**/*.test.tsx', 'tests/source-voice*.test.tsx'],
     environment: 'jsdom',
     environmentOptions: { jsdom: { url: 'https://experience.invalid/' } },
     setupFiles: ['tests/experience/setup.ts'],

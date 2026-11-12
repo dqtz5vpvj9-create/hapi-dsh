@@ -134,9 +134,11 @@ export { releaseDirName, computeReleaseId, releaseIdentity } from './manifest.mj
 export function verifyReleaseDirectory(root: string): Promise<BundleVerification>;
 export function prepareRelease(options: { bundleRoot: string; dshHome: string; verification: BundleVerification }): Promise<PreparedRelease>;
 export function readProfileManifest(directory: string): Promise<Record<string, unknown> | undefined>;
+export function ensureProfileBundleSelected(directory: string, name: string): Promise<boolean>;
 export function existingOverrides(profileManifest: Record<string, unknown> | undefined): Record<string, string>;
 export function linkDependencyName(role: 'host' | 'runner'): string;
 export function linkTarget(releaseRoot: string, role: 'host' | 'runner'): string;
+export function runnerSourceProviderTarget(releaseRoot: string): string;
 export function stagedOverrides(options: {
     current: Record<string, unknown> | undefined;
     manifest: BundleManifest;

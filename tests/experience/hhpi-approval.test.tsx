@@ -6,7 +6,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SourceApproval, SourceOperation, SourceReceipt } from '../../src/remote/protocol.ts'
 import { SourceApprovalControl } from '../../src/client/remote-controls.tsx'
 
-const request: SourceApproval = { id: 'same-native-request', method: 'command/approval', turnId: 'turn', itemId: 'item', params: { command: 'synthetic operation' } }
+const request: SourceApproval = { id: 'same-native-request', method: 'item/commandExecution/requestApproval', turnId: 'turn', itemId: 'item', params: { command: 'synthetic operation' } }
 function owner(id: string) {
   const pending = Promise.withResolvers<SourceReceipt>()
   const session = { sessionId: id as SessionId, operate: vi.fn((_request: SourceOperation) => pending.promise) }
@@ -61,7 +61,8 @@ test('an uncertain source answer remains visible and unmounting never resends', 
   await userEvent.click(screen.getByRole('button', { name: 'Allow' }))
   await act(async () => { a.pending.resolve({ ...a.done('Outcome unknown; not retried'), status: 'indeterminate' }); await a.pending.promise })
   expect(screen.getByRole('status')).toHaveTextContent('Outcome unknown; not retried')
-  expect(screen.getByRole('button', { name: 'Allow' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Check original decision' })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
   await waitFor(() => expect(a.session.operate).toHaveBeenCalledTimes(1))
@@ -73,7 +74,7 @@ test('an uncertain source answer remains visible and unmounting never resends', 
 test('offline approval remains visible and cannot submit until the source is reachable again', async () => {
   const a = owner('hhpi:machine:source:codex:thread')
   const view = render(<SourceApprovalControl session={a.session} request={request} zh={false} disabled/>)
-  expect(screen.getByRole('region', { name: 'Source approval' })).toHaveTextContent('command/approval')
+  expect(screen.getByRole('region', { name: 'Source approval' })).toHaveTextContent('Command approval')
   fireEvent.click(screen.getByRole('button', { name: 'Allow' }))
   expect(a.session.operate).not.toHaveBeenCalled()
   view.rerender(<SourceApprovalControl session={a.session} request={request} zh={false}/>)
@@ -97,4 +98,41 @@ test('a transient approval transport loss shows waiting while definite access de
   await act(async () => { b.pending.reject(Object.assign(new Error('client api: hhpi/operate failed: HTTP 403'), { code: 'gateway/internal' })); await b.pending.promise.catch(() => {}) })
   expect(screen.getByRole('alert')).toHaveTextContent('HTTP 403')
   expect(screen.queryByRole('status')).not.toBeInTheDocument()
+})
+
+test('human command context is visible while request IDs and raw parameters stay in collapsed details', () => {
+  const a = owner('hhpi:machine:source:codex:thread')
+  render(<SourceApprovalControl session={a.session} request={{ ...request, params: { command: 'npm test', cwd: '/workspace', reason: 'Run the requested checks' } }} zh={false}/> )
+  expect(screen.getByRole('heading', { name: 'Command approval' })).toBeVisible()
+  expect(screen.getByText('npm test')).toBeVisible()
+  expect(screen.getByText('Working directory: /workspace')).toBeVisible()
+  expect(screen.getByText('Run the requested checks')).toBeVisible()
+  expect(screen.getByText('Technical details').closest('details')).not.toHaveAttribute('open')
+})
+
+test('an unknown native request cannot use generic approval buttons', () => {
+  const a = owner('hhpi:machine:source:codex:thread')
+  render(<SourceApprovalControl session={a.session} request={{ ...request, method: 'unknown/requestPermission' }} zh={false}/> )
+  expect(screen.getByText(/generic approval is unavailable/)).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument()
+  expect(a.session.operate).not.toHaveBeenCalled()
+})
+
+test('source-provided decisions do not expose a broader approval choice', async () => {
+  const a = owner('hhpi:machine:source:codex:thread')
+  render(<SourceApprovalControl session={a.session} request={{ ...request, params: { command: 'native command', availableDecisions: ['decline', 'cancel'] } }} zh={false}/> )
+  expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Deny and stop this turn' }))
+  await waitFor(() => expect(a.session.operate).toHaveBeenCalledWith(expect.objectContaining({ requestId: request.id, decision: 'cancel' })))
+})
+
+test('a stale command card cannot approve after the source resolves its original request', async () => {
+  const a = owner('hhpi:machine:source:codex:thread')
+  let pendingRequests: SourceApproval[] = [request]
+  const session = { ...a.session, metadata: { getSnapshot: () => ({ pendingRequests }) } }
+  render(<SourceApprovalControl session={session} request={request} zh={false}/> )
+  pendingRequests = []
+  await userEvent.click(screen.getByRole('button', { name: 'Allow' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('original approval was resolved or changed')
+  expect(session.operate).not.toHaveBeenCalled()
 })

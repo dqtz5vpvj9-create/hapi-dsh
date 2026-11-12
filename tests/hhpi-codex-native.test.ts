@@ -2,7 +2,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DirectCodexAdapter } from '../src/remote/codex-adapter.ts';
 import { CodexRpc, CodexRpcError } from '../src/remote/codex-rpc.ts';
@@ -18,7 +17,7 @@ function isolatedNativeConfig(model: SyntheticResponsesModel): string {
     return `${model.config()}\n[features]\nplugins = false\n`;
 }
 
-async function completedNativeTurn(source: DirectCodexAdapter, page: SourcePage, nativeTurnId: string, signal: AbortSignal): Promise<SourcePage> {
+async function completedNativeTurn(source: DirectCodexAdapter, page: SourcePage, clientUserMessageId: string, signal: AbortSignal): Promise<SourcePage> {
     const sessionId = page.session.id;
     for await (const change of source.changes({ sessionId, epoch: page.epoch, version: page.version }, signal)) {
         if (!change.upserts.some(entry => entry.event.type === 'turn/end')) continue;
@@ -27,7 +26,7 @@ async function completedNativeTurn(source: DirectCodexAdapter, page: SourcePage,
         let coordinate: number | undefined; let found = false;
         for (const entry of current.entries) {
             if (entry.event.type === 'turn/start') coordinate = (entry.event.data as { turn: number }).turn;
-            if (entry.event.type === 'user/message' && (entry.event.data as { id: string }).id.includes(`:${encodeURIComponent(nativeTurnId)}:`)) { found = true; break; }
+            if (entry.event.type === 'user/message' && (entry.event.data as { source?: { rpcId?: string } }).source?.rpcId === clientUserMessageId) { found = true; break; }
         }
         if (found && coordinate !== undefined && current.entries.some(entry => entry.event.type === 'turn/end' && (entry.event.data as { turn: number }).turn === coordinate)) return current;
     }
@@ -81,7 +80,7 @@ test('native Codex creates once, sends, streams, pages, steers and interrupts wi
     skip: !script && !command ? 'Set HHPI_CODEX_TEST_COMMAND or HHPI_CODEX_TEST_SCRIPT to the pinned native Codex 0.165.0 executable.' : false,
     timeout: 45_000,
 }, async t => {
-    const root = await mkdtemp(join(tmpdir(), 'hhpi-native-'));
+    const root = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-native-'));
     const model = new SyntheticResponsesModel(); await model.start();
     await writeFile(join(root, 'config.toml'), isolatedNativeConfig(model));
     const config: DirectCodexConfig = { id: 'synthetic', machineId: 'fixture-machine', engine: 'codex', command: script ? process.execPath : command!,
@@ -112,8 +111,8 @@ test('native Codex creates once, sends, streams, pages, steers and interrupts wi
             const operation = { sessionId, operationId: `send-${turn}`, kind: 'send' as const, text: `Synthetic prompt ${turn}` };
             const [first, duplicate] = await Promise.all([source.operate(operation), source.operate(operation)]);
             assert.equal(first.status, 'accepted'); assert.deepEqual(first, duplicate);
-            assert.ok(first.turnId); targetTurn = first.turnId; phase = `observe automatic native turn ${turn}`;
-            accepted = await completed(accepted, first.turnId);
+            assert.deepEqual(first.ownerAdmission, { localId: operation.operationId, state: 'queued' }); targetTurn = operation.operationId; phase = `observe automatic native turn ${turn}`;
+            accepted = await completed(accepted, operation.operationId);
         }
         assert.equal(model.calls, 8, 'duplicate submissions must reach the native model only once');
         const identities = accepted.entries.map(entry => entry.event.seq);
@@ -132,28 +131,30 @@ test('native Codex creates once, sends, streams, pages, steers and interrupts wi
         model.automatic = false;
         phase = 'start held steering turn';
         const running = await source.operate({ sessionId, operationId: 'running', kind: 'send', text: 'Wait for synthetic feedback.' });
-        assert.equal(running.status, 'accepted'); assert.ok(running.turnId);
-        targetTurn = running.turnId; phase = 'receive held steering model request';
+        assert.equal(running.status, 'accepted'); assert.equal(running.turnId, undefined);
+        targetTurn = 'running'; phase = 'receive held steering model request';
         const held = await model.next(signal);
+        const runningTurnId = (await source.resolve(sessionId, signal)).activeTurnId; assert.ok(runningTurnId);
         phase = 'native steering acknowledgement';
-        const steering = { sessionId, operationId: 'steer', kind: 'steer' as const, text: 'Additional synthetic feedback.', turnId: running.turnId };
+        const steering = { sessionId, operationId: 'steer', kind: 'steer' as const, text: 'Additional synthetic feedback.', turnId: runningTurnId };
         const steer = await source.operate(steering);
         assert.equal(steer.status, 'accepted'); assert.deepEqual(await source.operate(steering), steer);
         model.automatic = true; held.reply('Synthetic steered completion');
         phase = 'observe steered turn completion';
-        accepted = await completed(accepted, running.turnId);
+        accepted = await completed(accepted, 'running');
         model.automatic = false;
         phase = 'start held cancellable turn';
         const cancellable = await source.operate({ sessionId, operationId: 'cancellable', kind: 'send', text: 'Wait for synthetic cancellation.' });
-        assert.equal(cancellable.status, 'accepted'); assert.ok(cancellable.turnId);
-        targetTurn = cancellable.turnId; phase = 'receive held cancellable model request';
+        assert.equal(cancellable.status, 'accepted'); assert.equal(cancellable.turnId, undefined);
+        targetTurn = 'cancellable'; phase = 'receive held cancellable model request';
         await model.next(signal);
+        const cancelledTurnId = (await source.resolve(sessionId, signal)).activeTurnId; assert.ok(cancelledTurnId);
         phase = 'native interrupt acknowledgement';
-        const cancel = { sessionId, operationId: 'cancel', kind: 'cancel' as const, turnId: cancellable.turnId };
+        const cancel = { sessionId, operationId: 'cancel', kind: 'cancel' as const, turnId: cancelledTurnId };
         const cancelled = await source.operate(cancel); assert.equal(cancelled.status, 'accepted');
         assert.deepEqual(await source.operate(cancel), cancelled);
         phase = 'observe interrupted turn completion';
-        await completed(accepted, cancellable.turnId);
+        await completed(accepted, 'cancellable');
         phase = 'verify retained source identities';
         const final = await source.read({ sessionId, limit: 500 });
         assert.deepEqual(final.entries.filter(entry => identities.includes(entry.event.seq)).map(entry => entry.event.seq), identities, 'native streaming and later turns preserve earlier source identities');
@@ -183,7 +184,7 @@ test('shared Codex source resumes the original persisted thread only after its n
     skip: !script && !command ? 'Set HHPI_CODEX_TEST_COMMAND or HHPI_CODEX_TEST_SCRIPT to the pinned native Codex 0.165.0 executable.' : false,
     timeout: 45_000,
 }, async t => {
-    const root = await mkdtemp(join(tmpdir(), 'hhpi-native-handoff-'));
+    const root = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-native-handoff-'));
     const model = new SyntheticResponsesModel(); await model.start();
     const sources: DirectCodexAdapter[] = [];
     const native: Array<{ rpc: RecordedNativeRpc; notifications: string[] }> = [];
@@ -218,9 +219,9 @@ test('shared Codex source resumes the original persisted thread only after its n
         const initial = await owner.source.read({ sessionId }, signal);
         phase = 'send original turn';
         const first = await owner.source.operate({ sessionId, operationId: 'persist-first-turn', kind: 'send', text: 'Persist this original thread.' });
-        assert.equal(first.status, 'accepted'); assert.ok(first.turnId);
+        assert.equal(first.status, 'accepted'); assert.equal(first.turnId, undefined);
         phase = 'observe original turn completion';
-        const persisted = await completedNativeTurn(owner.source, initial, first.turnId, signal);
+        const persisted = await completedNativeTurn(owner.source, initial, 'persist-first-turn', signal);
         assert.deepEqual(messageTexts(persisted, 'assistant/message'), ['Synthetic response 1']);
         assert.equal(model.calls, 1);
 
@@ -277,24 +278,25 @@ test('shared Codex source resumes the original persisted thread only after its n
         phase = 'explicit shared continuation after original exit';
         const [receipt, duplicate] = await Promise.all([attached.source.operate(operation), attached.source.operate({ ...operation })]);
         assert.equal(receipt.status, 'accepted'); assert.deepEqual(duplicate, receipt);
-        assert.equal(receipt.sessionId, sessionId); assert.ok(receipt.turnId); assert.notEqual(receipt.turnId, first.turnId);
+        assert.equal(receipt.sessionId, sessionId); assert.equal(receipt.turnId, undefined);
+        assert.deepEqual(receipt.ownerAdmission, { localId: operation.operationId, state: 'queued' });
         phase = 'observe resumed model request';
         const response = await model.next(signal);
         assert.equal(model.calls, 2, 'duplicate explicit sends must start exactly one new native model request');
         assert.deepEqual(await loaded(attached.rpc), [nativeId]);
         response.reply('Resumed the original persisted thread.');
         phase = 'observe resumed turn completion';
-        const completed = await completedNativeTurn(attached.source, reopened, receipt.turnId, signal);
+        const completed = await completedNativeTurn(attached.source, reopened, operation.operationId, signal);
         assert.deepEqual(messageTexts(completed, 'user/message'), ['Persist this original thread.', 'Continue the same persisted thread.']);
         assert.deepEqual(messageTexts(completed, 'assistant/message'), ['Synthetic response 1', 'Resumed the original persisted thread.']);
         assert.equal(completed.session.id, sessionId); assert.equal(completed.session.nativeId, nativeId);
         assert.deepEqual(await attached.source.operate({ ...operation }), receipt, 'an observed send retains its deduplicated receipt');
         assert.deepEqual(attached.rpc.writes.map(call => [call.method, call.threadId]),
-            [['thread/resume', nativeId], ['thread/resume', nativeId], ['turn/start', nativeId]],
-            'explicit continuation resumes once and starts one turn in the original thread');
+            [['thread/resume', nativeId], ['thread/resume', nativeId], ['thread/queue/add', nativeId]],
+            'explicit continuation resumes once and queues one input in the original thread');
         assert.equal(model.calls, 2);
         t.diagnostic(JSON.stringify({ olderReads, modelCalls: model.calls, nativeConflictCode: conflicting.error.code,
-            resumedOriginalThread: completed.session.nativeId === nativeId, resumedTurnStarts: attached.rpc.writes.filter(call => call.method === 'turn/start').length,
+            resumedOriginalThread: completed.session.nativeId === nativeId, resumedQueueAdmissions: attached.rpc.writes.filter(call => call.method === 'thread/queue/add').length,
             userMessages: messageTexts(completed, 'user/message').length, assistantMessages: messageTexts(completed, 'assistant/message').length }));
     } catch (error) {
         t.diagnostic(JSON.stringify({ phase, modelCalls: model.calls, native: native.map(({ rpc, notifications }) => ({
@@ -305,4 +307,71 @@ test('shared Codex source resumes the original persisted thread only after its n
         await Promise.all(sources.map(source => source.dispose()));
         await model.close(); await rm(root, { recursive: true, force: true });
     }
+});
+
+/** This bounded check can use the actual source executable while keeping a
+ * separate CODEX_HOME, native owner and synthetic local model endpoint. */
+test('native queue preserves idle execution, busy queue ownership and exact lost-ACK recovery', {
+    skip: !process.env.HHPI_CODEX_QUEUE_TEST_COMMAND && !command ? 'Set HHPI_CODEX_QUEUE_TEST_COMMAND to the source native executable.' : false,
+    timeout: 20_000,
+}, async t => {
+    const { SourceError } = await import('../src/remote/errors.ts');
+    const root = await mkdtemp('/mnt/cache/data-cache/hhpi-native-queue-');
+    const model = new SyntheticResponsesModel(); await model.start();
+    await writeFile(join(root, 'config.toml'), isolatedNativeConfig(model));
+    const config: DirectCodexConfig = { id: 'isolated-queue', machineId: 'fixture', engine: 'codex', command: process.env.HHPI_CODEX_QUEUE_TEST_COMMAND ?? command!,
+        args: ['app-server'], codexHome: root, cwd: root, ownership: 'exclusive' };
+    class LostQueueAck extends RecordedNativeRpc {
+        override async request<T>(method: string, params: unknown, options: { write?: boolean; signal?: AbortSignal } = {}): Promise<T> {
+            const response = await super.request<T>(method, params, options);
+            if (method === 'thread/queue/add' && (params as { clientUserMessageId?: string }).clientUserMessageId === 'lost-original') throw new SourceError('OUTCOME_UNKNOWN', 'Synthetic lost queue ACK after actual native admission');
+            return response;
+        }
+    }
+    const rpc = new LostQueueAck(config), source = new DirectCodexAdapter(config, join(root, 'source-index'), { rpc });
+    const signal = AbortSignal.timeout(16_000);
+    try {
+        const runtime = (await rpc.connect(signal)).userAgent;
+        const creation = await source.create({ sourceId: source.id, operationId: 'create', cwd: root });
+        assert.ok(creation.session); const { id: sessionId, nativeId } = creation.session;
+        const idleEnded = Promise.withResolvers<void>();
+        const stopIdle = rpc.onNotification(frame => { if (frame.method === 'turn/completed' && frame.params.threadId === nativeId) idleEnded.resolve() });
+        const idle = await source.operate({ sessionId, operationId: 'idle-input', kind: 'send', text: 'Idle queue admission starts normal work.' });
+        assert.equal(idle.status, 'accepted'); assert.equal(idle.turnId, undefined);
+        await Promise.race([idleEnded.promise, new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }))]);
+        stopIdle();
+        const completed = await rpc.request<{ data: Array<{ item: { type: string; clientId?: string } }> }>('thread/items/list', { threadId: nativeId, limit: 100 }, { signal });
+        assert.ok(completed.data.some(entry => entry.item.type === 'userMessage' && entry.item.clientId === 'idle-input'));
+        assert.equal(model.calls, 1, 'idle queue input executes through the native model owner');
+        assert.equal(completed.data.filter(entry => entry.item.type === 'agentMessage').length, 1);
+        model.automatic = false;
+        assert.equal((await source.operate({ sessionId, operationId: 'held-input', kind: 'send', text: 'Keep the model boundary pending.' })).status, 'accepted');
+        await model.next(signal);
+        const activeTurnId = (await source.resolve(sessionId, signal)).activeTurnId; assert.ok(activeTurnId);
+        const implicit = await rpc.request<{ turn: { id: string } }>('turn/start', { threadId: nativeId, clientUserMessageId: 'legacy-implicit-steer', input: [{ type: 'text', text: 'This is the old implicit-steer route.' }] }, { write: true });
+        assert.equal(implicit.turn.id, activeTurnId, 'busy turn/start joins the original active turn');
+        const queue = () => rpc.request<{ data: Array<{ id: string; clientUserMessageId: string }> }>('thread/queue/list', { threadId: nativeId }, { signal });
+        assert.equal((await queue()).data.length, 0, 'implicit steering is absent from the native queue');
+        await model.next(signal);
+        const callsBeforeQueued = model.calls;
+        const ordinary = { sessionId, operationId: 'ordinary-queued', kind: 'send' as const, text: 'Normal queued input.' };
+        assert.equal((await source.operate(ordinary)).status, 'accepted');
+        const lost = { sessionId, operationId: 'lost-original', kind: 'send' as const, text: 'Queue input whose transport ACK is lost.' };
+        assert.equal((await source.operate(lost)).status, 'indeterminate');
+        const writesBeforeRecovery = rpc.writes.length;
+        const recovered = await source.receipt(lost, signal);
+        assert.equal(recovered?.status, 'accepted'); assert.equal(recovered.observed, undefined);
+        assert.equal(rpc.writes.length, writesBeforeRecovery, 'receipt recovery is read-only');
+        assert.equal((await source.operate(lost)).status, 'accepted');
+        assert.equal(rpc.writes.length, writesBeforeRecovery, 'the recovered original ID is never enqueued twice');
+        const rows = (await queue()).data;
+        assert.deepEqual(rows.map(row => row.clientUserMessageId), [ordinary.operationId, lost.operationId]);
+        assert.equal((await source.resolve(sessionId, signal)).activeTurnId, activeTurnId);
+        for (const row of rows) await rpc.request('thread/queue/delete', { threadId: nativeId, queuedSubmissionId: row.id }, { write: true });
+        assert.equal((await queue()).data.length, 0);
+        assert.equal(model.calls, callsBeforeQueued, 'busy queued inputs have not started extra model turns');
+        assert.equal((await source.operate({ sessionId, operationId: 'cancel-owned-held-turn', kind: 'cancel', turnId: activeTurnId })).status, 'accepted');
+        t.diagnostic(JSON.stringify({ runtime, isolatedNativeHome: true, externalModelCalls: 0, syntheticModelCalls: model.calls,
+            idleQueueExecuted: true, busyTurnStartJoinedActiveTurn: true, busyNativeQueueRows: rows.length, recoveryWrites: 0, queueRemovedBeforeInterrupt: true }));
+    } finally { await source.dispose(); await model.close(); await rm(root, { recursive: true, force: true }); }
 });

@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import {
     installPaneMountedChatConsumer, MOUNTED_CHAT_ATTRIBUTE, publishPaneMountedChat,
     requestOlderThroughMountedChat, resetMountedChatRegistrations, resolveMountedChatForPane,
-    resolveMountedChatLatestForPane, toLatestThroughMountedChat,
+    resolveMountedChatLatestForPane, subscribePaneMountedChat, toLatestThroughMountedChat,
     type MountedChatConsumerV1, type MountedChatControlV1,
 } from '../src/client/mounted-chat-control.ts';
 
@@ -79,6 +79,21 @@ test('each Pane graph provides its own consumer and disposal stays scoped', () =
     assert.equal(resolveMountedChatForPane(element([secondPane])), secondControl, 'the other Pane keeps its control');
     secondDispose();
     assert.equal(resolveMountedChatForPane(element([secondPane])), undefined);
+});
+
+test('handoff followed by effect cleanup cannot remove a successor mounted-reader subscription', () => {
+    const target = pane();
+    let oldCalls = 0, successorCalls = 0;
+    const stop = subscribePaneMountedChat(target, () => { oldCalls += 1 });
+    publishPaneMountedChat(target, control());
+    stop();
+    const stopSuccessor = subscribePaneMountedChat(target, () => { successorCalls += 1 });
+    stop();
+    publishPaneMountedChat(target, control());
+    publishPaneMountedChat(target, null);
+    assert.equal(oldCalls, 1);
+    assert.equal(successorCalls, 2);
+    stopSuccessor();
 });
 
 test('a programmatic older request drives the pane control and reports fallback', async () => {

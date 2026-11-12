@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { JsonBlock } from '@deepseek-ai/dsh-client-ui-primitives'
 import { sourceToolProgressDefinition, SOURCE_TOOL_PROGRESS } from './tool-progress-conversation.ts'
 import { installSourceCommandViews } from './source-command-view.tsx'

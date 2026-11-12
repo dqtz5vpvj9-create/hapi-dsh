@@ -1,5 +1,4 @@
 /** Adapted from HAPI 0f8ef697 web/src/hooks/realtimeTranscription.ts. AGPL-3.0-only; see ../../../voice/UPSTREAM.md. */
-import { DEEPGRAM_TRANSCRIPTION_MODEL } from '../../voice/protocol/voice.ts'
 import {
     getBrowserLocalSpeechSupport,
     type LocalSpeechRecognition,
@@ -12,7 +11,8 @@ export interface RealtimeTranscriptionCallbacks {
     onConnected: () => void
     onPartial: (text: string) => void
     onFinal: (text: string) => void
-    onError: (error: Error) => void
+    /** An interrupted recognizer retains words already shown, for explicit review/insertion. */
+    onError: (error: Error, transcript?: string) => void
 }
 
 export interface RealtimeTranscriptionSession {
@@ -20,349 +20,8 @@ export interface RealtimeTranscriptionSession {
     cancel: () => void
 }
 
-type TokenFactory = () => Promise<string>
-
 function joinTranscriptParts(...parts: string[]): string {
     return parts.map((part) => part.trim()).filter(Boolean).join(' ')
-}
-
-function errorMessage(value: unknown, fallback: string): Error {
-    return value instanceof Error ? value : new Error(fallback)
-}
-
-export async function startOpenAIRealtimeTranscription(options: {
-    getToken: TokenFactory
-    signal?: AbortSignal
-    callbacks: RealtimeTranscriptionCallbacks
-}): Promise<RealtimeTranscriptionSession> {
-    options.signal?.throwIfAborted()
-    const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    })
-    try {
-        options.signal?.throwIfAborted()
-    } catch (error) {
-        stream.getTracks().forEach((track) => track.stop())
-        throw error
-    }
-    let peer: RTCPeerConnection
-    let channel: RTCDataChannel
-    try {
-        peer = new RTCPeerConnection()
-        channel = peer.createDataChannel('oai-events')
-    } catch (error) {
-        stream.getTracks().forEach((track) => track.stop())
-        throw error
-    }
-    let partial = ''
-    let finished = false
-    let stopping = false
-    let stopTimer: ReturnType<typeof setTimeout> | null = null
-
-    const cleanup = () => {
-        options.signal?.removeEventListener('abort', abortCapture)
-        if (stopTimer) clearTimeout(stopTimer)
-        stopTimer = null
-        stream.getTracks().forEach((track) => track.stop())
-        channel.close()
-        peer.close()
-    }
-    const abortCapture = () => { finished = true; cleanup() }
-    options.signal?.addEventListener('abort', abortCapture, { once: true })
-    const finish = (text: string) => {
-        if (finished) return
-        finished = true
-        cleanup()
-        options.callbacks.onFinal(text)
-    }
-    const fail = (value: unknown) => {
-        if (finished) return
-        finished = true
-        cleanup()
-        options.callbacks.onError(errorMessage(value, 'OpenAI realtime transcription failed'))
-    }
-
-    try {
-        const track = stream.getAudioTracks()[0]
-        if (!track) throw new Error('No microphone audio track is available')
-        peer.addTrack(track, stream)
-        channel.addEventListener('message', (event) => {
-            if (finished) return
-            if (String(event.data).length > 2 * 1024 * 1024) { fail(new Error('Realtime transcript exceeded its limit')); return }
-            let data: {
-                type?: string
-                delta?: string
-                transcript?: string
-                error?: { message?: string }
-            }
-            try {
-                data = JSON.parse(String(event.data)) as typeof data
-            } catch {
-                return
-            }
-            if (data.type === 'conversation.item.input_audio_transcription.delta' && data.delta) {
-                if (partial.length + data.delta.length > 2 * 1024 * 1024) { fail(new Error('Realtime transcript exceeded its limit')); return }
-                partial += data.delta
-                options.callbacks.onPartial(partial)
-            } else if (data.type === 'conversation.item.input_audio_transcription.completed') {
-                finish(data.transcript ?? partial)
-            } else if (data.type === 'error') {
-                fail(new Error(data.error?.message || 'OpenAI realtime transcription failed'))
-            }
-        })
-        peer.addEventListener('connectionstatechange', () => {
-            if (!finished && (peer.connectionState === 'failed' || peer.connectionState === 'closed')) {
-                fail(new Error('OpenAI realtime transcription disconnected'))
-            }
-        })
-
-        const offer = await peer.createOffer()
-        options.signal?.throwIfAborted()
-        await peer.setLocalDescription(offer)
-        const token = await options.getToken()
-        const response = await fetch('https://api.openai.com/v1/realtime/calls', {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/sdp'
-            },
-            body: offer.sdp ?? '',
-            signal: options.signal
-                ? AbortSignal.any([options.signal, AbortSignal.timeout(15_000)])
-                : AbortSignal.timeout(15_000)
-        })
-        if (!response.ok) throw new Error(`OpenAI realtime connection failed (HTTP ${response.status})`)
-        await peer.setRemoteDescription({ type: 'answer', sdp: await response.text() })
-        await new Promise<void>((resolve, reject) => {
-            if (channel.readyState === 'open') return resolve()
-            const timeout = setTimeout(() => reject(new Error('OpenAI realtime connection timed out')), 10_000)
-            const onAbort = () => {
-                clearTimeout(timeout)
-                reject(options.signal?.reason)
-            }
-            options.signal?.addEventListener('abort', onAbort, { once: true })
-            channel.addEventListener('open', () => {
-                clearTimeout(timeout)
-                options.signal?.removeEventListener('abort', onAbort)
-                resolve()
-            }, { once: true })
-            channel.addEventListener('error', () => {
-                clearTimeout(timeout)
-                options.signal?.removeEventListener('abort', onAbort)
-                reject(new Error('OpenAI realtime connection failed'))
-            }, { once: true })
-        })
-        options.signal?.throwIfAborted()
-        options.callbacks.onConnected()
-    } catch (error) {
-        fail(error)
-        throw error
-    }
-
-    return {
-        stop: async () => {
-            if (finished || stopping) return
-            stopping = true
-            stream.getTracks().forEach((track) => track.stop())
-            if (channel.readyState !== 'open') return finish(partial)
-            channel.send(JSON.stringify({ type: 'input_audio_buffer.commit' }))
-            await new Promise<void>((resolve) => {
-                stopTimer = setTimeout(() => {
-                    clearInterval(check)
-                    finish(partial)
-                    resolve()
-                }, 2_500)
-                const check = setInterval(() => {
-                    if (!finished) return
-                    clearInterval(check)
-                    resolve()
-                }, 25)
-            })
-        },
-        cancel: () => {
-            if (finished) return
-            finished = true
-            cleanup()
-        }
-    }
-}
-
-export async function startDeepgramRealtimeTranscription(options: {
-    getToken: TokenFactory
-    language?: string
-    signal?: AbortSignal
-    callbacks: RealtimeTranscriptionCallbacks
-}): Promise<RealtimeTranscriptionSession> {
-    options.signal?.throwIfAborted()
-    const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    })
-    try {
-        options.signal?.throwIfAborted()
-    } catch (error) {
-        stream.getTracks().forEach((track) => track.stop())
-        throw error
-    }
-    const stopTracks = () => stream.getTracks().forEach((track) => track.stop())
-    let abortCapture = stopTracks
-    const captureAborted = () => abortCapture()
-    options.signal?.addEventListener('abort', captureAborted, { once: true })
-    let token: string
-    try {
-        token = await options.getToken()
-        options.signal?.throwIfAborted()
-    } catch (error) {
-        options.signal?.removeEventListener('abort', captureAborted)
-        stopTracks()
-        throw error
-    }
-    const query = new URLSearchParams({
-        model: DEEPGRAM_TRANSCRIPTION_MODEL,
-        smart_format: 'true',
-        interim_results: 'true',
-        endpointing: 'false'
-    })
-    if (options.language) query.set('language', options.language)
-    const mimeType = [
-        'audio/webm;codecs=opus',
-        'audio/webm',
-        'audio/ogg;codecs=opus'
-    ].find((type) => typeof MediaRecorder.isTypeSupported !== 'function' || MediaRecorder.isTypeSupported(type))
-    let socket!: WebSocket
-    let recorder: MediaRecorder
-    try {
-        socket = new WebSocket(`wss://api.deepgram.com/v1/listen?${query}`, ['bearer', token])
-        recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream)
-    } catch (error) {
-        options.signal?.removeEventListener('abort', captureAborted)
-        socket?.close()
-        stopTracks()
-        throw error
-    }
-    let committed = ''
-    let interim = ''
-    let finished = false
-    let stopping = false
-    let stopTimer: ReturnType<typeof setTimeout> | null = null
-
-    const cleanup = () => {
-        options.signal?.removeEventListener('abort', captureAborted)
-        if (stopTimer) clearTimeout(stopTimer)
-        stopTimer = null
-        recorder.ondataavailable = null
-        recorder.onstop = null
-        if (recorder.state !== 'inactive') recorder.stop()
-        stream.getTracks().forEach((track) => track.stop())
-        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'CloseStream' }))
-        socket.close()
-    }
-    abortCapture = () => { finished = true; cleanup() }
-    const finish = (text: string) => {
-        if (finished) return
-        finished = true
-        cleanup()
-        options.callbacks.onFinal(text)
-    }
-    const fail = (value: unknown) => {
-        if (finished) return
-        finished = true
-        cleanup()
-        options.callbacks.onError(errorMessage(value, 'Deepgram realtime transcription failed'))
-    }
-
-    recorder.ondataavailable = (event) => {
-        if (event.data.size > 0 && socket.readyState === WebSocket.OPEN) {
-            if (socket.bufferedAmount > 2 * 1024 * 1024) { fail(new Error('Realtime audio upload is too slow')); return }
-            socket.send(event.data)
-        }
-    }
-    recorder.onerror = () => fail(new Error('Audio recording failed'))
-    recorder.onstop = () => {
-        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'Finalize' }))
-    }
-    socket.addEventListener('message', (event) => {
-        if (finished) return
-        if (String(event.data).length > 2 * 1024 * 1024) { fail(new Error('Realtime transcript exceeded its limit')); return }
-        let data: {
-            type?: string
-            is_final?: boolean
-            from_finalize?: boolean
-            channel?: { alternatives?: Array<{ transcript?: string }> }
-            description?: string
-        }
-        try {
-            data = JSON.parse(String(event.data)) as typeof data
-        } catch {
-            return
-        }
-        if (data.type === 'Error') return fail(new Error(data.description || 'Deepgram realtime transcription failed'))
-        if (data.type !== 'Results') return
-        const text = data.channel?.alternatives?.[0]?.transcript ?? ''
-        if (committed.length + text.length > 2 * 1024 * 1024) { fail(new Error('Realtime transcript exceeded its limit')); return }
-        if (data.is_final) {
-            committed = joinTranscriptParts(committed, text)
-            interim = ''
-        } else {
-            interim = text
-        }
-        const current = joinTranscriptParts(committed, interim)
-        options.callbacks.onPartial(current)
-        if (stopping && data.is_final && data.from_finalize) finish(current)
-    })
-    socket.addEventListener('close', () => {
-        if (!finished && !stopping) fail(new Error('Deepgram realtime transcription disconnected'))
-    })
-
-    await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('Deepgram realtime connection timed out')), 10_000)
-        const onAbort = () => {
-            clearTimeout(timeout)
-            reject(options.signal?.reason)
-        }
-        options.signal?.addEventListener('abort', onAbort, { once: true })
-        socket.addEventListener('open', () => {
-            clearTimeout(timeout)
-            options.signal?.removeEventListener('abort', onAbort)
-            if (options.signal?.aborted || finished) { reject(options.signal?.reason ?? new Error('Realtime transcription ended')); return }
-            recorder.start(250)
-            options.callbacks.onConnected()
-            resolve()
-        }, { once: true })
-        socket.addEventListener('error', () => {
-            clearTimeout(timeout)
-            options.signal?.removeEventListener('abort', onAbort)
-            reject(new Error('Deepgram realtime connection failed'))
-        }, { once: true })
-    }).catch((error) => {
-        fail(error)
-        throw error
-    })
-
-    return {
-        stop: async () => {
-            if (finished || stopping) return
-            stopping = true
-            if (recorder.state !== 'inactive') recorder.stop()
-            else if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'Finalize' }))
-            await new Promise<void>((resolve) => {
-                stopTimer = setTimeout(() => {
-                    clearInterval(check)
-                    finish(joinTranscriptParts(committed, interim))
-                    resolve()
-                }, 2_500)
-                const check = setInterval(() => {
-                    if (!finished) return
-                    clearInterval(check)
-                    resolve()
-                }, 25)
-            })
-        },
-        cancel: () => {
-            if (finished) return
-            finished = true
-            cleanup()
-        }
-    }
 }
 
 export const BROWSER_LOCAL_AVAILABILITY_TIMEOUT_MS = 10_000
@@ -507,7 +166,13 @@ export async function startBrowserLocalTranscription(options: {
     let finished = false
     let stopping = false
 
+    const cancel = () => {
+        if (finished) return
+        finished = true
+        releaseRecognition()
+    }
     const releaseRecognition = () => {
+        options.signal?.removeEventListener('abort', cancel)
         recognition.onresult = null
         recognition.onerror = null
         recognition.onend = null
@@ -532,7 +197,7 @@ export async function startBrowserLocalTranscription(options: {
         }
         current = joinTranscriptParts(...finalParts, ...interimParts)
         if (current.length > 2 * 1024 * 1024) {
-            finished = true; releaseRecognition(); options.callbacks.onError(new Error('On-device transcript exceeded its limit')); return
+            finished = true; releaseRecognition(); options.callbacks.onError(new Error('On-device transcript exceeded its limit'), current); return
         }
         options.callbacks.onPartial(current)
     }
@@ -540,18 +205,20 @@ export async function startBrowserLocalTranscription(options: {
         if (event.error === 'aborted' && stopping) return
         finished = true
         releaseRecognition()
-        options.callbacks.onError(new Error(event.error ? `On-device transcription failed: ${event.error}` : 'On-device transcription failed'))
+        options.callbacks.onError(new Error(event.error ? `On-device transcription failed: ${event.error}` : 'On-device transcription failed'), current)
     }
     recognition.onend = () => {
         if (stopping) finish()
         else if (!finished) {
             finished = true
             releaseRecognition()
-            options.callbacks.onError(new Error('On-device transcription stopped'))
+            options.callbacks.onError(new Error('On-device transcription stopped'), current)
         }
     }
-    recognition.start()
-    options.callbacks.onConnected()
+    options.signal?.addEventListener('abort', cancel, { once: true })
+    if (options.signal?.aborted) { cancel(); options.signal.throwIfAborted() }
+    try { recognition.start() } catch (error) { cancel(); throw error }
+    if (!finished) options.callbacks.onConnected()
 
     return {
         stop: async () => {
@@ -572,10 +239,6 @@ export async function startBrowserLocalTranscription(options: {
                 }, 25)
             })
         },
-        cancel: () => {
-            if (finished) return
-            finished = true
-            releaseRecognition()
-        }
+        cancel
     }
 }

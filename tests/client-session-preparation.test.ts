@@ -8,16 +8,24 @@ import { resolve as resolvePath } from 'node:path'
 import { test, type TestContext } from 'node:test'
 import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
-import { act, createElement, useLayoutEffect } from 'react'
+import { act, createElement, useLayoutEffect, useRef } from 'react'
 import type { SessionBinding, SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ConversationContentProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsRenderSlots, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SourcePreparationReference, SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
+import type { SourcePreparationReference, SourceWindowPreparer, SourceWindowReader } from '../src/client/source-session-types.ts'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import type { RemotePaneViews } from '../src/client/remote-reading-session.ts'
 import type { ConversationHistoryViewV1, HistoryViewSnapshotV1 } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { sourceSessionId, type SourceChanges, type SourceChangesRequest, type SourceOperation, type SourcePage, type SourceSession } from '../src/remote/protocol.ts'
 import { installSessionViewHost } from '../src/client/surface/session-view.tsx'
+import { SourceReadCommits, type SourceReadingCommit } from '../src/client/source-reading-commit.ts'
+import type { MountedChatConsumerV1, MountedChatControlV1 } from '../src/client/mounted-chat-control.ts'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { officialChat } from './official-conversation-fixture.ts'
+import { installOrdinaryReadingMemory } from '../src/client/ordinary-reading-checkpoint.ts'
+import { WorkspaceApplicationIdentity } from '../src/client/application-identity.ts'
+import { createWorkspaceUpdatePreparations } from '../src/client/update-preparation.ts'
 
 const require = createRequire(import.meta.url)
 const projectRoot = resolvePath(import.meta.dirname, '..')
@@ -69,18 +77,20 @@ function official(name: string): { apply(ctx: Context): void; inject: string[] }
     return registration.factory(require)
 }
 
-async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?: boolean } = {}) {
+async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?: boolean; readCommits?: boolean } = {}) {
     const window = createWindow('<!doctype html><html><body><main id="app"></main><section id="pane"></section></body></html>', 'https://fixture.invalid/')
     const document = window.document
     const restorers: Array<() => void> = []
     const root = new Context()
+    const readCommits = new SourceReadCommits(), commits: SourceReadingCommit[] = []
+    readCommits.subscribe(commit => commits.push(commit))
     let host: ReturnType<typeof installSessionViewHost> | undefined
     let unmount: (() => void) | undefined
     t.after(async () => {
         try {
             await act(() => { host?.dispose(); unmount?.() })
             await root.fiber.dispose()
-        } finally { for (const restore of restorers.reverse()) restore() }
+        } finally { readCommits.dispose(); for (const restore of restorers.reverse()) restore() }
     })
     const define = (target: object, key: string, descriptor: PropertyDescriptor): void => {
         const prior = Object.getOwnPropertyDescriptor(target, key)
@@ -96,6 +106,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     let elapsed = 0
     install(window, 'performance', { now: () => elapsed, getEntriesByType: () => [] })
     install(window, 'sessionStorage', { getItem: () => null, setItem() {}, removeItem() {} })
+    if (options.readCommits) { install(window, 'innerHeight', 800); install(window, 'innerWidth', 800) }
     const frames = new Map<number, FrameRequestCallback>()
     let frameId = 0
     install(window, 'requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++frameId, callback); return frameId })
@@ -107,7 +118,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     define(elementPrototype, 'clientWidth', { get() { return 800 } })
     // Candidate geometry borrows dimensions and typography from the visible
     // pane; Domino has neither layout nor an iterable computed declaration.
-    install(window, 'getComputedStyle', () => Object.assign([], { font: '16px sans-serif', letterSpacing: 'normal', getPropertyValue: () => '' }))
+    install(window, 'getComputedStyle', () => Object.assign([], { visibility: 'visible', font: '16px sans-serif', letterSpacing: 'normal', getPropertyValue: () => '' }))
     if (!('isConnected' in elementPrototype)) define(elementPrototype, 'isConnected', {
         get(this: HTMLElement) { return this.ownerDocument.documentElement.contains(this) },
     })
@@ -128,9 +139,20 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     install(elementPrototype, 'querySelector', function(this: HTMLElement, selector: string) { return querySelector.call(this, selector) ?? null })
     const id = (options.hhpiPane ? sourceSessionId({ machineId: 'preparation-machine', sourceId: 'native', engine: 'codex', nativeId: 'preparation-thread' })
         : 'preparation-fixture') as SessionBinding['sessionId']
+    const native = Session.create(SessionId(id)), readEvent = native.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Source body' }] }), { surfaceOp: 'append' })
+    const readChat = officialChat(); t.after(() => readChat.close())
+    readChat.assembler.replaceWindow([{ type: 'event', event: readEvent }], false); readChat.assembler.activateTarget('chat'); readChat.assembler.flush()
+    const readSnapshot = observable(readChat.assembler.snapshot('chat'))
+    const readNode = readSnapshot.getSnapshot().nodes.get(readSnapshot.getSnapshot().order[0]!)!
+    const readListeners = new Set<() => void>()
+    const readControl: MountedChatControlV1 = { version: 1, read: () => ({ revision: 1, renderRevision: 1, anchor: null, following: true, hasOlder: false, busy: false }),
+        renderedNode: key => readSnapshot.getSnapshot().nodes.get(key) as import('@deepseek-ai/dsh-client-ui-chat/client').ChatConversationViewNode | undefined,
+        subscribe(listener) { readListeners.add(listener); return () => { readListeners.delete(listener) } },
+        async loadOlder() { throw new Error('Read commits cannot page') }, async reveal() { throw new Error('Read commits cannot scroll') }, async toLatest() { throw new Error('Read commits cannot jump') } }
     const preparation = deferred<SessionBinding>(), ready = deferred<SessionBinding>(), chatMounted = deferred<void>()
-    const readingSnapshot = observable({ phase: 'loading' as 'loading' | 'ready', viewId: 'preparation-pane', version: undefined as number | undefined,
-        before: null as string | null, after: null as string | null, hasBefore: false, hasAfter: false, busy: false, entries: [] as never[] })
+    const readingSnapshot = observable({ phase: (options.readCommits ? 'ready' : 'loading') as 'loading' | 'ready', viewId: 'preparation-pane', version: undefined as number | undefined,
+        before: null as string | null, after: null as string | null, hasBefore: false, hasAfter: false, busy: false,
+        entries: options.readCommits ? [{ type: 'event' as const, event: readEvent }] : [] })
     const readingView = { viewId: 'preparation-pane', snapshot: readingSnapshot, read: async () => readingSnapshot.getSnapshot() }
     const state = observable<SessionSnapshot>({ sessionId: id, pendingSubmissions: [], running: false, subagent: null,
         removed: false, openState: 'open', openError: null, hasMore: options.fillPage === true, loadingOlder: false,
@@ -152,7 +174,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     const paneViews = RemotePaneViewsClass ? new RemotePaneViewsClass() : undefined
     let paneReference: SessionReference | undefined, paneReady = false
     const paneOwner = { ...session, historyRead: { version: 1, openView: async () => ({}) },
-        metadata: observable({}), history: { sourceEpoch: 'preparation-epoch' } }
+        metadata: observable({}), history: { sourceEpoch: 'preparation-epoch', savedAnchor: () => undefined } }
     const held = { sessionId: id, binding: { ...binding, session: paneOwner } as unknown as SessionBinding, ready: preparation.promise,
         release() {}, [Symbol.dispose]() {} } as SessionReference
     const sessions = { list: observable({ byId: {}, ids: [], phase: 'ready' }), binding: (key: string) => bindings.get(key),
@@ -168,7 +190,10 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
         retainInfo: () => observable({ retainedBy: {} }),
     }
     root.reflect.provide('sessions', sessions as unknown as Context['sessions'])
-    root.reflect.provide('uiConversation', { binding: () => ({ readingView }) } as unknown as Context['uiConversation'])
+    const application = new WorkspaceApplicationIdentity(), updates = createWorkspaceUpdatePreparations()
+    const stopMemory = installOrdinaryReadingMemory(root)
+    t.after(() => { stopMemory(); application.dispose(); updates.dispose() })
+    root.reflect.provide('uiConversation', { binding: () => ({ readingView, target: () => readSnapshot }) } as unknown as Context['uiConversation'])
     root.reflect.provide('remote', { $on: () => () => {} } as unknown as Context['remote'])
     root.reflect.provide('remoteAccess', { source: () => observable(undefined) } as unknown as Context['remoteAccess'])
     await root.plugin(official('@deepseek-ai/dsh-client-ui-renderer'))
@@ -206,15 +231,25 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
         })
         ctx.slots.register({ name: 'conversation.session' }, ({ sessionId, useSession }: PropsRuntime<'conversation.session'>) => {
             assert.equal(useSession(snapshot => snapshot.sessionId), sessionId)
+            const element = useRef<HTMLElement>(null)
             useLayoutEffect(() => { counts.mounts++; chatMounted.resolve(); return () => { counts.unmounts++ } }, [])
-            return createElement('div', { 'data-chat-flow': '', 'data-preparation-slot': sessionId }, 'Source body')
+            useLayoutEffect(() => {
+                if (!options.readCommits || !element.current) return
+                const consumer = root.get('mountedChatConsumer') as MountedChatConsumerV1 | undefined
+                const mounted = element.current; consumer?.onMountedChat?.(readControl, mounted)
+                return () => consumer?.onMountedChat?.(null, mounted)
+            }, [])
+            return createElement('div', { ref: element, 'data-chat-flow': '', 'data-preparation-slot': sessionId,
+                ...(options.readCommits ? { 'data-chat-node-key': readNode.key, 'data-chat-anchor-key': readNode.key } : {}) }, 'Source body')
         })
     } })
-    await root.plugin({ name: 'preparation-host', inject: ['slots', 'sessions', 'uiConversation'], apply(ctx: Context) { host = installSessionViewHost(ctx); return () => host!.dispose() } })
+    await root.plugin({ name: 'preparation-host', inject: ['slots', 'sessions', 'uiConversation'], apply(ctx: Context) {
+        host = installSessionViewHost(ctx, options.readCommits ? { onReadCommit: readCommits.publish } : {}); return () => host!.dispose()
+    } })
     await act(() => { unmount = root.uiRenderer.mount(document.getElementById('app')!) })
     const reference: SourcePreparationReference = { sessionId: id, binding, preparationReady: preparation.promise, ready: ready.promise,
         release() { counts.releases++ }, [Symbol.dispose]() { counts.releases++ } }
-    const navigation = { hostId: 'local', paneId: 'pane', state: observable({ visible: true, focused: true }),
+    const navigation = { hostId: 'local', paneId: 'pane', application, updates, state: observable({ visible: true, focused: true }),
         reading: observable(undefined) } as unknown as WorkspacePaneNavigation
     const target = document.getElementById('pane')!
     assert.ok(host)
@@ -239,7 +274,8 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
             [Symbol.dispose]() { throw new Error('Candidate references remain owned by the source') } }
         return { reference: candidateReference, started: started.promise, finish: () => page.resolve() }
     }
-    return { target, document, host: installedHost, handle, binding, reference, preparation, ready, chatMounted, readingSnapshot, paneReference: () => paneReference,
+    return { target, document, host: installedHost, handle, binding, reference, preparation, ready, chatMounted, readingSnapshot,
+        commits, readEvent, readSubscriptions: () => readListeners.size, paneReference: () => paneReference,
         paneReady: () => paneReady, paneViews, counts, errors, preparers, readers, candidate,
         failProvider(error: Error) {
             // The official SlotRenderer contains plugin-slot errors itself.
@@ -269,6 +305,20 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
         async settle(work: () => void) { await act(async () => { work(); await tick() }) },
     }
 }
+
+test('the real SessionOccurrence starts read commits only after visible ready admission and stops on handoff', async t => {
+    const f = await fixture(t, { readCommits: true })
+    await f.settle(() => f.preparation.resolve(f.binding)); await f.chatMounted
+    await f.frame(); assert.equal(f.counts.ready, 0); assert.equal(f.commits.length, 0); assert.equal(f.readSubscriptions(), 0)
+    await f.settle(() => f.ready.resolve(f.binding))
+    for (let i = 0; i < 8; i++) await f.frame()
+    assert.equal(f.counts.ready, 1); assert.equal(f.commits.length, 1); assert.equal(f.readSubscriptions(), 1)
+    assert.strictEqual(f.commits[0]!.sessionBinding, f.binding)
+    assert.deepEqual(f.commits[0]!.position, { kind: 'dsh', seq: f.readEvent.seq }); assert.equal(f.commits[0]!.at, f.readEvent.time)
+    assert.equal(f.commits[0]!.hostId, 'local'); assert.equal(f.commits[0]!.paneId, 'pane')
+    f.handle.suspendReading(); assert.equal(f.readSubscriptions(), 0)
+    await f.frame(); assert.equal(f.commits.length, 1, 'a retired occurrence cannot resume read delivery while retained for its successor')
+})
 
 test('HHPI reference mounts through the real Host before its official reading window can become ready', async t => {
     const f = await fixture(t, { hhpiPane: true })

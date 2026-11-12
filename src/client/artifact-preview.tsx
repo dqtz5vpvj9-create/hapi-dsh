@@ -1,5 +1,7 @@
-import { DocumentSelectionButton } from './document-selection.tsx'
-/** HAPI artifact source adapter inside the official resource/tab/document lifecycle. */
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+/** Source documents inside the official resource/tab/document lifecycle. */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { CodeBlock, ImageLightbox, languageForPath } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -8,22 +10,22 @@ import type { PropsRenderSlots, PropsRuntime, SlotHookFactory, SlotMap } from '@
 import type { UseSidebarRightTabInfo } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { ARTIFACT_PROTOCOL, GENERATED_MEDIA_PROTOCOL, ARTIFACT_TAB_ID, ARTIFACT_TAB_KIND, parseSourceDocumentResourceAddress, sessionFileArtifactPath,
-    type ArtifactReference, type GeneratedMediaReference, type SourceDocumentReference } from '../workspace/artifacts.ts'
-import { artifactPresentation, artifactViewers, loadArtifact, readArtifactBytes, type ArtifactApi, type ArtifactPresentation, type ArtifactViewer, type LoadedArtifact } from './artifact-content.ts'
+import { WORKSPACE_DOCUMENT_PROTOCOL, ARTIFACT_TAB_ID, ARTIFACT_TAB_KIND, parseWorkspaceDocumentAddress } from '../workspace/artifacts.ts'
+import type { WorkspaceResource } from '../workbench-types.ts'
+import { workspaceArtifactPresentation, artifactViewers, loadWorkspaceArtifact, readWorkspaceArtifactBytes, type ArtifactPresentation, type ArtifactViewer, type LoadedWorkspaceArtifact } from './artifact-content.ts'
 import { SourceMarkdown, sourceMarkdownLabels } from './source-markdown.tsx'
-import { sourcePathAddress } from './source-path-actions.tsx'
+import type { SourceFileClient } from './source-workspace-provider.ts'
+import { DocumentSelectionButton } from './document-selection.tsx'
 import { errorMessage } from './controller.ts'
 import { borrowArtifactBodies, DOCUMENT_PREFIX } from './artifact-bodies.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
-    interface ResourceProtocolMap { 'hapi-artifact': ArtifactReference; 'hapi-generated-media': GeneratedMediaReference }
+    interface ResourceProtocolMap { 'hhpi-document': WorkspaceResource }
     interface SlotMap { 'hapi.artifact.document': SlotMap['sidebar.right.tab.document'] }
 }
 declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
     interface SidebarRightResourceParamsMap { 'hapi-artifact': { viewer?: ArtifactViewer; wrap?: boolean; line?: number } }
 }
-
 type ArtifactBodyProps = PropsRuntime<'sidebar.right.pane.tab'> & PropsRenderSlots<'hapi.artifact.document'>
 const tabInfoFactory: SlotHookFactory<'sidebar.right.tab.document', UseSidebarRightTabInfo> = (_standard, reader) => reader
 
@@ -49,11 +51,11 @@ function ArtifactImage({ data, mimeType, name, language, visible }: { data: Uint
         {open && visible && <ImageLightbox src={url} alt={name} onClose={close} labels={{ dialog: zh ? '源图片' : 'Source image', close: zh ? '关闭' : 'Close' }}/>}</div> : null
 }
 
-/** Keep metadata, download bytes and view selection tied to the actual occurrence lifetime. */
-function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: ArtifactApi; reference: SourceDocumentReference; language: string }) {
-    const { ctx, api, reference, language } = props, { tab } = props.useTabInfo(), zh = language.startsWith('zh')
+/** Metadata and bytes share the captured account/source authority of this tab occurrence. */
+export function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; client: SourceFileClient; resource: WorkspaceResource; language: string }) {
+    const { ctx, client, resource, language } = props, { tab } = props.useTabInfo(), zh = language.startsWith('zh')
     const address = tab.contentId
-    const [revision, setRevision] = useState(0), [loaded, setLoaded] = useState<LoadedArtifact | null>(null)
+    const [revision, setRevision] = useState(0), [loaded, setLoaded] = useState<LoadedWorkspaceArtifact | null>(null)
     const [presentation, setPresentation] = useState<ArtifactPresentation | null>(null), [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState(true), [downloading, setDownloading] = useState(false)
     const download = useRef<AbortController | null>(null), scrollport = useRef<HTMLElement | null>(null)
@@ -66,28 +68,38 @@ function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: Artifac
     useEffect(() => tab.actions.bindCommands({ refresh }), [tab.actions, refresh])
     useEffect(() => {
         const controller = new AbortController(), signal = AbortSignal.any([controller.signal, tab.signal])
-        setLoading(true); setLoaded(null); setPresentation(null); setError(null)
-        void loadArtifact(api, reference, signal).then(value => { if (!signal.aborted) setLoaded(value) }, failure => { if (!signal.aborted) { setError(errorMessage(failure)); setLoading(false) } })
-        return () => { controller.abort(); download.current?.abort() }
-    }, [address, revision, api, tab.signal])
+        setLoading(true); setLoaded(null); setPresentation(null); setError(null); setDownloading(false)
+        void loadWorkspaceArtifact(client, resource, signal).then(value => { if (!signal.aborted) setLoaded(value) }, failure => { if (!signal.aborted) { setError(errorMessage(failure)); setLoading(false) } })
+        return () => { controller.abort(); download.current?.abort(); download.current = null }
+    }, [address, revision, client, tab.signal])
     useEffect(() => {
         if (!loaded) return
         if (!viewer) { setLoading(false); return }
         const controller = new AbortController(), signal = AbortSignal.any([controller.signal, tab.signal])
         setLoading(true); setPresentation(null); setError(null)
-        void artifactPresentation(api, loaded, viewer, location.href, signal).then(value => {
+        void workspaceArtifactPresentation(loaded, viewer, signal).then(value => {
             if (!signal.aborted) { setPresentation(value); setLoading(false) }
         }, failure => { if (!signal.aborted) { setError(errorMessage(failure)); setLoading(false) } })
         return () => { controller.abort() }
-    }, [loaded, viewer, api, tab.signal])
-    // A provider's selected definition may hot-reload without changing the bytes.
+    }, [loaded, viewer, tab.signal])
+    useEffect(() => {
+        if (!loaded) return
+        const revoked = () => { download.current?.abort(); setLoaded(null); setPresentation(null); setLoading(false); setDownloading(false); setError(zh ? '账号或来源权限已变更；引用已保留，请重新读取。' : 'The account or source permission changed. Its original reference is kept; reload to check access.') }
+        try {
+            const access = ctx.hhpiSessions.captureWorkspaceAccess(props.sessionId)
+            access.assertCurrent(); access.signal.throwIfAborted()
+            if (access.scope !== loaded.context.owner.scope) { revoked(); return }
+            access.signal.addEventListener('abort', revoked, { once: true })
+            return () => access.signal.removeEventListener('abort', revoked)
+        } catch { revoked() }
+    }, [loaded, ctx, props.sessionId, zh])
     void definitions
     const downloadOriginal = async (): Promise<void> => {
         if (!loaded || download.current) return
         const controller = new AbortController(); download.current = controller; setDownloading(true)
         const signal = AbortSignal.any([controller.signal, tab.signal])
         try {
-            const bytes = await readArtifactBytes(loaded.metadata.downloadUrl, location.href, signal)
+            const bytes = await readWorkspaceArtifactBytes(loaded, signal)
             signal.throwIfAborted()
             const url = URL.createObjectURL(new Blob([bytes], { type: loaded.metadata.mimeType })), link = document.createElement('a')
             link.href = url; link.download = loaded.metadata.fileName; link.click()
@@ -102,66 +114,56 @@ function ArtifactContent(props: ArtifactBodyProps & { ctx: Context; api: Artifac
     const body = (): ReactNode => {
         if (!presentation || !loaded) return null
         const { content } = presentation
-        // A `session-file:` artifact names a real path on the source machine, so
-        // its Markdown keeps the original relative-image and link base. An
-        // opaque artifact has no filesystem base and must not guess one.
-        const artifactPath = reference.document.kind === 'artifact' ? sessionFileArtifactPath(reference.document.artifactId) : null
         if (presentation.viewer === 'markdown' && content.kind === 'text') return <div className="hapi-source-markdown" data-document-markdown><SourceMarkdown text={content.text} complete={content.eof}
-            source={reference.source} fileDrag={ctx.fileDrag.actions} {...(artifactPath === null ? {} : { documentPath: artifactPath })} language={language}
+            context={loaded.context} fileDrag={ctx.fileDrag.actions} {...(resource.document.kind === 'file' ? { documentPath: resource.document.path } : {})} language={language}
             openFile={(path, line) => tab.actions.openResource(sessionFileAddress(props.sessionId, path), line === undefined ? {} : { params: { line } })}/></div>
         if (presentation.viewer === 'code' && content.kind === 'text') return <CodeBlock className="hapi-artifact-code" code={content.text} lang={languageForPath(loaded.metadata.fileName)} streaming={false}
             lineNumbers wrap={wrap} copyLabel={labels.code.copyLabel} copiedLabel={labels.code.copiedLabel} toolbarLabels={labels.code.toolbarLabels}/>
         if (presentation.viewer === 'image' && content.kind === 'bytes') return <ArtifactImage data={content.data} mimeType={loaded.metadata.mimeType} name={loaded.metadata.fileName} language={language} visible={tab.visible}/>
-        const key = `${DOCUMENT_PREFIX}${presentation.viewer}`
         return props.renderSlot('hapi.artifact.document', { content, resourceAddress: address, wrap,
-            addResource: resource => ctx.resources.pin(resource, tab.signal), setResources: resources => { for (const resource of resources) ctx.resources.pin(resource, tab.signal) },
+            addResource: item => ctx.resources.pin(item, tab.signal), setResources: resources => { for (const item of resources) ctx.resources.pin(item, tab.signal) },
             scrollportRef: element => { scrollport.current = element },
-        }, { entryKey: key, hookContext: props.useTabInfo,
+        }, { entryKey: `${DOCUMENT_PREFIX}${presentation.viewer}`, hookContext: props.useTabInfo,
             fallback: <p role="alert" className="hapi-artifact-status">{zh ? '此官方文档插件尚未加载；可以下载源文件。' : 'This official document plugin is unavailable. The original document can still be downloaded.'}</p>,
         })
     }
-    return <section className="hapi-artifact" data-hapi-artifact-source={reference.source.sourceSessionId}>
-        <header className="hapi-artifact-toolbar"><DocumentSelectionButton sessionId={props.sessionId} source={reference.source} path={reference.document.kind === 'artifact' ? `artifact:${reference.document.artifactId}` : `generated-media:${reference.document.imageId}`} version={loaded?.metadata.hash} zh={zh}/><strong title={loaded?.metadata.fileName ?? reference.document.fileName}>{loaded?.metadata.fileName ?? reference.document.fileName}</strong>
+    return <section className="hapi-artifact" data-hhpi-document-source={resource.target.sessionId}>
+        <header className="hapi-artifact-toolbar">{loaded && <DocumentSelectionButton ctx={ctx} sessionId={props.sessionId} owner={loaded.context.owner}
+            path={resource.document.kind === 'file' ? resource.document.path : `${resource.document.kind}:${resource.document.id}`} version={loaded.metadata.version} zh={zh}/>}
+            <strong title={loaded?.metadata.fileName}>{loaded?.metadata.fileName ?? (zh ? '源文档' : 'Source document')}</strong>
             {choices.length > 1 && <select aria-label={zh ? '文档显示方式' : 'Document viewer'} value={viewer} onChange={event => choose({ viewer: event.currentTarget.value as ArtifactViewer })}>{choices.map(value => <option key={value} value={value}>{viewerName(value)}</option>)}</select>}
             {(viewer === 'code' || viewer === 'text') && <label><input type="checkbox" checked={wrap} onChange={event => choose({ wrap: event.currentTarget.checked })}/>{zh ? '换行' : 'Wrap'}</label>}
             <button type="button" onClick={refresh} disabled={loading}>{zh ? '重新读取' : 'Reload'}</button>
             <button type="button" disabled={!loaded || downloading} onClick={() => { void downloadOriginal() }}>{downloading ? zh ? '正在下载…' : 'Downloading…' : zh ? '下载原件' : 'Download original'}</button>
         </header>
-        {presentation?.converted && <div className="hapi-artifact-source">{zh ? '由原 HAPI 文档转换服务生成 PDF；下载保留原始文件。' : 'PDF produced by the original HAPI document conversion service. Download keeps the original file.'}</div>}
-        {viewer === 'html' && <div className="hapi-artifact-source">{zh ? '官方 HTML 静态预览；此 artifact 没有可推断的工作目录依赖。' : 'Official static HTML preview. This artifact has no inferred workspace dependency directory.'}</div>}
+        {viewer === 'html' && <div className="hapi-artifact-source">{zh ? '官方 HTML 静态预览。' : 'Official static HTML preview.'}</div>}
         <div className="hapi-artifact-content">{error && <p role="alert" className="hapi-artifact-status">{error}</p>}
             {loading ? <p role="status" className="hapi-artifact-status">{zh ? '正在读取源文档…' : 'Loading source document…'}</p> : !viewer && loaded ? <p className="hapi-artifact-status">{zh ? '此文件没有可用的文档预览器；可下载原始文件。' : 'No document preview is available for this file. Download the original file.'}</p> : body()}
         </div>
     </section>
 }
 
-/** Optional dependency: disabling a document plugin never disables the workspace shell. */
-export function installArtifactPreview(ctx: Context, api: ArtifactApi): () => void {
+export function installArtifactPreview(ctx: Context, client: SourceFileClient): () => void {
     const scope = ctx.inject(['resources', 'documentPreviews'], child => {
         const disposers: Array<() => void> = []
         const style = document.createElement('style'); style.textContent = styles; document.head.append(style); disposers.push(() => style.remove())
-        for (const protocol of [ARTIFACT_PROTOCOL, GENERATED_MEDIA_PROTOCOL] as const) disposers.push(child.resources.register({ protocol, async *open(address, { signal }) {
+        disposers.push(child.resources.register({ protocol: WORKSPACE_DOCUMENT_PROTOCOL, async *open(address, { signal }) {
             if (signal.aborted) return
-            const reference = parseSourceDocumentResourceAddress(address)
-            if (!reference) { yield { ok: false, error: new RemoteError('gateway/internal', 'Invalid original HAPI source document address', {}) }; return }
-            // This protocol exposes source identity. Its owner separately reads
-            // authenticated bytes; no absolutePath is invented for the resource.
-            yield { ok: true, value: reference }
+            const resource = parseWorkspaceDocumentAddress(address)
+            if (!resource) { yield { ok: false, error: new RemoteError('gateway/internal', 'Invalid source document address', {}) }; return }
+            yield { ok: true, value: resource }
         } }))
         disposers.push(child.sidebarRightTabs.register({ id: ARTIFACT_TAB_ID, kind: ARTIFACT_TAB_KIND, keepMounted: true,
-            patterns: [ARTIFACT_PROTOCOL, GENERATED_MEDIA_PROTOCOL].map(protocol => `dsh-resource://${protocol}/[\\s\\S]+`), priority: 'fallback',
-            canOpen: address => parseSourceDocumentResourceAddress(address) !== null,
-            title: address => parseSourceDocumentResourceAddress(address)?.document.fileName || 'Source document',
+            patterns: [`dsh-resource://${WORKSPACE_DOCUMENT_PROTOCOL}/[\\s\\S]+`], priority: 'fallback',
+            canOpen: address => parseWorkspaceDocumentAddress(address) !== null, title: () => 'Source document',
         }))
         const Body = (props: ArtifactBodyProps) => {
-            const { tab } = props.useTabInfo(), state = props.useResource<'hapi-artifact' | 'hapi-generated-media'>(tab.contentId)
-            const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved')
-            const source = sourcePathAddress(native ?? observed), reference = state.value
+            const { tab } = props.useTabInfo(), state = props.useResource<'hhpi-document'>(tab.contentId), resource = state.value
             const language = useSyncExternalStore(listener => child.locale.subscribe(listener), () => child.locale.getSnapshot().active)
-            if (!reference) return <p className="hapi-artifact-status" role={state.status === 'failed' ? 'alert' : 'status'}>{state.failure?.message ?? (language.startsWith('zh') ? '正在解析源文档…' : 'Resolving source document…')}</p>
-            if (!source || source.sourceSessionId !== reference.source.sourceSessionId || reference.source.sourceHubId && source.sourceHubId !== reference.source.sourceHubId
-                || reference.source.machineId && source.machineId !== reference.source.machineId) return <p role="alert" className="hapi-artifact-status">{language.startsWith('zh') ? '此 artifact 的原始机器或会话与当前窗格不匹配；引用已保留。' : 'This artifact’s original machine or session does not match the current pane. Its source reference is preserved.'}</p>
-            return <ArtifactContent key={tab.contentId} {...props} ctx={child} api={api} reference={reference} language={language}/>
+            if (!resource) return <p className="hapi-artifact-status" role={state.status === 'failed' ? 'alert' : 'status'}>{state.failure?.message ?? (language.startsWith('zh') ? '正在解析源文档…' : 'Resolving source document…')}</p>
+            const hostId = child.get('sourceWorkspaceTransport')?.hostId ?? 'local'
+            if (resource.target.sessionId !== props.sessionId || resource.target.hostId !== hostId) return <p role="alert" className="hapi-artifact-status">{language.startsWith('zh') ? '此文档的原始 Host 或会话与当前窗格不匹配；引用已保留。' : 'This document belongs to another Host or source session. Its original reference is kept.'}</p>
+            return <ArtifactContent key={tab.contentId} {...props} ctx={child} client={client} resource={resource} language={language}/>
         }
         disposers.push(child.slots.inject('sidebar.right.pane.tab', () => child.slots.register({ name: 'sidebar.right.pane.tab', key: ARTIFACT_TAB_ID,
             children: { 'hapi.artifact.document': { kind: 'keyed', scope: 'session', inject: { hooks: { tabInfo: tabInfoFactory } } } },

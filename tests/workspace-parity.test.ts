@@ -6,8 +6,10 @@ import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
 import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
 import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore } from '../src/client/model.ts'
 import { commandForKey } from '../src/client/shortcuts.ts'
-import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../src/workspace/legacy.ts'
-import { paneTitle, sessionActivity, sessionDestinations, sessionFolder, stableSessionOrder, windowActivity, windowAlias, windowTitle } from '../src/workspace/presentation.ts'
+import { bindSourceAliases, legacyPaneReference, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState } from '../src/workspace/legacy.ts'
+import { paneTitle, sessionActivity, sessionModel, sourceProjection, sessionDestinations, sessionFolder, stableSessionOrder, windowActivity, windowAlias, windowTitle } from '../src/workspace/presentation.ts'
+import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
+import { pendingTarget } from '../src/workspace/pending-target.ts'
 import { SidebarState } from '../src/workspace/sidebar-state.ts'
 import { sidebarTree } from '../src/workspace/sidebar-tree.ts'
 
@@ -15,35 +17,45 @@ function row(id: string, patch: Partial<WorkspaceCatalogRow> = {}): WorkspaceCat
     return { id: id as SessionId, sourceSessionId: id, displayTitle: id, hostId: 'local', hostLabel: 'Primary', hostOnline: true,
         archived: false, pinned: false, blank: false, running: false, updatedAt: 1, retainedBy: {}, ...patch }
 }
-function native(id: string, source: string, changes: Record<string, unknown> = {}): WorkspaceCatalogRow {
-    return row(id, { projectionValues: { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: source, nativeConnection: 'attached',
-        execution: { status: 'idle', waitingOn: [] }, pendingRequests: [], ...changes } } as unknown as NonNullable<WorkspaceCatalogRow['projectionValues']> })
+function native(id: string, source: string, changes: Partial<SourceSession> = {}): WorkspaceCatalogRow {
+    const identity = { machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: source }
+    const metadata: SourceSession = { ...identity, id: sourceSessionId(identity), title: source, cwd: '/source', updatedAt: 1,
+        status: 'idle', activeTurnId: null, capabilities: { send: true, steer: true, cancel: true, approve: true, files: true }, pendingRequests: [], ...changes }
+    return row(id, { sourceSessionId: metadata.id, projectionValues: { hhpiSource: metadata } })
 }
+const question = { id: 'native-question', method: 'item/tool/requestUserInput', turnId: 'turn', itemId: 'item', params: {} }
+const approval = { ...question, id: 'native-approval', method: 'item/commandExecution/requestApproval' }
 function store() { let n = 0; const id = () => `pane-${++n}`; return new WorkspaceStore(initialWorkspace(id), id) }
 
-test('a child transcript cannot claim its root source identity during migration or read-state mapping', () => {
-    const parent = row('parent', { projectionValues: { hapiObserved: { ownership: 'hapi-runner', hubId: 'hub', hapiSessionId: 'source' } } as never })
-    const child = row('child', { parentId: 'parent' as SessionId, projectionValues: { hapiObserved: { ownership: 'hapi-runner', hubId: 'hub', hapiSessionId: 'source', sidechain: { scopeId: 'real-child' } } } as never })
-    assert.equal(isSourceChild(child), true)
-    assert.equal(sourceIdentity(child), null)
-    assert.deepEqual(sourceIdentity(parent), { sessionId: 'source', hubId: 'hub' })
-    assert.equal(sourceRow({ kind: 'chat', sessionId: 'old', sourceSessionId: 'source' }, { child, parent }), parent)
+test('a child row cannot claim another original session projection', () => {
+    const parent = native('parent', 'parent-thread')
+    const child = native('child', 'child-thread')
+    assert.equal(sourceProjection(parent)?.nativeId, 'parent-thread')
+    assert.equal(sourceProjection(child)?.nativeId, 'child-thread')
+    assert.ok(parent.projectionValues)
+    assert.equal(sourceProjection({ ...child, projectionValues: parent.projectionValues }), undefined)
 })
 
-test('source waiting and error precedence beats running; async input remains pending without hiding execution', () => {
-    const active = { status: 'active', waitingOn: [] }
-    assert.equal(sessionActivity(native('a', 's', { execution: { ...active, waitingOn: ['input'] } })).kind, 'input')
-    assert.equal(sessionActivity(native('a', 's', { execution: { ...active, waitingOn: ['approval', 'input'] } })).kind, 'permission')
-    assert.equal(sessionActivity(native('a', 's', { execution: { status: 'systemError', waitingOn: ['approval'] } })).kind, 'error')
-    const pending = sessionActivity(native('a', 's', { execution: active, pendingRequests: [{ tool: 'request_user_input', blocking: false }] }))
-    assert.equal(pending.kind, 'running'); assert.equal(pending.running, true); assert.equal(pending.pending, true)
-    assert.equal(sessionActivity(native('a', 's', { nativeConnection: 'disconnected', execution: active })).kind, 'offline')
+test('HHPI presentation uses current requests and connectivity while ordinary DSH retains native model selection', () => {
+    const current = native('a', 's', { status: 'running', pendingRequests: [question] })
+    assert.equal(sessionActivity(current).kind, 'input')
+    assert.equal(sessionActivity(native('a', 's', { status: 'waiting', pendingRequests: [question, approval] })).kind, 'permission')
+    assert.deepEqual(pendingTarget(current), { kind: 'approval', requestId: question.id })
+    assert.equal(sessionActivity(native('a', 's', { status: 'running' })).kind, 'running')
+    assert.equal(sessionActivity(native('a', 's', { status: 'running', connection: { state: 'offline', observedAt: 1 } })).kind, 'offline')
+    assert.equal(sessionActivity(native('a', 's')).kind, 'idle', 'idle is not evidence of completion')
+    assert.equal(sourceProjection({ ...current, sourceSessionId: 'another-source' }), undefined)
+    assert.equal(sessionModel(native('a', 's', { codex: { model: 'native-model', reasoningEffort: null, parentThreadId: null, agentNickname: null } })), 'native-model')
+    const selection = { provider: 'provider', model: 'ordinary-model' }
+    assert.equal(sessionModel(row('ordinary', { projectionValues: { modelSelection: { next: selection, lastUsed: null } } })), 'ordinary-model')
+    assert.equal(sessionModel(row('ordinary', { projectionValues: { modelSelection: { next: null, lastUsed: selection } } })), 'ordinary-model')
+    assert.equal(sessionActivity(row('ordinary', { running: true })).kind, 'running')
 })
 
 test('window titles follow content; strongest activity scans every pane; aliases and exact W/P follow layout positions', () => {
     const layout = store(); layout.openSession('a'); const first = layout.focusedPane().id
     layout.split('horizontal', { kind: 'chat', sessionId: 'b' })
-    const rows = { a: row('a', { displayTitle: 'Build' }), b: native('b', 's', { execution: { status: 'active', waitingOn: ['approval'] } }) }
+    const rows = { a: row('a', { displayTitle: 'Build' }), b: native('b', 's', { status: 'waiting', pendingRequests: [approval] }) }
     assert.equal(windowTitle(layout.active(), first, rows, 'Empty'), 'Build')
     assert.equal(windowActivity(layout.active(), rows), 'permission')
     assert.equal(sessionDestinations(layout.getSnapshot()).get('b')?.label, 'W1 · P2')
@@ -53,26 +65,17 @@ test('window titles follow content; strongest activity scans every pane; aliases
     assert.equal(commandForKey('h'), 'left'); assert.equal(commandForKey('j'), 'down'); assert.equal(commandForKey('k'), 'up'); assert.equal(commandForKey('l'), 'right'); assert.equal(commandForKey('w'), 'windowList')
 })
 
-test('legacy import preserves every document, terminal, identity and weight while unavailable sessions remain source-addressed', () => {
-    const legacy = { schemaVersion: 2, revision: 17, workspaces: [{ id: 'window', name: 'Research', autoName: false, root: {
-        type: 'split', id: 'split', axis: 'horizontal', weights: [2, 1, 1], children: [
-            { type: 'pane', id: 'chat', resource: { kind: 'chat', sessionId: 'source' } },
-            { type: 'pane', id: 'file', resource: { kind: 'document', sessionId: 'source', document: { kind: 'file', path: '/repo/task.md', machineId: 'machine' } } },
-            { type: 'pane', id: 'terminal', resource: { kind: 'terminal', sessionId: 'unknown', terminalId: 'pty-stable' } },
-        ],
-    } }] }
-    const imported = importLegacyWorkspace(legacy, { display: native('display', 'source') })!
-    const resources = panes(imported.windows[0]!.root).map(pane => pane.resource)
-    assert.deepEqual(resources[0], { kind: 'chat', sessionId: 'display', sourceSessionId: 'source', sourceHubId: 'hub' })
-    assert.deepEqual(resources[1], { kind: 'document', sessionId: 'display', sourceSessionId: 'source', sourceHubId: 'hub', document: { kind: 'file', path: '/repo/task.md', machineId: 'machine' } })
-    assert.deepEqual(resources[2], { kind: 'terminal', sessionId: 'hapi-unmapped:3', sourceSessionId: 'unknown', terminalId: 'pty-stable' })
-    const bound = bindSourceResources(imported, { display: native('display-r2', 'source'), later: native('later', 'unknown') })
-    assert.equal(panes(bound.windows[0]!.root)[0]!.id, 'chat')
-    assert.equal(panes(bound.windows[0]!.root)[2]!.resource.kind, 'terminal')
-    assert.deepEqual(bound.windows[0]!.root.type === 'split' && bound.windows[0]!.root.weights, [2, 1, 1])
-    assert.equal(bindSourceResources(bound, { display: native('display-r2', 'source'), later: native('later', 'unknown') }), bound)
-    assert.equal(importLegacyWorkspace({ schemaVersion: 2, revision: 0, workspaces: [] }, {}), null)
-    assert.throws(() => importLegacyWorkspace({ ...legacy, workspaces: [...legacy.workspaces, ...legacy.workspaces] }, {}))
+test('finite session aliases preserve pane geometry and never retarget an old file or terminal resource', () => {
+    const layout = store()
+    layout.openResource({ kind: 'chat', sessionId: 'old', sourceSessionId: 'source', sourceHubId: 'hub' })
+    layout.split('horizontal', { kind: 'terminal', sessionId: 'old', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-terminal' })
+    const original = layout.getSnapshot(), bound = bindSourceAliases(original, () => ({ kind: 'federated-dsh', hostId: 'paired', sessionId: 'native' }))
+    const resources = panes(bound.windows[0]!.root).map(pane => pane.resource)
+    assert.equal(resources[0]!.kind === 'chat' && resources[0]!.sessionId, 'hapi-remote:paired:native')
+    assert.deepEqual(resources[1], panes(original.windows[0]!.root)[1]!.resource)
+    assert.deepEqual(bound.windows[0]!.root.type === 'split' && bound.windows[0]!.root.weights, original.windows[0]!.root.type === 'split' && original.windows[0]!.root.weights)
+    assert.equal(bindSourceAliases(bound, () => undefined), bound)
+    assert.deepEqual(legacyPaneReference({ kind: 'chat', sessionId: 'ordinary-r1' }), undefined)
 })
 
 test('geometry sync never exports the active window, focused pane, or zoom and keeps browser selection on merge', () => {
@@ -88,21 +91,21 @@ test('geometry sync never exports the active window, focused pane, or zoom and k
     assert.equal(parseWorkspaceState(restored).windows.length, 2)
 })
 
-test('a terminal pane navigated to a file follows only its source display successor and retains its current title', () => {
+test('a saved terminal file target keeps its original resource address until its own exact resource migration', () => {
     const layout = store()
     layout.openResource({ kind: 'terminal', sessionId: 'display-one', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-pty' })
     const paneId = layout.focusedPane().id
     layout.updateView(paneId, { type: 'resource', address: sessionFileAddress('display-one', '/repo/readme.md'), params: { line: 7 } }, 'readme.md')
     const next = native('display-two', 'source')
-    const rebound = bindSourceResources(layout.getSnapshot(), { 'display-two': next })
+    const rebound = bindSourceAliases(layout.getSnapshot(), () => ({ kind: 'local-dsh', hostId: 'local', sessionId: 'display-two' }))
     const pane = panes(rebound.windows[0]!.root)[0]!
     assert.equal(pane.id, paneId)
-    assert.deepEqual(pane.resource, { kind: 'terminal', sessionId: 'display-two', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-pty',
-        target: { type: 'resource', address: sessionFileAddress('display-two', '/repo/readme.md'), params: { line: 7 } }, title: 'readme.md' })
+    assert.deepEqual(pane.resource, { kind: 'terminal', sessionId: 'display-one', sourceSessionId: 'source', sourceHubId: 'hub', terminalId: 'original-pty',
+        target: { type: 'resource', address: sessionFileAddress('display-one', '/repo/readme.md'), params: { line: 7 } }, title: 'readme.md' })
     assert.equal(paneTitle(pane, { 'display-two': next }, 'Empty'), 'readme.md')
     assert.equal(windowTitle(rebound.windows[0]!, paneId, { 'display-two': next }, 'Empty'), 'readme.md')
     layout.updateView(paneId, { type: 'tab', kind: 'third-party', address: 'sidebar://third-party/opaque-display-one', params: { opaque: 'display-one' } })
-    const opaque = bindSourceResources(layout.getSnapshot(), { 'display-two': next })
+    const opaque = bindSourceAliases(layout.getSnapshot(), () => ({ kind: 'local-dsh', hostId: 'local', sessionId: 'display-two' }))
     const resource = panes(opaque.windows[0]!.root)[0]!.resource
     assert.ok(resource.kind === 'terminal')
     assert.deepEqual(resource.target, { type: 'tab', kind: 'third-party', address: 'sidebar://third-party/opaque-display-one', params: { opaque: 'display-one' } })

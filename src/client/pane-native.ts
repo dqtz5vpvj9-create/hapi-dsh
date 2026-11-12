@@ -9,18 +9,15 @@
  * fails loud instead of duplicating locale namespaces or slot contributions.
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { HAPI_REMOTE } from '../client-api.ts'
 import { en, zh } from './locales.ts'
 import { installWorkspaceStyles } from './styles.ts'
 import { installNativeIntegration } from './native-integration.tsx'
 import { installSourceComposerBridge } from './source-composer.tsx'
-import { installHapiTabs } from './hapi-tabs.tsx'
-import { installRemoteSourceControls } from './remote-controls.tsx'
-import { installSourceAdmin } from './source-admin.tsx'
 import { installPaneMountedChatConsumer, type MountedChatPane } from './mounted-chat-control.ts'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { installWithLegacyHapiCapability } from './source-notifications/capability.ts'
 import type {} from './remote-sessions.ts'
+import type {} from './source-workspace-client.ts'
+import type { SourceNativeNavigationOptions } from './source-native-navigation.tsx'
 
 /** Marker attribute `installWorkspaceStyles` writes on its style element. */
 const STYLE_MARKER = 'style[data-hapi-workspace-styles]'
@@ -53,14 +50,13 @@ async function disposeAll(disposers: Array<() => void | Promise<void>>): Promise
  * @param ctx - the pane graph's Context with the HAPI remote namespace mounted.
  * @returns asynchronous disposer owned by the caller's pane lifetime.
  */
-export function installPaneNative(ctx: Context): () => Promise<void> {
-    return installPaneNativeInternal(ctx, null)
+export function installPaneNative(ctx: Context, navigation: SourceNativeNavigationOptions): () => Promise<void> {
+    return installPaneNativeInternal(ctx, null, navigation)
 }
 
-function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): () => Promise<void> {
+function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null, navigation: SourceNativeNavigationOptions): () => Promise<void> {
     try { performance.mark(pane ? 'hapi-dsh:pane-native:with-pane' : 'hapi-dsh:pane-native:no-pane') } catch { /* diagnostics are optional */ }
     if (ctx.get('hapiPaneNative')) throw new Error('Pane HAPI surfaces are already installed on this Context')
-    const api = ctx.remote.hapi
     const disposers: Array<() => void | Promise<void>> = []
     try {
         const composer = installSourceComposerBridge(ctx)
@@ -80,19 +76,10 @@ function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): 
         }
         const unlocale = ctx.locale.register('hapiWorkspace', { en, zh })
         disposers.push(unlocale)
-        const integration = installNativeIntegration(ctx, api, sessionId => {
-            // A source fork is a new conversation, so the pane graph's own official
-            // navigation emits the selection which its outer workspace observes.
-            void ctx.sessions.refresh().then(() => ctx.uiWorkspace.openSession(sessionId as never))
-        }, () => { void ctx.sessions.refresh() })
+        const integration = installNativeIntegration(ctx, composer, navigation)
         disposers.push(() => integration.dispose())
         const unprovide = ctx.reflect.provide('hapiPaneNative', integration)
         disposers.push(() => unprovide())
-        disposers.push(installWithLegacyHapiCapability(ctx.hhpiSessions.capabilities, () => {
-            const installed = [installHapiTabs(ctx, api, composer), installSourceAdmin(ctx, api)]
-            return () => { for (const dispose of installed.reverse()) dispose() }
-        }))
-        disposers.push(installRemoteSourceControls(ctx))
     } catch (error) {
         void disposeAll(disposers).catch(() => { /* Preserve the installation error. */ })
         throw error
@@ -106,16 +93,6 @@ function installPaneNativeInternal(ctx: Context, pane: MountedChatPane | null): 
  * @param ctx - the activated pane graph Context.
  * @returns asynchronous disposer that removes the surfaces, then the namespace.
  */
-export async function mountPaneNative(ctx: Context, pane?: MountedChatPane | null): Promise<() => Promise<void>> {
-    const unmount = await ctx.remote.$mount(HAPI_REMOTE)
-    let dispose: (() => Promise<void>) | undefined
-    try {
-        dispose = installPaneNativeInternal(ctx, pane ?? null)
-    } catch (error) {
-        await unmount()
-        throw error
-    }
-    return async () => {
-        try { await dispose?.() } finally { await unmount() }
-    }
+export async function mountPaneNative(ctx: Context, navigation: SourceNativeNavigationOptions, pane?: MountedChatPane | null): Promise<() => Promise<void>> {
+    return installPaneNativeInternal(ctx, pane ?? null, navigation)
 }

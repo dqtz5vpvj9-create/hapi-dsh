@@ -23,6 +23,8 @@ export interface ComposerEnterInput {
   readonly actions: Pick<InputActions, 'submit'>
   readonly state: Pick<InputState, 'phase' | 'draft' | 'attachmentIds'>
   readonly blocked: boolean
+  /** This occurrence renders upload progress and recovery beside its native attachments. */
+  readonly inlineAttachmentFeedback?: boolean
   arbitrate(): ArbitrateOutcome
   attachments(): ComposerAttachmentAdmission
   notify(issue: ComposerEnterIssue): void
@@ -45,11 +47,24 @@ export class ComposerEnterBehavior {
 
   /** True only when this occurrence intercepted Enter before the official target keymap. */
   handle(event: ComposerEnterEvent, editable: boolean): boolean {
-    if (this.disposed || event.defaultPrevented || event.key !== 'Enter' || this.owner.preference() !== 'newline') return false
+    if (this.disposed || event.defaultPrevented || event.key !== 'Enter') return false
     // The browser owns IME confirmation; the official keymap retains its own
     // matching guard. Shift+Enter and platform/application chords stay intact.
     if (event.isComposing || event.keyCode === 229 || this.composing || this.now() < this.compositionUntil
       || event.shiftKey || event.altKey || event.getModifierState('AltGraph') || (event.ctrlKey && event.metaKey)) return false
+    if (this.owner.preference() !== 'newline') {
+      const current = this.owner.current()
+      if (!current?.inlineAttachmentFeedback) return false
+      const admission = current.attachments()
+      if (admission === 'ready') return false
+      // The native Send is disabled for these same files. Keep Enter from
+      // replacing their persistent progress/recovery row with an error toast.
+      event.stopPropagation(); event.preventDefault()
+      if (!event.repeat && editable && !frozen(current)) {
+        try { if (current.arbitrate() === 'pass' && admission === 'unavailable') current.notify(admission) } catch { current.notify('failed') }
+      }
+      return true
+    }
     // Bypass only the official Enter-to-submit keydown handler. An admitted
     // plain Enter must retain its native default: beforeinput then reaches
     // the original editor, which owns selection, LineBreakNode, undo and
@@ -69,7 +84,10 @@ export class ComposerEnterBehavior {
         event.preventDefault()
         if (!current.state.draft.trim() && !current.state.attachmentIds.length) return true
         const admission = current.attachments()
-        if (admission !== 'ready') { current.notify(admission); return true }
+        if (admission !== 'ready') {
+          if (!current.inlineAttachmentFeedback || admission === 'unavailable') current.notify(admission)
+          return true
+        }
         // Public ordinary submission keeps command adjudication, claims,
         // attachments and the default sink under their existing owner.
         current.actions.submit()

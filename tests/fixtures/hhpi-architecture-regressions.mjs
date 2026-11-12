@@ -165,7 +165,8 @@ test('directory hints cannot overwrite accepted history facts', { timeout: 5000 
     sessions.dispose();
     await ctx.fiber.dispose();
 });
-test('quick remount reuses the shared subscription', { timeout: 5000 }, async () => {
+test('quick remount reuses the shared subscription', { timeout: 5000 }, async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const w = new Wire();
     let subscriptions = 0, stopped = 0;
     const original = w.changes.bind(w);
@@ -182,11 +183,17 @@ test('quick remount reuses the shared subscription', { timeout: 5000 }, async ()
     await turn();
     assert.equal(stopped, 0);
     b.release();
+    t.mock.timers.tick(299);
     await turn();
+    const readsBeforeRemount = w.calls.length;
     const c = await h.openView('c', budget);
     await turn();
     assert.equal(subscriptions, 1);
+    assert.equal(w.calls.length, readsBeforeRemount + 1, 'quick remount still reads the authoritative latest window');
     c.release();
+    t.mock.timers.tick(300);
+    await turn();
+    assert.equal(stopped, 1, 'the final released view stops its subscription after the debounce');
     h.dispose();
 });
 test('old native generation cannot overwrite the active turn', { timeout: 5000 }, async () => {

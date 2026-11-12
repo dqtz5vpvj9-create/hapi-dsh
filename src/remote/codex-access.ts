@@ -24,3 +24,8 @@ export interface CodexCapabilities {
     protocolVersion: '0.165.0'; runtime: string;
     methods: Record<string, 'read' | 'write'>; unavailable: Record<string, string>;
 }
+
+/** HHPI source-adapter action, not a Codex-native JSON-RPC method. */
+export const QUEUED_STEER_METHOD = 'hhpi/queue/steer';
+/** Source queue view, including its exact in-flight transfer ownership. */
+export const QUEUE_VIEW_METHOD = 'hhpi/queue/list';

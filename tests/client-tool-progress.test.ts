@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import type { ConversationMatch, ConversationNodeContext, ConversationStartMatch } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { sourceToolProgressDefinition as definition, SOURCE_TOOL_PROGRESS, type SourceToolProgressState } from '../src/client/tool-progress-conversation.ts'
-import type { SourceToolProgress } from '../src/hapi-agent/tool-progress.ts'
+import type { SourceToolProgress } from '../src/shared/tool-progress.ts'
 
 const first: SourceToolProgress = { callId: 'display-call', sourceCallId: 'original-call', toolName: 'bash',
     sourceRowId: 'partial-one', createdAt: 1000, turn: 2, step: 3, phase: 'progress', payload: { content: [{ type: 'text', text: 'One' }] } }

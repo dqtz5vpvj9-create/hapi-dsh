@@ -3,7 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { TurnTailOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client'
 import { sourceReviewDefinition, SOURCE_REVIEW_DATA } from './codex-review-conversation.ts'
-import type { SourceReviewFinding } from '../hapi-agent/codex-review.ts'
+import type { SourceReviewFinding } from '../shared/codex-review.ts'
 
 function location(finding: SourceReviewFinding): string | null {
     if (!finding.filePath) return null

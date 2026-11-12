@@ -20,7 +20,7 @@ async function writeRuntime(dshHome: string, dshVersion: string, extRelease: str
     await writeFile(binary, '#!/usr/bin/env node\n');
     const runtimeRoot = join(release, 'runtime');
     const sealFiles = ['node_modules/@deepseek-ai/dsh/package.json', 'node_modules/@deepseek-ai/dsh/lib/bin.js'];
-    const files = {};
+    const files: Record<string, string> = {};
     for (const path of sealFiles) files[path] = createHash('sha256').update(await readFile(join(runtimeRoot, path))).digest('hex');
     await writeFile(join(runtimeRoot, 'runtime-identity.json'), JSON.stringify({
         schemaVersion: 1, upstreamVersion: dshVersion, extRelease, packages: [], files,

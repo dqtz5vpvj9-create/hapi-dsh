@@ -1,147 +1,173 @@
-/** HAPI speech and voice assistants attached to the unchanged official composer and settings. */
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import type { Context } from '@deepseek-ai/cordis';
-import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-import type { TokenSpan } from '@deepseek-ai/dsh-client-ui-conversation/client';
-import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
-import type {} from '../../codex/projection-types.ts';
-import type {} from '../../hapi-agent/projection-types.ts';
-import type { HapiRemoteApi } from '../../client-api.ts';
-import type { WorkbenchSource } from '../../workbench-types.ts';
-import type { WorkspaceUiScope } from '../workspace-ui.ts';
-import type {} from '../workspace-ui.ts';
-import type {} from '../pane-navigation.ts';
-import { SourceVoiceTransport } from './transport.ts';
-import { VoiceCatalog } from './catalog.ts';
-import { useSourceDictation, supportsDictation } from './dictation.ts';
-import { useVoiceAssistant } from './use-assistant.ts';
-import { assertVoiceBinding, voiceContextReader } from './context.ts';
-import { voiceToolOwner } from './tools.ts';
-import { VoiceCredentialsPanel, VoicePreferencesPanel, useVoicePreferences, words } from './settings.tsx';
-import { voiceError } from './assistant.ts';
-import { VOICE_BACKEND_LABELS } from '../../voice/protocol/voicePickerCatalog.ts';
-import { useWorkspacePane } from '../surface/pane-context.tsx';
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+/** On-device dictation inserts through the existing official editor actions, never through submit. */
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import type { Context } from '@deepseek-ai/cordis'
+import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionInput, TokenSpan } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { WorkspaceUiScope } from '../workspace-ui.ts'
+import { useWorkspacePane } from '../surface/pane-context.tsx'
+import { assertVoiceBinding } from './context.ts'
+import { supportsDictation, useSourceDictation } from './dictation.ts'
+import { VoicePreferencesPanel, useVoicePreferences, words } from './settings.tsx'
+import { useComposerIdentity, type ComposerIdentity } from '../composer-identity.ts'
+import { accountComposerDraftKey, readComposerRecoveries, writeComposerRecoveries, subscribeComposerRecoveries, notifyComposerRecoveries, type RecoveredComposerDraft } from '../composer-autosave.ts'
+import { randomId } from '../random-id.ts'
 
-type ComposerProps = PropsRuntime<'conversation.input.left'>;
-function Dialog({ title, close, minimize, children }: { title: string; close(): void; minimize(): void; children: ReactNode }) {
-    const ref = useRef<HTMLDialogElement>(null), id = useId();
-    useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-    return <dialog ref={ref} className="hapi-voice-dialog" aria-labelledby={id} onCancel={event => { event.preventDefault(); close(); }}>
-        <header><h2 id={id}>{title}</h2><span><button type="button" onClick={minimize} aria-label={title.startsWith('语音') ? '最小化语音并继续' : 'Minimize voice and continue'}>−</button>
-            <button type="button" onClick={close} aria-label={title.startsWith('语音') ? '关闭语音' : 'Close voice'}>×</button></span></header>{children}
-    </dialog>;
+type ComposerProps = PropsRuntime<'conversation.input.left'>
+type VoiceUi = Pick<WorkspaceUiScope, 'voice' | 'preferences' | 'application'>
+interface CapturedDictation { span: TokenSpan; binding: SessionBinding; actions: ComposerProps['inputActions']; identity: ComposerIdentity; key: string; id: string; input: Pick<SessionInput, 'state'> }
+type DictationCopy = RecoveredComposerDraft & { retention: NonNullable<RecoveredComposerDraft['retention']> }
+const isDictationCopy = (copy: RecoveredComposerDraft): copy is DictationCopy => copy.retention?.kind === 'dictation'
+function Dialog({ title, close, children }: { title: string; close(): void; children: ReactNode }) {
+    const ref = useRef<HTMLDialogElement>(null), id = useId()
+    useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close() }, [])
+    return <dialog ref={ref} className="hapi-voice-dialog" aria-labelledby={id} onCancel={event => { event.preventDefault(); close() }}>
+        <header><h2 id={id}>{title}</h2><button type="button" onClick={close} aria-label={title.startsWith('本机') ? '关闭听写' : 'Close dictation'}>×</button></header>{children}
+    </dialog>
 }
-
-export function VoiceComposer({ ctx, api, transport, catalog, ui, language, binding, source, composer, readOnly, initialOpen = false }: {
-    ctx: Context; api: HapiRemoteApi; transport: SourceVoiceTransport; catalog: VoiceCatalog; ui: WorkspaceUiScope; language: string;
-    binding: SessionBinding; source: WorkbenchSource | null; composer: ComposerProps; readOnly: boolean; initialOpen?: boolean;
+export function VoiceComposer({ ctx, ui, language, binding, composer, initialOpen = false, signal }: {
+    ctx: Context; ui: VoiceUi; language: string; binding: SessionBinding; composer: ComposerProps; initialOpen?: boolean; signal?: AbortSignal
 }) {
-    useEffect(() => { if (initialOpen) void catalog.refresh(); }, [catalog, initialOpen]);
-    const tr = words(language), navigation = useWorkspacePane(ctx), identity = `${navigation?.paneId ?? 'main'}:${binding.sessionId}`;
-    const dictationId = `${identity}:dictation`, assistantId = `${identity}:voice`;
-    const ownerId = useSyncExternalStore(ui.voice.subscribe, ui.voice.getSnapshot);
-    const { preferences } = useVoicePreferences(ui.preferences, catalog);
-    const [open, setOpen] = useState(initialOpen), [settingsOpen, setSettingsOpen] = useState(false), [error, setError] = useState<string | null>(null);
-    const [pending, setPending] = useState(''), [notice, setNotice] = useState('');
-    const insertion = useRef<TokenSpan | null>(null), latest = useRef(composer); latest.current = composer;
-    const reader = useMemo(() => voiceContextReader(ctx, api, binding, source), [ctx, api, binding, source]);
-    const owner = useMemo(() => voiceToolOwner(ctx, api, binding, source !== null, reader), [ctx, api, binding, source, reader]);
-    const final = (text: string) => {
-        if (!text) { setNotice(tr('No transcript was returned.', '没有返回转录文本。')); return; }
+    const tr = words(language), navigation = useWorkspacePane(ctx)
+    const ownerId = `${navigation?.paneId ?? binding.viewId ?? 'main'}:${binding.sessionId}:dictation`
+    const owner = useSyncExternalStore(ui.voice.subscribe, ui.voice.getSnapshot)
+    const preferences = useVoicePreferences(ui.preferences)
+    const identity = useComposerIdentity(ctx, binding.sessionId, ui.application)
+    const lifecycleSignal = useMemo(() => identity && signal ? AbortSignal.any([identity.signal, signal]) : identity?.signal ?? signal, [identity, signal])
+    const key = identity && !identity.signal.aborted ? accountComposerDraftKey(identity.scope, navigation?.hostId ?? 'local', binding.sessionId) : null
+    const [open, setOpen] = useState(initialOpen), [retained, setRetained] = useState<{ key: string; copies: DictationCopy[] }>(), [notice, setNotice] = useState('')
+    const pending = retained?.key === key ? retained.copies : []
+    const insertion = useRef<CapturedDictation | null>(null), latest = useRef(composer); latest.current = composer
+    const preservationFailed = useRef(false)
+    const forget = (copyKey: string, ids: readonly string[]) => {
+        const all = readComposerRecoveries(localStorage, copyKey), next = all.filter(copy => !copy.retention || !ids.includes(copy.retention.id))
+        if (next.length !== all.length) writeComposerRecoveries(localStorage, copyKey, next)
+        setRetained(value => value?.key === copyKey ? { key: copyKey, copies: value.copies.filter(copy => !ids.includes(copy.retention.id)) } : value)
+    }
+    const keep = (text: string, captured: CapturedDictation, detached: boolean, insertedDraft?: string) => {
+        const copy: DictationCopy = { text, references: [], retention: { kind: 'dictation', id: captured.id, ...(insertedDraft === undefined ? {} : { insertedDraft }) } }
         try {
-            assertVoiceBinding(ctx, binding);
-            if (insertion.current && latest.current.inputActions.insertText(text, insertion.current)) {
-                latest.current.inputActions.persistDraft(); setPending(''); setNotice(tr('Transcript inserted into this draft. Review it before sending.', '转录已插入当前输入框，请检查后再发送。')); return;
-            }
-            setPending(text); setNotice(tr('The draft changed while listening. The transcript is retained below; insert it when ready.', '听写期间输入框已变化。转录保留在下方，可在准备好后插入。'));
-        } catch (failure) { setPending(text); setError(voiceError(failure)); }
-    };
-    const dictation = useSourceDictation(transport, final, () => ui.voice.release(dictationId));
-    const assistant = useVoiceAssistant(transport, owner, () => ui.voice.release(assistantId));
-    const current = useRef({ dictation, assistant }); current.current = { dictation, assistant };
-    const recording = ['connecting', 'listening', 'processing'].includes(dictation.status);
-    const talking = ui.voice.owns(assistantId), ours = ui.voice.owns(dictationId) || talking;
-    const active = recording || talking, busyElsewhere = ownerId !== null && !ours;
-    const stop = async () => { current.current.dictation.cancel(); await current.current.assistant.stop(); };
-    const showError = (failure: unknown) => setError(voiceError(failure));
-    const close = () => { void stop().then(() => { setOpen(false); setSettingsOpen(false); }, showError); };
+            const all = readComposerRecoveries(localStorage, captured.key)
+            writeComposerRecoveries(localStorage, captured.key, [...all.filter(value => value.retention?.id !== captured.id), copy])
+            preservationFailed.current = false
+        } catch {
+            preservationFailed.current = true
+            if (!detached) setNotice(tr('Your transcript is still visible, but could not be saved. Keep this pane open.', '转录仍保留在当前面板，但尚未保存，请先保留此窗格。'))
+        }
+        if (!detached && captured.key === key) setRetained(value => ({ key: captured.key,
+            copies: [...(value?.key === captured.key ? value.copies.filter(value => value.retention.id !== captured.id) : []), copy] }))
+    }
+    useLayoutEffect(() => {
+        if (!key) return
+        const refresh = () => {
+            try {
+                const all = readComposerRecoveries(localStorage, key)
+                // A detached view may have lost its store writer just before
+                // insertion. Keep its backup until the new editor proves that
+                // exact inserted document was restored by its native owner.
+                let draft: string | undefined
+                try { draft = ctx.conversation.input.for(binding.ctx).state.getSnapshot().draft } catch { /* Retain every copy while its input is unavailable. */ }
+                const settled = all.filter(copy => isDictationCopy(copy) && copy.retention.insertedDraft !== undefined && copy.retention.insertedDraft === draft)
+                const copies = all.filter(copy => !settled.includes(copy))
+                if (settled.length) writeComposerRecoveries(localStorage, key, copies)
+                const next = copies.filter(isDictationCopy)
+                setRetained(value => value?.key === key && JSON.stringify(value.copies) === JSON.stringify(next) ? value : { key, copies: next })
+            } catch { setNotice(tr('The saved transcript could not be read. Its original copy has been kept.', '无法读取已保存转录，原副本仍保留。')) }
+        }
+        refresh()
+        return subscribeComposerRecoveries(key, refresh)
+    }, [key, binding, ctx])
+    const dictation = useSourceDictation((text, interrupted, lifecycle, detached) => {
+        if (!text) return
+        const captured = insertion.current
+        if (!captured) return
+        // Ordinary lifecycle interruption keeps words in the same input when
+        // its captured selection is still valid. No focus or send is requested.
+        if (!interrupted || lifecycle) {
+            try {
+                if (captured.binding !== binding || !captured.identity.current()) throw new Error('The original dictation input changed')
+                assertVoiceBinding(ctx, captured.binding)
+                if (captured.actions.insertText(text, captured.span)) {
+                    captured.actions.persistDraft()
+                    if (detached) keep(text, captured, true, captured.input.state.getSnapshot().draft)
+                    else { forget(captured.key, [captured.id]); preservationFailed.current = false }
+                    if (!detached) setNotice(tr('Transcript inserted. Review the draft before sending.', '转录已插入，请检查草稿后再发送。'))
+                    return
+                }
+            } catch { /* Retain only under the captured original account/Host/source. */ }
+        }
+        keep(text, captured, detached)
+        if (!detached && !preservationFailed.current) setNotice(tr('Dictation stopped. Your transcript is kept below for review.', '听写已停止，已识别文字保留在下方供检查。'))
+    }, () => ui.voice.release(ownerId), lifecycleSignal)
+    const current = useRef(dictation); current.current = dictation
+    const active = ['connecting', 'listening', 'processing'].includes(dictation.status)
+    const supported = supportsDictation(), busyElsewhere = owner !== null && !ui.voice.owns(ownerId)
     useEffect(() => {
-        if (assistant.state.status !== 'connected') return;
-        try { assistant.state.notice ? ui.preferences.setItem('hapi-voice-context-notice', assistant.state.notice) : ui.preferences.removeItem('hapi-voice-context-notice'); }
-        catch (failure) { setError(voiceError(failure)); }
-    }, [assistant.state.status, assistant.state.notice, ui.preferences]);
-    useEffect(() => {
-        const exit = () => { current.current.dictation.cancel(); void current.current.assistant.stop().catch(() => {}); };
-        window.addEventListener('pagehide', exit); return () => { window.removeEventListener('pagehide', exit); exit(); };
-    }, []);
-    useEffect(() => navigation?.registerCloseGuard(() => !pending || window.confirm(tr('Close this pane and discard the uninserted voice transcript?', '关闭此窗格并丢弃尚未插入的语音转录？'))), [navigation, pending, language]);
-    const begin = async (retry = false) => {
-        setError(null); setNotice('');
+        const interrupt = () => current.current.interrupt()
+        window.addEventListener('pagehide', interrupt)
+        const hidden = () => { if (!navigation?.state.getSnapshot().visible) interrupt() }
+        const unsubscribe = navigation?.state.subscribe(hidden)
+        const unbind = binding.session.subscribe(() => { if (binding.session.getSnapshot().removed) interrupt() })
+        return () => { window.removeEventListener('pagehide', interrupt); unsubscribe?.(); unbind(); interrupt() }
+    }, [binding, navigation])
+    const visibleIds = JSON.stringify(pending.map(copy => copy.retention.id))
+    useEffect(() => { if (key) { notifyComposerRecoveries(key); return () => notifyComposerRecoveries(key) } }, [open, key, visibleIds])
+    useEffect(() => navigation?.registerCloseGuard(() => {
+        current.current.interrupt()
+        return !preservationFailed.current
+    }), [navigation])
+    const begin = async () => {
+        if (pending.length) return
+        setNotice('')
         try {
-            assertVoiceBinding(ctx, binding);
-            const dictate = retry || preferences.mode === 'dictation';
-            if (dictate) {
-                if (!retry && !supportsDictation(preferences)) throw new Error(tr('Configure a supported dictation provider in Voice settings.', '请在语音设置中配置此浏览器支持的转录服务。'));
-                if (!ui.voice.claim(dictationId, () => current.current.dictation.cancel())) throw new Error(tr('Another pane owns the microphone. Stop its voice activity before starting here.', '其他窗格正在使用麦克风，请先停止那里的语音。'));
-                insertion.current = latest.current.inputActions.captureInsertion();
-                try { if (retry) await dictation.retry(); else await dictation.start(preferences); }
-                catch (failure) { ui.voice.release(dictationId); throw failure; }
-            } else {
-                if (readOnly) throw new Error(tr('This source is read-only. Resume control in the original conversation before starting its voice assistant.', '此源会话当前只读，请先在原会话恢复控制，再启动语音助手。'));
-                if (!preferences.backend) throw new Error(tr('Configure a voice assistant backend in Voice settings.', '请先在语音设置中配置语音助手后端。'));
-                if (!ui.voice.claim(assistantId, () => current.current.assistant.stop())) throw new Error(tr('Another pane owns the microphone. Stop its voice activity before starting here.', '其他窗格正在使用麦克风，请先停止那里的语音。'));
-                // Only the actual connection owner releases its claim after
-                // cleanup. A stale React snapshot cannot prove that cleanup.
-                await assistant.start(preferences);
-            }
-        } catch (failure) { showError(failure); }
-    };
-    const insertPending = () => { try {
-        assertVoiceBinding(ctx, binding);
-        if (!latest.current.inputActions.insertText(pending, latest.current.inputActions.captureInsertion())) throw new Error(tr('The draft changed again. Your transcript is retained.', '输入框再次变化，转录仍保留。'));
-        latest.current.inputActions.persistDraft(); setPending(''); setNotice(tr('Transcript inserted. Review it before sending.', '转录已插入，请检查后再发送。'));
-    } catch (failure) { showError(failure); } };
-    const dictationLabel = ({ idle: tr('Ready to dictate', '准备听写'), connecting: tr('Connecting microphone…', '正在连接麦克风…'), listening: tr('Listening', '正在听写'), processing: tr('Transcribing…', '正在转录…'), error: tr('Transcription stopped', '转录已停止') })[dictation.status];
-    const assistantLabel = ({ idle: tr('Ready to call', '准备通话'), connecting: tr('Connecting voice assistant…', '正在连接语音助手…'), connected: assistant.state.mode === 'speaking' ? tr('Assistant speaking', '助手正在说话') : tr('Listening', '正在聆听'), stopping: tr('Closing microphone and connection…', '正在关闭麦克风与连接…'), error: tr('Voice stopped', '语音已停止') })[assistant.state.status];
-    return <div className="hapi-voice-seat"><button type="button" className={active ? 'hapi-voice-trigger hapi-voice-live' : 'hapi-voice-trigger'} aria-haspopup="dialog"
-        aria-label={tr('Voice and dictation', '语音与听写')} title={active ? tr('Voice active', '语音正在使用') : tr('Voice and dictation', '语音与听写')}
-        onMouseDown={event => event.preventDefault()} onClick={() => { setOpen(true); void catalog.refresh(); }}>
+            assertVoiceBinding(ctx, binding)
+            if (!identity?.current() || !key || !supported || signal?.aborted || !ui.voice.claim(ownerId, () => current.current.interrupt())) return
+            const actions = latest.current.inputActions
+            insertion.current = { span: actions.captureInsertion(), binding, actions, identity, key, id: randomId(), input: ctx.conversation.input.for(binding.ctx) }
+            await dictation.start(preferences)
+        } catch {
+            ui.voice.release(ownerId)
+            setNotice(tr('Local dictation could not start. Check microphone permission and the browser’s language pack.', '无法启动本机听写，请检查麦克风权限和浏览器语言包。'))
+        }
+    }
+    const insertPending = () => {
+        try {
+            if (!key || !identity?.current()) return
+            assertVoiceBinding(ctx, binding)
+            if (!latest.current.inputActions.insertText(pending.map(copy => copy.text).join('\n\n'), latest.current.inputActions.captureInsertion())) return
+            latest.current.inputActions.persistDraft(); forget(key, pending.map(copy => copy.retention.id))
+            setNotice(tr('Transcript inserted. Review the draft before sending.', '转录已插入，请检查草稿后再发送。'))
+        } catch { /* Keep the transcript for explicit insertion when the binding is editable. */ }
+    }
+    const discard = () => {
+        dictation.cancel()
+        try { if (key && identity?.current()) forget(key, pending.map(copy => copy.retention.id)) }
+        catch { setNotice(tr('The saved transcript could not be removed. Its original copy has been kept.', '无法移除已保存转录，原副本仍保留。')) }
+    }
+    const status = ({ idle: tr('Ready to dictate', '准备听写'), connecting: tr('Checking local speech recognition…', '正在检查本机语音识别…'),
+        listening: tr('Listening', '正在听写'), processing: tr('Finishing dictation…', '正在完成听写…'),
+        error: tr('Local dictation stopped. Check microphone permission and the installed language pack.', '本机听写已停止，请检查麦克风权限和已安装的语言包。') })[dictation.status]
+    return <div className="hapi-voice-seat"><button type="button" className={active ? 'hapi-voice-trigger hapi-voice-live' : 'hapi-voice-trigger'}
+        aria-haspopup="dialog" aria-label={tr('Local dictation', '本机听写')} title={tr('Local dictation', '本机听写')}
+        onMouseDown={event => event.preventDefault()} onClick={() => setOpen(true)}>
         <svg viewBox="0 0 20 20" width="17" height="17" aria-hidden="true"><rect x="7" y="2" width="6" height="10" rx="3" fill="none" stroke="currentColor" strokeWidth="1.5"/><path d="M4.5 9a5.5 5.5 0 0 0 11 0M10 14.5V18M6.5 18h7" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
-        {active ? <span>{tr('Live', '正在使用')}</span> : pending ? <span>{tr('Transcript ready', '转录待插入')}</span> : null}</button>
-        {open && <Dialog title={tr('Voice and dictation', '语音与听写')} close={close} minimize={() => setOpen(false)}><div className="hapi-voice-body">
-            <p className="hapi-voice-session">{tr('Bound to this conversation', '绑定到当前会话')} · <code>{binding.sessionId}</code></p>
-            {error && <p role="alert" className="hapi-voice-error">{error}</p>}
-            {busyElsewhere && <div className="hapi-voice-warning"><p>{tr('A different pane currently owns the microphone.', '另一个窗格正在使用麦克风。')}</p>
-                <button type="button" onClick={() => { void ui.voice.stop().catch(showError); }}>{tr('Stop the other voice activity', '停止其他窗格的语音')}</button></div>}
-            <div className="hapi-voice-row"><button type="button" disabled={active} aria-pressed={preferences.mode === 'dictation'} onClick={() => { try { ui.preferences.setItem('hapi-voice-mode', 'dictation'); } catch (failure) { showError(failure); } }}>{tr('Dictation', '听写')}</button>
-                <button type="button" disabled={active} aria-pressed={preferences.mode === 'assistant'} onClick={() => { try { ui.preferences.setItem('hapi-voice-mode', 'assistant'); } catch (failure) { showError(failure); } }}>{tr('Voice assistant', '语音助手')}</button>
-                <button type="button" aria-expanded={settingsOpen} onClick={() => setSettingsOpen(value => !value)}>{tr('Voice settings', '语音设置')}</button></div>
-            {(preferences.mode === 'dictation' || recording) && !talking ? <section aria-label={tr('Dictation', '听写')}>
-                <p role="status">{dictationLabel} · {preferences.provider ?? tr('No provider selected', '尚未选择服务商')} · {preferences.transcriptionMode}</p>
-                {dictation.error && <p role="alert" className="hapi-voice-error">{dictation.error}</p>}
-                <div className="hapi-voice-row">{recording ? <><button type="button" disabled={dictation.status !== 'listening'} onClick={() => { void dictation.stop().catch(showError); }}>{tr('Stop and transcribe', '停止并转录')}</button>
-                    <button type="button" onClick={dictation.cancel}>{tr('Cancel recording', '取消录音')}</button></>
-                    : <button type="button" disabled={busyElsewhere} onClick={() => { void begin(); }}>{tr('Start dictation', '开始听写')}</button>}
-                    {dictation.retryAvailable && !recording && <button type="button" disabled={busyElsewhere} onClick={() => { void begin(true); }}>{tr('Retry the retained recording', '重新提交保留的录音')}</button>}</div>
-                {dictation.partial && <div className="hapi-voice-transcript"><p>{tr('Live transcript', '实时转录')}</p><pre>{dictation.partial}</pre>{!recording && <button type="button" onClick={() => { setPending(dictation.partial); }}>{tr('Keep this partial transcript', '保留此部分转录')}</button>}</div>}
-                <p><small>{tr('Speech is inserted into this draft without sending it. Existing text and attachment chips are preserved.', '语音只插入当前输入框，不自动发送；保留已有文字与附件。')}</small></p>
-            </section> : <section aria-label={tr('Voice assistant', '语音助手')}>
-                <p role="status">{assistantLabel} · {preferences.backend ? VOICE_BACKEND_LABELS[preferences.backend] : tr('No backend selected', '尚未选择后端')}</p>
-                {assistant.state.error && <p role="alert" className="hapi-voice-error">{assistant.state.error}</p>}{assistant.state.notice && <p role="status">{assistant.state.notice}</p>}
-                <div className="hapi-voice-row">{talking ? <><button type="button" disabled={assistant.state.status !== 'connected'} aria-pressed={assistant.state.muted} onClick={() => assistant.setMuted(!assistant.state.muted)}>{assistant.state.muted ? tr('Unmute microphone', '取消麦克风静音') : tr('Mute microphone', '麦克风静音')}</button>
-                    <button type="button" onClick={() => { void assistant.stop().catch(showError); }}>{tr('End voice call', '结束语音通话')}</button></>
-                    : <button type="button" disabled={busyElsewhere || readOnly} onClick={() => { void begin(); }}>{tr('Start voice call', '开始语音通话')}</button>}</div>
-                {readOnly && <p>{tr('Resume the original source conversation to send requests through voice.', '请恢复原源会话后再通过语音发送请求。')}</p>}
-                <p><small>{tr('The selected voice provider receives bounded conversation context and microphone audio. Spoken coding requests use this conversation’s normal queue; approval responses apply only to the one pending request advertised to this voice connection.', '所选语音服务商会收到有边界的会话上下文与麦克风音频。口述任务进入当前会话的正常队列；审批仅作用于已告知本次语音连接的那一条待处理请求。')}</small></p>
-                {assistant.state.caption && <p className="hapi-voice-caption" aria-live="polite">{assistant.state.caption}</p>}
-                {assistant.state.receipts.length > 0 && <details><summary>{tr('Voice tool receipts', '语音工具回执')} ({assistant.state.receipts.length})</summary>{assistant.state.receipts.map(receipt => <article key={receipt.id}>
-                    <strong>{receipt.name} · {receipt.status}</strong><p>{receipt.result || tr('Waiting for source admission…', '等待源确认接收…')}</p>{receipt.requestId && <code>{receipt.requestId}</code>}</article>)}</details>}
-            </section>}
-            {notice && <p role="status">{notice}</p>}{pending && <section><label>{tr('Retained transcript', '已保留的转录')}<textarea rows={5} value={pending} onChange={event => setPending(event.target.value)}/></label>
-                <div className="hapi-voice-row"><button type="button" onClick={insertPending}>{tr('Insert into current draft', '插入当前输入框')}</button><button type="button" onClick={() => { void navigator.clipboard.writeText(pending).catch(showError); }}>{tr('Copy transcript', '复制转录')}</button><button type="button" onClick={() => setPending('')}>{tr('Discard transcript', '丢弃转录')}</button></div></section>}
-            {settingsOpen && <section className="hapi-voice-settings"><VoicePreferencesPanel api={api} store={ui.preferences} catalog={catalog} language={language} disabled={active}/><VoiceCredentialsPanel api={api} catalog={catalog} language={language}/></section>}
+        {active ? <span>{tr('Listening', '正在听写')}</span> : pending.length ? <span>{tr('Transcript ready', '转录待插入')}</span> : null}</button>
+        {open && <Dialog title={tr('Local dictation', '本机听写')} close={() => { dictation.interrupt(); setOpen(false) }}><div className="hapi-voice-body">
+            <VoicePreferencesPanel store={ui.preferences} language={language} disabled={active}/>
+            {supported && <p role="status">{status}</p>}
+            {busyElsewhere && <p role="status">{tr('Another pane is using the microphone.', '另一个窗格正在使用麦克风。')}</p>}
+            <div className="hapi-voice-row">{active ? <>
+                <button type="button" disabled={dictation.status !== 'listening'} onClick={() => { void dictation.stop() }}>{tr('Stop and insert', '停止并插入')}</button>
+                <button type="button" onClick={discard}>{tr('Cancel dictation', '取消听写')}</button>
+            </> : <button type="button" disabled={!!pending.length || !supported || busyElsewhere || signal?.aborted} onClick={() => { void begin() }}>{tr('Start dictation', '开始听写')}</button>}</div>
+            {dictation.partial && <pre className="hapi-voice-transcript">{dictation.partial}</pre>}
+            {notice && <p role="status">{notice}</p>}
+            {pending.length > 0 && <section data-hapi-dictation-recoveries={JSON.stringify([key, pending.map(copy => copy.retention.id)])} aria-label={tr('Uninserted transcript', '待插入转录')}><pre className="hapi-voice-transcript">{pending.map(copy => copy.text).join('\n\n')}</pre>
+                <button type="button" onClick={insertPending}>{tr('Insert into this draft', '插入当前草稿')}</button>
+                <button type="button" onClick={discard}>{tr('Cancel dictation', '取消听写')}</button></section>}
+            <p><small>{tr('Dictation stays on this device and only inserts into the draft. Existing text and attachments are preserved; nothing is sent automatically.',
+                '听写在本机完成，只插入草稿；保留已有文字和附件，不会自动发送。')}</small></p>
         </div></Dialog>}
-    </div>;
+    </div>
 }
-

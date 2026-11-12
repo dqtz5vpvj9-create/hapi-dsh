@@ -3,14 +3,12 @@ import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
-import { parseSources } from '../remote/config.ts';
+import { parseSources, parseSourceWorkspaces, type SourceWorkspaceConfig } from '../remote/config.ts';
 import type { DirectSourceConfig } from '../remote/protocol.ts';
 
 export const DSH_VERSION = '0.2.2-rc.1';
-export const HAPI_REVISION = '55166cf8d87814ccfb383b538a8e8c55283bed81';
 export const CONFIG_VERSION = 1;
 
 export interface RuntimeConfig {
@@ -20,14 +18,6 @@ export interface RuntimeConfig {
         profile: string;
         command?: string;
         args?: string[];
-    };
-    hapi?: {
-        id: string;
-        url: string;
-        tokenEnv: string;
-        token?: string;
-        /** Original HAPI Hub HTTPS origin reachable by the mobile Companion. */
-        companionUrl?: string;
     };
     server: {
         host: string;
@@ -40,6 +30,7 @@ export interface RuntimeConfig {
     };
     federation?: { credentialsFile: string };
     sources?: DirectSourceConfig[];
+    sourceWorkspaces?: SourceWorkspaceConfig[];
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -74,16 +65,6 @@ export function normalizeHttpUrl(value: unknown, name: string): string {
     return url.toString().replace(/\/+$/, '');
 }
 
-/** Native Companion clients accept an origin, not a reverse-proxy path prefix. */
-export function normalizeCompanionUrl(value: unknown): string {
-    const normalized = normalizeHttpUrl(value, 'hapi.companionUrl');
-    const url = new URL(normalized);
-    if (url.protocol !== 'https:' || url.pathname !== '/' || typeof value === 'string' && (value.includes('?') || value.includes('#'))) {
-        throw new Error('hapi.companionUrl must be an HTTPS origin without a path prefix');
-    }
-    return url.origin;
-}
-
 /** Match the official bare host[:port] contract without silently broadening a port grant. */
 function trustedAuthority(value: unknown): string {
     if (typeof value !== 'string' || value.includes('*')) throw new Error('server.trustedHosts must contain bare host[:port] authorities');
@@ -97,21 +78,23 @@ function trustedAuthority(value: unknown): string {
 }
 
 /** Validate serialized operator configuration before it is used by the Host or CLI. */
-export function parseConfig(input: unknown): RuntimeConfig {
+export function parseConfig(input: unknown, options: { composition?: 'host' | 'runner' } = {}): RuntimeConfig {
     const config = record(input, 'configuration');
-    keys(config, ['version', 'dsh', 'hapi', 'server', 'federation', 'sources'], 'configuration');
+    if (Object.hasOwn(config, 'hapi')) throw new Error('Legacy HAPI Hub configuration is retired. Keep the original file for offline migration or recovery, then configure native sources or officially paired Runners before starting.');
+    keys(config, ['version', 'dsh', 'server', 'federation', 'sources', 'sourceWorkspaces'], 'configuration');
     if (config.version !== CONFIG_VERSION) throw new Error(`Unsupported configuration version; expected ${CONFIG_VERSION}`);
     const dsh = record(config.dsh, 'dsh');
-    const hapi = config.hapi === undefined ? undefined : record(config.hapi, 'hapi');
     const server = record(config.server, 'server');
     keys(dsh, ['home', 'profile', 'command', 'args'], 'dsh');
-    if (hapi) keys(hapi, ['id', 'url', 'tokenEnv', 'token', 'companionUrl'], 'hapi');
     keys(server, ['host', 'port', 'publicUrl', 'trustedHosts', 'tls', 'loginPasswordFile'], 'server');
     const home = string(dsh.home, 'dsh.home');
     if (!isAbsolute(home)) throw new Error('dsh.home must be an absolute path');
     const profile = string(dsh.profile, 'dsh.profile');
     if (!/^[a-z][a-z0-9_-]{0,63}$/.test(profile)) throw new Error('dsh.profile must use lowercase letters, digits, underscores, or hyphens');
-    if (['web', 'headless', 'sdk', 'sdk-minimal', 'acp', 'desktop'].includes(profile)) {
+    // A Runner can join the original official Web profile. The main workspace
+    // still requires a dedicated profile and must not replace that execution owner.
+    if (['web', 'headless', 'sdk', 'sdk-minimal', 'acp', 'desktop'].includes(profile)
+        && !(profile === 'web' && options.composition === 'runner')) {
         throw new Error('dsh.profile must name a dedicated custom profile, such as hapi');
     }
     const host = string(server.host, 'server.host');
@@ -137,16 +120,8 @@ export function parseConfig(input: unknown): RuntimeConfig {
         }
         result.dsh.args = [...dsh.args];
     }
-    if (hapi) {
-        const tokenEnv = string(hapi.tokenEnv, 'hapi.tokenEnv');
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tokenEnv)) throw new Error('hapi.tokenEnv must be an environment variable name');
-        const hubId = hapi.id === undefined ? randomUUID() : string(hapi.id, 'hapi.id');
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(hubId)) throw new Error('hapi.id must be a stable identifier using letters, digits, dots, underscores, or hyphens');
-        result.hapi = { id: hubId, url: normalizeHttpUrl(hapi.url, 'hapi.url'), tokenEnv };
-        if (hapi.token !== undefined) result.hapi.token = string(hapi.token, 'hapi.token');
-        if (hapi.companionUrl !== undefined) result.hapi.companionUrl = normalizeCompanionUrl(hapi.companionUrl);
-    }
     if (config.sources !== undefined) result.sources = parseSources(config.sources);
+    if (config.sourceWorkspaces !== undefined) result.sourceWorkspaces = parseSourceWorkspaces(config.sourceWorkspaces, result.sources ?? []);
     if (server.loginPasswordFile !== undefined) {
         const path = string(server.loginPasswordFile, 'server.loginPasswordFile');
         if (!isAbsolute(path)) throw new Error('server.loginPasswordFile must be an absolute path');
@@ -181,15 +156,10 @@ export function defaultConfigPath(env: NodeJS.ProcessEnv = process.env): string 
     return join(base, 'hapi-dsh', 'config.json');
 }
 
-export type HapiRuntimeConfig = RuntimeConfig & { hapi: NonNullable<RuntimeConfig['hapi']> };
-export function createConfig(hapiUrl: string, env?: NodeJS.ProcessEnv): HapiRuntimeConfig;
-export function createConfig(hapiUrl?: undefined, env?: NodeJS.ProcessEnv): RuntimeConfig;
-export function createConfig(hapiUrl: string | undefined, env?: NodeJS.ProcessEnv): RuntimeConfig;
-export function createConfig(hapiUrl?: string, env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
+export function createConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
     return parseConfig({
         version: CONFIG_VERSION,
         dsh: { home: env.DSH_HOME ? resolve(env.DSH_HOME) : join(homedir(), '.dsh'), profile: 'hapi' },
-        ...(hapiUrl === undefined ? {} : { hapi: { id: randomUUID(), url: hapiUrl, tokenEnv: 'HAPI_DSH_TOKEN' } }),
         server: { host: '127.0.0.1', port: 3080 },
     });
 }
@@ -222,19 +192,9 @@ export async function readPrivateJson(path: string): Promise<unknown> {
     }
 }
 
-/** Assign legacy configs a persistent random Hub identity before any session identity is derived. */
+/** Product startup validates native-only configuration; legacy input remains an offline recovery concern. */
 export async function readConfig(path: string): Promise<RuntimeConfig> {
-    const document = await readPrivateJson(path);
-    const config = parseConfig(document);
-    const input = document as { hapi?: { id?: unknown } };
-    if (input.hapi === undefined || input.hapi.id !== undefined) return config;
-    return withFileLock(`${path}.migration`, async () => {
-        // Re-read under the lock, so two starting processes cannot persist different identities.
-        const current = await readPrivateJson(path);
-        const result = parseConfig(current);
-        if ((current as { hapi?: { id?: unknown } }).hapi?.id === undefined) await writeConfig(path, result, true);
-        return result;
-    });
+    return parseConfig(await readPrivateJson(path));
 }
 
 /** Create a private config without replacing an existing file. Updates require an explicit replace request. */
@@ -283,22 +243,5 @@ export async function writePrivateJson(path: string, value: unknown, replace = f
     }
 }
 
-export function resolveHapiToken(config: RuntimeConfig, env: NodeJS.ProcessEnv = process.env): string {
-    if (!config.hapi) throw new Error('No HAPI source is configured; a HAPI token is not required for HHPI sources or federation.');
-    const value = env[config.hapi.tokenEnv] ?? config.hapi.token;
-    if (!value?.trim()) throw new Error(`Set ${config.hapi.tokenEnv} to the HAPI access token before starting`);
-    if (value.includes('\0') || /[\r\n]/.test(value)) throw new Error('HAPI access token must be a single line');
-    return value;
-}
-
-type PublicHapiConfig = Omit<NonNullable<RuntimeConfig['hapi']>, 'token'> & { credentialConfigured: boolean };
-export function publicConfig(config: HapiRuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi: PublicHapiConfig };
-export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi?: PublicHapiConfig };
-export function publicConfig(config: RuntimeConfig): Omit<RuntimeConfig, 'hapi'> & { hapi?: PublicHapiConfig } {
-    const { hapi, ...common } = config;
-    return {
-        ...common,
-        ...(hapi ? { hapi: { id: hapi.id, url: hapi.url, tokenEnv: hapi.tokenEnv,
-            ...(hapi.companionUrl ? { companionUrl: hapi.companionUrl } : {}), credentialConfigured: Boolean(hapi.token) } } : {}),
-    };
-}
+/** The native-only schema contains no Hub credential; reject legacy objects before rendering. */
+export function publicConfig(config: RuntimeConfig): RuntimeConfig { return parseConfig(config); }

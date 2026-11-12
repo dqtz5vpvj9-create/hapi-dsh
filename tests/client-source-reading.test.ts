@@ -1,11 +1,21 @@
 /** Actual reading binding with DOM/Session boundary doubles; no browser claim. */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import type { Context } from '@deepseek-ai/cordis'
+import { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { ConversationNodeAssembler } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+import { Session, SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
+import { createAssistantMessage, createToolResultMessage, createUserMessage, ToolCallId, type LlmAttemptId } from '@deepseek-ai/dsh-llm'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import type { PaneReadingIntent } from '../src/client/reading-intent.ts'
 import { bindPaneReading, registerLatestCancellation } from '../src/client/reading-view.ts'
+import { bindRemotePaneReading } from '../src/client/remote-reading.ts'
+import { publishPaneMountedChat } from '../src/client/mounted-chat-control.ts'
+import { officialChat } from './official-conversation-fixture.ts'
+import { WorkspaceApplicationIdentity } from '../src/client/application-identity.ts'
+import { createWorkspaceUpdatePreparations } from '../src/client/update-preparation.ts'
+import { armOrdinaryReadingForReload, installOrdinaryReadingMemory } from '../src/client/ordinary-reading-checkpoint.ts'
 
 function store<T>(initial: T) {
     let value = initial
@@ -26,16 +36,50 @@ class Events {
 }
 async function microtasks() { for (let i = 0; i < 12; i++) await Promise.resolve() }
 
+function nativeWindow(kind: 'tool' | 'assistant', warm: boolean, result = false) {
+    const native = Session.create(SessionId('session')), chat = officialChat(), entries: SessionEventLikeEntry[] = []
+    const assembler = chat.assembler as unknown as Pick<ConversationNodeAssembler, 'append' | 'flush'>
+    chat.assembler.replaceWindow([], false); chat.assembler.activateTarget('chat'); chat.assembler.flush()
+    const append = (entry: SessionEventLikeEntry) => { entries.push(entry); assembler.append(entry); assembler.flush() }
+    append({ type: 'event', event: native.append('turn/start', { turn: 1 }) })
+    append({ type: 'event', event: native.append('step/start', { turn: 1, step: 1 }) })
+    const user = native.append('user/message', createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'source prompt' }] }), { surfaceOp: 'append' })
+    append({ type: 'event', event: user })
+    if (warm) append({ type: 'transient', event: { type: 'assistant/live-chunk', seq: user.seq + 0.5, time: Date.now(),
+        data: { attemptId: 'reading-fixture-attempt' as LlmAttemptId, turn: 1, step: 1, chunk: kind === 'tool'
+            ? { type: 'tool-call-delta', index: 0, id: ToolCallId('reading-fixture-call'), name: 'fixture_tool', argumentsDelta: '{}' }
+            : { type: 'text-delta', index: 0, text: 'source answer' } } } })
+    let target: SessionEvent = kind === 'tool'
+        ? native.append('tool/call', { turn: 1, step: 1, callId: ToolCallId('reading-fixture-call'), name: 'fixture_tool', arguments: '{}' })
+        : native.append('assistant/message', { turn: 1, step: 1, stream: [], message: createAssistantMessage({ source: { provider: 'fixture', model: 'fixture' }, content: [{ type: 'text', text: 'source answer' }] }) }, { surfaceOp: 'append' })
+    append({ type: 'event', event: target })
+    if (result) {
+        target = native.append('tool/result', { turn: 1, step: 1, message: createToolResultMessage({
+            callId: ToolCallId('reading-fixture-call'), content: [{ type: 'text', text: 'source result' }], isError: false,
+        }) }, { surfaceOp: 'append' })
+        append({ type: 'event', event: target })
+    }
+    const nodes = () => { const snapshot = chat.assembler.snapshot('chat'); return snapshot.order.map(key => snapshot.nodes.get(key)!).filter(Boolean) }
+    const row = nodes().find(node => node.kind === (kind === 'tool' ? 'tool-call' : 'assistant-step'))!
+    assert.ok(row)
+    return { target, row, nodes, entries: () => entries, close: () => chat.close() }
+}
+
 function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>;
-    latestControl?: 'button' | 'following' | 'missing'; sourceHistory?: boolean } = {}) {
+    latestControl?: 'button' | 'following' | 'missing'; sourceHistory?: boolean; hhpi?: boolean; remoteBinding?: boolean;
+    storage?: Map<string, string>; reload?: boolean; initialLatest?: boolean; ordinaryHero?: boolean;
+    nativePage?: (signal: AbortSignal) => Promise<void>; missingNativeTarget?: boolean;
+    nativeResident?: boolean; emptyNative?: boolean; nativeWindow?: ReturnType<typeof nativeWindow>; emptyEventSource?: boolean } = {}) {
     const observer = Object.getOwnPropertyDescriptor(globalThis, 'MutationObserver')
     Object.defineProperty(globalThis, 'MutationObserver', { configurable: true, value: class { observe() {} disconnect() {} } })
     let now = 0, id = 0, top = 300, rowTop = 500, rowPresent = true
     const timers = new Map<number, { at: number; run: () => void }>(), frames = new Map<number, FrameRequestCallback>()
-    const storage = new Map<string, string>(), writes: number[] = [], loads: number[] = [], officialClicks: number[] = []
+    const storage = options.storage ?? new Map<string, string>(), writes: number[] = [], loads: number[] = [], officialClicks: number[] = []
+    const nativeReads: unknown[] = [], nativeReveals: unknown[] = []
+    let nativeLoaded = options.nativeResident ?? !options.nativePage
     const window = Object.assign(new Events(), {
         innerWidth: 390, innerHeight: 844,
-        performance: { getEntriesByType: () => [] },
+        performance: { getEntriesByType: () => options.reload ? [{ type: 'reload' }] : [] },
         sessionStorage: { getItem: (key: string) => storage.get(key) ?? null,
             setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
         setTimeout(run: () => void, delay: number) { const handle = ++id; timers.set(handle, { at: now + delay, run }); return handle },
@@ -46,13 +90,15 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
     const root = Object.assign(new Events(), {
         dataset: {} as Record<string, string>, isConnected: true, hidden: false,
         closest: (selector: string) => selector.includes('aria-hidden') ? null : root,
-        querySelector: (selector: string) => selector === '[data-conversation-scroll]' ? port : null,
+        querySelector: (selector: string) => selector === '[data-conversation-scroll]' ? port
+            : options.ordinaryHero && selector === '[data-conversation-content][data-content-phase="hero"] [data-composer-input]' ? {} : null,
         querySelectorAll: (selector: string) => selector === 'button[aria-label]' ? (!options.latestControl || options.latestControl === 'button' ? [latestButton] : [])
             : selector.includes('data-chat-anchor-key') && rowPresent ? [row] : [],
-        prepend: () => {},
+        prepend: () => {}, append: () => {}, setAttribute: () => {}, removeAttribute: () => {},
     })
-    const document = { defaultView: window, elementFromPoint: () => rowPresent ? row : null,
+    const document = Object.assign(new Events(), { defaultView: window, visibilityState: 'visible', elementFromPoint: () => rowPresent ? row : null,
         createElement: () => ({ className: '', textContent: '', type: '', onclick: undefined, setAttribute() {}, append() {}, remove() {} }) }
+    )
     const port = {
         ...(options.scrollend === false ? {} : { onscrollend: null }), ownerDocument: document,
         scrollHeight: 5000, clientHeight: 660,
@@ -76,22 +122,55 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
         click() { officialClicks.push(port.scrollHeight); port.scrollTop = port.scrollHeight - port.clientHeight },
     }
     Object.assign(root, { ownerDocument: document })
-    const state = store({ visible: true, focused: true }), reading = store<PaneReadingIntent | undefined>(undefined)
-    const events = store({ revision: 0, change: { kind: 'append' } })
-    const history = store({ openState: 'open', loadingOlder: false, removed: false })
+    const state = store({ visible: true, focused: true }), reading = store<PaneReadingIntent | undefined>(options.initialLatest
+        ? { revision: 1, sessionId: 'session', target: { kind: 'latest' } } : undefined)
+    const eventState = store({ revision: 0, change: { kind: 'append' } })
+    const windowEntries = () => nativeLoaded ? options.nativeWindow?.entries() ?? [] : []
+    const events = { ...eventState, getSnapshot: () => ({ ...eventState.getSnapshot(), entries: options.emptyEventSource ? [] : windowEntries() }) }
+    const history = store({ openState: 'open', loadingOlder: false, removed: false, blank: options.ordinaryHero === true, hasMore: false, running: false, promptAttempted: false })
     const sourceWindow = store({ hasMoreAfter: false, historyId: 'host-a', historyVersion: 0 })
     let completeLoad: (() => void) | undefined
-    const reference = { sessionId: 'session', ready: Promise.resolve(), binding: { eventSource: events,
-        session: { ...history, returnToLive: options.returnToLive, ...(options.sourceHistory ? { sourceWindow } : {}),
+    const sessionId = options.hhpi ? 'hhpi:reading-machine:reading-source:codex:reading-thread' : 'session'
+    let sourceEpoch = 'reading-epoch-1'
+    const reference = { sessionId, ready: Promise.resolve(), binding: { sessionId, eventSource: events,
+        session: { sessionId, ...history, get sourceEpoch() { return sourceEpoch }, returnToLive: options.returnToLive,
+            ...(options.remoteBinding ? { readingView: {} } : {}), ...(options.sourceHistory ? { sourceWindow } : {}),
             loadThrough(seq: number) { loads.push(seq); return new Promise<void>(resolve => { completeLoad = resolve }) } } } } as unknown as SessionReference
-    const ctx = { sessions: { list: { getSnapshot: () => ({ byId: { session: {} } }) } },
-        locale: { bind: () => () => 'To bottom', getSnapshot: () => ({ active: 'en' }) },
-        uiConversation: { binding: () => ({ target: () => ({ getSnapshot: () => ({ nodes: new Map([['message-50', { anchorSeq: 50 }]]) }) }) }) } } as unknown as Context
-    const navigation = { hostId: 'host', paneId: 'pane', state, reading } as unknown as WorkspacePaneNavigation
-    const dispose = bindPaneReading(ctx, root as unknown as HTMLElement, reference, navigation)
+    const heroChat = options.ordinaryHero ? officialChat() : undefined
+    if (heroChat) { heroChat.assembler.replaceWindow([], false); heroChat.assembler.flush(); assert.equal(heroChat.assembler.snapshot('chat'), undefined) }
+    const ctx = new Context(), application = new WorkspaceApplicationIdentity(), updates = createWorkspaceUpdatePreparations()
+    application.set({ accountId: 'reading-account', origin: 'https://fixture.invalid' }, 'reading-device')
+    ctx.reflect.provide('sessions', { list: { getSnapshot: () => ({ byId: { session: {} } }) }, binding: () => reference.binding } as unknown as Context['sessions'])
+    ctx.reflect.provide('locale', { bind: () => () => 'To bottom', getSnapshot: () => ({ active: 'en' }) } as unknown as Context['locale'])
+    ctx.reflect.provide('uiConversation', { binding: () => ({
+            readingView: { snapshot: { getSnapshot: () => ({ entries: windowEntries() }) }, async read(request: { target: { seq: number } }, signal: AbortSignal) {
+                if (options.nativePage) {
+                    nativeReads.push(request); await options.nativePage(signal); nativeLoaded = !options.missingNativeTarget
+                } else {
+                    loads.push(request.target.seq)
+                    await new Promise<void>(resolve => { completeLoad = resolve })
+                }
+            } },
+            target: () => ({ getSnapshot: () => heroChat ? heroChat.assembler.snapshot('chat') : options.emptyNative ? undefined : ({
+                order: nativeLoaded ? options.nativeWindow?.nodes().map(node => node.key) ?? ['message-50'] : [],
+                nodes: {
+                get: (key: string) => options.nativeWindow ? options.nativeWindow.nodes().find(node => node.key === key) : key === 'message-50' ? { key, anchorSeq: 50 } : undefined,
+                values: () => nativeLoaded ? options.nativeWindow?.nodes() ?? [{ key: 'message-50', anchorSeq: 50, kind: 'assistant-step' }] : [],
+            } }), subscribe: () => { heroChat?.assembler.activateTarget('chat'); return () => {} } }),
+        }) } as unknown as Context['uiConversation'])
+    const stopMemory = installOrdinaryReadingMemory(ctx)
+    const navigation = { hostId: 'host', paneId: 'pane', state, reading, application, updates } as unknown as WorkspacePaneNavigation
+    if (!options.emptyNative) publishPaneMountedChat(root, { version: 1,
+        read: () => ({ revision: 0, anchor: null, following: false, hasOlder: true, busy: false }), subscribe: () => () => {},
+        checkpointReading() { ctx.chatScrollMemory.forBinding(reference.binding)!.save({ anchorKey: 'message-50', anchorTop: rowTop - top, scrollTop: top }) },
+        async loadOlder() { throw new Error('Exact notification navigation must not replay intervening history') },
+        async reveal(target) { nativeReveals.push(target) }, async toLatest() { throw new Error('A missing original target cannot fall back to latest') },
+    })
+    const dispose = (options.remoteBinding ? bindRemotePaneReading : bindPaneReading)(ctx, root as unknown as HTMLElement, reference, navigation)
     const framesNow = () => { const current = [...frames.values()]; frames.clear(); for (const run of current) run(now) }
     return {
-        root, document, window, port, row, writes, loads, officialClicks, state, reading, sourceWindow,
+        root, document, window, port, row, writes, loads,
+        replaceSourceEpoch(value: string) { sourceEpoch = value; sourceWindow.set({ ...sourceWindow.getSnapshot(), historyId: value }) }, officialClicks, state, reading, sourceWindow, nativeReads, nativeReveals, updates, storage,
         async ready() { await microtasks(); root.emit('scroll', port); framesNow() },
         replace() { events.set({ revision: events.getSnapshot().revision + 1, change: { kind: 'replace' } }) },
         gesture(type: string, values: Record<string, unknown> = {}) { root.emit(type, row, values) },
@@ -107,11 +186,116 @@ function fixture(options: { scrollend?: boolean; returnToLive?: (signal?: AbortS
         },
         dispose() {
             dispose()
+            stopMemory(); updates.dispose(); application.dispose(); void ctx.fiber.dispose(); void heroChat?.close()
+            publishPaneMountedChat(root, null)
             if (observer) Object.defineProperty(globalThis, 'MutationObserver', observer)
             else Reflect.deleteProperty(globalThis, 'MutationObserver')
         },
     }
 }
+
+test('the actual Pane binding registers its official reader checkpoint and restores only its armed untargeted reload', async () => {
+    const before = fixture(); await before.ready(); await before.updates.checkpoint(); armOrdinaryReadingForReload(before.updates)
+    const saved = before.storage; before.dispose()
+    const after = fixture({ storage: saved, reload: true })
+    try {
+        await after.ready(); assert.deepEqual(after.loads, [50]); await after.complete()
+        assert.deepEqual(after.nativeReveals, [{ key: 'message-50', seq: 50 }]); assert.deepEqual(after.writes, [])
+    } finally { after.dispose() }
+})
+
+test('explicit initial latest skips the controlled ticket and arbitrary legacy reload anchors are never read', async () => {
+    const before = fixture(); await before.ready(); await before.updates.checkpoint(); armOrdinaryReadingForReload(before.updates)
+    const saved = before.storage; before.dispose()
+    const explicit = fixture({ storage: saved, reload: true, initialLatest: true })
+    try {
+        await explicit.ready(); explicit.flushFrames(); await microtasks()
+        assert.deepEqual(explicit.loads, []); assert.deepEqual(explicit.nativeReveals, []); assert.deepEqual(explicit.officialClicks, [5000])
+    } finally { explicit.dispose() }
+    const legacyKey = 'hapi-dsh:reload-reading:["host","pane","session"]'
+    saved.set(legacyKey, JSON.stringify({ key: 'message-50', seq: 50, offset: 30 }))
+    const ordinary = fixture({ storage: saved, reload: true })
+    try {
+        await ordinary.ready(); assert.deepEqual(ordinary.loads, []); assert.deepEqual(ordinary.nativeReveals, [])
+        assert.ok(saved.has(legacyKey), 'the original unscoped record remains available for explicit local recovery')
+    } finally { ordinary.dispose() }
+})
+
+test('ordinary DSH notification reads around its original message and reveals through the mounted native reader', async t => {
+    const f = fixture({ nativePage: async () => {} }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'message', messageId: '50', origin: 'notification' } })
+    await microtasks()
+    assert.deepEqual(f.nativeReads, [{ kind: 'around', target: { key: '50', seq: 50 } }])
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }])
+    assert.deepEqual(f.loads, []); assert.deepEqual(f.writes, [])
+})
+
+test('a removed ordinary DSH notification target reports failure without landing at latest or another message', async t => {
+    const f = fixture({ nativePage: async () => {}, missingNativeTarget: true }); t.after(() => f.dispose()); await f.ready()
+    f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'message', messageId: '50', origin: 'notification' } })
+    await microtasks()
+    assert.equal(f.root.dataset.hapiReading, 'error'); assert.deepEqual(f.nativeReveals, []); assert.deepEqual(f.loads, [])
+})
+
+for (const kind of ['tool', 'assistant'] as const) {
+    for (const resident of [true, false]) test(`HHPI ${resident ? 'resident streamed' : 'cold'} native ${kind} reveals its original integer source identity`, async t => {
+        const window = nativeWindow(kind, resident); t.after(() => window.close())
+        const f = fixture({ hhpi: true, remoteBinding: true, nativeWindow: window, nativeResident: resident,
+            nativePage: async () => { if (resident) throw new Error('The exact resident target must not read another window') } })
+        t.after(() => f.dispose()); await f.ready()
+        if (resident) assert.notEqual(Math.floor(window.row.anchorSeq), window.target.seq,
+            'the actual streamed row proves that rounding its sorting anchor loses the committed event identity')
+        f.reading.set({ revision: 1, sessionId: 'hhpi:reading-machine:reading-source:codex:reading-thread',
+            target: { kind: 'message', messageId: String(window.target.seq), origin: 'link' } })
+        await microtasks()
+        assert.equal(f.root.dataset.hapiReading, 'ready')
+        assert.deepEqual(f.nativeReads, resident ? [] : [{ kind: 'around', target: { key: String(window.target.seq), seq: window.target.seq } }])
+        assert.deepEqual(f.nativeReveals, [{ key: window.row.key, seq: window.target.seq }])
+        assert.deepEqual(f.loads, []); assert.deepEqual(f.writes, []); assert.deepEqual(f.officialClicks, [])
+    })
+
+    test(`an already mounted streamed native ${kind} reveals its original durable identity without a history read`, async t => {
+        const window = nativeWindow(kind, true); t.after(() => window.close())
+        const f = fixture({ nativeWindow: window, nativeResident: true, nativePage: async () => { throw new Error('A resident original must not reload') } }); t.after(() => f.dispose()); await f.ready()
+        assert.notEqual(window.row.anchorSeq, window.target.seq)
+        f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'message', messageId: String(window.target.seq), origin: 'notification' } })
+        await microtasks()
+        assert.equal(f.root.dataset.hapiReading, 'ready')
+        assert.deepEqual(f.nativeReads, []); assert.deepEqual(f.nativeReveals, [{ key: window.row.key, seq: window.target.seq }])
+        assert.deepEqual(f.officialClicks, []); assert.deepEqual(f.loads, []); assert.deepEqual(f.writes, [])
+    })
+
+    test(`a cold native ${kind} reads around the original integer seq and reveals the same official node`, async t => {
+        const window = nativeWindow(kind, false); t.after(() => window.close())
+        const f = fixture({ nativeWindow: window, nativePage: async () => {} }); t.after(() => f.dispose()); await f.ready()
+        f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'message', messageId: String(window.target.seq), origin: 'notification' } })
+        await microtasks()
+        assert.equal(f.root.dataset.hapiReading, 'ready')
+        assert.deepEqual(f.nativeReads, [{ kind: 'around', target: { key: String(window.target.seq), seq: window.target.seq } }])
+        assert.deepEqual(f.nativeReveals, [{ key: window.row.key, seq: window.target.seq }]); assert.deepEqual(f.officialClicks, [])
+    })
+}
+
+for (const resident of [true, false]) test(`HHPI ${resident ? 'resident' : 'cold'} tool result resolves from its committed occurrence when the legacy event source is empty`, async t => {
+    const window = nativeWindow('tool', false, true); t.after(() => window.close())
+    const pending = Promise.withResolvers<void>()
+    const f = fixture({ hhpi: true, remoteBinding: true, nativeWindow: window, nativeResident: resident, emptyEventSource: true,
+        nativePage: () => pending.promise })
+    t.after(() => f.dispose()); await f.ready()
+    assert.notEqual(window.row.anchorSeq, window.target.seq, 'a result sequence names its call node rather than its sorting anchor')
+    f.reading.set({ revision: 1, sessionId: 'hhpi:reading-machine:reading-source:codex:reading-thread',
+        target: { kind: 'message', messageId: String(window.target.seq), origin: 'link' } })
+    await microtasks()
+    if (!resident) {
+        assert.equal(f.root.dataset.hapiReading, 'waiting')
+        assert.deepEqual(f.nativeReveals, [], 'the prepared window must not land before the official read commits')
+        pending.resolve(); await microtasks()
+    }
+    assert.equal(f.root.dataset.hapiReading, 'ready')
+    assert.deepEqual(f.nativeReads, resident ? [] : [{ kind: 'around', target: { key: String(window.target.seq), seq: window.target.seq } }])
+    assert.deepEqual(f.nativeReveals, [{ key: window.row.key, seq: window.target.seq }])
+    assert.deepEqual(f.loads, []); assert.deepEqual(f.writes, []); assert.deepEqual(f.officialClicks, [])
+})
 
 test('source paging and item revision replacements do not turn ordinary reading into recovery navigation', async t => {
     const f = fixture({ sourceHistory: true }); t.after(() => f.dispose()); await f.ready()
@@ -133,7 +317,7 @@ for (const change of ['rewrite', 'host-restart'] as const) {
         await microtasks()
         assert.deepEqual(f.loads, [50], 'the committed history identity/version owns recovery')
         await f.complete()
-        assert.deepEqual(f.writes, [420])
+        assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }]); assert.deepEqual(f.writes, [])
         f.replace(); f.sourceWindow.set({ ...f.sourceWindow.getSnapshot(), hasMoreAfter: true })
         await microtasks()
         assert.deepEqual(f.loads, [50], 'later same-version commits do not repeat the recovery')
@@ -162,7 +346,8 @@ test('idle source replace preserves real reconnect restoration', async t => {
     f.shift(120); f.replace(); await microtasks()
     assert.deepEqual(f.loads, [50])
     await f.complete()
-    assert.deepEqual(f.writes, [420], 'replacement geometry is corrected to the retained reading position')
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }], 'the official reader restores the retained source target')
+    assert.deepEqual(f.writes, [], 'the plugin cannot place a reconnect viewport through DOM scroll writes')
 })
 
 test('a new gesture cancels an already running reconnect restore', async t => {
@@ -200,7 +385,8 @@ test('a tap without scrolling releases recovery even when native scrollend never
     f.gesture('touchend', { touches: [] }); f.advance(200); await microtasks()
     assert.deepEqual(f.loads, [50])
     await f.complete()
-    assert.deepEqual(f.writes, [420], 'a tap without reader motion does not discard the pre-replacement bookmark')
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }], 'a tap without reader motion does not discard the source target')
+    assert.deepEqual(f.writes, [])
 })
 
 test('pointercancel before native pan is not the end of touch ownership', async t => {
@@ -219,7 +405,7 @@ test('deferred recovery retains its original bookmark if replacement removed the
     f.scroll(350); f.gesture('touchend', { touches: [] }); f.end(); await microtasks()
     assert.deepEqual(f.loads, [50], 'missing replacement DOM must not discard the reconnect bookmark')
     f.showRow(true); f.shift(120); await f.complete()
-    assert.deepEqual(f.writes, [420])
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }]); assert.deepEqual(f.writes, [])
 })
 
 test('explicit latest navigation supersedes a deferred reconnect bookmark', async t => {
@@ -287,6 +473,15 @@ test('an existing official smooth tail owner needs no second scroll action', asy
     assert.deepEqual(f.loads, [], 'a mid-follow position must not become a reconnect bookmark')
 })
 
+test('a fully opened ordinary blank admits its official hero editor without a nonexistent latest action', async t => {
+    const f = fixture({ ordinaryHero: true, latestControl: 'missing', initialLatest: true })
+    t.after(() => f.dispose()); await f.ready(); await microtasks(); f.flushFrames(); await microtasks()
+    assert.equal(f.root.dataset.hapiReading, 'ready')
+    assert.deepEqual(f.officialClicks, [])
+    assert.deepEqual(f.writes, [], 'blank admission must not invent a Chat scroll owner')
+    assert.deepEqual(f.loads, [])
+})
+
 test('a missing official latest action fails without a plugin scroll fallback', async t => {
     const f = fixture({ latestControl: 'missing' }); t.after(() => f.dispose()); await f.ready()
     f.reading.set({ revision: 1, sessionId: 'session', target: { kind: 'latest' } })
@@ -341,7 +536,7 @@ test('hiding a moving pane does not leave reconnect recovery permanently waiting
     f.state.set({ visible: true, focused: true }); await microtasks()
     assert.deepEqual(f.loads, [50], 'visible recovery must not depend on a scrollend from a hidden DOM')
     await f.complete()
-    assert.deepEqual(f.writes, [460])
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }]); assert.deepEqual(f.writes, [])
 })
 
 test('recovery waits until after the official scrollend listeners and fresh motion cancels that frame', async t => {
@@ -374,7 +569,7 @@ test('a replacement tail cannot masquerade as deliberate tail navigation after t
     f.gesture('touchend', { touches: [] }); f.end(); await microtasks()
     assert.deepEqual(f.loads, [50], 'the old history must still be recovered when replace removed it')
     f.showRow(true); await f.complete()
-    assert.deepEqual(f.writes, [300])
+    assert.deepEqual(f.nativeReveals, [{ key: 'message-50', seq: 50 }]); assert.deepEqual(f.writes, [])
 })
 
 /** DOM-boundary fixture for the real binding: mutation delivery only reaches
@@ -497,4 +692,33 @@ test('hiding a pane cancels its footer wait and a late receipt cannot steal focu
     f.state.set({ visible: true, focused: true }); await microtasks()
     assert.deepEqual(f.focused, [receipt], 'the retained explicit intent resumes when its own pane is visible again')
     assert.equal(f.root.dataset.hapiReading, 'ready')
+})
+
+
+test('an HHPI epoch replacement cannot restore an old raw sequence into the successor projection', async () => {
+    const f = fixture({ sourceHistory: true, hhpi: true })
+    try {
+        await f.ready()
+        f.replaceSourceEpoch('reading-epoch-2')
+        await microtasks()
+        assert.equal(f.root.dataset.hapiReading, 'error')
+        assert.deepEqual(f.loads, [], 'no old raw seq is submitted to the replacement source epoch')
+        assert.deepEqual(f.nativeReveals, [])
+    } finally { f.dispose() }
+})
+
+
+test('an empty source latest destination waits for the official window without requiring a mounted Chat', async () => {
+    const source = Promise.withResolvers<void>()
+    const f = fixture({ hhpi: true, remoteBinding: true, emptyNative: true, nativePage: () => source.promise })
+    try {
+        f.reading.set({ revision: 1, sessionId: 'hhpi:reading-machine:reading-source:codex:reading-thread', target: { kind: 'latest' } })
+        await f.ready()
+        assert.equal(f.root.dataset.hapiReading, 'waiting')
+        assert.deepEqual(f.nativeReads, [{ kind: 'latest' }])
+        source.resolve(); await f.ready()
+        assert.equal(f.root.dataset.hapiReading, 'ready')
+        assert.deepEqual(f.nativeReveals, [])
+        assert.equal(f.nativeReads.length, 1)
+    } finally { f.dispose() }
 })

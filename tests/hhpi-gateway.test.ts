@@ -19,7 +19,7 @@ function fixture(): { adapter: SourceAdapter; calls: string[] } {
     } };
 }
 test('source machine and canonical identity are enforced before native dispatch', async () => {
-    const { adapter, calls } = fixture(), gateway = new SourceGateway([adapter], false);
+    const { adapter, calls } = fixture(), gateway = new SourceGateway([adapter]);
     await assert.rejects(gateway.read({ sessionId: sourceSessionId({ ...identity, machineId: 'other' }) }, allow), { code: 'TARGET_UNAVAILABLE' });
     await assert.rejects(gateway.read({ sessionId: 'hhpi:bad' }, allow), { code: 'INVALID_REQUEST' });
     await assert.rejects(gateway.read({ sessionId: session.id }, () => false), { code: 'UNSUPPORTED' });
@@ -28,7 +28,7 @@ test('source machine and canonical identity are enforced before native dispatch'
     await gateway.dispose(); await gateway.dispose(); assert.equal(calls.filter(call => call === 'dispose').length, 1);
 });
 test('catalog filters per-session grants without requiring source-wide creation rights', async () => {
-    const { adapter } = fixture(), gateway = new SourceGateway([adapter], false);
+    const { adapter } = fixture(), gateway = new SourceGateway([adapter]);
     try {
         const catalog = await gateway.catalog(resource => resource.kind === 'session' && resource.id === session.id);
         assert.deepEqual(catalog.sessions, [session]); assert.deepEqual(catalog.sources, []); assert.equal(catalog.legacyHapi, false);
@@ -38,7 +38,7 @@ test('catalog filters per-session grants without requiring source-wide creation 
 test('permission revocation during IO rejects a late history or resource response', async () => {
     const { adapter } = fixture(), gate = Promise.withResolvers<SourcePage>(), resource = Promise.withResolvers<{ encoding: 'base64'; content: string; mimeType: string }>();
     adapter.read = async () => gate.promise; adapter.readResource = async () => resource.promise;
-    const gateway = new SourceGateway([adapter], false); let allowed = true;
+    const gateway = new SourceGateway([adapter]); let allowed = true;
     const pending = gateway.read({ sessionId: session.id }, () => allowed);
     const file = gateway.resource({ sessionId: session.id, path: 'synthetic' }, () => allowed);
     allowed = false; gate.resolve(page); resource.resolve({ encoding: 'base64', content: '', mimeType: 'text/plain' });
@@ -48,7 +48,7 @@ test('streaming revocation and foreign source frames fail before publication', a
     const { adapter } = fixture(); let allowed = true;
     const gate = Promise.withResolvers<SourceChanges>();
     adapter.changes = async function* () { yield await gate.promise; };
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     const stream = gateway.changes({ sessionId: session.id, epoch: 'epoch-a', version: 1 }, () => allowed);
     const next = stream[Symbol.asyncIterator]().next(); allowed = false;
     gate.resolve({ session, epoch: 'epoch-a', base: 1, version: 2, reset: false, upserts: [], removed: [] });
@@ -57,7 +57,7 @@ test('streaming revocation and foreign source frames fail before publication', a
     await assert.rejects(gateway.read({ sessionId: session.id }, allow), { code: 'INVALID_REQUEST' }); await gateway.dispose();
 });
 test('unavailable source retains offline catalog but never falls back to central Host resources', async () => {
-    const { adapter, calls } = fixture(), gateway = new SourceGateway([adapter], false);
+    const { adapter, calls } = fixture(), gateway = new SourceGateway([adapter]);
     try {
         await gateway.catalog(allow); adapter.list = async () => { throw new Error('Synthetic source outage'); };
         const catalog = await gateway.catalog(allow);
@@ -70,7 +70,7 @@ test('unavailable source retains offline catalog but never falls back to central
     } finally { await gateway.dispose(); }
 });
 test('foreign acknowledgements remain indeterminate and disposed gateways reject new work', async () => {
-    const { adapter } = fixture(), gateway = new SourceGateway([adapter], false);
+    const { adapter } = fixture(), gateway = new SourceGateway([adapter]);
     adapter.operate = async request => ({ operationId: request.operationId, sessionId: 'foreign', status: 'accepted', message: 'Synthetic foreign receipt' }) as SourceReceipt;
     await assert.rejects(gateway.operate({ sessionId: session.id, operationId: 'one', kind: 'cancel' }, allow), { code: 'OUTCOME_UNKNOWN' });
     await gateway.dispose(); await assert.rejects(gateway.read({ sessionId: session.id }, allow), { code: 'DISPOSED' });
@@ -82,7 +82,7 @@ test('revocation during a native operation or creation never publishes its late 
     const creation = Promise.withResolvers<import('../src/remote/protocol.ts').SourceCreationReceipt>();
     adapter.operate = async () => mutation.promise;
     adapter.create = async () => creation.promise;
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     let allowed = true;
     const access: SourceAccess = () => allowed;
     const writing = gateway.operate({ sessionId: session.id, operationId: 'request-1', kind: 'send', text: 'synthetic' }, access);
@@ -101,7 +101,7 @@ test('gateway disposal before a late read or resource response rejects the stale
     const fileGate = Promise.withResolvers<{ encoding: 'base64'; content: string; mimeType: string }>();
     adapter.read = async () => pageGate.promise;
     adapter.readResource = async () => fileGate.promise;
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     const reading = gateway.read({ sessionId: session.id }, allow);
     const resource = gateway.resource({ sessionId: session.id, path: 'synthetic' }, allow);
     await gateway.dispose();
@@ -118,14 +118,14 @@ test('a slow source cannot delay a healthy catalog and late discovery joins the 
     const gate = Promise.withResolvers<SourceSession[]>();
     let slowCalls = 0;
     Object.assign(slow, { id: 'slow', list: async () => { slowCalls++; return gate.promise; } });
-    const gateway = new SourceGateway([adapter, slow], false);
+    const gateway = new SourceGateway([adapter, slow]);
     try {
         const opening = gateway.catalog(allow);
         await new Promise<void>(resolve => setImmediate(resolve));
         t.mock.timers.tick(100);
         const first = await opening;
         assert.deepEqual(first.sessions.map(row => row.id), [session.id]);
-        assert.deepEqual(first.sources.map(row => [row.id, row.online]), [['codex', true], ['slow', false]]);
+        assert.deepEqual(first.sources.map(row => [row.id, row.online]), [['codex', true]], 'an unobserved slow source is not an outage');
 
         const cached = gateway.catalog(allow);
         t.mock.timers.tick(0);
@@ -140,11 +140,36 @@ test('a slow source cannot delay a healthy catalog and late discovery joins the 
     } finally { await gateway.dispose(); }
 });
 
+test('cold source discovery remains pending until an empty success or a real failure settles it', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const first = fixture().adapter, second = fixture().adapter;
+    const empty = Promise.withResolvers<SourceSession[]>(), failed = Promise.withResolvers<SourceSession[]>();
+    first.list = async () => empty.promise;
+    Object.assign(second, { id: 'slow', list: async () => failed.promise });
+    const gateway = new SourceGateway([first, second]);
+    try {
+        let settled = false;
+        const opening = gateway.catalog(allow).then(value => { settled = true; return value; });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        t.mock.timers.tick(100);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        assert.equal(settled, false, 'the admission budget cannot publish a false source outage');
+        empty.resolve([]);
+        const accepted = await opening;
+        assert.deepEqual(accepted.sessions, []);
+        assert.deepEqual(accepted.sources.map(row => [row.id, row.online]), [['codex', true]], 'an empty success is ready; the other source is still pending');
+        t.mock.timers.tick(29_900); // The original 30s source deadline, not another UI retry.
+        await new Promise<void>(resolve => setImmediate(resolve));
+        const result = gateway.catalog(allow); t.mock.timers.tick(0);
+        assert.equal((await result).sources.find(row => row.id === 'slow')?.online, false);
+    } finally { await gateway.dispose(); }
+});
+
 test('catalog cancellation releases only its caller and gateway disposal cancels shared discovery', async () => {
     const { adapter } = fixture(), gate = Promise.withResolvers<SourceSession[]>();
     let calls = 0, sourceSignal: AbortSignal | undefined;
     adapter.list = async signal => { calls++; sourceSignal = signal; return gate.promise; };
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     const cancelled = new AbortController();
     const first = gateway.catalog(allow, cancelled.signal), second = gateway.catalog(allow);
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -172,7 +197,7 @@ test('a saved source resolves directly while its complete directory remains pend
     const directory = Promise.withResolvers<SourceSession[]>();
     adapter.list = async () => directory.promise;
     adapter.resolve = async id => { calls.push('resolve'); assert.equal(id, session.id); return session; };
-    const gateway = new SourceGateway([adapter], false);
+    const gateway = new SourceGateway([adapter]);
     try {
         assert.deepEqual(await gateway.resolve(session.id, allow), session);
         assert.deepEqual(calls, ['resolve']);
@@ -184,7 +209,7 @@ test('a saved source resolves directly while its complete directory remains pend
 test('source resolution rechecks permission and canonical identity after IO', async () => {
     const { adapter } = fixture(), gate = Promise.withResolvers<SourceSession>();
     adapter.resolve = () => gate.promise;
-    const gateway = new SourceGateway([adapter], false); let granted = true;
+    const gateway = new SourceGateway([adapter]); let granted = true;
     try {
         const pending = gateway.resolve(session.id, () => granted);
         granted = false; gate.resolve(session);
@@ -198,7 +223,7 @@ test('a malformed source directory cannot hide a different healthy source', asyn
     const { adapter } = fixture();
     const broken: SourceAdapter = { ...fixture().adapter, id: 'broken',
         list: async () => [{ ...session, sourceId: 'wrong-source' }] };
-    const gateway = new SourceGateway([adapter, broken], false);
+    const gateway = new SourceGateway([adapter, broken]);
     try {
         const catalog = await gateway.catalog(allow);
         assert.deepEqual(catalog.sessions, [session]);

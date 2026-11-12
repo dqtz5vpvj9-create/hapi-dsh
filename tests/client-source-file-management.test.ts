@@ -1,233 +1,246 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { SourceFileMutation, sourceFileContains, validSourceFileName } from '../src/client/source-file-management.ts'
-import type { NativeWorkbenchApi } from '../src/workbench-types.ts'
 import { createSourceFileMutations, sourceFileMutationKey, type SourceFileOwner } from '../src/client/source-file-mutation-journal.ts'
+import type { WorkspaceMutationResult, WorkspaceEntry, WorkspaceServices } from '../src/workspace/service-types.ts'
+import type { WorkspaceFileManageRequest } from '../src/workbench-types.ts'
 import { SourceFileLocksFixture, SourceFileStorageFixture, deferred } from './source-file-mutation-fixture.ts'
+import { fileContext, fileOwner } from './source-file-context-fixture.ts'
 
-const owner: SourceFileOwner = { sourceHubId: 'hub-a', sourceSessionId: 'source-a', machineId: 'machine-a' }
-const journal = () => createSourceFileMutations({ storage: new SourceFileStorageFixture(), locks: new SourceFileLocksFixture(), channel: null })
-type Api = Pick<NativeWorkbenchApi, 'nativeFileManage' | 'nativeFileUpload' | 'nativeFileInspect'>
-const basicApi = (): Api => ({ nativeFileManage: async () => ({ ok: true, value: { success: true } }),
-  nativeFileUpload: async () => ({ ok: true, value: { success: true } }),
-  nativeFileInspect: async () => ({ ok: true, value: { success: false, code: 'not-found' } }) })
-const rename = () => ({ action: 'rename' as const, path: '/source/a', destination: '/source/b', expectedRevision: 'a'.repeat(64) })
+type Result = WorkspaceMutationResult<WorkspaceEntry | null>
+const owner = fileOwner('management-fixture')
+const rename = () => ({ action: 'rename' as const, path: '/source/a', destination: '/source/b', expectedVersion: 'opaque:initial' })
+function fixture(options: { storage?: SourceFileStorageFixture; locks?: SourceFileLocksFixture; owner?: SourceFileOwner } = {}) {
+  const storage = options.storage ?? new SourceFileStorageFixture(), locks = options.locks ?? new SourceFileLocksFixture()
+  const context = fileContext(options.owner ?? owner), journal = createSourceFileMutations({ storage, locks, channel: null })
+  return { context, storage, locks, journal, create: () => new SourceFileMutation(context, journal) }
+}
+const applied = (id: string): Result => ({ status: 'applied', operationId: id, value: null })
 
-test('source file mutation retains unknown identity, inspects both paths, and never replays during recovery', async () => {
-  const writes: unknown[] = [], reads: string[] = []
-  const api: Pick<NativeWorkbenchApi, 'nativeFileManage' | 'nativeFileUpload' | 'nativeFileInspect'> = {
-    nativeFileManage: async request => { writes.push(request); throw new Error('Connection lost after source rename') },
-    nativeFileUpload: async request => { writes.push(request); return { ok: true, value: { success: true } } },
-    nativeFileInspect: async request => { reads.push(request.path); return { ok: true, value: { success: false, code: 'not-found' } } },
-  }
-  const model = new SourceFileMutation(api, owner, journal())
-  await model.manage({ action: 'rename', path: '/source/first', destination: '/source/second', expectedRevision: 'a'.repeat(64) })
+test('unknown operations retain the original source identity, inspect both paths, and never replay during recovery', async () => {
+  const f = fixture(), sent: WorkspaceFileManageRequest[] = [], reads: string[] = []
+  f.context.services.mutations!.manage = async request => { sent.push(request); throw new Error('Connection lost after source rename') }
+  f.context.services.documents.inspect = async path => { reads.push(path); return null }
+  const model = f.create(); await model.manage(rename()); const id = model.getSnapshot().operationId
   assert.equal(model.getSnapshot().uncertain, true)
-  await model.manage({ action: 'delete', path: '/source/first', expectedRevision: 'a'.repeat(64), recursive: false })
-  await model.upload('/source/new', 'YQ=='); assert.equal(writes.length, 1)
-  assert.equal(await model.review(), false)
-  await model.inspect(); assert.deepEqual(reads, ['/source/first', '/source/second']); assert.equal(writes.length, 1)
-  assert.equal(model.getSnapshot().uncertain, true)
+  await model.manage({ action: 'delete', path: '/source/a', expectedVersion: 'opaque:initial', recursive: false })
+  assert.equal(sent.length, 1); assert.equal(sent[0]?.operationId, id); assert.deepEqual(sent[0]?.target, owner.binding.target)
+  assert.equal(await model.review(), false); await model.inspect()
+  assert.deepEqual(reads, ['/source/a', '/source/b']); assert.equal(sent.length, 1); assert.equal(model.getSnapshot().uncertain, true)
   assert.equal(await model.review(), true)
-  await model.upload('/source/new', 'YQ=='); assert.equal(writes.length, 2)
 })
 
-test('partial delete and committed rename metadata survive the failure response', async () => {
-  const result = { success: false, error: 'Cannot inspect new path', commit: { action: 'rename' as const, path: '/a', destination: '/b' } }
-  const model = new SourceFileMutation({ nativeFileManage: async () => ({ ok: true, value: result }),
-    nativeFileUpload: async () => ({ ok: true, value: { success: true } }),
-    nativeFileInspect: async () => ({ ok: true, value: { success: false, code: 'denied' } }),
-  }, owner, journal())
-  await model.manage({ action: 'rename', path: '/a', destination: '/b', expectedRevision: 'a'.repeat(64) })
-  assert.deepEqual(model.getSnapshot().result?.commit, result.commit)
-  await model.inspect(); assert.equal(await model.review(), false)
+test('source indeterminate results stay unknown and cannot be called confirmed by inspecting current paths', async () => {
+  const f = fixture(); f.context.services.mutations!.manage = async request => ({ status: 'indeterminate', operationId: request.operationId })
+  const model = f.create(); await model.manage(rename()); const result = model.getSnapshot().result
+  assert.equal(result?.status, 'indeterminate'); await model.inspect(); assert.equal(model.getSnapshot().phase, 'unknown')
+  assert.equal(await model.review(), true); assert.deepEqual(model.getSnapshot().result, result)
 })
 
-test('source path guards cover descendant drafts and reject ambiguous creation names', () => {
-  assert.equal(sourceFileContains('/work/a', '/work/a/file'), true)
-  assert.equal(sourceFileContains('/work/a', '/work/ab/file'), false)
-  assert.equal(sourceFileContains('C:\\Work\\A', 'c:/work/a/file'), true)
-  assert.equal(sourceFileContains('/Work/A', '/work/a'), false)
+test('original source receipts reconcile a lost acknowledgement without issuing a second mutation', async () => {
+  const f = fixture(); let count = 0, operation = ''
+  f.context.services.mutations!.manage = async request => { count++; operation = request.operationId; throw new Error('Lost acknowledgement') }
+  f.context.services.mutations!.receipt = async id => id === operation ? applied(id) : null
+  const model = f.create(); await model.manage(rename()); await model.inspect()
+  assert.equal(count, 1); assert.equal(model.getSnapshot().phase, 'confirmed'); assert.equal(model.getSnapshot().uncertain, false)
+})
+
+test('path guards protect descendant drafts and reject ambiguous creation names', () => {
+  assert.equal(sourceFileContains('/work/a', '/work/a/file'), true); assert.equal(sourceFileContains('/work/a', '/work/ab/file'), false)
+  assert.equal(sourceFileContains('C:\\Work\\A', 'c:/work/a/file'), true); assert.equal(sourceFileContains('/Work/A', '/work/a'), false)
   for (const value of ['.', '..', ' ', 'a/b', 'a\\b', 'C:drive', 'a\0b']) assert.equal(validSourceFileName(value), false)
   assert.equal(validSourceFileName('你好 source.txt'), true)
 })
 
-test('durable admission precedes the RPC and fixes the caller-owned request snapshot', async () => {
-  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture(), entered = deferred<void>(), continueWrite = deferred<void>()
-  storage.beforeWrite = async index => { if (index === 1) { entered.resolve(); await continueWrite.promise } }
-  const owned = { ...owner }, operation = rename(), sent: unknown[] = []
-  const api = basicApi(); api.nativeFileManage = async request => {
-    const saved = await storage.read(owner)
-    assert.equal(saved?.receipt.phase, 'pending'); assert.deepEqual(request.operation, saved?.receipt.request)
-    sent.push(request); return { ok: true, value: { success: true } }
+test('durable admission precedes RPC and snapshots both operation and source ownership', async () => {
+  const f = fixture(), entered = deferred<void>(), release = deferred<void>(), operation = rename(), sent: WorkspaceFileManageRequest[] = []
+  f.storage.beforeWrite = async index => { if (index === 1) { entered.resolve(); await release.promise } }
+  f.context.services.mutations!.manage = async request => {
+    const row = await f.storage.read(owner); assert.equal(row?.receipt.phase, 'pending'); assert.deepEqual(row?.receipt.request, request.operation)
+    sent.push(request); return applied(request.operationId)
   }
-  const model = new SourceFileMutation(api, owned, createSourceFileMutations({ storage, locks, channel: null }))
-  const flight = model.manage(operation); await entered.promise
-  assert.equal(sent.length, 0)
-  operation.destination = '/changed-after-admission'; owned.machineId = 'other-machine'
-  continueWrite.resolve(); assert.equal(await flight, true)
-  assert.deepEqual(sent, [{ source: owner, operation: rename() }])
+  const model = f.create(), flight = model.manage(operation); await entered.promise
+  operation.destination = '/changed-after-admission'; release.resolve(); assert.equal(await flight, true)
+  assert.deepEqual(sent[0]?.operation, rename()); assert.equal(sent[0]?.operationId, model.getSnapshot().operationId)
 })
 
-test('refused durable admission and missing source ownership never send', async () => {
-  const storage = new SourceFileStorageFixture(); storage.beforeWrite = async () => { throw new Error('Quota denied') }
-  let sent = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; return { ok: true, value: { success: true } } }
-  const retained = createSourceFileMutations({ storage, locks: new SourceFileLocksFixture(), channel: null })
-  const model = new SourceFileMutation(api, owner, retained)
-  assert.equal(await model.manage(rename()), false); assert.match(model.getSnapshot().storageError ?? '', /Quota denied/)
-  const incomplete = new SourceFileMutation(api, { sourceSessionId: owner.sourceSessionId }, retained)
-  assert.equal(await incomplete.manage(rename()), false); assert.match(incomplete.getSnapshot().error ?? '', /Hub, session and machine/)
-  assert.equal(sent, 0); assert.equal(storage.rows.size, 0)
+test('refused durable admission never sends and preserves the source request for the user', async () => {
+  const f = fixture(); let sent = 0
+  f.storage.beforeWrite = async () => { throw new Error('Quota denied') }
+  f.context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const model = f.create(); assert.equal(await model.manage(rename()), false)
+  assert.equal(sent, 0); assert.equal(f.storage.rows.size, 0); assert.match(model.getSnapshot().storageError ?? '', /Quota denied/)
 })
 
-test('missing cross-window lock capability refuses mutation without an in-memory fallback', async () => {
-  const storage = new SourceFileStorageFixture(), unavailable = async (): Promise<never> => { throw new Error('Web Locks unavailable') }
-  const retained = createSourceFileMutations({ storage, locks: { held: unavailable, exclusive: unavailable }, channel: null })
-  let sent = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; return { ok: true, value: { success: true } } }
-  const model = new SourceFileMutation(api, owner, retained)
-  assert.equal(await model.manage(rename()), false); assert.equal(sent, 0); assert.equal(storage.rows.size, 0)
-  assert.match(model.getSnapshot().storageError ?? '', /Web Locks unavailable/)
+test('missing browser Web Locks refuses mutation rather than using an in-memory fallback', async () => {
+  const context = fileContext(owner), storage = new SourceFileStorageFixture(), unavailable = async (): Promise<never> => { throw new Error('Web Locks unavailable') }
+  const journal = createSourceFileMutations({ storage, locks: { held: unavailable, exclusive: unavailable }, channel: null }); let sent = 0
+  context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const model = new SourceFileMutation(context, journal); assert.equal(await model.manage(rename()), false)
+  assert.equal(sent, 0); assert.equal(storage.rows.size, 0); assert.match(model.getSnapshot().storageError ?? '', /Web Locks unavailable/)
 })
 
-test('a disposed graph does not send after a delayed admission transaction completes', async () => {
-  const storage = new SourceFileStorageFixture(), entered = deferred<void>(), continueWrite = deferred<void>()
-  storage.beforeWrite = async () => { entered.resolve(); await continueWrite.promise }
-  let sent = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; return { ok: true, value: { success: true } } }
-  const retained = createSourceFileMutations({ storage, locks: new SourceFileLocksFixture(), channel: null })
-  const model = new SourceFileMutation(api, owner, retained), flight = model.manage(rename())
-  await entered.promise; model.dispose(); continueWrite.resolve()
-  assert.equal(await flight, false); assert.equal(sent, 0)
-  assert.equal((await storage.read(owner))?.receipt.phase, 'pending')
-  const restored = new SourceFileMutation(api, owner, retained); await restored.load()
-  assert.equal(restored.getSnapshot().uncertain, true); assert.equal(restored.getSnapshot().busy, false)
+test('disposing a graph during durable admission retains the intent and does not send afterwards', async () => {
+  const f = fixture(), entered = deferred<void>(), release = deferred<void>(); let sent = 0
+  f.storage.beforeWrite = async () => { entered.resolve(); await release.promise }
+  f.context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const original = f.create(), flight = original.manage(rename()); await entered.promise; original.dispose(); release.resolve()
+  assert.equal(await flight, false); assert.equal(sent, 0); assert.equal((await f.storage.read(owner))?.receipt.phase, 'pending')
+  const restored = f.create(); await restored.load(); assert.equal(restored.getSnapshot().uncertain, true)
 })
 
-test('a rebound graph retains the active flight and can only inspect after the old RPC settles', async () => {
-  const storage = new SourceFileStorageFixture(), retained = createSourceFileMutations({ storage, locks: new SourceFileLocksFixture(), channel: null })
-  const started = deferred<void>(), reply = deferred<Awaited<ReturnType<Api['nativeFileManage']>>>(); let reads = 0, sent = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; started.resolve(); return reply.promise }
-  api.nativeFileInspect = async () => { reads++; return { ok: true, value: { success: false, code: 'not-found' } } }
-  const original = new SourceFileMutation(api, owner, retained), flight = original.manage(rename())
-  await started.promise; const operationId = original.getSnapshot().operationId; original.dispose()
-  const restored = new SourceFileMutation(api, owner, retained); await restored.load()
-  assert.equal(restored.getSnapshot().operationId, operationId); assert.equal(restored.getSnapshot().busy, true)
+test('rebound graphs retain an active flight and cannot inspect until its original RPC settles', async () => {
+  const f = fixture(), entered = deferred<void>(), reply = deferred<Result>(); let reads = 0, sent = 0
+  f.context.services.mutations!.manage = async () => { sent++; entered.resolve(); return reply.promise }
+  f.context.services.documents.inspect = async () => { reads++; return null }
+  const original = f.create(), flight = original.manage(rename()); await entered.promise; original.dispose()
+  const restored = f.create(); await restored.load(); assert.equal(restored.getSnapshot().busy, true)
   await restored.inspect(); assert.equal(await restored.review(), false); assert.equal(reads, 0)
-  reply.reject(new Error('Lost source acknowledgement')); assert.equal(await flight, false)
-  await restored.load(); await restored.load(); assert.equal(restored.getSnapshot().busy, false)
-  await restored.inspect(); assert.equal(reads, 2); assert.equal(await restored.review(), true)
-  assert.equal(restored.getSnapshot().phase, 'reviewed'); assert.equal(restored.getSnapshot().result, null)
-  assert.equal((await storage.read(owner))?.receipt.error, 'Lost source acknowledgement'); assert.equal(sent, 1)
+  reply.reject(new Error('Lost source acknowledgement')); await flight; await restored.load(); await restored.load()
+  assert.equal(restored.getSnapshot().busy, false); await restored.inspect(); assert.equal(reads, 2)
+  assert.equal(await restored.review(), true); assert.equal(sent, 1)
 })
 
-test('two windows sharing storage and Web Locks cannot review or replace a still-running source mutation', async () => {
-  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture()
-  const firstJournal = createSourceFileMutations({ storage, locks, channel: null }), secondJournal = createSourceFileMutations({ storage, locks, channel: null })
-  const started = deferred<void>(), reply = deferred<Awaited<ReturnType<Api['nativeFileManage']>>>(); let sent = 0, reads = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; started.resolve(); return reply.promise }
-  api.nativeFileInspect = async () => { reads++; return { ok: true, value: { success: false, code: 'not-found' } } }
-  const first = new SourceFileMutation(api, owner, firstJournal), flight = first.manage(rename())
-  await started.promise
-  const second = new SourceFileMutation(api, owner, secondJournal); await second.load()
-  assert.equal(second.getSnapshot().busy, true)
-  await second.inspect(); assert.equal(await second.review(), false)
-  assert.equal(await second.upload('/source/new', 'YQ=='), false); assert.equal(reads, 0); assert.equal(sent, 1)
-  reply.reject(new Error('Unknown after source disconnect')); await flight; await second.load()
-  await second.inspect(); assert.equal(await second.review(), true)
-  assert.equal(second.getSnapshot().phase, 'reviewed'); assert.equal(sent, 1)
+test('two windows sharing durable storage and locks cannot replace a running source operation', async () => {
+  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture(), f = fixture({ storage, locks }), other = fixture({ storage, locks })
+  const entered = deferred<void>(), reply = deferred<Result>(); let sent = 0
+  f.context.services.mutations!.manage = async () => { sent++; entered.resolve(); return reply.promise }
+  other.context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const first = f.create(), flight = first.manage(rename()); await entered.promise
+  const second = other.create(); await second.load(); assert.equal(second.getSnapshot().busy, true)
+  assert.equal(await second.manage(rename()), false); assert.equal(await second.review(), false); assert.equal(sent, 1)
+  reply.reject(new Error('Unknown after source disconnect')); await flight; await second.load(); await second.inspect()
+  assert.equal(await second.review(), true); assert.equal(sent, 1)
 })
 
-test('pending intent after a window loss reloads as unknown and upload bytes are never retained', async () => {
-  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture(), retained = createSourceFileMutations({ storage, locks, channel: null })
-  let uploads = 0, reads = 0
-  const api = basicApi(); api.nativeFileUpload = async () => { uploads++; throw new Error('Lost upload acknowledgement') }
-  api.nativeFileInspect = async () => { reads++; return { ok: true, value: { success: false, code: 'not-found' } } }
-  const original = new SourceFileMutation(api, owner, retained)
-  const payload = Buffer.from('File bytes must not enter the operation journal').toString('base64')
-  await original.upload('/source/upload.txt', payload); original.dispose()
-  const row = (await storage.read(owner))!; row.receipt.phase = 'pending'; row.receipt.error = null
-  storage.rows.set(sourceFileMutationKey(owner), row)
-  const restored = new SourceFileMutation(api, owner, createSourceFileMutations({ storage, locks, channel: null })); await restored.load()
-  assert.equal(restored.getSnapshot().uncertain, true); assert.equal(restored.getSnapshot().busy, false)
-  assert.equal(await restored.upload('/source/upload.txt', payload), false)
-  assert.equal(JSON.stringify([...storage.rows.values()]).includes(payload), false)
-  assert.deepEqual(restored.getSnapshot().request, { action: 'upload', path: '/source/upload.txt' })
-  await restored.inspect(); assert.equal(await restored.review(), true)
-  assert.equal(reads, 1); assert.equal(uploads, 1); assert.equal(restored.getSnapshot().phase, 'reviewed')
+test('failed result persistence leaves the original pending operation and does not permit a retry', async () => {
+  const f = fixture(); let sent = 0; f.storage.beforeWrite = async index => { if (index === 2) throw new Error('Disk full after send') }
+  f.context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const original = f.create(); assert.equal(await original.manage(rename()), false); original.dispose()
+  const restored = f.create(); await restored.load(); assert.equal(restored.getSnapshot().uncertain, true)
+  assert.equal(await restored.manage(rename()), false); assert.equal(sent, 1); assert.equal((await f.storage.read(owner))?.receipt.phase, 'pending')
 })
 
-test('failed result persistence leaves the original durable pending receipt and never retries the source', async () => {
-  const storage = new SourceFileStorageFixture(); storage.beforeWrite = async index => { if (index === 2) throw new Error('Disk full after send') }
-  const locks = new SourceFileLocksFixture(); let sent = 0
-  const api = basicApi(); api.nativeFileManage = async () => { sent++; return { ok: true, value: { success: true } } }
-  const original = new SourceFileMutation(api, owner, createSourceFileMutations({ storage, locks, channel: null }))
-  assert.equal(await original.manage(rename()), false); assert.equal((await storage.read(owner))?.receipt.phase, 'pending')
-  original.dispose(); const restored = new SourceFileMutation(api, owner, createSourceFileMutations({ storage, locks, channel: null }))
-  await restored.load(); assert.equal(restored.getSnapshot().uncertain, true); assert.equal(restored.getSnapshot().result, null)
-  assert.equal(await restored.manage(rename()), false); assert.equal(sent, 1)
+test('account, Host, machine and workspace identities isolate retained operations and corrupt owners are not replaced', async () => {
+  const f = fixture(); f.context.services.mutations!.manage = async () => { throw new Error('Unknown source result') }
+  await f.create().manage(rename())
+  const others: SourceFileOwner[] = [ { ...owner, scope: 'another-account' },
+    { ...owner, binding: { ...owner.binding, target: { ...owner.binding.target, hostId: 'another-host' } } },
+    { ...owner, binding: { ...owner.binding, machineId: 'another-machine' } }, { ...owner, binding: { ...owner.binding, workspaceId: 'another-root-generation' } } ]
+  for (const other of others) { const context = fileContext(other), model = new SourceFileMutation(context, f.journal); await model.load(); assert.equal(model.getSnapshot().request, null) }
+  const row = (await f.storage.read(owner))!; f.storage.rows.set(sourceFileMutationKey(owner), { ...row, owner: others[0] })
+  const restored = f.create(); assert.equal(await restored.manage(rename()), false); assert.match(restored.getSnapshot().storageError ?? '', /Wrong saved owner/)
 })
 
-test('source identity includes Hub and machine, and incompatible stored owners cannot be replaced', async () => {
-  const storage = new SourceFileStorageFixture(), retained = createSourceFileMutations({ storage, locks: new SourceFileLocksFixture(), channel: null })
-  const api = basicApi(); api.nativeFileManage = async () => { throw new Error('Unknown source result') }
-  const first = new SourceFileMutation(api, owner, retained); await first.manage(rename())
-  for (const other of [{ ...owner, sourceHubId: 'hub-b' }, { ...owner, machineId: 'machine-b' }]) {
-    const model = new SourceFileMutation(api, other, retained); await model.load(); assert.equal(model.getSnapshot().request, null)
-  }
-  const corruptOwner = { ...owner, sourceSessionId: 'wrong-owner' }
-  storage.rows.set(sourceFileMutationKey(owner), { ...(await storage.read(owner))!, owner: corruptOwner })
-  const restored = new SourceFileMutation(api, owner, retained)
-  assert.equal(await restored.manage(rename()), false); assert.match(restored.getSnapshot().storageError ?? '', /Wrong saved owner/)
+test('a newer out-of-band receipt cannot be overwritten by an older late result', async () => {
+  const f = fixture(), entered = deferred<void>(), reply = deferred<Result>()
+  f.context.services.mutations!.manage = async () => { entered.resolve(); return reply.promise }
+  const model = f.create(), flight = model.manage(rename()); await entered.promise
+  const old = (await f.storage.read(owner))!, replacement = { ...old.receipt, operationId: crypto.randomUUID(), request: { action: 'create-file' as const, path: '/other' } }
+  const newer = await f.storage.write(owner, old.revision, replacement); reply.resolve(applied(old.receipt.operationId))
+  assert.equal(await flight, false); assert.deepEqual(await f.storage.read(owner), newer)
 })
 
-test('an out-of-band newer receipt cannot be overwritten by an older late result', async () => {
-  const storage = new SourceFileStorageFixture(), retained = createSourceFileMutations({ storage, locks: new SourceFileLocksFixture(), channel: null })
-  const started = deferred<void>(), reply = deferred<Awaited<ReturnType<Api['nativeFileManage']>>>()
-  const api = basicApi(); api.nativeFileManage = async () => { started.resolve(); return reply.promise }
-  const model = new SourceFileMutation(api, owner, retained), flight = model.manage(rename()); await started.promise
-  const previous = (await storage.read(owner))!, replacement = { ...previous.receipt, operationId: crypto.randomUUID(), request: { action: 'upload' as const, path: '/other' } }
-  const newer = await storage.write(owner, previous.revision, replacement)
-  reply.resolve({ ok: true, value: { success: true } }); assert.equal(await flight, false)
-  assert.deepEqual(await storage.read(owner), newer)
-})
-
-test('partial source evidence is bounded with its omitted-path count, without being called confirmed', async () => {
-  const api = basicApi(); api.nativeFileManage = async () => ({ ok: true, value: { success: false, deletedPaths: Array.from({ length: 50 }, (_, index) => `/source/${index}`) } })
-  const model = new SourceFileMutation(api, owner, journal()); await model.manage(rename())
-  assert.equal(model.getSnapshot().result?.deletedPaths?.length, 32); assert.equal(model.getSnapshot().omittedPaths, 18)
-  assert.equal(model.getSnapshot().phase, 'unknown')
-})
-
-test('a delayed lock grant rechecks durable admission and never replaces another window unknown receipt', async () => {
-  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture(), requested = deferred<void>(), grant = deferred<void>()
-  const delayedLocks = { held: locks.held.bind(locks), async exclusive<T>(key: string, action: () => Promise<T>) {
+test('a delayed lock grant rechecks durable admission rather than replacing another window unknown operation', async () => {
+  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture(), requested = deferred<void>(), grant = deferred<void>(), context = fileContext(owner); let sent = 0
+  const waitingJournal = createSourceFileMutations({ storage, locks: { held: locks.held.bind(locks), async exclusive<T>(key: string, action: () => Promise<T>) {
     requested.resolve(); await grant.promise; return locks.exclusive(key, action)
-  } }
-  const waitingJournal = createSourceFileMutations({ storage, locks: delayedLocks, channel: null })
-  let sent = 0
-  const waitingApi = basicApi(); waitingApi.nativeFileManage = async () => { sent++; return { ok: true, value: { success: true } } }
-  const waiting = new SourceFileMutation(waitingApi, owner, waitingJournal), waitingFlight = waiting.manage({ action: 'create-file', path: '/new-request' })
-  await requested.promise
-  const otherApi = basicApi(); otherApi.nativeFileManage = async () => { throw new Error('Lost first acknowledgement') }
-  const other = new SourceFileMutation(otherApi, owner, createSourceFileMutations({ storage, locks, channel: null }))
-  await other.manage(rename()); const unknown = await storage.read(owner)
-  assert.equal(unknown?.receipt.phase, 'unknown')
-  await waiting.load(); assert.equal(waiting.getSnapshot().uncertain, true)
-  grant.resolve(); assert.equal(await waitingFlight, false)
-  assert.equal(sent, 0); assert.deepEqual(await storage.read(owner), unknown)
+  } }, channel: null })
+  context.services.mutations!.manage = async request => { sent++; return applied(request.operationId) }
+  const waiting = new SourceFileMutation(context, waitingJournal), flight = waiting.manage({ action: 'create-file', path: '/source/new' }); await requested.promise
+  const other = fixture({ storage, locks }); other.context.services.mutations!.manage = async () => { throw new Error('Lost first acknowledgement') }
+  await other.create().manage(rename()); const unknown = await storage.read(owner); grant.resolve()
+  assert.equal(await flight, false); assert.equal(sent, 0); assert.deepEqual(await storage.read(owner), unknown)
 })
 
-test('a stale review button cannot bypass a different window active Web Lock', async () => {
-  const storage = new SourceFileStorageFixture(), locks = new SourceFileLocksFixture()
-  const first = createSourceFileMutations({ storage, locks, channel: null }), second = createSourceFileMutations({ storage, locks, channel: null })
-  const api = basicApi(); api.nativeFileManage = async () => { throw new Error('Unconfirmed source request') }
-  const model = new SourceFileMutation(api, owner, second); await model.manage(rename()); await model.inspect()
-  assert.equal(model.getSnapshot().canReview, true)
-  const entered = deferred<void>(), done = deferred<void>()
-  const flight = first.exclusive(owner, model.getSnapshot().operationId!, async () => { entered.resolve(); await done.promise })
-  await entered.promise
-  assert.equal(await model.review(), false); assert.equal((await storage.read(owner))?.receipt.phase, 'unknown')
-  done.resolve(); await flight
+test('a stale review action cannot bypass another window active lock', async () => {
+  const f = fixture(); f.context.services.mutations!.manage = async () => { throw new Error('Unconfirmed') }
+  const model = f.create(); await model.manage(rename()); await model.inspect(); assert.equal(model.getSnapshot().canReview, true)
+  const entered = deferred<void>(), release = deferred<void>(), flight = f.journal.exclusive(owner, model.getSnapshot().operationId!, async () => { entered.resolve(); await release.promise })
+  await entered.promise; assert.equal(await model.review(), false); assert.equal((await f.storage.read(owner))?.receipt.phase, 'unknown'); release.resolve(); await flight
+})
+
+test('browser upload chunks remain binary and file bytes never enter the durable operation record', async () => {
+  const f = fixture(), bytes = new TextEncoder().encode('sensitive upload bytes'), chunks: Uint8Array[] = []
+  let transfer: Awaited<ReturnType<NonNullable<WorkspaceServices['uploads']>['begin']>>
+  const services: WorkspaceServices = { ...f.context.services, uploads: {
+    async begin(request) { transfer = { uploadId: crypto.randomUUID(), target: request.target, operationId: request.operationId, destination: request.destination,
+      bytes: request.bytes, receivedBytes: 0, chunkBytes: 5, maxBytes: 1024 }; return transfer },
+    async append(request) { chunks.push(request.data); return { receivedBytes: request.offset + request.data.length } },
+    async finish() { return { status: 'applied', operationId: transfer.operationId, value: { kind: 'file', resource: { target: owner.binding.target, document: { kind: 'file', path: '/source/upload' } },
+      file: { absolutePath: '/source/upload', version: 'opaque:uploaded', bytes: bytes.length } } } },
+    async status() { return { state: 'uploading', transfer } }, async cancel() { return { state: 'cancelled' } },
+  } }
+  const model = new SourceFileMutation({ owner, services }, f.journal)
+  assert.equal(await model.upload('/source/upload', new Blob([bytes])), true)
+  assert.deepEqual(Buffer.concat(chunks), Buffer.from(bytes)); assert.equal(JSON.stringify([...f.storage.rows.values()]).includes('sensitive upload bytes'), false)
+  assert.deepEqual(model.getSnapshot().request, { action: 'upload', path: '/source/upload', bytes: bytes.length, mimeType: 'application/octet-stream', uploadId: transfer!.uploadId })
+})
+
+
+function interruptedUpload() {
+  const f = fixture(), data = new Uint8Array([0, 255, 1, 2, 3, 4]), offsets: number[] = []
+  let transfer: Awaited<ReturnType<NonNullable<WorkspaceServices['uploads']>['begin']>>, begins = 0, finishes = 0, statuses = 0, loseBegin = false, loseFinish = false, interrupted = true
+  let finished: Awaited<ReturnType<NonNullable<WorkspaceServices['uploads']>['finish']>> | undefined
+  const services: WorkspaceServices = { ...f.context.services, uploads: {
+    async begin(request) {
+      begins++
+      transfer ??= { uploadId: crypto.randomUUID(), target: request.target, operationId: request.operationId, destination: request.destination,
+        bytes: request.bytes, receivedBytes: 0, chunkBytes: 2, maxBytes: 1024 }
+      assert.equal(request.operationId, transfer.operationId)
+      if (loseBegin) { loseBegin = false; throw new Error('Lost begin reply') }
+      return transfer
+    },
+    async append(request) {
+      const saved = (await f.storage.read(owner))!.receipt
+      assert.equal(saved.request.action === 'upload' && saved.request.uploadId, transfer.uploadId)
+      offsets.push(request.offset); transfer = { ...transfer, receivedBytes: request.offset + request.data.length }
+      if (interrupted) { interrupted = false; throw new Error('Lost append reply') }
+      return { receivedBytes: transfer.receivedBytes }
+    },
+    async finish() {
+      finishes++
+      finished = { status: 'applied', operationId: transfer.operationId, value: { kind: 'file', resource: { target: owner.binding.target, document: { kind: 'file', path: '/source/upload' } },
+        file: { absolutePath: '/source/upload', version: 'opaque:uploaded', bytes: data.length } } }
+      if (loseFinish) throw new Error('Lost finish reply')
+      return finished
+    },
+    async status(request) { statuses++; assert.equal(request.uploadId, transfer.uploadId); return finished ? { state: 'finished', result: finished } : { state: 'uploading', transfer } },
+    async cancel() { return { state: 'cancelled' } },
+  } }
+  const create = () => new SourceFileMutation({ owner, services }, f.journal)
+  return { ...f, create, file: new Blob([data]), offsets, counts: () => ({ begins, finishes, statuses }),
+    loseBegin: () => { loseBegin = true }, loseFinish: () => { loseFinish = true }, noInterruption: () => { interrupted = false } }
+}
+
+test('lost append acknowledgement resumes the original upload from authoritative status without resending confirmed bytes', async () => {
+  const f = interruptedUpload(), model = f.create()
+  assert.equal(await model.upload('/source/upload', f.file), false); const id = model.getSnapshot().operationId
+  assert.equal(model.getSnapshot().hasUploadFile, true); await model.inspect()
+  assert.deepEqual(f.offsets, [0]); assert.equal(f.counts().finishes, 0); assert.equal(model.getSnapshot().canReview, false)
+  assert.equal(await model.resumeUpload(), true)
+  assert.deepEqual(f.offsets, [0, 2, 4]); assert.equal(model.getSnapshot().operationId, id); assert.equal(f.counts().begins, 1)
+})
+
+test('refresh cannot resume without original bytes and reselected files require explicit matching intent', async () => {
+  const f = interruptedUpload(), original = f.create(); await original.upload('/source/upload', f.file); original.dispose()
+  const restored = f.create(); await restored.load(); assert.equal(restored.getSnapshot().hasUploadFile, false)
+  assert.equal(await restored.resumeUpload(), false); assert.equal(await restored.resumeUpload(f.file), false)
+  assert.equal(await restored.resumeUpload(new Blob(['wrong-size']), true), false); assert.deepEqual(f.offsets, [0])
+  assert.equal(await restored.resumeUpload(f.file, true), true); assert.deepEqual(f.offsets, [0, 2, 4]); assert.equal(f.counts().begins, 1)
+})
+
+test('inspection consumes the original finished receipt and does not blindly repeat finish after its reply is lost', async () => {
+  const f = interruptedUpload(); f.noInterruption(); f.loseFinish(); const original = f.create()
+  assert.equal(await original.upload('/source/upload', f.file), false); original.dispose()
+  const restored = f.create(); await restored.load(); await restored.inspect()
+  assert.equal(restored.getSnapshot().phase, 'confirmed'); assert.equal(restored.getSnapshot().result?.status, 'applied')
+  assert.equal(f.counts().finishes, 1); assert.equal(f.counts().begins, 1)
+})
+
+test('explicit recovery after a lost begin reply uses the original operation ID and does not admit a new upload', async () => {
+  const f = interruptedUpload(); f.loseBegin(); f.noInterruption(); const model = f.create()
+  assert.equal(await model.upload('/source/upload', f.file), false); const id = model.getSnapshot().operationId
+  assert.deepEqual(f.offsets, []); assert.equal(await model.resumeUpload(), true)
+  assert.equal(model.getSnapshot().operationId, id); assert.equal(f.counts().begins, 2); assert.equal(f.counts().finishes, 1)
 })

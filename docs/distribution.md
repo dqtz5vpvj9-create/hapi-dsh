@@ -1,66 +1,60 @@
-# 构建与分发维护
+# 构建、分发与回滚
 
-## 官方 bundle 契约
+当前产品是 HHPI，技术包名仍为 `hapi-dsh`。面向使用者的入口是包含插件与完整 DSH 扩展的正式 bundle；开发 checkout 的覆盖安装与普通插件 tgz 是不同的产物。正式 manifest 和实际 Host、Runner 共同确定已部署版本，发布记录见[发行说明](hhpi-retirement-release-notes.md)。
 
-根 `package.json` 的主导出是 Host ESM；`./client` 指向构建后的官方 Client 模块注册脚本；`./cli` 与 `bin.hapi-dsh` 指向 CLI。`dsh.bundle.patch` 指向 `config/cordis.patch.yml`，`dsh.client.inject` 列出官方客户端依赖，平台为 `web`。
+## 构建输入与运行时
 
-官方浏览器 loader 需要模块注册格式；单独输出普通 ESM 文件并不会自动成为 DSH Client：
+官方 DSH 固定 `0.2.2-rc.1`，源码提交、active patch 与许可由 `UPSTREAMS.json` 和 `source-snapshots` 记录。根包、Host-only `hapi-dsh-runner` 与 manifest 声明的全部扩展来自同一归档集合；当前扩展构建步骤见[扩展安装](hhpi-extension-install.md)。
 
-```javascript
-window.__ModuleLoader__.load({
-  id: "hapi-dsh",
-  factory: function (require) {
-    var module = { exports: {} };
-    var exports = module.exports;
-    // 构建器在这里放入插件自己的 CommonJS bundle。
-    return module.exports;
-  }
-});
-```
+`scripts/build.mjs` 构建 Host ESM、官方 Client 模块注册脚本、CLI、公开普通 DSH provider 和独立 Runner manifest。Client 通过官方模块表与声明依赖加载，当前按需 chunk 为本机语音与截图；旧 HAPI native/session/administration 面板退出。最终文件清单以构建器与打包检查为准，不因旧 dist 文件存在就纳入发行。
 
-`scripts/build.mjs` 分别构建 Host、Client、CLI 和 `dist/runner`。Host 和 Client 的 Cordis 类型声明分开检查，避免同名服务的两端类型被错误合并。官方依赖仍由原运行时提供；构建器不修改上游代码。
+Runner manifest 不带工作区 Client，保留原 DSH 执行与插件图。受管 Host 链接到 release 的 `runtime/node_modules/hapi-dsh`，Runner 链接到同一 runtime 的 `hapi-dsh/dist/runner`。健康检查必须从真实 consumer 解析这些包和扩展，而不是只读解包目录的版本。
 
-Client 还包含五个按需包内 chunk：`client.voice.js`、`client.capture.js`、`client.native-panels.js`、`client.session-panels.js` 和 `client.administration.js`。它们使用同一个官方模块 ID、各自的 `chunk` 名称注册，由 `require.async()` 加载。`package.files` 包含整个 `dist`；打包与 CLI artifact 检查必须同时确认这五个文件存在。安装 smoke 还会从实际启动的官方 Host boot graph 取得 revision，逐个请求官方 chunk 路由并检查 JavaScript 注册内容，避免“主包能启动、打开可选面板才 404”。
+## 创建发行产物
 
-分阶段启动的共用逻辑位于 `src/shared/boot-graph.ts`。Host 的 `src/index.ts` 和 Client 的 `src/client/deferred-plugins.ts` 都静态导入它，构建器将实际使用的函数分别编入 `dist/index.js` 和 `dist/client.js`，无需新增 HTTP 资源、package 子路径导出或运行时源码加载。`package.files` 同时收录整个 `src`；打包检查逐个核对 TypeScript 源文件，Host 声明构建也包含 `src/shared/**/*.ts`。这些是构建与文件清单的静态约束，最终安装结果仍须对应最终提交的 artifact。
+在固定依赖和完整扩展已安装的 checkout 中执行；最终检查的结果必须对应实际打包字节：
 
-`dist/runner/package.json` 是独立 Host-only manifest，包名为 `hapi-dsh-runner`，有自己的 patch，故意不带 `dsh.client`。运行时通过官方 `dsh plugin --profile hapi-runner add link:<dist/runner>` 安装该 bundle。不要用根 package 的子路径替代独立 manifest，否则官方模块发现可能把主工作区 Client 带进 Runner。
-
-## 创建可安装发行包
-
-```bash
-npm install --global pnpm@11.28.5
-npm ci
+```text
 npm run check
-HAPI_DSH_OFFICIAL_TESTS=1 node --import tsx --test --test-isolation=none tests/federation-official.test.ts
-npm exec -- playwright install --with-deps chromium
-npm run test:e2e
 node scripts/distribution-pack.mjs
-node scripts/distribution-smoke.mjs
+npm run bundle:pack -- --ext-release ABSOLUTE_SOURCE_BEARING_EXT_RELEASE
+node scripts/distribution-smoke.mjs ABSOLUTE_EXTENSION_PACKAGE_DIRECTORY
 ```
 
-打包脚本使用 `npm pack --ignore-scripts`，要求先显式构建。它验证包内 Host、Client、CLI、Runner manifest/patch、类型声明、许可证与文档，拒绝把本地凭据、测试产物或依赖目录装入发行包，再为 `.tgz` 计算 SHA-256。
+`distribution-smoke` 的参数是包含 `manifest.json` 与其声明的全部 tgz 的扩展构建目录；`bundle:pack` 的参数是包含 `release.json`、对应源码与许可的完整发行目录。跨平台安装 CI 随插件上传并复用同一份扩展归档，不在安装阶段换回上游未扩展包。
 
-发行包包含插件源码、构建脚本、TypeScript 配置和 `UPSTREAMS.json`，不包含已安装依赖；安装时 npm 根据固定依赖版本下载官方 DSH。锁文件及测试保存在同版本 GitHub 源码中。当前只支持正常 npm 解析/安装路径，未提供离线全依赖镜像或跨平台单文件二进制。
+`distribution-pack` 使用显式构建后的 `npm pack --ignore-scripts`，核对源文件、运行入口、声明、许可和文档，排除凭据与本地数据，沿用既有 `SHA256SUMS`。它将当前 `QUICKSTART.md` 原样复制为 `artifacts/INSTALL.md`，分发文案只有这一份源。
 
-支持的安装入口是已构建 `.tgz`，或 `git clone` 后 `npm ci`、`npm run build`。不要用 `npm install github:...` 代替这两条路径；本包没有隐式 `prepare` 生命周期来替使用者编译源码。
+薄包 `hapi-dsh-VERSION.tgz` 不会因普通 npm 安装而自动成为完整扩展发行。完整 `hapi-dsh-bundle-VERSION.tgz` 携带插件 payload、真实 ext tarball、manifest、许可、安装器和完整对应源码/source offer。安装时未修改的依赖仍从公开 registry 解析，因此不是离线单文件二进制。不能用占位 fixture 发布真实 HHPI 能力。
 
-## GitHub Actions
+## 安装与升级
 
-`.github/workflows/ci.yml` 保留类型、逻辑、官方 federation 与完整浏览器回归。打包 job 与回归并行，生成同一份 `.tgz` 和 `INSTALL.md`；Linux、Windows、macOS 三个 job 下载这份包，在带空格的干净目录安装运行依赖，调用真实 npm 命令 shim，验证版本、登录脱敏、主/Runner profile、离线 doctor、HTTP 启动与撤销。测试目录的 pnpm 随安装提供，不依赖预装的全局 pnpm。发布仍等待整个工作流成功，快速生成安装包不绕过正式发布门槛。
+完整 bundle 的初次安装入口不依赖已安装 HHPI：
 
-日常准备包可用 `npm run dist:pack`，完整安装验证用 `npm run test:install`。这两条命令不会提交、推送或发布到 npm。
+```text
+tar -xzf hapi-dsh-bundle-VERSION.tgz
+node package/dist/install.mjs install --profile hapi --role host
+```
 
-`.github/workflows/release.yml` 在 `v*` tag 上调用相同验证流程。验证成功后校验 tag 与 `package.json.version` 一致，下载该流程已经检查过的同一安装包，复核 SHA-256，再创建 GitHub Release。发布任务只有所需的 `contents: write` 权限，不运行 `npm publish`。
+原有 Runner 用其真实 DSH home/profile 和 `--role runner` 安装同一个 bundle，保留私有 Runner 配置与机器身份。已有运行实例先通过 idle gate，再按服务监督方案重启；安装命令成功本身不证明新进程或远端资源已就绪。[安装指南](install.md)说明配置、配对与现有 Web 的挂载。
 
-创建新版本时：
+已安装 CLI 可调用 `bundle status`、`bundle verify`、`bundle upgrade --tgz FILE` 和 `bundle rollback`。自定义实例始终使用对应私有配置。详细 standalone 参数与实际托管路径见[安装器说明](../scripts/bundle/README.md)。
 
-1. 更新 package version 与锁文件，记录变更和已完成的真实部署验收。
-2. 使本机与 CI 的所有门槛通过，核对许可证和第三方来源。
-3. 提交后创建匹配版本的 tag，例如 package `0.1.0` 对应 `v0.1.0`。
-4. 推送 tag 触发发布；下载 release 包在干净机器复验安装路径。
+既有发布流程保持不可变 release、清单校验、路径边界、profile manifest/lock 备份、官方插件安装、consumer 解析、idle 和 health gate。失败保留旧 active 并恢复原 profile。至少保留两个先前 release；回滚软件与依赖，不回滚会话日志、原生队列或审批结果，也不重发不确定操作。
 
-不要为修复已发布字节而移动同名 tag 或覆盖既有发行包。修复后产生新版本，并让各台 Hub/Runner 协同升级。发布流程不会静默覆盖已有 GitHub Release。
+## CI、发布与证据
+
+旧数据的离线恢复工具单独交付为 `hapi-dsh-offline-recovery-VERSION.tgz`，通过 `npm run recovery:pack -- --out ABSOLUTE_DIRECTORY` 生成。该归档包含 Node 24 可执行入口、内置依赖、对应源码和许可，不属于工作区运行图或主 bundle payload。它只读取用户明确选择的导出、生成私有恢复对象，不连接源或自动导入。实际命令和边界见[离线恢复说明](offline-recovery.md)；发行时将此归档与主 bundle 一并提供。
+
+CI 的 verify、package 和三平台安装 job 是计划执行入口；成功结论来自某次具体 job 的日志，不能根据 workflow 配置推断。当前测试层次、真实官方集成和两条有界浏览器验收见[测试说明](testing.md)。`test:e2e` / Playwright 全应用流程已退出，不应恢复旧命令作为日常门槛。
+
+发布使用实际验证过的同一 artifact，核对包版本、扩展身份、源码与许可；tag 和 release 不覆盖已发布字节。既有站点发布还核对认证 HTTP/WebSocket、运行版本与真实界面。源码/Node/DOM 通过分别记录，不能代替 Windows 原源 Runner、物理设备输入/通知或最终发布证据。
+
+## 许可证与历史
+
+项目使用 AGPL-3.0-only，复用 HAPI 的几何和输入等代码保留其声明；退出旧运行时不删除许可证。DSH 扩展基于 MIT 源码，补丁、实际包源码、构建输入和对应许可随 source offer 提供。第三方许可与固定版本见 `NOTICE`、`UPSTREAMS.json` 和发行内容。
+
+以下只保留旧版本的实际 CI 证据；旧 login、旧 chunk 和旧模型路径不再是当前流程。这些记录不证明本轮源码或 artifact 通过。
 
 ## 2026-10-23 安装验收记录
 
@@ -77,9 +71,3 @@ node scripts/distribution-smoke.mjs
 该提交的整个 CI 仍为失败：verify 中 1,064 项逻辑测试有 1,058 项通过、5 项失败、1 项跳过，失败均为测试夹具把 `mkdtemp` 根目录写死到 `/mnt/cache/data-cache`，而 GitHub Runner 没有该目录。`feaefd51b2dd9c8d6b4e9f095d1dbd55c3418909` 将这五个用例改用平台 `tmpdir()`。截至 2026-10-23 17:44 UTC，[新 CI 39996951990](https://github.com/dqtz5vpvj9-create/hapi-dsh/actions/runs/39996951990) 的 package 与三个系统安装均已通过；verify 已通过原失败阶段、官方 federation、测量负对照和共享 UI 验收，完整浏览器回归仍在运行，尚不能标记整个流程通过。
 
 这两个远端提交均不包含随后工作树里的五个 chunk 完整性检查和移动滚动改动。上面的跨平台结果不能替代下一次包含这些改动的最终 artifact 验收；必须按最终提交重新检查 package、三个安装 job 与 verify 的结果。
-
-## 对照源码与许可证
-
-HAPI 的工作区几何及原生输入适配保留来源声明，本项目使用 AGPL-3.0-only。完整对应源码、构建脚本和锁文件随 GitHub tag 提供；安装包 README 和 NOTICE 指向源码仓库。DSH 是原样 npm 依赖，使用其 MIT 许可与声明。
-
-需要更新兼容版本时，先检查官方插件 manifest、ClientModuleSystem/Loader、Session 与 connection 契约，再同时更新固定版本、握手检查、真实集成测试与文档。不能仅放宽版本判断来跳过实际兼容性验证。

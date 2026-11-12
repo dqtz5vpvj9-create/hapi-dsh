@@ -1,5 +1,6 @@
 /** Shared production/client-only build configuration. No upstream bytes are edited. */
 import { build } from 'esbuild';
+import { CLIENT_CHUNK_NAMES } from '../src/shared/client-artifacts.ts';
 import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -34,11 +35,8 @@ export async function buildClientBundle(buildIdentity, { publish = true, minifyI
             '@deepseek-ai/dsh-api-gateway/client',
         ],
     };
-    const chunks = [
-        ['client.voice.js', 'src/client/source-voice/composer.tsx'], ['client.capture.js', 'html2canvas-pro'],
-        ['client.native-panels.js', 'src/client/native-panels.ts'], ['client.session-panels.js', 'src/client/session-extras.tsx'],
-        ['client.administration.js', 'src/client/source-admin-panel.tsx'],
-    ];
+    const chunkEntries = { voice: 'src/client/source-voice/composer.tsx', capture: 'html2canvas-pro' };
+    const chunks = CLIENT_CHUNK_NAMES.map(name => [`client.${name}.js`, chunkEntries[name]]);
     const [result, ...extras] = await Promise.all([
         build({ ...options, entryPoints: ['src/client/index.ts'] }),
         ...chunks.map(([, entry]) => build({ ...options, entryPoints: [entry] })),

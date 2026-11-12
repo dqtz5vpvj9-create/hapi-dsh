@@ -1,4 +1,5 @@
 import { randomId } from './random-id.ts'
+import type { AppAccountScope, AppSourceRoute } from '../workspace/app-service-types.ts'
 /** HAPI's original browser-only Web Share Target transfer format (AGPL-3.0). */
 export const SHARE_DATABASE = 'hapi-share-transfers';
 export const SHARE_STORE = 'transfers';
@@ -8,10 +9,10 @@ export const SHARE_TOTAL_LIMIT = 128 * 1024 * 1024;
 export interface SharedFile { name: string; type: string; blob: Blob }
 export interface SharePayload { title: string; text: string; url: string; files: SharedFile[]; createdAt: number }
 export interface ShareFields { title?: string; text?: string; url?: string; fileUrl?: string; fileName?: string; fileType?: string }
-export type ShareTarget = { kind: 'hapi'; hubId: string; sessionId: string } | { kind: 'dsh'; hostId: string; sessionId: string };
-export interface ShareDelivery { target: ShareTarget; status: 'ready' | 'inserting' | 'inserted' | 'unknown'; owner: string; afterText?: string; error?: string }
+export type ShareTarget = AppSourceRoute;
+export interface ShareDelivery { scope: AppAccountScope; target: ShareTarget; status: 'ready' | 'inserting' | 'inserted' | 'unknown'; owner: string; afterText?: string; error?: string }
 export interface ShareRecord extends SharePayload { id: string; hapiDshDelivery?: ShareDelivery }
-export const shareTargetKey = (target: ShareTarget) => JSON.stringify(target.kind === 'hapi' ? ['hapi', target.hubId, target.sessionId] : ['dsh', target.hostId, target.sessionId]);
+export const shareTargetKey = (target: ShareTarget) => JSON.stringify([target.kind, target.hostId, target.sessionId]);
 export const shareSeedText = (value: SharePayload) => [value.title, value.text, value.url].filter(part => part.length > 0).join('\n').trim();
 
 export function parseShareFields(hash: string): ShareFields {
@@ -38,14 +39,14 @@ export function validateSharePayload(value: unknown, now = Date.now()): SharePay
     return row as SharePayload;
 }
 
-/** Content is fragment-only; external companion files never receive app cookies. */
+/** Content is fragment-only; external shared files never receive app cookies. */
 export async function shareFromFragment(fields: ShareFields, signal: AbortSignal, fetcher: typeof fetch = fetch): Promise<SharePayload> {
     const payload: SharePayload = { title: fields.title ?? '', text: fields.text ?? '', url: fields.url ?? '', files: [], createdAt: Date.now() };
     if (fields.fileUrl) {
         const url = new URL(fields.fileUrl);
-        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('A companion file must use an HTTP(S) URL without embedded credentials.');
+        if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('A shared file must use an HTTP(S) URL without embedded credentials.');
         const response = await fetcher(url, { signal, credentials: 'omit', mode: 'cors', referrerPolicy: 'no-referrer' });
-        if (!response.ok) throw new Error(`The companion file could not be read (HTTP ${response.status}).`);
+        if (!response.ok) throw new Error(`The shared file could not be read (HTTP ${response.status}).`);
         if (Number(response.headers.get('content-length')) > SHARE_FILE_LIMIT) { await response.body?.cancel(); throw new Error('The shared file exceeds 50 MiB.'); }
         const chunks: Uint8Array[] = []; let size = 0;
         if (response.body) {

@@ -10,13 +10,16 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SessionReference, SessionSnapshot } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ChatConversationViewNode, ChatSnapshot } from '@deepseek-ai/dsh-client-ui-chat/client'
-import type { SourceWindowPreparer, SourceWindowReader } from '../src/client/source-sessions.ts'
+import type { SourceWindowPreparer, SourceWindowReader } from '../src/client/source-session-types.ts'
 import { pinSourceViewport, sourceRetentionPlan } from '../src/client/source-window-retention.ts'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import { officialChat } from './official-conversation-fixture.ts'
+import { installOrdinaryReadingMemory } from '../src/client/ordinary-reading-checkpoint.ts'
+import { WorkspaceApplicationIdentity } from '../src/client/application-identity.ts'
+import { createWorkspaceUpdatePreparations } from '../src/client/update-preparation.ts'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import type { PaneReadingIntent } from '../src/client/reading-intent.ts'
-import { installSessionViewHost, prepareCandidateViewport, prepareInitialViewport, readSourceWindowViewport, registerVisibleWindowReader, WindowPreparationCoordinator } from '../src/client/surface/session-view.tsx'
+import { SessionContent, installSessionViewHost, prepareCandidateViewport, prepareInitialViewport, readSourceWindowViewport, registerVisibleWindowReader, WindowPreparationCoordinator } from '../src/client/surface/session-view.tsx'
 
 function fixture() {
     const spacer = { offsetHeight: 0 }
@@ -692,6 +695,9 @@ async function viewHostFixture(t: TestContext) {
         __ModuleLoader__: { load(value: typeof published) { published = value } },
     })
     const root = new Context()
+    const application = new WorkspaceApplicationIdentity(), updates = createWorkspaceUpdatePreparations()
+    const stopMemory = installOrdinaryReadingMemory(root)
+    t.after(() => { stopMemory(); application.dispose(); updates.dispose() })
     root.reflect.provide('sessions', { list: { getSnapshot: () => ({ byId: {} }) } } as unknown as Context['sessions'])
     new (published!.factory(require).SlotRegistry)(root)
     await root.plugin({ name: 'reader-public-shell', inject: ['slots'], apply(ctx: Context) {
@@ -703,7 +709,7 @@ async function viewHostFixture(t: TestContext) {
         host = installSessionViewHost(ctx); return () => host.dispose()
     } })
     await plugin
-    return { root, host, plugin }
+    return { root, host, plugin, navigation: { hostId: 'local', paneId: 'viewport-fixture', application, updates } }
 }
 
 function measuringTarget(geometry: ReturnType<typeof fixture>, readingState?: () => string | null): HTMLElement {
@@ -724,18 +730,18 @@ const emptyEvents = () => ({ getSnapshot: () => ({ entries: [], revision: 0, has
     subscribe: () => () => {} })
 
 test('ready Session occurrences use the committed event window without registering a second reader', async t => {
-    const { root, host, plugin } = await viewHostFixture(t)
+    const { root, host, plugin, navigation: navigationBase } = await viewHostFixture(t)
     try {
         const readers = new Set<SourceWindowReader>(), ready = deferred<SessionReference['binding']>()
         let releases = 0
-        const binding = { session: { getSnapshot: () => ({ hasMore: false, loadingOlder: false }),
+        const binding = { sessionId: 'same-owner', session: { sessionId: 'same-owner', getSnapshot: () => ({ hasMore: false, loadingOlder: false }),
             registerWindowReader(reader: SourceWindowReader) { readers.add(reader); return () => { readers.delete(reader) } },
         }, eventSource: emptyEvents() } as unknown as SessionReference['binding']
         const reference = { sessionId: 'same-owner', binding, ready: ready.promise, release() { releases++ } } as unknown as SessionReference
         const visible = { current: true }
         const mount = (paneId: string) => host.mount({ paneId, reference,
             target: measuringTarget(fixture()),
-            navigation: { state: { getSnapshot: () => ({ visible: visible.current }), subscribe: () => () => {} }, reading: { getSnapshot: () => undefined, subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation,
+            navigation: { ...navigationBase, state: { getSnapshot: () => ({ visible: visible.current }), subscribe: () => () => {} }, reading: { getSnapshot: () => undefined, subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation,
         })
         const first = mount('first'), second = mount('second')
         assert.equal(readers.size, 0, 'loading views have no usable geometry yet')
@@ -751,15 +757,15 @@ test('ready Session occurrences use the committed event window without registeri
 })
 
 test('a reused source can select its new measuring preparer before latest reading becomes ready', async t => {
-    const { root, host } = await viewHostFixture(t)
+    const { root, host, navigation: navigationBase } = await viewHostFixture(t)
     const preparers = new Set<SourceWindowPreparer>()
-    const binding = { session: { getSnapshot: () => ({ hasMore: false, loadingOlder: false, removed: false }),
+    const binding = { sessionId: 'reused-source', session: { sessionId: 'reused-source', getSnapshot: () => ({ hasMore: false, loadingOlder: false, removed: false }),
         registerWindowPreparer(preparer: SourceWindowPreparer) { preparers.add(preparer); return () => { preparers.delete(preparer) } },
     }, eventSource: emptyEvents() } as unknown as SessionReference['binding']
     const reference = { sessionId: 'reused-source', binding, ready: Promise.resolve(binding) } as unknown as SessionReference
     let oldVisible = true, checkedBeforeReady = false, newReady = 0
     const navigation = (visible: () => boolean, latest = false) => ({
-        state: { getSnapshot: () => ({ visible: visible() }), subscribe: () => () => {} },
+        ...navigationBase, state: { getSnapshot: () => ({ visible: visible() }), subscribe: () => () => {} },
         reading: { getSnapshot: () => latest ? { revision: 1, sessionId: 'reused-source', target: { kind: 'latest' } } : undefined,
             subscribe: () => () => {} },
     }) as unknown as WorkspacePaneNavigation
@@ -790,16 +796,16 @@ test('a reused source can select its new measuring preparer before latest readin
 })
 
 test('a removed source uses the existing error channel and unregisters measuring preparation', async t => {
-    const { root, host } = await viewHostFixture(t)
+    const { root, host, navigation: navigationBase } = await viewHostFixture(t)
     const preparers = new Set<SourceWindowPreparer>(), errors: unknown[] = []
     let ready = 0
-    const binding = { session: { getSnapshot: () => ({ hasMore: false, loadingOlder: false, removed: true }),
+    const binding = { sessionId: 'removed-source', session: { sessionId: 'removed-source', getSnapshot: () => ({ hasMore: false, loadingOlder: false, removed: true }),
         registerWindowPreparer(preparer: SourceWindowPreparer) { preparers.add(preparer); return () => { preparers.delete(preparer) } },
     }, eventSource: emptyEvents() } as unknown as SessionReference['binding']
     const reference = { sessionId: 'removed-source', binding, ready: Promise.resolve(binding) } as unknown as SessionReference
     try {
         const view = host.mount({ paneId: 'removed', reference, target: measuringTarget(fixture()),
-            navigation: { state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} }, reading: { getSnapshot: () => undefined, subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation,
+            navigation: { ...navigationBase, state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} }, reading: { getSnapshot: () => undefined, subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation,
             onReady: () => { ready++ }, onError: error => { errors.push(error) },
         })
         await tick()
@@ -812,14 +818,14 @@ test('a removed source uses the existing error channel and unregisters measuring
 })
 
 test('disposing the whole Host cancels initial admission while the browser has no active frames', async t => {
-    const { root, host } = await viewHostFixture(t)
+    const { root, host, navigation: navigationBase } = await viewHostFixture(t)
     const f = fixture()
     f.documentVisible(false); f.suspendFrames()
-    const binding = f.reference.binding
+    const binding = { ...f.reference.binding, sessionId: 'suspended-host', session: { ...f.reference.binding.session, sessionId: 'suspended-host' } } as unknown as SessionReference['binding']
     const reference = { sessionId: 'suspended-host', binding, ready: Promise.resolve(binding) } as unknown as SessionReference
     try {
         host.mount({ paneId: 'suspended', reference, target: measuringTarget(f),
-            navigation: { state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} },
+            navigation: { ...navigationBase, state: { getSnapshot: () => ({ visible: true }), subscribe: () => () => {} },
                 reading: { getSnapshot: () => undefined, subscribe: () => () => {} } } as unknown as WorkspacePaneNavigation,
         })
         await tick()
@@ -829,4 +835,22 @@ test('disposing the whole Host cancels initial admission while the browser has n
         assert.equal(f.pendingFrames(), 0)
         assert.equal(f.listeners(), 0)
     } finally { await root.fiber.dispose() }
+})
+
+
+test('an empty native thread with its own source cwd uses the official active composer instead of the Host workspace picker', () => {
+    const nativeId = 'hhpi:machine:source:codex:empty', ordinaryId = 'ordinary'
+    const props = (id: string, source?: { id: string; cwd: string }) => ({
+        sessionId: id,
+        useSession: (select: (value: unknown) => unknown) => select({ blank: true, awaitingFirstTurn: false, running: false, promptAttempted: false, openState: 'open', subagent: null }),
+        useConversation: (select: (value: unknown) => unknown) => select({ activeTargets: new Set() }),
+        useSessions: (select: (value: unknown) => unknown) => select({ byId: { [id]: { blank: true, projectionValues: source ? { hhpiSource: source } : {} } } }),
+        renderFactorySlot: (name: string, input: { phase: string; hero: boolean }) => {
+            assert.equal(name, 'conversation.content')
+            return createElement('div', { 'data-phase': input.phase, 'data-workspace-picker': input.hero })
+        },
+    }) as unknown as Parameters<typeof SessionContent>[0]
+    assert.match(renderToStaticMarkup(createElement(SessionContent, props(nativeId, { id: nativeId, cwd: '/original-source' }))), /data-phase="active" data-workspace-picker="false"/)
+    assert.match(renderToStaticMarkup(createElement(SessionContent, props(ordinaryId))), /data-phase="hero" data-workspace-picker="true"/)
+    assert.match(renderToStaticMarkup(createElement(SessionContent, props(nativeId, { id: 'another-source', cwd: '/display-host' }))), /data-phase="hero" data-workspace-picker="true"/)
 })

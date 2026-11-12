@@ -14,12 +14,13 @@ class Transfers implements ShareTransfers {
     }
 }
 const payload = (): SharePayload => ({ title: 'Title', text: 'Exact shared text', url: 'https://example.invalid/read', files: [{ name: 'shared.txt', type: 'text/plain', blob: new Blob(['actual fixture bytes']) }], createdAt: Date.now() });
-const alpha: ShareTarget = { kind: 'hapi', hubId: 'hub-alpha', sessionId: 'same-source-id' }, beta: ShareTarget = { kind: 'hapi', hubId: 'hub-beta', sessionId: 'same-source-id' };
+const scope = { accountId: 'account', origin: 'https://workspace.example' };
+const alpha: ShareTarget = { kind: 'local-dsh', hostId: 'local', sessionId: 'same-source-id' }, beta: ShareTarget = { kind: 'federated-dsh', hostId: 'other-host', sessionId: 'same-source-id' };
 async function settle(until: () => boolean) { for (let step = 0; step < 100; step++) { if (until()) return; await new Promise<void>(resolve => setImmediate(resolve)); } assert.fail('Share operation did not settle'); }
 function storage(owner = 'same-browser-window') { return { getItem: () => owner, setItem() {} }; }
 
 test('original notes wait for the named composer and keep existing share receipts unchanged', async () => {
-    const inbox = new WorkspaceShareInbox(new Transfers(), storage());
+    const inbox = new WorkspaceShareInbox(new Transfers(), storage(), scope);
     await inbox.ingest(payload());
     const previous = inbox.getSnapshot(); let calls = 0, wrong = 0, ready = false;
     inbox.register(alpha, { paneId: 'plugin-pane', ready: () => true, async insert() { wrong++; return { afterText: '' }; } });
@@ -38,7 +39,7 @@ test('original notes wait for the named composer and keep existing share receipt
 });
 
 test('cancelled note insertion never writes when its composer appears later', async () => {
-    const inbox = new WorkspaceShareInbox(new Transfers(), storage()), abort = new AbortController(); let calls = 0;
+    const inbox = new WorkspaceShareInbox(new Transfers(), storage(), scope), abort = new AbortController(); let calls = 0;
     const inserting = inbox.insertOriginal(alpha, 'chat-pane', payload(), abort.signal);
     abort.abort(); await assert.rejects(inserting, { name: 'AbortError' });
     inbox.register(alpha, { paneId: 'chat-pane', ready: () => true, async insert() { calls++; return { afterText: '' }; } });
@@ -46,8 +47,8 @@ test('cancelled note insertion never writes when its composer appears later', as
     inbox.dispose();
 });
 
-test('share hand-off requires exact Hub/session and a ready target; insertion is claimed before effects', async () => {
-    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage()); let ready = false, calls = 0, wrong = 0;
+test('share hand-off requires exact Host/source session and a ready target; insertion is claimed before effects', async () => {
+    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage(), scope); let ready = false, calls = 0, wrong = 0;
     const id = await inbox.ingest(payload());
     inbox.register(beta, { ready: () => true, async insert() { wrong++; return { afterText: '' }; } });
     inbox.register(alpha, { ready: () => ready, async insert(content) {
@@ -57,25 +58,25 @@ test('share hand-off requires exact Hub/session and a ready target; insertion is
     await inbox.select(alpha); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 0); assert.equal(wrong, 0);
     ready = true; inbox.wake(); inbox.wake(); await settle(() => inbox.getSnapshot().phase === 'inserted');
     assert.equal(calls, 1); assert.equal(wrong, 0); assert.ok(await transfers.read(id), 'original files remain recoverable');
-    const reopened = new WorkspaceShareInbox(transfers, storage()); reopened.register(alpha, { ready: () => true, async insert() { calls++; return { afterText: '' }; } });
+    const reopened = new WorkspaceShareInbox(transfers, storage(), scope); reopened.register(alpha, { ready: () => true, async insert() { calls++; return { afterText: '' }; } });
     await reopened.load(id); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 1);
     inbox.dispose(); reopened.dispose();
 });
 
 test('an interrupted insertion remains unknown after reopening and never automatically duplicates content', async () => {
-    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage()); const id = await inbox.ingest(payload()); let calls = 0;
+    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage(), scope); const id = await inbox.ingest(payload()); let calls = 0;
     inbox.register(alpha, { ready: () => true, async insert() { calls++; throw new Error('The view was closed after its local edit'); } });
     await inbox.select(alpha); await settle(() => inbox.getSnapshot().phase === 'unknown');
     assert.equal((await transfers.read(id))?.hapiDshDelivery?.status, 'unknown'); inbox.dispose();
-    const reopened = new WorkspaceShareInbox(transfers, storage()); reopened.register(alpha, { ready: () => true, async insert() { calls++; return { afterText: 'reviewed' }; } });
+    const reopened = new WorkspaceShareInbox(transfers, storage(), scope); reopened.register(alpha, { ready: () => true, async insert() { calls++; return { afterText: 'reviewed' }; } });
     await reopened.load(id); reopened.wake(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 1);
     await reopened.select(alpha); assert.equal(calls, 1); assert.match(reopened.getSnapshot().error!, /receipt/u);
     await reopened.select(alpha, true); await settle(() => reopened.getSnapshot().phase === 'inserted'); assert.equal(calls, 2); reopened.dispose();
 });
 
 test('another window cannot consume a bound share just by mounting a matching conversation', async () => {
-    const transfers = new Transfers(), first = new WorkspaceShareInbox(transfers, storage('first')); const id = await first.ingest(payload()); await first.select(alpha);
-    const second = new WorkspaceShareInbox(transfers, storage('second')); let calls = 0;
+    const transfers = new Transfers(), first = new WorkspaceShareInbox(transfers, storage('first'), scope); const id = await first.ingest(payload()); await first.select(alpha);
+    const second = new WorkspaceShareInbox(transfers, storage('second'), scope); let calls = 0;
     second.register(alpha, { ready: () => true, async insert() { calls++; return { afterText: 'chosen explicitly' }; } });
     await second.load(id); second.wake(); await new Promise<void>(resolve => setImmediate(resolve)); assert.equal(calls, 0);
     await second.select(alpha); await settle(() => second.getSnapshot().phase === 'inserted'); assert.equal(calls, 1);
@@ -83,7 +84,7 @@ test('another window cannot consume a bound share just by mounting a matching co
 });
 
 test('new-session cancellation retains the share and an unrelated creation cannot claim it', async () => {
-    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage()); const id = await inbox.ingest(payload());
+    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage(), scope); const id = await inbox.ingest(payload());
     inbox.created(alpha); assert.equal(inbox.getSnapshot().phase, 'pick');
     assert.ok(inbox.beginCreation()); inbox.cancelCreation(); inbox.created(beta); assert.equal(inbox.getSnapshot().phase, 'pick'); assert.ok(await transfers.read(id));
     assert.ok(inbox.beginCreation()); inbox.created(alpha); await settle(() => inbox.getSnapshot().phase === 'waiting');
@@ -91,16 +92,16 @@ test('new-session cancellation retains the share and an unrelated creation canno
 });
 
 test('only this window’s untouched pending share follows a confirmed original-source successor', async () => {
-    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage()); const id = await inbox.ingest(payload());
-    const from = { hubId: 'hub-alpha', sessionId: 'same-source-id', hostId: 'local', displayId: 'display-before' };
-    const to = { ...from, sessionId: 'returned-new-source', displayId: 'display-after' };
+    const transfers = new Transfers(), inbox = new WorkspaceShareInbox(transfers, storage(), scope); const id = await inbox.ingest(payload());
+    const from = alpha;
+    const to = { ...from, sessionId: 'returned-new-source' };
     await inbox.select(alpha);
-    await assert.rejects(inbox.retargetPending(from, { ...to, hubId: 'hub-beta' }), /unconfirmed Hub/);
-    const other = new WorkspaceShareInbox(transfers, storage('other-window')); await other.load(id);
+    await assert.rejects(inbox.retargetPending(from, { ...to, hostId: 'other-host' }), /unconfirmed source owner/);
+    const other = new WorkspaceShareInbox(transfers, storage('other-window'), scope); await other.load(id);
     assert.equal(await other.retargetPending(from, to), false);
     assert.equal(await inbox.retargetPending(from, to), true);
-    assert.deepEqual(inbox.getSnapshot().record?.hapiDshDelivery?.target, { kind: 'hapi', hubId: 'hub-alpha', sessionId: 'returned-new-source' });
-    let inserted = 0; inbox.register({ kind: 'hapi', hubId: to.hubId, sessionId: to.sessionId }, { ready: () => true, async insert() { inserted++; return { afterText: 'shared' }; } });
+    assert.deepEqual(inbox.getSnapshot().record?.hapiDshDelivery?.target, { kind: 'local-dsh', hostId: 'local', sessionId: 'returned-new-source' });
+    let inserted = 0; inbox.register(to, { ready: () => true, async insert() { inserted++; return { afterText: 'shared' }; } });
     await settle(() => inbox.getSnapshot().phase === 'inserted');
     assert.equal(await inbox.retargetPending(to, { ...to, sessionId: 'yet-another' }), false); assert.equal(inserted, 1);
     inbox.dispose(); other.dispose();
@@ -125,3 +126,26 @@ test('malformed, expired and over-limit shared payloads are rejected without del
     assert.throws(() => validateSharePayload({ ...payload(), files: [{ name: 'too-large', type: 'x', blob: oversized }] }), /50 MiB/u);
     assert.throws(() => validateSharePayload({ ...payload(), title: '', text: '', url: '', files: [] }), /no text/u);
 });
+
+test('a bound share cannot cross account scope or resume automatically after account replacement', async () => {
+    const transfers = new Transfers(), first = new WorkspaceShareInbox(transfers, storage(), scope)
+    const id = await first.ingest(payload()); await first.select(alpha)
+    const second = new WorkspaceShareInbox(transfers, storage('second'), { ...scope, accountId: 'another' })
+    await second.load(id)
+    assert.equal(second.getSnapshot().phase, 'error'); assert.match(second.getSnapshot().error!, /another authenticated account/)
+    assert.equal(second.getSnapshot().record, null)
+    first.setScope(undefined); assert.equal(first.getSnapshot().record, null)
+    assert.equal((await transfers.read(id))?.hapiDshDelivery?.status, 'ready')
+    first.dispose(); second.dispose()
+})
+
+test('historical unscoped hand-off content remains stored and cannot be replayed under an invented account', async () => {
+    const transfers = new Transfers(), id = await transfers.put(payload())
+    const original = transfers.rows.get(id)!
+    transfers.rows.set(id, { ...original, hapiDshDelivery: { target: { kind: 'hapi', hubId: 'old-hub', sessionId: 'old' }, status: 'ready', owner: 'window' } } as never)
+    const inbox = new WorkspaceShareInbox(transfers, storage(), scope)
+    await inbox.load(id)
+    assert.equal(inbox.getSnapshot().phase, 'error'); assert.match(inbox.getSnapshot().error!, /earlier hand-off format/)
+    assert.equal((await transfers.read(id))?.text, original.text)
+    inbox.dispose()
+})

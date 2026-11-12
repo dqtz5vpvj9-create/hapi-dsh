@@ -24,9 +24,10 @@ import { installSharedRightbar } from './shared-rightbar.tsx'
 import { installSourceWindowNavigation } from './source-window-navigation.tsx'
 import { bindPaneReading } from '../reading-view.ts'
 import { bindRemotePaneReading } from '../remote-reading.ts'
+import { bindSourceReadingCommits, type SourceReadingCommitListener } from '../source-reading-commit.ts'
 import { isSourceSessionId } from '../../remote/protocol.ts'
 import type { RemotePaneSession } from '../remote-reading-session.ts'
-import type { SourcePreparationReference, SourceViewportSession, SourceWindowViewport } from '../source-sessions.ts'
+import type { SourcePreparationReference, SourceViewportSession, SourceWindowViewport } from '../source-session-types.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface SlotMap {
@@ -330,7 +331,7 @@ export async function prepareCandidateViewport(target: HTMLElement, reference: S
             if (pages++ >= 12) return false
             const before = reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
             const session = reference.binding.session as SessionReference['binding']['session'] & SourceViewportSession
-            if (!await wait(session.loadViewportPage(pagePlan.next(port)))) return false
+            if (!await wait(session.loadViewportPage ? session.loadViewportPage(pagePlan.next(port)) : session.loadOlder())) return false
             // The loop's next frame supplies the second post-commit frame.
             if (!await frame()) return false
             const after = reference.binding.eventSource.getSnapshot().entries[0]?.event.seq
@@ -470,7 +471,7 @@ export interface SessionViewHandle {
     dispose(): Promise<void>
 }
 
-interface ViewLifetime { mounted: boolean; removed?: (() => void) | undefined }
+interface ViewLifetime { mounted: boolean; readingRetired?: boolean; stopReadingObservers?: (() => void) | undefined; removed?: (() => void) | undefined }
 
 interface Entry extends SessionViewMount {
     readonly key: number
@@ -517,9 +518,13 @@ function ChatViews({ renderSlot, SessionProvider }: ConversationViewsProps): Rea
 }
 
 /** Same public binding and phase inputs as the official embedded child chat. */
-function SessionContent({ sessionId, useSession, useConversation, useSessions, renderFactorySlot }: ContentProps): ReactNode {
+export function SessionContent({ sessionId, useSession, useConversation, useSessions, renderFactorySlot }: ContentProps): ReactNode {
     const activeTargets = useConversation(value => value.activeTargets.size > 0)
     const summaryBlank = useSessions(state => state.byId[sessionId]?.blank)
+    const sourceWorkspace = useSessions(state => {
+        const source = state.byId[sessionId]?.projectionValues?.hhpiSource
+        return isSourceSessionId(sessionId) && source?.id === sessionId && source.cwd.trim().length > 0
+    })
     // Subscribe only to shell phase. Streaming text, queue receipts and draft
     // edits have their own subscriptions below this factory occurrence.
     const phase = useSession(session => {
@@ -527,6 +532,9 @@ function SessionContent({ sessionId, useSession, useConversation, useSessions, r
         const blank = !active && !session.promptAttempted
         const parentPending = session.subagent?.address.mode === 'continuable' && session.subagent.parentAvailable === undefined
         if ((blank && session.openState === 'loading' && summaryBlank !== true) || parentPending) return 'settling'
+        // A native thread already owns its source cwd. The ordinary empty-session
+        // workspace picker cannot establish membership for this remote identity.
+        if (sourceWorkspace) return 'active'
         return blank && (session.openState === 'open' || summaryBlank === true) ? 'hero' : 'active'
     })
     return renderFactorySlot('conversation.content', {
@@ -573,13 +581,29 @@ function ViewFrame({ entry, children }: { entry: Entry; children: ReactNode }): 
 
 /** The pin caches both public faces; unchanged entries need no sibling render.
  * Session, locale, and slot subscriptions below remain independently active. */
-const SessionOccurrence = memo(function SessionOccurrence({ ctx, entry, candidate, SessionProvider, renderSlot }:
-    Pick<HostProps, 'SessionProvider' | 'renderSlot'> & { ctx: Context; entry: Entry; candidate?: PreparationEntry | undefined }): ReactNode {
+const SessionOccurrence = memo(function SessionOccurrence({ ctx, entry, candidate, SessionProvider, renderSlot, onReadCommit }:
+    Pick<HostProps, 'SessionProvider' | 'renderSlot'> & { ctx: Context; entry: Entry; candidate?: PreparationEntry | undefined; onReadCommit?: SourceReadingCommitListener | undefined }): ReactNode {
     useLayoutEffect(() => {
         if (entry.phase !== 'ready') return
         return registerVisibleWindowReader(ctx, entry.target, entry.reference, () =>
             entry.lifetime.mounted && entry.phase === 'ready' && entry.navigation.state.getSnapshot().visible)
     }, [ctx, entry.phase, entry.reference, entry.target, entry.navigation])
+    useLayoutEffect(() => {
+        if (entry.phase !== 'ready' || entry.lifetime.readingRetired) return
+        const stops: Array<() => void> = []
+        if (onReadCommit) stops.push(bindSourceReadingCommits(ctx, entry.target, entry.reference, entry.navigation,
+            () => entry.lifetime.mounted && !entry.lifetime.readingRetired, onReadCommit))
+        if (isSourceSessionId(entry.reference.sessionId)) {
+            const checkpoint = ctx.get('hhpiSessions')?.installReadingCheckpoint(entry.navigation.updates, entry.reference.binding,
+                () => resolveMountedChatForPane(entry.target))
+            if (checkpoint) stops.push(checkpoint)
+        }
+        if (!stops.length) return
+        let active = true
+        const stop = (): void => { if (!active) return; active = false; for (const dispose of stops) dispose() }
+        entry.lifetime.stopReadingObservers = stop
+        return () => { stop(); if (entry.lifetime.stopReadingObservers === stop) delete entry.lifetime.stopReadingObservers }
+    }, [ctx, entry.phase, entry.reference, entry.target, entry.navigation, onReadCommit])
     return <WorkspacePaneProvider value={entry.navigation}>
         <PreparationContext.Provider value={candidate}>
         <ViewBoundary onError={entry.onRenderError}>
@@ -603,7 +627,7 @@ const SessionOccurrence = memo(function SessionOccurrence({ ctx, entry, candidat
  * that Context's AppFrame once; portals inherit its public scope and slot hosts.
  * Closing a handle never releases a different view or terminates execution.
  */
-export function installSessionViewHost(ctx: Context): {
+export function installSessionViewHost(ctx: Context, options: { onReadCommit?: SourceReadingCommitListener } = {}): {
     mount(options: SessionViewMount): SessionViewHandle
     size(): number
     dispose(): void
@@ -629,7 +653,7 @@ export function installSessionViewHost(ctx: Context): {
         const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
         return <>{current.views.map(entry => createPortal(
             <SessionOccurrence ctx={ctx} entry={entry} candidate={current.candidates.get(entry.key)}
-                SessionProvider={SessionProvider} renderSlot={renderSlot}/>, entry.target, String(entry.key),
+                SessionProvider={SessionProvider} renderSlot={renderSlot} onReadCommit={options.onReadCommit}/>, entry.target, String(entry.key),
         ))}</>
     }
     const mountPreparation = (reference: SessionReference, owner: Entry, onError: () => void): WindowPreparationMount => {
@@ -701,7 +725,10 @@ export function installSessionViewHost(ctx: Context): {
                 const reference = ctx.sessions.openReadingView?.(options.reference, identity)
                 if (!reference) throw new Error('This Host has no independent official source reader.')
                 try {
-                    ;(reference.binding.session as RemotePaneSession).bindReadingCache(options.paneId)
+                    const intent = options.navigation.reading.getSnapshot()
+                    const target = intent?.sessionId === reference.sessionId && intent.target.kind === 'message' ? Number(intent.target.messageId) : undefined
+                    ;(reference.binding.session as RemotePaneSession).bindReadingCache(options.paneId,
+                        target !== undefined && Number.isSafeInteger(target) && target >= 0 ? { kind: 'around', seq: target } : { kind: 'latest' })
                     const reading = ctx.uiConversation.binding(reference.binding).readingView
                     if (!reading) throw new Error('The official Conversation did not install the Pane reading window.')
                     ;(reference.binding.session as RemotePaneSession).attach(reading)
@@ -718,7 +745,11 @@ export function installSessionViewHost(ctx: Context): {
                 ? bindRemotePaneReading(ctx, options.target, options.reference, options.navigation)
                 : bindPaneReading(ctx, options.target, options.reference, options.navigation)
             let readingStopped = false
-            const uninitialHistory = (): void => { if (!readingStopped) { readingStopped = true; stopReading() } }
+            const uninitialHistory = (): void => {
+                entry.lifetime.readingRetired = true
+                entry.lifetime.stopReadingObservers?.(); delete entry.lifetime.stopReadingObservers
+                if (!readingStopped) { readingStopped = true; stopReading() }
+            }
             initialHistory.set(identity, uninitialHistory)
             let live = true
             const preparationAbort = new AbortController()

@@ -56,11 +56,20 @@ if (args[0] === 'plugin' && args.includes('add')) {
   log({ kind: 'plugin-add', profile, name, target })
   if (fail === 'plugin') { console.error('fake dsh: injected plugin failure'); process.exit(3) }
   const pkg = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+  const plainProvider = name === 'hapi-dsh-session-provider'
+  const unchanged = pkg.dependencies?.[name] === spec
   pkg.dependencies = { ...(pkg.dependencies ?? {}), [name]: spec }
-  pkg.dsh = { ...(pkg.dsh ?? {}), profile: { ...(pkg.dsh?.profile ?? {}), bundles: [...new Set([...(pkg.dsh?.profile?.bundles ?? []), name])] } }
+  if (!unchanged && !plainProvider) pkg.dsh = { ...(pkg.dsh ?? {}), profile: { ...(pkg.dsh?.profile ?? {}), bundles: [...new Set([...(pkg.dsh?.profile?.bundles ?? []), name])] } }
   writeJson(join(profileDir, 'package.json'), pkg)
-  const releaseRoot = target.endsWith('/package/dist/runner')
-    ? target.slice(0, -'/package/dist/runner'.length)
+  if (plainProvider) {
+    const link = join(profileDir, 'node_modules', name)
+    mkdirSync(dirname(link), { recursive: true })
+    rmSync(link, { recursive: true, force: true })
+    symlinkSync(target, link, 'dir')
+    process.exit(0)
+  }
+  const releaseRoot = target.endsWith('/runtime/node_modules/hapi-dsh/dist/runner')
+    ? target.slice(0, -'/runtime/node_modules/hapi-dsh/dist/runner'.length)
     : target.endsWith('/runtime/node_modules/hapi-dsh')
       ? target.slice(0, -'/runtime/node_modules/hapi-dsh'.length)
       : target.endsWith('/package') ? dirname(target) : undefined
@@ -95,7 +104,7 @@ if (args.includes('--dump-config')) {
   const path = join(profileDir, 'package.json')
   if (existsSync(path)) {
     const pkg = JSON.parse(readFileSync(path, 'utf8'))
-    for (const dependency of Object.keys(pkg.dependencies ?? {})) console.log('- id: ' + dependency)
+    for (const bundle of pkg.dsh?.profile?.bundles ?? []) console.log('- id: ' + bundle)
   }
   process.exit(0)
 }
@@ -185,6 +194,11 @@ export async function createHarness(): Promise<Harness> {
         await write('node_modules/@deepseek-ai/dsh/package.json', { name: '@deepseek-ai/dsh', version: manifest.release.upstreamVersion, bin: { dsh: 'lib/bin.js' } })
         // The profile links this runtime copy of the plugin.
         await write('node_modules/hapi-dsh/package.json', { name: 'hapi-dsh', version: '0.1.2' })
+        await write('node_modules/hapi-dsh/dist/runner/package.json', { name: 'hapi-dsh-runner', type: 'module', main: './index.js' })
+        await writeFile(join(directory, 'node_modules/hapi-dsh/dist/runner/index.js'), 'export {};\n')
+        await write('node_modules/hapi-dsh/dist/session-provider/package.json', { name: 'hapi-dsh-session-provider', type: 'module', main: './index.js', exports: { '.': './index.js', './client': './client.js', './package.json': './package.json' }, dsh: { client: { platform: 'web' } } })
+        await writeFile(join(directory, 'node_modules/hapi-dsh/dist/session-provider/index.js'), 'export {};\n')
+        await writeFile(join(directory, 'node_modules/hapi-dsh/dist/session-provider/client.js'), 'export {};\n')
         const packages = []
         for (const item of manifest.payload.dshExt) {
             await write(`node_modules/${item.name}/package.json`, { name: item.name, version: fail === 'health' ? '0.2.2-rc.1' : item.version })

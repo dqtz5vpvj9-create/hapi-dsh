@@ -1,0 +1,3256 @@
+{
+  "schema_version": 1,
+  "planning_only": true,
+  "date": "2026-11-07",
+  "baseline_commit": "81620088ed78bf0c34a71a70e6067ed9de8c5cb8",
+  "product_scope": "Remove HAPI compatibility sources; preserve HHPI v1; deliver M0-M8/A1-P4/R1-R10, bounded reopen windows and profile-guided delivery efficiency; no paired RSI experiments.",
+  "concurrency": {
+    "total_slots": 4,
+    "coordinator_slots": 1,
+    "child_slots": 3,
+    "policy": "Assign a complete user path to one child, including integration; root waits for completion/conflict events, not progress polling. Four available slots are a ceiling, not a target.",
+    "worktrees": "not authorized by this task"
+  },
+  "node_semantics": {
+    "done": "Declared output and scoped verification accepted; finish gates satisfied; component completion is not integrated product acceptance.",
+    "dependencies": "Hard output dependencies only. Shared writes and shared environments are resource constraints, not invented functional edges.",
+    "new_files": "Proposed locations, not implemented capabilities; adjust through coordinator and update ownership before writing.",
+    "manifest": "X0 resolves exact retirement files; E1 resolves conditional extension files. Unresolved manifests forbid those writes; never authorize directory-wide deletion.",
+    "review": "Each cross-layer slice saves an independent first pass from original goals, baseline and raw results before comparing implementation coverage. V3 reconciles those reviews and new findings.",
+    "verification": "Each coding task includes small local checks. Before a check, reserve stable reads of relevant source/dependencies; full checks/release reserve a stable checkout against every product writer.",
+    "requirements": "The 64 mapped requirements are a baseline, not an exhaustive oracle; goal-required discoveries extend the same record and affected nodes.",
+    "integration": "I nodes require lifecycle/adjacent-feature results and review of critical assumptions; compiler, component and visible-test success alone cannot close user delivery."
+  },
+  "gates": {
+    "G_EXT": {
+      "status": "unverified",
+      "scope": [
+        "T1"
+      ],
+      "condition": "E1 confirms supported public composition, or the exact needed DSH package extension is already explicitly approved; otherwise only the upstream-writing portion waits."
+    },
+    "G_DEVICE": {
+      "status": "unverified",
+      "scope": [
+        "V1",
+        "V2"
+      ],
+      "condition": "Actual supported phone/browser/IME and agent control are available; viewport simulation is insufficient."
+    },
+    "G_PUSH": {
+      "status": "unverified",
+      "scope": [
+        "V2"
+      ],
+      "condition": "Authorized isolated push environment, subscription and source event are available; no credentials in this plan."
+    },
+    "G_DEVICE_BUDGET": {
+      "status": "unverified",
+      "scope": [
+        "V1",
+        "V2"
+      ],
+      "condition": "The device checks proposed in main plan section 8 have an applicable recorded rule/budget; reuse any existing authorization."
+    },
+    "G_OWNER": {
+      "status": "per-source-unverified",
+      "scope": [
+        "X1"
+      ],
+      "condition": "Old task writer admitted work and requests are reconciled and supported handoff or natural completion permits one new writer; conversion development can proceed earlier."
+    },
+    "G_PTY_EXIT": {
+      "status": "per-terminal-unverified",
+      "scope": [
+        "X3"
+      ],
+      "condition": "Exact supported attach exists, or old terminal has ended or been explicitly handled; never kill or replace to satisfy migration."
+    }
+  },
+  "nodes": [
+    {
+      "id": "B0",
+      "title": "固定基线与任务写入归属",
+      "group": "准备",
+      "kind": "preparation",
+      "status": "planned",
+      "depends_on": [],
+      "executor": "coordinator",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "核对最新用户目标、当前 diff、既有批准与公共文件负责人；先保存生命周期/组合行为及关键假设，再对照旧清单，复用现有记录。",
+      "verification": "用户决定、验证事实和设计假设分开；新增目标内必要行为有归属，不能用原 64 条映射宣称完整。"
+    },
+    {
+      "id": "E1",
+      "title": "确认 PTY 公开组合与扩展边界",
+      "group": "准备",
+      "kind": "preparation",
+      "status": "planned",
+      "depends_on": [],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [
+        "/mnt/cache/src/dsh-ext/packages/api/terminal-controller/src/index.ts",
+        "/mnt/cache/src/dsh-ext/packages/api/terminal-controller/src/types.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "核对固定 DSH 版本的 owner/context 工厂；明确现有公开组合可用，或列出所需包与最小扩展及已有批准。",
+      "verification": "明确 T1 的扩展条件；未批准不得改上游源码。"
+    },
+    {
+      "id": "E2",
+      "title": "准备手机与后台通知验证条件",
+      "group": "准备",
+      "kind": "preparation",
+      "status": "planned",
+      "depends_on": [],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "发现实际设备、浏览器、IME、隔离账号/会话、推送环境及现有设备验收规则；准备不等于通过。",
+      "verification": "G_DEVICE、G_PUSH、G_DEVICE_BUDGET 分别记录有据结果；无条件保持待处理。"
+    },
+    {
+      "id": "X0",
+      "title": "精确盘点迁移对象和退役文件",
+      "group": "准备",
+      "kind": "preparation",
+      "status": "planned",
+      "depends_on": [
+        "B0"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/workspace/legacy.ts",
+        "src/remote/config.ts",
+        "src/cli/config.ts",
+        "package.json"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "产出 R1–R10 的实际引用/注册/产物与数据去向清单，按会话、文件、PTY、应用服务分四份退役 manifest。",
+      "verification": "每份列确切文件和保留消费者；不按目录名删除，不写私密数据。"
+    },
+    {
+      "id": "C1",
+      "title": "来源能力与绑定契约",
+      "group": "契约",
+      "kind": "contract",
+      "status": "planned",
+      "depends_on": [
+        "B0"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/shared/source-operation-policy.ts"
+      ],
+      "new_files": [
+        "src/shared/source-capability.ts"
+      ],
+      "read_files": [
+        "src/remote/protocol.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "固定本机 DSH、federation、Codex 的 capability/binding/provider 输入输出及 unavailable 原因。",
+      "verification": "类型与最小契约检查；HHPI v1 不变。 记录本契约关键假设及可推翻它的组合场景。"
+    },
+    {
+      "id": "C2",
+      "title": "源工作区与文件资源契约",
+      "group": "契约",
+      "kind": "contract",
+      "status": "planned",
+      "depends_on": [
+        "B0"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/workbench-types.ts",
+        "src/shared/source-access.ts"
+      ],
+      "new_files": [
+        "src/workspace/service-types.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "确定源机器、授权、文件版本、流式上传和 PTY owner 的内部服务边界；禁止落回中央 Host。",
+      "verification": "只读默认契约保留；不新增 HHPI v1 字段。 记录本契约关键假设及可推翻它的组合场景。"
+    },
+    {
+      "id": "C3",
+      "title": "账号、通知与阅读状态契约",
+      "group": "契约",
+      "kind": "contract",
+      "status": "planned",
+      "depends_on": [
+        "B0"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/notification-types.ts"
+      ],
+      "new_files": [
+        "src/workspace/app-service-types.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "确定应用服务的账号/设备/源身份、事件位置、阅读意图、订阅及分享范围。",
+      "verification": "跨账号隔离与旧请求身份的契约可检查。 记录本契约关键假设及可推翻它的组合场景。"
+    },
+    {
+      "id": "C4",
+      "title": "持久操作及结果关联契约",
+      "group": "契约",
+      "kind": "contract",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "src/client/remote-operation-contracts.ts"
+      ],
+      "read_files": [
+        "src/client/remote-operation-ledger.ts",
+        "src/remote/operation-ledger.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "明确 settings/fork/plan/queue 的意图、认领、receipt 与源结果关联；文件保存、PTY 不共用消息重发。",
+      "verification": "使用既有事务与主键；接受、源确认、结果分别建模。 记录本契约关键假设及可推翻它的组合场景。"
+    },
+    {
+      "id": "D1",
+      "title": "实现能力解析与目录共享",
+      "group": "基础",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/native-action-api.ts",
+        "src/client/composer-picker/data.ts",
+        "src/remote/codex-methods.ts"
+      ],
+      "new_files": [
+        "src/client/source-capabilities.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "按来源和代际共享能力/模型/技能目录，原生入口选择同一 provider。",
+      "verification": "菜单不恢复执行；能力、在线、授权分别表达。"
+    },
+    {
+      "id": "D2",
+      "title": "扩展操作账本及源结果持久化",
+      "group": "基础",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/remote-operation-ledger.ts",
+        "src/client/remote-storage.ts",
+        "src/client/remote-outbox.ts",
+        "src/remote/operation-ledger.ts",
+        "src/remote/codex-adapter.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "先接已有操作，再支持新设置、分支和计划动作；丢回执查询原 ID，保留不明结果。",
+      "verification": "多 Pane/重载/撤销/源已执行但回执丢失；不重建线程或盲目重发。"
+    },
+    {
+      "id": "D3",
+      "title": "接通源工作区执行与授权环境",
+      "group": "基础",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/remote/source-registry.ts",
+        "src/remote/gateway.ts"
+      ],
+      "new_files": [
+        "src/workspace/source-services.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "在确切机器组合源工作区服务；复用远端访问授权及执行环境，不创建替身 Agent。",
+      "verification": "同名路径跨机器不混淆；服务端拒绝越权及 Host 回退。"
+    },
+    {
+      "id": "I0",
+      "title": "稳定共享组合入口",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts",
+        "src/client/ui.tsx",
+        "src/client/source-session.tsx",
+        "src/hub/workspace-shell.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "先固定共享装配约定与现有任务 facade；资源和应用服务各自在 C2/C3 就绪后接线，不等全部契约或业务实现。",
+      "verification": "未接通能力不冒报；默认原生 DSH 路径仍可用。"
+    },
+    {
+      "id": "A1",
+      "title": "新建与分支完整交互",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/new-session.tsx",
+        "src/client/source-creation.ts",
+        "src/client/native-fork-action.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "从入口收集来源/目录，拿确切新目标后打开，返回父会话保留草稿；提供待确认恢复入口。",
+      "verification": "契约 fixture 可用于局部检查，真实原生关联由 I1 关闭。"
+    },
+    {
+      "id": "A2",
+      "title": "设置、命令和候选统一处理",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/remote-codex-actions.tsx",
+        "src/client/remote-codex-controls.tsx",
+        "src/client/remote-input-triggers.ts",
+        "src/client/composer-picker/index.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "菜单、斜杠、模型/权限、技能和插件引用使用同一动作语义与绑定。",
+      "verification": "取消菜单保留光标和草稿；来源切换后迟到结果不串对象。"
+    },
+    {
+      "id": "A3",
+      "title": "队列、计划与 Goal 操作",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/source-queue.tsx",
+        "src/client/source-queued-edit.tsx",
+        "src/client/source-queued-edit-state.ts",
+        "src/client/source-plan.tsx",
+        "src/client/native-plan.tsx",
+        "src/client/native-plan-state.ts",
+        "src/client/composer-goal.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "接完整队列编辑/取消、计划执行/继续规划、Goal 与 Todo 各自语义。",
+      "verification": "开始与编辑竞争、原 ID 恢复、不可用原因及相邻入口一致。"
+    },
+    {
+      "id": "A4",
+      "title": "审批和结构化问题呈现",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/remote-controls.tsx",
+        "src/client/remote-native-question.tsx",
+        "src/client/remote-elicitation.tsx",
+        "src/client/native-tool-admission.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "请求卡展示人可判断的内容与动作，技术详情收起，保留精确 request/turn。",
+      "verification": "多待处理、旧卡、自由回答、源结算和不支持处理器不误批准。"
+    },
+    {
+      "id": "A5",
+      "title": "过程、正文和富结果分层",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/generated-media-display.tsx",
+        "src/client/tool-progress-display.tsx",
+        "src/client/live-disclosure.ts",
+        "src/remote/codex-presentation.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "保留当前过程展开、历史收起和手动意图；正文、计划、图片正常可见，普通工具失败留在原生详情；任务阻塞和用户操作失败提供可执行的反馈。",
+      "verification": "运行→正文→新过程→图片/计划→完成；受控源说明按既有指令入口处理。"
+    },
+    {
+      "id": "A6",
+      "title": "来源搜索及父子任务导航",
+      "group": "任务",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/sidebar-search-query.ts",
+        "src/client/sidebar-search-controls.tsx",
+        "src/client/source-history.tsx",
+        "src/workspace/sidebar-tree.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "接真实搜索、已有分页、父子任务历史/终态和精确返回。",
+      "verification": "不按标题猜目标，不将全量 catalog 称为 wire 分页。"
+    },
+    {
+      "id": "F1",
+      "title": "独立源文件读写与版本保护",
+      "group": "文件",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/hapi/workspace-files.ts"
+      ],
+      "new_files": [
+        "src/workspace/source-files.ts"
+      ],
+      "read_files": [
+        "src/hapi/workbench.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "提取通用源文件服务，涵盖目录、搜索、读写、管理动作、版本/冲突与授权。",
+      "verification": "真实写入在隔离源工作区；读后写不冒充任意外部进程原子 CAS。"
+    },
+    {
+      "id": "F2",
+      "title": "文件浏览、管理和返回入口",
+      "group": "文件",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/source-path-actions.tsx",
+        "src/client/source-file-actions.tsx",
+        "src/client/source-file-management.ts",
+        "src/client/source-file-mutation-journal.ts",
+        "src/client/source-file-edit.ts",
+        "src/client/native-document-journal.ts",
+        "src/client/workbench-drafts.ts"
+      ],
+      "new_files": [
+        "src/client/source-workspace-provider.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "从树、搜索、Diff 进入原对象，管理操作逐项反馈，引用后回到原草稿。",
+      "verification": "错误目标、部分成功、取消/返回、只读授权和迟到读取。"
+    },
+    {
+      "id": "F3",
+      "title": "编辑保存与脏稿恢复",
+      "group": "文件",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/source-file-edit.ts",
+        "src/client/native-document-journal.ts",
+        "src/client/workbench-drafts.ts",
+        "src/client/source-file-actions.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "编辑、保存、冲突、外部变更和多编辑视图保留各自脏稿及光标。",
+      "verification": "保存期间继续输入、丢回执、刷新恢复，不覆盖新输入。"
+    },
+    {
+      "id": "F4",
+      "title": "附件本机准备与二进制传输",
+      "group": "文件",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/remote-file-upload.ts",
+        "src/client/source-image-preparation.ts",
+        "src/client/composer-attachment-recovery.tsx",
+        "src/remote/codex-uploads.ts",
+        "src/remote/codex-attachments.ts"
+      ],
+      "new_files": [
+        "src/workspace/source-uploads.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "保持选图即启动上传；内部先本机处理再传输，普通文件也可进度/取消/恢复。",
+      "verification": "常见照片、长图、源码和文档；移除与迟到完成不串附件。"
+    },
+    {
+      "id": "F5",
+      "title": "媒体预览、下载与引用",
+      "group": "文件",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/artifact-preview.tsx",
+        "src/client/artifact-content.ts",
+        "src/client/artifact-bodies.ts",
+        "src/workspace/artifacts.ts",
+        "src/workspace/documents.ts",
+        "src/client/source-markdown.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "声明支持的媒体/文档可读、可播放或取得原件；相对链接、选区引用与返回完整。",
+      "verification": "格式失败仍能取原件；不自动发送；布局与实际媒体另给证据。"
+    },
+    {
+      "id": "T1",
+      "title": "源 owner 的公开 PTY 组合",
+      "group": "终端",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2",
+        "E1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/hapi/terminal-controller.ts"
+      ],
+      "new_files": [
+        "src/workspace/source-terminal-service.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [
+        "G_EXT"
+      ],
+      "finish_gates": [],
+      "retirement_manifests": [
+        "EXT_PTY_IF_APPROVED"
+      ],
+      "output": "接 DSH 真 PTY 生命周期、保留、恢复、ack 与单输入控制权；只在确需时修改已批准的公开工厂。",
+      "verification": "不伪造 Agent.ctx；不改 terminal wire；无原进程时明确结束。"
+    },
+    {
+      "id": "T2",
+      "title": "终端视图与手机控制入口",
+      "group": "终端",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/source-terminal-actions.tsx",
+        "src/client/source-terminal/view.tsx",
+        "src/client/source-terminal/input.ts",
+        "src/client/source-terminal/TouchBar.tsx",
+        "src/client/source-terminal/clipboard.ts",
+        "src/client/source-terminal/styles.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "复用原生终端 UI，处理 attach/read-only/断线、控制键、粘贴、resize 和返回。",
+      "verification": "局部输入/控制检查；原进程恢复由 I3、真机键盘由 V1 关闭。"
+    },
+    {
+      "id": "N1",
+      "title": "账号隔离的订阅与投递服务",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C3"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "src/workspace/notification-service.ts",
+        "src/workspace/notification-store.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "实现自有 Host 订阅保存/撤销、投递状态及渠道重试；密钥只在服务端。",
+      "verification": "账号切换、过期、撤销与服务重启；不得重发 Agent 操作。"
+    },
+    {
+      "id": "N2",
+      "title": "无 Pane 时的轻量源事件观察",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C3"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "src/workspace/notification-events.ts"
+      ],
+      "read_files": [
+        "src/remote/event-index.ts",
+        "src/remote/gateway.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "消费已授权源事件，按身份维护有界游标和缺口恢复；不保留完整 transcript/DOM。",
+      "verification": "初始基线/重连不重推旧完成，来源撤销终止观察。"
+    },
+    {
+      "id": "N3",
+      "title": "通知设置、worker 与精确跳转",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/source-notifications/index.tsx",
+        "src/client/source-notifications/runtime.ts",
+        "src/client/source-notifications/capability.ts",
+        "src/notifications/worker.ts",
+        "src/workspace/notifications.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "去除 legacyHapi 门控，登录后继续原通知目标，旧请求不绑定新请求。",
+      "verification": "投递、展示、已读分别表达；拒绝权限与重订阅可继续。"
+    },
+    {
+      "id": "N4",
+      "title": "跨设备已读与手动未读",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/workspace/read-sync.ts",
+        "src/workspace/sidebar-state.ts",
+        "src/client/sidebar-row-state.tsx"
+      ],
+      "new_files": [
+        "src/workspace/read-state-service.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "持久化账号/源会话阅读意图，接原生读者提交；迟到快照不撤销新意图。",
+      "verification": "打开列表/后台收到不自动已读；跨设备冲突收敛。"
+    },
+    {
+      "id": "N5",
+      "title": "独立分享、导出与接收",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "C2",
+        "C3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/share-transfer.ts",
+        "src/client/share-receiver.tsx",
+        "src/client/share-inbox.tsx",
+        "src/client/source-export.tsx",
+        "src/client/turn-share.tsx",
+        "src/notifications/share-worker.ts"
+      ],
+      "new_files": [
+        "src/workspace/share-service.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "通用分享与富内容导出脱离 Hub，资源范围授权和认证后返回完整。",
+      "verification": "引用实际资源可读；失效链接、跨账号和返回原草稿。"
+    },
+    {
+      "id": "N6",
+      "title": "安装更新与多类草稿 checkpoint",
+      "group": "应用",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C3",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/update-preparation.ts",
+        "src/client/composer-autosave.ts",
+        "src/client/remote-reading-memory.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "更新前统一调用消息/附件/文档/位置 checkpoint，失败留在当前版本，不新建执行。",
+      "verification": "局部失败与延迟；真实对象接线由 I5 验证。"
+    },
+    {
+      "id": "H1",
+      "title": "核对重开窗口缺口与阅读基线",
+      "group": "连续性",
+      "kind": "investigation",
+      "status": "planned",
+      "depends_on": [
+        "B0"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [
+        "src/client/remote-reading.ts",
+        "src/client/remote-session-state.ts",
+        "src/client/remote-recovery.ts",
+        "src/client/remote-history.ts",
+        "src/client/remote-reading-session.ts",
+        "src/client/remote-reading-cache.ts",
+        "src/remote/event-index.ts"
+      ],
+      "exclusive_resources": [
+        "browser",
+        "performance",
+        "installed-runtime"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "复核已定位的旧缓存/全局追赶耦合；固定视口和 N，比较 Δ=0/1000/10000 的默认 latest、显式 around、重放可用/过期路径。",
+      "verification": "分别记录首屏读取与独立同步、请求量/字节/驻留、就绪时间及当前 80 ms 结果；已有证据可复用，不从零调查。"
+    },
+    {
+      "id": "H2",
+      "title": "分离目标窗口读取与同步追赶",
+      "group": "连续性",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1",
+        "H1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/remote-reading.ts",
+        "src/client/remote-reading-owner.ts",
+        "src/client/remote-reading-session.ts",
+        "src/client/remote-reading-cache.ts",
+        "src/client/remote-session-state.ts",
+        "src/client/remote-recovery.ts",
+        "src/client/surface/history-retention.ts",
+        "src/client/remote-history.ts",
+        "tests/client-source-reading.test.ts",
+        "tests/client-history-retention.test.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "默认重开直接 latest 取 N 条；显式继续旧位置/搜索走 around；修复缓存尾部事实，窗口就绪不等待全量正文追赶，保留版本/代际/多读者和写入对账。",
+      "verification": "覆盖 Δ/N、冷暖缓存、重放过期、双 Pane/修订/pending 写入；首屏与驻留受窗口预算约束，后台量单列；保留连续阅读及相关故障保护。"
+    },
+    {
+      "id": "H3",
+      "title": "导航、紧凑输入与次级页面修复",
+      "group": "连续性",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/controller.ts",
+        "src/client/menus.ts",
+        "src/client/compact-composer.tsx",
+        "src/client/compact-composer-styles.ts",
+        "src/workspace/viewport.ts",
+        "src/client/pane-navigation.ts",
+        "src/client/appearance/preferences.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "核查 Pane/返回、长按、紧凑输入和通用设置；修明确缺陷，不再重做编辑器。",
+      "verification": "真实菜单取消/返回/长草稿/窄屏；真机结论由 V1 取得。"
+    },
+    {
+      "id": "L1",
+      "title": "离线迁移公共读取与恢复包",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "X0",
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "scripts/migrations/hapi-offline/common.ts",
+        "scripts/migrations/hapi-offline/index.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "实现只读输入快照、精确身份索引及离线恢复包基础；按对象交接，不装入产品运行时。",
+      "verification": "重复运行、中途失败、无映射内容可访问；禁止按标题猜身份。"
+    },
+    {
+      "id": "L2",
+      "title": "原生运行时精确别名解析",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "C1"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "src/workspace/source-aliases.ts"
+      ],
+      "read_files": [
+        "src/client/source-session-resolver.ts",
+        "src/workspace/legacy.ts"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "实现仅消费当前格式和精确本地别名的解析；别名不替代来源授权。",
+      "verification": "旧链接能到确切原目标；未知映射保留内容，不访问 Hub。"
+    },
+    {
+      "id": "I1",
+      "title": "接通新建与分支",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "A1"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts",
+        "src/client/ui.tsx",
+        "src/client/source-session.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "正常入口创建或分支后进入确切原生线程，父草稿保留，未知结果可恢复。",
+      "verification": "三条来源；确切源关联、原生首次提交、丢回执和返回；fixture 不关闭真实接通。"
+    },
+    {
+      "id": "I2",
+      "title": "接通文件浏览、管理与编辑",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "D3",
+        "F1",
+        "F2",
+        "F3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/runner/index.ts",
+        "src/hub/workspace-shell.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "组合源文件服务、浏览管理页面与编辑器；正常入口保存并从正确源读回。",
+      "verification": "两台同名路径源；创建/改名等管理动作、保存冲突、刷新脏稿及返回。"
+    },
+    {
+      "id": "I3",
+      "title": "接通独立可靠终端",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D3",
+        "T1",
+        "T2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/runner/index.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "注册真实 PTY provider 与视图；此节点不依赖文件编辑完成。",
+      "verification": "源 owner 存活时同进程恢复、不重放按键；关闭 Pane 不杀进程；显式关闭只结束原终端。"
+    },
+    {
+      "id": "I4",
+      "title": "接通无 Pane 的后台通知",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D3",
+        "N1",
+        "N2",
+        "N3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/hub/workspace-shell.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "无目标 Pane 时由 Host 观察授权源，订阅/投递/认证后返回接通；不等待文件编辑。",
+      "verification": "重连、撤销、旧请求和账号隔离；实际后台投递由 V2 关闭。"
+    },
+    {
+      "id": "I5",
+      "title": "接通分享和更新恢复",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D2",
+        "I11",
+        "I12",
+        "I4",
+        "I13",
+        "N5",
+        "N6"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/hub/workspace-shell.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "接真实资源授权、分享接收和所有 checkpoint 提供者，解除安装/更新门控。",
+      "verification": "真实消息/附件/文档/阅读位置更新恢复；分享资源跨账号限制。"
+    },
+    {
+      "id": "I6",
+      "title": "接通重开定位与连续阅读",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "H2",
+        "H3",
+        "I10",
+        "I12"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition",
+        "browser",
+        "performance",
+        "installed-runtime"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "接通 latest/继续旧位置/搜索与通知目标，核对两个 Pane、媒体和导航；完整窗口可读与同步对账分别结算。",
+      "verification": "复用 H2 组合回归，在既有预算确认重开目标及六段上翻/锚点/图片/帧间隔；独立首轮审查不得先沿用实现者清单。"
+    },
+    {
+      "id": "X1",
+      "title": "会话、owner、队列和草稿转移",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "L1",
+        "L2",
+        "I1",
+        "I7",
+        "I8",
+        "I9",
+        "I10"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "scripts/migrations/hapi-offline/sessions.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [
+        "G_OWNER"
+      ],
+      "retirement_manifests": [],
+      "output": "实现并演练精确会话/队列转换；按来源结算旧写入 owner，未知结果留待确认，随后切换唯一可写路径。",
+      "verification": "隔离升级快照可重复恢复；实际旧 owner 未退出时不得关闭该来源迁移。"
+    },
+    {
+      "id": "X2",
+      "title": "文件、附件和编辑草稿转移",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "L1",
+        "I2",
+        "I11",
+        "I12"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "scripts/migrations/hapi-offline/files.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "转换真实二进制对象、receipt、文档脏稿及冲突基线；未映射原件保留离线可访问副本。",
+      "verification": "刷新、部分失败、缺附件、重复转换；不能只迁 metadata。"
+    },
+    {
+      "id": "X3",
+      "title": "旧 PTY 退出与输出保留",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "L1",
+        "I3"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "scripts/migrations/hapi-offline/terminals.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [
+        "G_PTY_EXIT"
+      ],
+      "retirement_manifests": [],
+      "output": "盘点旧 owner/进程，只有确切受支持 attach 才复用；否则保留输出并等待有据的退出条件。",
+      "verification": "不创建新 shell 冒充迁移，不强停无关进程。"
+    },
+    {
+      "id": "X4",
+      "title": "布局、已读、订阅和应用设置转移",
+      "group": "迁移",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "L1",
+        "L2",
+        "I4",
+        "I13",
+        "I5"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [
+        "scripts/migrations/hapi-offline/application.ts"
+      ],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "转换布局、阅读与手动未读；按 origin/key/账号条件重新绑定订阅，保留通知选择。",
+      "verification": "旧账号隔离、旧完成不批量推送、无法精确定位时保留旧信息。"
+    },
+    {
+      "id": "R1",
+      "title": "退役会话、owner 桥和旧投影",
+      "group": "退役",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "X1",
+        "I6"
+      ],
+      "executor": "coordinator",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/remote/service.ts",
+        "src/remote/config.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [
+        "SESSION"
+      ],
+      "output": "按 SESSION manifest 提取仍有效 helper 后删除旧 owner 桥、伪会话、投影与管理 RPC；同步解除引用。",
+      "verification": "R2/R3/R4 无生产可达路径；普通 DSH/federation/Codex 行为仍在。"
+    },
+    {
+      "id": "R2",
+      "title": "退役 HAPI 文件与 SessionTerminal",
+      "group": "退役",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "X2",
+        "X3"
+      ],
+      "executor": "coordinator",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/shared/source-access.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [
+        "RESOURCE"
+      ],
+      "output": "按 RESOURCE manifest 删除旧文件/上传/终端后端及 slots；保留通用资源保护与 Codex 自身图片缓存升级。",
+      "verification": "R5/R6 退出，原件、草稿、原生 PTY 仍可用。"
+    },
+    {
+      "id": "R3",
+      "title": "退役 Hub 应用服务和在线迁移",
+      "group": "退役",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "X1",
+        "X2",
+        "X4"
+      ],
+      "executor": "coordinator",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/hub/workspace-shell.ts",
+        "src/client/source-session-resolver.ts",
+        "src/client/persistence.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [
+        "APPLICATION"
+      ],
+      "output": "按 APPLICATION manifest 删除 Hub 通知/read-sync/分享及在线旧格式解析，装入精确别名读者。",
+      "verification": "R7/R9 退出；迁移工具不装入生产包，无启动时 Hub 扫描。"
+    },
+    {
+      "id": "R4",
+      "title": "移除 HAPI 专属入口",
+      "group": "退役",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "X1",
+        "X3",
+        "X4"
+      ],
+      "executor": "coordinator",
+      "write_files": [
+        "src/client/index.ts",
+        "src/client/ui.tsx",
+        "src/client/menus.ts",
+        "src/client/deferred-panels.tsx"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [
+        "ENTRY"
+      ],
+      "output": "按 ENTRY manifest 删除 Hub 管理/备份、Companion、专属凭据语音入口；保留通用设置/导出/本地语音。",
+      "verification": "R8 退出，旧链接有明确恢复路径；普通语音、设置取消和返回仍有效。"
+    },
+    {
+      "id": "R0",
+      "title": "关闭组合根、配置与生产打包",
+      "group": "退役",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "R1",
+        "R2",
+        "R3",
+        "R4"
+      ],
+      "executor": "coordinator",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/cli/config.ts",
+        "src/remote/config.ts",
+        "src/remote/service.ts",
+        "src/remote/gateway.ts",
+        "src/client-api.ts",
+        "package.json",
+        "package-lock.json",
+        "scripts/build.mjs",
+        "scripts/build-client.mjs"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition",
+        "dependencies"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "删除 config.hapi 和 HAPI 专属依赖/export/注入/安装路径；v1 legacyHapi 固定 false，保留兼容字段定义。",
+      "verification": "R1/R10 关闭；按实际导入/产物核对，不能靠字符串计数或改名；保留许可证及有效通用测试。"
+    },
+    {
+      "id": "O1",
+      "title": "同步安装、定位、许可和运行说明",
+      "group": "交付",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "R0"
+      ],
+      "executor": "any",
+      "write_files": [
+        "README.md",
+        "QUICKSTART.md",
+        "HANDOFF.md",
+        "AGENTS.md",
+        "docs/feature-parity.md",
+        "docs/source-view-architecture.md"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "更新三条来源、独立服务、配置迁移、版本、通知/设备支持与回退说明；记录复用许可证。",
+      "verification": "已有批准无需重新索取；新包扩展依赖和原生权限说明准确。"
+    },
+    {
+      "id": "V0",
+      "title": "无 HAPI 新装与升级闭环",
+      "group": "交付",
+      "kind": "acceptance",
+      "status": "planned",
+      "depends_on": [
+        "R0",
+        "I5",
+        "I6",
+        "X1",
+        "X2",
+        "X3",
+        "X4"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "installation",
+        "stable-checkout"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "用隔离新装及升级快照走原生工作台，核对运行注册和网络访问无 Hub 依赖。",
+      "verification": "复用安装/进程内检查；三条路径与用户数据保护，输出对应版本和未完成项。"
+    },
+    {
+      "id": "V1",
+      "title": "实际手机键盘与终端验收",
+      "group": "交付",
+      "kind": "acceptance",
+      "status": "planned",
+      "depends_on": [
+        "E2",
+        "I1",
+        "I7",
+        "I2",
+        "I11",
+        "I3",
+        "H3"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "device",
+        "installed-runtime"
+      ],
+      "start_gates": [],
+      "finish_gates": [
+        "G_DEVICE",
+        "G_DEVICE_BUDGET"
+      ],
+      "retirement_manifests": [],
+      "output": "在实际支持的设备/IME 检查组合输入、候选、长草稿附件、菜单、方向切换、终端控制键与返回。",
+      "verification": "记录设备/浏览器/输入法/构建；发现明确问题交回所属任务，保持该节点未通过直至复验。"
+    },
+    {
+      "id": "V2",
+      "title": "实际后台通知与精确返回验收",
+      "group": "交付",
+      "kind": "acceptance",
+      "status": "planned",
+      "depends_on": [
+        "E2",
+        "I4",
+        "I13"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "device",
+        "installed-runtime",
+        "push-environment"
+      ],
+      "start_gates": [],
+      "finish_gates": [
+        "G_DEVICE",
+        "G_PUSH",
+        "G_DEVICE_BUDGET"
+      ],
+      "retirement_manifests": [],
+      "output": "隔离源产生事件，实际退后台接收并认证返回原请求，确认其他设备已读收敛。",
+      "verification": "API 成功和前台 toast 不算通过；拒绝/撤销、旧通知、服务重启范围如实记录。"
+    },
+    {
+      "id": "V3",
+      "title": "独立查漏及全部范围对账",
+      "group": "交付",
+      "kind": "review",
+      "status": "planned",
+      "depends_on": [
+        "V0",
+        "V1",
+        "V2",
+        "O1",
+        "S1"
+      ],
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "汇总各切片从原始目标独立推导的行为与首轮记录；核对 A1–P4/R1–R10、追加缺口、被推翻假设、二级状态。",
+      "verification": "复用切片证据；未查/失败不填通过；新必要行为回交负责人，同路径复验。测试分数、角色数量与目录映射均不证明完整。"
+    },
+    {
+      "id": "V4",
+      "title": "最终统一发布与结果结算",
+      "group": "交付",
+      "kind": "release",
+      "status": "planned",
+      "depends_on": [
+        "V3"
+      ],
+      "executor": "coordinator",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "release",
+        "stable-checkout",
+        "composition",
+        "installed-runtime"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "在稳定代码上调用现有完整发布入口，核对实际线上版本与用户结果，保留回退；未完成项不能报整体完成。",
+      "verification": "发布保护完整，UI/真机/原生证据对应最终版本；仅受影响结果需复验。"
+    },
+    {
+      "id": "I7",
+      "title": "接通设置、命令和候选",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "A2"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "正常菜单和命令走同一原生 handler/ledger。",
+      "verification": "模型、权限、技能/插件引用和菜单取消，结果与真实源一致。"
+    },
+    {
+      "id": "I8",
+      "title": "接通队列、计划和 Goal",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "A3"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "正常入口完成队列编辑/取消、计划执行/继续规划及原生 Goal。",
+      "verification": "竞争、重载和多 Pane 不重复派发，源终态正确展示。"
+    },
+    {
+      "id": "I9",
+      "title": "接通审批和结构化问题",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "A4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "请求卡实际作用于原 request/turn 并跟随源结算。",
+      "verification": "旧卡、多请求、答案草稿及可信处理器，不能误批准。"
+    },
+    {
+      "id": "I10",
+      "title": "接通搜索、父子导航和过程",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "A5",
+        "A6"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "真实搜索和父子导航落到确切任务，过程/正文/结果按语义呈现。",
+      "verification": "搜索定位、返回位置、当前展开/历史收起和手动意图。"
+    },
+    {
+      "id": "I11",
+      "title": "接通附件传输与源端读取",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D2",
+        "D3",
+        "F1",
+        "F4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "原生附件入口完成本机准备、真实源上传、移除和提交。",
+      "verification": "大图/文档读取、切 Pane/刷新/取消；没有中央 Host 回退。"
+    },
+    {
+      "id": "I12",
+      "title": "接通媒体、下载和引用返回",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "I2",
+        "A5",
+        "F5"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "历史和新结果都可查看原件、下载、引用并返回。",
+      "verification": "真实媒体、相对链接、选区引用与错误退路。"
+    },
+    {
+      "id": "I13",
+      "title": "接通跨设备阅读意图",
+      "group": "集成",
+      "kind": "implementation",
+      "status": "planned",
+      "depends_on": [
+        "I0",
+        "D1",
+        "D3",
+        "N4"
+      ],
+      "executor": "any",
+      "write_files": [
+        "src/index.ts",
+        "src/client/index.ts",
+        "src/client/remote-sessions.ts"
+      ],
+      "new_files": [],
+      "read_files": [],
+      "exclusive_resources": [
+        "composition"
+      ],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "output": "原生读者提交与 Host 持久阅读/未读意图接通。",
+      "verification": "跨账号隔离，跨设备迟到状态不撤销新意图。"
+    },
+    {
+      "group": "Harness 改进",
+      "kind": "verification",
+      "status": "planned",
+      "executor": "any",
+      "write_files": [],
+      "new_files": [],
+      "read_files": [
+        "docs/hhpi-delivery-method.md",
+        "docs/hhpi-proactive-ui-review.md",
+        "docs/development-profile-rsi.md"
+      ],
+      "exclusive_resources": [],
+      "start_gates": [],
+      "finish_gates": [],
+      "retirement_manifests": [],
+      "id": "S1",
+      "title": "固定完整用户路径与独立行为判据",
+      "depends_on": [
+        "B0"
+      ],
+      "output": "复用既有 profile 和检查；为本批完整用户路径确定入口、源操作、结果展示与失败恢复；不建立父/候选实验。",
+      "verification": "从原始用户目标核对实际可见结果，先接通最短用户路径；后续按真实缺陷补充。"
+    }
+  ],
+  "requirements": {
+    "A1": [
+      "H3",
+      "I0"
+    ],
+    "A2": [
+      "D1",
+      "I0"
+    ],
+    "A3": [
+      "A1",
+      "A2",
+      "I1",
+      "I7"
+    ],
+    "A4": [
+      "D3",
+      "F1",
+      "I2",
+      "V0"
+    ],
+    "B1": [
+      "A6",
+      "H3",
+      "I10"
+    ],
+    "B2": [
+      "A6",
+      "I1",
+      "I10"
+    ],
+    "B3": [
+      "D1",
+      "H2",
+      "I6"
+    ],
+    "B4": [
+      "N4",
+      "A6",
+      "H3",
+      "I4",
+      "I10",
+      "I13"
+    ],
+    "C1": [
+      "H3",
+      "V1"
+    ],
+    "C2": [
+      "D2",
+      "H3",
+      "V1"
+    ],
+    "C3": [
+      "A2",
+      "I1",
+      "F5",
+      "I2",
+      "I7",
+      "I12"
+    ],
+    "C4": [
+      "A2",
+      "H3",
+      "V1",
+      "I7"
+    ],
+    "D1": [
+      "F4",
+      "I2",
+      "V1",
+      "I11"
+    ],
+    "D2": [
+      "D2",
+      "F4",
+      "I2",
+      "I11"
+    ],
+    "D3": [
+      "A1",
+      "F4",
+      "I1",
+      "I2",
+      "I11"
+    ],
+    "D4": [
+      "F4",
+      "I2",
+      "I11"
+    ],
+    "E1": [
+      "D2",
+      "I1"
+    ],
+    "E2": [
+      "A3",
+      "I1",
+      "I8"
+    ],
+    "E3": [
+      "D2",
+      "A3",
+      "I1",
+      "I8"
+    ],
+    "E4": [
+      "D2",
+      "H2",
+      "I1",
+      "I6"
+    ],
+    "F1": [
+      "A5",
+      "H2",
+      "I6",
+      "I10"
+    ],
+    "F2": [
+      "A5",
+      "I1",
+      "I10"
+    ],
+    "F3": [
+      "A4",
+      "A5",
+      "I1",
+      "I9",
+      "I10"
+    ],
+    "F4": [
+      "A5",
+      "F5",
+      "I1",
+      "I2",
+      "I10",
+      "I12"
+    ],
+    "G1": [
+      "D2",
+      "A4",
+      "I1",
+      "I9"
+    ],
+    "G2": [
+      "A4",
+      "I1",
+      "I9"
+    ],
+    "G3": [
+      "D2",
+      "A3",
+      "I1",
+      "I8"
+    ],
+    "G4": [
+      "A3",
+      "I1",
+      "I8"
+    ],
+    "H1": [
+      "A5",
+      "F5",
+      "I2",
+      "I10",
+      "I12"
+    ],
+    "H2": [
+      "F5",
+      "I2",
+      "I12"
+    ],
+    "H3": [
+      "F5",
+      "H3",
+      "I2",
+      "I12"
+    ],
+    "H4": [
+      "F2",
+      "F5",
+      "I2",
+      "I12"
+    ],
+    "I1": [
+      "F1",
+      "F2",
+      "I2"
+    ],
+    "I2": [
+      "F1",
+      "F2",
+      "I2"
+    ],
+    "I3": [
+      "F1",
+      "F3",
+      "I2"
+    ],
+    "I4": [
+      "F2",
+      "F5",
+      "I2",
+      "I12"
+    ],
+    "J1": [
+      "A6",
+      "I1",
+      "I10"
+    ],
+    "J2": [
+      "A6",
+      "H2",
+      "I6",
+      "I10"
+    ],
+    "J3": [
+      "A3",
+      "N2",
+      "I1",
+      "I4",
+      "I8"
+    ],
+    "J4": [
+      "T1",
+      "T2",
+      "I3",
+      "V1"
+    ],
+    "K1": [
+      "H3",
+      "I6"
+    ],
+    "K2": [
+      "H3",
+      "V1"
+    ],
+    "K3": [
+      "A1",
+      "F2",
+      "H3",
+      "I1",
+      "I2"
+    ],
+    "K4": [
+      "H2",
+      "H3",
+      "I6",
+      "V1"
+    ],
+    "L1": [
+      "H2",
+      "I6"
+    ],
+    "L2": [
+      "A5",
+      "H2",
+      "I6",
+      "V1",
+      "I10"
+    ],
+    "L3": [
+      "A6",
+      "H2",
+      "I6",
+      "I10"
+    ],
+    "L4": [
+      "H1",
+      "H2",
+      "H3",
+      "I6"
+    ],
+    "M1": [
+      "H2",
+      "I6"
+    ],
+    "M2": [
+      "D2",
+      "A1",
+      "X1",
+      "I1"
+    ],
+    "M3": [
+      "D2",
+      "H2",
+      "I6"
+    ],
+    "M4": [
+      "A3",
+      "A4",
+      "D2",
+      "I1",
+      "I8",
+      "I9"
+    ],
+    "N1": [
+      "A6",
+      "N2",
+      "I4",
+      "I10"
+    ],
+    "N2": [
+      "N4",
+      "I4",
+      "V2",
+      "I13"
+    ],
+    "N3": [
+      "N1",
+      "N3",
+      "I4",
+      "V2"
+    ],
+    "N4": [
+      "N3",
+      "I4",
+      "V2"
+    ],
+    "O1": [
+      "H3",
+      "R4"
+    ],
+    "O2": [
+      "H3",
+      "R4"
+    ],
+    "O3": [
+      "N5",
+      "F5",
+      "I5",
+      "I12"
+    ],
+    "O4": [
+      "X4",
+      "N6",
+      "I5",
+      "O1"
+    ],
+    "P1": [
+      "D3",
+      "R0",
+      "O1",
+      "V0"
+    ],
+    "P2": [
+      "E1",
+      "O1",
+      "V0",
+      "V4"
+    ],
+    "P3": [
+      "N6",
+      "I5",
+      "V4"
+    ],
+    "P4": [
+      "E2",
+      "V1",
+      "V2",
+      "V4"
+    ]
+  },
+  "retirement_requirements": {
+    "R1": [
+      "R0"
+    ],
+    "R2": [
+      "R1"
+    ],
+    "R3": [
+      "R1"
+    ],
+    "R4": [
+      "R1"
+    ],
+    "R5": [
+      "R2"
+    ],
+    "R6": [
+      "R2"
+    ],
+    "R7": [
+      "R3"
+    ],
+    "R8": [
+      "R4"
+    ],
+    "R9": [
+      "R3"
+    ],
+    "R10": [
+      "R0",
+      "O1",
+      "V0"
+    ]
+  },
+  "modules": {
+    "M0": [
+      "X0",
+      "L1",
+      "L2",
+      "X1",
+      "X2",
+      "X3",
+      "X4",
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "R0",
+      "V0"
+    ],
+    "M1": [
+      "C1",
+      "D1",
+      "D3",
+      "I0"
+    ],
+    "M2": [
+      "C4",
+      "D2",
+      "I1",
+      "X1"
+    ],
+    "M3": [
+      "A1",
+      "A2",
+      "A3",
+      "A6",
+      "I1",
+      "I7",
+      "I8",
+      "I10"
+    ],
+    "M4": [
+      "C2",
+      "D3",
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5",
+      "T1",
+      "T2",
+      "I2",
+      "I3",
+      "I11",
+      "I12"
+    ],
+    "M5": [
+      "A4",
+      "A5",
+      "I1",
+      "I9",
+      "I10"
+    ],
+    "M6": [
+      "C3",
+      "N1",
+      "N2",
+      "N3",
+      "N4",
+      "N5",
+      "N6",
+      "I4",
+      "I5",
+      "V2",
+      "I13"
+    ],
+    "M7": [
+      "H1",
+      "H2",
+      "I6"
+    ],
+    "M8": [
+      "E2",
+      "H3",
+      "O1",
+      "V1",
+      "V2",
+      "V3",
+      "V4"
+    ]
+  },
+  "resource_policy": {
+    "composition": "Coordinator serializes shared entry points; tasks may use other slots for disjoint files.",
+    "installed-runtime": "H1/I6/V1/V2 use a fixed installed build; publication cannot replace it during checks.",
+    "stable-checkout": "V0/V4 and any full check pause all product writes; read-only analysis/document work may continue.",
+    "paths": "Intersecting write sets, and a test read set intersecting active writes, cannot overlap. Add test/helper/config paths to the reservation before editing."
+  },
+  "release_policy": {
+    "incremental": "After an integrated dependency-closed slice is usable, coordinator may freeze writes and invoke the existing full release once; do not chain check/test:release/deploy. Remaining scope stays open.",
+    "early_acceptance": "V1/V2 may run before retirement on a named build. Later affected changes invalidate their affected results; V4 requires final-version-applicable evidence.",
+    "failure": "A failed node remains incomplete; fix under the same scope and revalidate affected descendants. New required behavior adds nodes/edges; never erase scope to force DONE."
+  },
+  "structural_analysis": {
+    "nodes": 65,
+    "hard_edges": 173,
+    "acyclic": true,
+    "reachable_to_final": 65,
+    "dag_width_ignoring_resources_and_gates": 29,
+    "topological_frontiers": [
+      [
+        "B0",
+        "E1",
+        "E2"
+      ],
+      [
+        "C1",
+        "C2",
+        "C3",
+        "H1",
+        "S1",
+        "X0"
+      ],
+      [
+        "A5",
+        "A6",
+        "C4",
+        "D1",
+        "D3",
+        "F1",
+        "F2",
+        "F5",
+        "H2",
+        "H3",
+        "L2",
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "T1",
+        "T2"
+      ],
+      [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "D2",
+        "F3",
+        "F4",
+        "I0",
+        "L1",
+        "N6"
+      ],
+      [
+        "I1",
+        "I10",
+        "I11",
+        "I13",
+        "I2",
+        "I3",
+        "I4",
+        "I7",
+        "I8",
+        "I9"
+      ],
+      [
+        "I12",
+        "V1",
+        "V2",
+        "X1",
+        "X3"
+      ],
+      [
+        "I5",
+        "I6",
+        "X2"
+      ],
+      [
+        "R1",
+        "R2",
+        "X4"
+      ],
+      [
+        "R3",
+        "R4"
+      ],
+      [
+        "R0"
+      ],
+      [
+        "O1",
+        "V0"
+      ],
+      [
+        "V3"
+      ],
+      [
+        "V4"
+      ]
+    ],
+    "longest_chain_by_node_count": [
+      "B0",
+      "C1",
+      "C4",
+      "I0",
+      "I2",
+      "I12",
+      "I5",
+      "X4",
+      "R3",
+      "R0",
+      "V0",
+      "V3",
+      "V4"
+    ],
+    "unordered_write_conflicts": [
+      {
+        "a": "H3",
+        "b": "R4",
+        "files": [
+          "src/client/menus.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I2",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I3",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I4",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I5",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I6",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "R2",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I1",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I3",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts",
+          "src/runner/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I4",
+        "files": [
+          "src/client/index.ts",
+          "src/hub/workspace-shell.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I2",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I4",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I5",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I6",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "R1",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "R3",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I3",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I6",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "R1",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "R2",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I4",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "I6",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "R1",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "R2",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I5",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "R2",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "R3",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "R4",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "I6",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts"
+        ]
+      },
+      {
+        "a": "R1",
+        "b": "R2",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R1",
+        "b": "R3",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R1",
+        "b": "R4",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "R1",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R1",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "R3",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "R4",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "I7",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R2",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "R3",
+        "b": "R4",
+        "files": [
+          "src/client/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I8",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I7",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I8",
+        "b": "I9",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I8",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I8",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I8",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I8",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I9",
+        "b": "I10",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I9",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I9",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I9",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I10",
+        "b": "I11",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I10",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I10",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I11",
+        "b": "I12",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I11",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "a": "I12",
+        "b": "I13",
+        "files": [
+          "src/client/index.ts",
+          "src/client/remote-sessions.ts",
+          "src/index.ts"
+        ]
+      }
+    ]
+  },
+  "method_tasks": {
+    "requirements_and_assumptions": [
+      "B0",
+      "C1",
+      "C2",
+      "C3",
+      "C4"
+    ],
+    "reopen_window": [
+      "H1",
+      "H2",
+      "I6"
+    ],
+    "independent_review": [
+      "V3"
+    ],
+    "profile_delivery": [
+      "S1"
+    ]
+  },
+  "execution_revision": "2026-11-08: RSI paired experiments cancelled; event-driven root; end-to-end path ownership"
+}

@@ -20,11 +20,11 @@ export interface WorkspacePaneNavigation extends WorkspaceUiScope {
     locate(target: PaneReadingTarget): void
     /** Veto removal/replacement of this pane's view; hiding or moving does not close it. */
     registerCloseGuard(guard: () => boolean): () => void
+    /** Same-native local-shadow correction only; the input owner may preserve its draft or veto. */
+    registerSourceRouteCheckpoint?(checkpoint: { sessionId: string; transfer(target: { hostId: string; scope: string }): boolean }): () => void
     /** Retain this own input graph until a source-successor draft CAS settles.
      * Removing its visual pane still hides it and disables navigation. */
     retainForDraftTransfer(): () => void
-    /** Only call after a confirmed source operation returns a ready successor. */
-    openSuccessor(displaySessionId: string): Promise<void>
     /** Navigate this pane without changing another pane's session binding. */
     openSession(displaySessionId: string, options?: { beside?: SplitAxis; target?: PaneReadingTarget }): void
     /** Reveal this graph's own unchanged Conversation, retaining every tab. */

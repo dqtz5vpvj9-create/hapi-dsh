@@ -1,4 +1,5 @@
 import { useWorkspacePane } from './surface/pane-context.tsx'
+import { sourceRoute } from '../shared/source-capability.ts'
 /** A view-local hand-off into the actual official composer, preserving semantic chips. */
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
@@ -15,41 +16,43 @@ import { installComposerAutosave } from './composer-autosave-seat.tsx';
 
 export function installShareReceiver(ctx: Context, existingBridge?: SourceComposerBridge): () => void {
     const scope = ctx.inject(['slots', 'sessions', 'conversation', 'locale', 'hapiWorkspaceUi'], owner => {
-        const inbox = owner.hapiWorkspaceUi.shareInbox, bridge = existingBridge ?? installSourceComposerBridge(owner);
+        const inbox = owner.hapiWorkspaceUi.shareInbox, sharedBridge = existingBridge ?? owner.get('sourceComposer');
+        const bridge = sharedBridge ?? installSourceComposerBridge(owner);
         const enter = installComposerEnter(owner, bridge);
-        const autosave = installComposerAutosave(owner);
-        const recovery = installComposerAttachmentRecovery(owner, bridge);
+        const autosave = installComposerAutosave(owner, owner.hapiWorkspaceUi.application);
+        const recovery = installComposerAttachmentRecovery(owner, bridge, owner.hapiWorkspaceUi.application);
         const handoffs = owner.hapiWorkspaceUi.handoffs, handoffReceiver = installDraftHandoffReceiver(owner, bridge);
         const handoffChanges = handoffs.subscribe(inbox.wake);
         const Receiver = (props: PropsRuntime<'conversation.input.dock'>) => {
-            const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
-            const current = useRef({ props, source, observed }); current.current = { props, source, observed };
+            const current = useRef({ props }); current.current = { props };
             const input = props.useInput(value => value), pane = useWorkspacePane(owner);
             const state = useSyncExternalStore(inbox.subscribe, inbox.getSnapshot);
             const language = useSyncExternalStore(listener => owner.locale.subscribe(listener), () => owner.locale.getSnapshot().active);
             const tr = (en: string, zh: string) => language.startsWith('zh') ? zh : en;
-            const targets = useMemo(() => {
-                const result: ShareTarget[] = [{ kind: 'dsh', hostId: pane?.hostId ?? 'local', sessionId: props.sessionId }];
-                if (source?.hubId && !observed?.sidechain) result.push({ kind: 'hapi', hubId: source.hubId, sessionId: source.hapiSessionId });
-                return result;
-            }, [pane?.hostId, props.sessionId, source?.hubId, source?.hapiSessionId, observed?.sidechain]);
+            const targets = useMemo((): ShareTarget[] => {
+                try { return [sourceRoute(pane?.hostId ?? 'local', props.sessionId, 'local')] }
+                catch { return [] }
+            }, [pane?.hostId, props.sessionId]);
             useEffect(() => {
+                const liveBinding = () => {
+                    const latest = current.current.props;
+                    if (latest.sessionId !== props.sessionId || latest.inputActions !== props.inputActions) return undefined;
+                    return latest.sessionBinding ?? owner.sessions.binding(latest.sessionId);
+                };
                 const ready = () => {
-                    const latest = current.current, binding = owner.sessions.binding(props.sessionId);
-                    if (!binding || !pane || !pane.state.getSnapshot().visible || !pane.state.getSnapshot().focused || latest.observed?.sidechain || latest.source?.readOnly) return false;
-                    if (!latest.source && /^(?:hapi-codex-|hapi-observed-)/u.test(props.sessionId)) return false;
-                    if (latest.source && handoffs.blocksSource({ hubId: latest.source.hubId, sessionId: latest.source.hapiSessionId })) return false;
+                    const binding = liveBinding();
+                    if (!binding || !pane || !pane.state.getSnapshot().visible || !pane.state.getSnapshot().focused) return false;
                     return !['adjudicating', 'submitting'].includes(owner.conversation.input.for(binding.ctx).state.getSnapshot().phase);
                 };
                 const receiver: ShareReceiver = { paneId: pane?.paneId, ready, async insert(payload, signal, options) {
-                    const binding = owner.sessions.binding(props.sessionId); if (!binding || !ready()) throw new Error('The original composer is not ready.');
+                    const binding = liveBinding(); if (!binding || !ready()) throw new Error('The original composer is not ready.');
                     const facade = owner.conversation.input.for(binding.ctx), before = facade.state.getSnapshot();
                     const seed = options?.exactText ? payload.text : shareSeedText(payload), suffix = seed ? `${before.draft ? '\n\n' : ''}${seed}` : '';
                     const files = payload.files.map(file => new File([file.blob], file.name, { type: file.type }));
-                    const undo = await bridge.addFiles(props.sessionId, files, signal);
+                    const undo = await bridge.addFiles(props.sessionId, files, signal, props.inputActions);
                     try {
                         signal.throwIfAborted();
-                        if (!ready() || owner.sessions.binding(props.sessionId) !== binding || facade.state.getSnapshot().draftRev !== before.draftRev) throw new Error('The composer changed while preparing the shared files. The original share is retained.');
+                        if (!ready() || liveBinding() !== binding || facade.state.getSnapshot().draftRev !== before.draftRev) throw new Error('The composer changed while preparing the shared files. The original share is retained.');
                         const end = handoffDetectEnd(before);
                         if (suffix && !current.current.props.inputActions.insertText(suffix, { start: end, end, draftRev: before.draftRev })) throw new Error('The composer changed before the shared text could be inserted.');
                         current.current.props.inputActions.persistDraft(); pane?.revealConversation(); facade.focus();
@@ -59,8 +62,8 @@ export function installShareReceiver(ctx: Context, existingBridge?: SourceCompos
                 const stops = targets.map(target => inbox.register(target, receiver));
                 stops.push(pane?.state.subscribe(inbox.wake) ?? (() => {}));
                 return () => { for (const stop of stops) stop(); };
-            }, [inbox, handoffs, props.sessionId, pane, targets]);
-            useEffect(inbox.wake, [inbox, source, input.phase, input.draftRev]);
+            }, [inbox, handoffs, props.sessionId, props.sessionBinding, props.inputActions, pane, targets]);
+            useEffect(inbox.wake, [inbox, input.phase, input.draftRev]);
             const target = state.record?.hapiDshDelivery?.target;
             if (!target || !targets.some(value => shareTargetKey(value) === shareTargetKey(target))) return null;
             if (state.phase === 'idle' || state.phase === 'pick') return null;
@@ -73,7 +76,7 @@ export function installShareReceiver(ctx: Context, existingBridge?: SourceCompos
             </div>;
         };
         const stop = owner.slots.inject('conversation.input.dock', () => owner.slots.register({ name: 'conversation.input.dock', id: 'hapi.share-receiver', order: -80 }, Receiver));
-        return () => { enter(); autosave(); handoffChanges(); handoffReceiver(); recovery(); stop(); if (!existingBridge) bridge.dispose(); };
+        return () => { enter(); autosave(); handoffChanges(); handoffReceiver(); recovery(); stop(); if (!sharedBridge) bridge.dispose(); };
     });
     return () => { void scope.dispose(); };
 }

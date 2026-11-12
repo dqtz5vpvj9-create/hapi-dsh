@@ -16,8 +16,8 @@ import { EXT_CAPABILITIES, releaseDirName, releaseIdentity, validateBundleManife
 import {
     DEFAULT_KEEP_PREVIOUS, FAILED_STATE, HEALTH_TIMEOUT_MS, RELEASE_STATES, ROLLED_BACK_STATE,
     activeRelease, applyOverridesToManifest, awaitHealthy, backupDirectory, backupProfileFiles,
-    commitActivation, existingOverrides, failAttempt, forgetReleases, idleVerdict, inspectExtResolution, inspectHapiLink, isIdempotentReinstall,
-    isProcessAlive, linkDependencyName, linkTarget, prepareRelease, profileDirectory, prunePlan, readBundleState, readProfileManifest, verifyReleaseDirectory,
+    commitActivation, ensureProfileBundleSelected, existingOverrides, failAttempt, forgetReleases, idleVerdict, inspectExtResolution, inspectHapiLink, isIdempotentReinstall,
+    isProcessAlive, linkDependencyName, linkTarget, runnerSourceProviderTarget, prepareRelease, profileDirectory, prunePlan, readBundleState, readProfileManifest, verifyReleaseDirectory,
     readRuntimeSnapshot, releaseDirectory, releasesDirectory, restoreProfileBackup, rollbackActivation, scanDshSingletons, stagedOverrides,
     startAttempt, stateRoot, transitionAttempt, trimRetained, verifyBundleRoot, verifyPayloadTarballs, writeBundleState,
 } from './release.mjs';
@@ -221,15 +221,24 @@ export async function activateRelease({ dshHome, profile, role, releaseRoot, man
         const target = linkTarget(releaseRoot, role);
         await requireDirectory(target, `the release does not contain ${target}`);
         const name = linkDependencyName(role);
-        logger?.(`running the official plugin manager: ${commandLine({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', `link:${target}`] })}`);
-        const installed = await runOfficial(run, command, ['plugin', '--profile', profile, 'add', `link:${target}`], { env, cwd: directory });
-        if (installed.exitCode !== 0) throw new Error('official DSH plugin installation failed; run dsh plugin for its installation diagnostics');
+        // Link the provider by name: resolving a sibling via '..' from the
+        // profile's Runner symlink would escape into profile/node_modules.
+        const links = role === 'runner' ? [runnerSourceProviderTarget(releaseRoot), target] : [target];
+        for (const linked of links) {
+            await requireDirectory(linked, `the release does not contain ${linked}`);
+            logger?.(`running the official plugin manager: ${commandLine({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', `link:${linked}`] })}`);
+            const installed = await runOfficial(run, command, ['plugin', '--profile', profile, 'add', `link:${linked}`], { env, cwd: directory });
+            if (installed.exitCode !== 0) throw new Error('official DSH plugin installation failed; run dsh plugin for its installation diagnostics');
+        }
         const after = await readProfileManifest(directory);
         const dependency = after?.dependencies?.[name];
         const spec = typeof dependency === 'string' && dependency.startsWith('link:') ? dependency.slice(5) : dependency;
         if (typeof spec !== 'string' || resolve(directory, spec) !== resolve(target)) {
             throw new Error(`the official plugin manager did not link ${name} to the staged release`);
         }
+        const link = await inspectHapiLink({ dshHome, profile, releaseRoot, role });
+        if (!link.ok) throw new Error(link.problems.join('; '));
+        if (await ensureProfileBundleSelected(directory, name)) logger?.(`selected the installed ${name} bundle in profile ${profile}`);
         const dump = await runOfficial(run, command, ['--profile', profile, '--dump-config'], { env, cwd: undefined, timeoutMs: DUMP_TIMEOUT_MS });
         if (dump.exitCode !== 0 || !new RegExp(`^\\s*-?\\s*id:\\s*["']?${name}["']?\\s*$`, 'm').test(dump.stdout)) {
             throw new Error(`the composed profile does not contain the ${name} plugin row`);
@@ -450,7 +459,9 @@ export async function installRelease(rawOptions) {
             pnpmVersion = pnpmResult?.exitCode === 0 ? pnpmResult.stdout.trim() : undefined;
         }
         if (!dryRun && !preparedRuntime) {
-            preparedRuntime = await (options.runtimeBuilder ?? prepareRuntime)({ run, pnpm, env, releaseRoot, manifest, logger });
+            const previous = activeRelease(state, profile);
+            const previousReleaseRoot = previous && previous.releaseId !== releaseId ? releaseDirectory(dshHome, previous.releaseId) : undefined;
+            preparedRuntime = await (options.runtimeBuilder ?? prepareRuntime)({ run, pnpm, pnpmVersion, env, releaseRoot, manifest, previousReleaseRoot, logger });
             // The injected builder is a test seam: keep the caller's launcher there.
             if (!options.runtimeBuilder) command = { executable: process.execPath, args: [preparedRuntime.dshBinary] };
             logger(`runtime: @deepseek-ai/dsh ${preparedRuntime.dshVersion} with ${preparedRuntime.packages.length} ext package(s)`);
@@ -476,6 +487,7 @@ export async function installRelease(rawOptions) {
                 packages: manifest.payload.dshExt.map(item => item.name) },
             plannedCommands: command ? [
                 { purpose: 'initialize-profile (only when missing)', args: ['--profile', profile, '--from-default-profile', 'web', '--dump-config'] },
+                ...(role === 'runner' ? [{ purpose: 'link-source-provider', args: ['plugin', '--profile', profile, 'add', `link:${runnerSourceProviderTarget(releaseRoot)}`] }] : []),
                 { purpose: 'add-bundle', args: ['plugin', '--profile', profile, 'add', `link:${linkTarget(releaseRoot, role)}`] },
                 { purpose: 'dump-config', args: ['--profile', profile, '--dump-config'] },
             ] : [],

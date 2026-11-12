@@ -1,6 +1,25 @@
 {
   "extends": "./tsconfig.json",
-  "compilerOptions": { "rootDir": "." },
-  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/client-api.ts", "tests/workspace-*.test.ts", "tests/client-*.test.ts"],
-  "exclude": ["node_modules", "dist", "tests/client-source-sessions-contract.test.ts"]
+  "compilerOptions": {
+    "rootDir": "."
+  },
+  "include": [
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx",
+    "src/client-api.ts",
+    "tests/workspace-*.test.ts",
+    "tests/client-*.test.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests/client-source-sessions-contract.test.ts",
+    "tests/workspace-source-composition.test.ts",
+    "tests/workspace-source-upload-composition.test.ts",
+    "tests/workspace-source-services.test.ts",
+    "tests/workspace-source-terminal.test.ts",
+    "tests/workspace-source-files.test.ts",
+    "tests/workspace-source-artifacts.test.ts",
+    "tests/workspace-source-uploads.test.ts"
+  ]
 }

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createPaneBootGate, shouldBootPane } from '../src/client/surface/lazy-pane.ts'
+import { HostBootQueue } from '../src/client/surface/host-boot-queue.ts'
 import { prefetchPaneArtifacts } from '../src/client/surface/prefetch.ts'
 
 test('visible panes boot eagerly; plugin-page renderers without a visible flag boot too', () => {
@@ -106,4 +107,30 @@ test('prefetch drops failed bundles from the cache and keeps warming the rest', 
     assert.deepEqual(calls.sort(), ['http://host.invalid/plugins/??bad/client.js&rev=1', 'http://host.invalid/plugins/??good/client.js&rev=2'])
     assert.equal(artifacts.has('http://host.invalid/plugins/??bad/client.js&rev=1'), false, 'a failed prefetch must not poison the loader cache')
     assert.equal(await artifacts.get('http://host.invalid/plugins/??good/client.js&rev=2'), 'ok')
+})
+
+
+test('restored resource graphs wait for coherent foreground/idle; explicit focus starts immediately and closed work never boots', async () => {
+    let focused = 'chat', pending = true, busy = false
+    const started: string[] = []
+    const releases = new Map<string, () => void>()
+    const queue = new HostBootQueue(() => focused, () => pending || busy)
+    const turn = () => new Promise(resolve => setTimeout(resolve, 65))
+    try {
+        for (const id of ['file1', 'file2', 'file3', 'file4']) queue.add(id, () => {
+            started.push(id)
+            return new Promise<void>(resolve => { releases.set(id, resolve) })
+        })
+        await turn(); assert.deepEqual(started, [], 'visible restored files do not compete with the opening chat')
+        pending = false; busy = true; queue.prioritize()
+        await turn(); assert.deepEqual(started, [], 'foreground gesture still owns initialization')
+        focused = 'file3'; queue.prioritize()
+        await turn(); assert.deepEqual(started, ['file3'], 'explicit selection bypasses passive idle')
+        queue.remove('file2'); releases.get('file3')!()
+        focused = 'chat'; busy = false; queue.prioritize()
+        await turn(); assert.deepEqual(started, ['file3', 'file1'], 'background graphs initialize one at a time')
+        releases.get('file1')!(); await turn()
+        assert.deepEqual(started, ['file3', 'file1', 'file4'])
+        releases.get('file4')!()
+    } finally { queue.dispose(); for (const release of releases.values()) release() }
 })

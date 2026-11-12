@@ -1,0 +1,7 @@
+# Localize pointer focus-ring styling to the focused control
+
+The theme's root-modality descendant selector causes document-wide style invalidation when pointer mode is first published. A bounded native-browser diagnostic observed 43.138ms affecting 2,842 elements; removing that exact rule eliminated the same global recalculation on the subsequent mode transition. Same-value publisher writes did not reproduce the cost.
+
+Keep the public input-modality publisher and its keyboard/IME policy. The dynamic theme observes that public state and places a private marker on only the current focused control; the pointer ring rule uses the marker without an ancestor dependency. Transfer it on actual focus changes and release it with the theme effect. Editable controls, descendant ring colors, borders, elevation and keyboard navigation preserve their existing behavior. No static web-frontend or primitive bundle change is needed.
+
+The production installer plus actual primitive publisher pass the related 20 theme contracts, and the existing theme TypeScript project passes. The regressions cover the missing local marker, exclusion of editable controls, keyboard focus changes, consumed bubbling focus events and disposal/reinstallation. Browser consumption and formal reading performance still require verification; the existing 80ms gate is unchanged. This is an upstream PR draft only and includes no upstream push.

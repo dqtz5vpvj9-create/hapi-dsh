@@ -1,0 +1,11 @@
+# Avoid automatic reader landings inside a measured window publication
+
+A windowed Conversation measures its official Chat reader, publishes rows synchronously, then corrects the measured anchor. Chat's content layout effect currently also preserves that anchor during publication. This premature landing releases the virtualizer's retained range before the measured correction, producing another mount/measurement pass in the same task.
+
+Forward the coordinator's existing critical-section state through optional read-only `ConversationWindowCommitV1.isCommitting(viewId)` and `WindowCommitParticipationV1.isCommitting()`. The mounted Chat skips competing automatic content/resize reconciliation inside that section. The coordinator remains the publisher and the viewport remains the scroll owner; explicit navigation and consumers without the optional method keep their existing behavior. There is no deferred commit or timing workaround.
+
+Reuse accepted row border-box heights when only the component-owned outer row gap changes. Gap sizes remain part of the virtualizer's total size; real body/style/hidden/resize changes still remeasure.
+
+The real hook regression observes an early scroll write on the prior implementation, then verifies that only the official correction writes after publication. Scoped contracts also cover per-window state and cleanup after correction failure, resident row identity, real dirty measurements, explicit navigation and default scroll/fold behavior. Browser frame and anchor acceptance is recorded separately.
+
+Also suppress the deferred `rowsCommitted` preserve queued by an already opened reader during that same coordinated publish. Initialization remains queued for a first reader; a later image/body resize still preserves its anchor. Reuse accepted heights when only `TurnProcessNodeView`'s three metadata count attributes change as older history arrives. The counts do not render text or participate in styles; body/style/visibility changes still invalidate. The added regressions expose both extra geometry reads before the change and cover initial opening plus later growth afterward. The existing `.10` browser failure remains recorded until the complete real reading check passes.

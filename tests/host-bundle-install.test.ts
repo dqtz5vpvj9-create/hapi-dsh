@@ -5,10 +5,13 @@
  */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { createRequire } from 'node:module'
+import { resolveBundleDir, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import {
     EXT_PACKAGES, createHarness, logLines, makeExtRelease, seedProfile,
 } from './host-bundle-support.test.ts'
@@ -62,7 +65,7 @@ test('installing the same manifest twice changes nothing', async () => {
     }
 })
 
-test('the runner role installs the Host-only runner bundle into its profile', async () => {
+test('the runner profile loads its Host-only bundle from the same managed runtime closure', async () => {
     const harness = await createHarness()
     try {
         await seedProfile(harness.dshHome, harness.profile)
@@ -70,7 +73,38 @@ test('the runner role installs the Host-only runner bundle into its profile', as
         assert.equal(installed.ok, true, installed.error)
         const profileManifest = await harness.profileManifest()
         const dependencies = profileManifest.dependencies as Record<string, string>
-        assert.equal(dependencies['hapi-dsh-runner'], `link:${join(harness.releaseRoot('a'), 'package', 'dist', 'runner')}`)
+        const runtime = join(harness.releaseRoot('a'), 'runtime')
+        const runnerRoot = join(runtime, 'node_modules', 'hapi-dsh', 'dist', 'runner')
+        assert.equal(dependencies['hapi-dsh-runner'], `link:${runnerRoot}`)
+        assert.equal(dependencies['hapi-dsh-session-provider'], `link:${join(runtime, 'node_modules/hapi-dsh/dist/session-provider')}`)
+        assert.ok(!(profileManifest.dsh as { profile: { bundles: string[] } }).profile.bundles.includes('hapi-dsh-session-provider'), 'plain provider has no second profile layer')
+        const profileDir = join(harness.dshHome, 'profiles', harness.profile)
+        await symlink(runnerRoot, join(profileDir, 'node_modules/hapi-dsh-runner'), 'dir')
+        await writeFile(join(runnerRoot, 'cordis.patch.yml'), await readFile(new URL('../config/runner.patch.yml', import.meta.url)))
+        const logicalBundle = resolveBundleDir('dsh', 'hapi-dsh-runner', join(runtime, 'node_modules/@deepseek-ai/dsh/package.json'), profileDir)
+        assert.equal(logicalBundle, join(profileDir, 'node_modules/hapi-dsh-runner'))
+        const rows = loadOverlayPatches('dsh', join(logicalBundle, 'cordis.patch.yml')).flatMap(row => row.insert ?? [])
+        const providerRow = rows.find(row => row.id === 'hapi-dsh-session-provider')
+        assert.equal(providerRow?.name, 'hapi-dsh-session-provider', 'the real symlink overlay must keep a resolvable package name')
+        const profileRequire = createRequire(join(profileDir, 'package.json'))
+        assert.equal(profileRequire.resolve(providerRow!.name! + '/client'), join(runtime, 'node_modules/hapi-dsh/dist/session-provider/client.js'))
+
+        // The official launcher/pnpm remain fixtures. Node executes these two real
+        // package entry points to prove the linked Runner shares the runtime owner.
+        const ownerRoot = join(runtime, 'node_modules', '@deepseek-ai', 'cordis')
+        await mkdir(ownerRoot, { recursive: true })
+        await mkdir(runnerRoot, { recursive: true })
+        await writeFile(join(ownerRoot, 'package.json'), JSON.stringify({ name: '@deepseek-ai/cordis', version: '4.1.0', type: 'module', main: './index.js' }))
+        await writeFile(join(ownerRoot, 'index.js'), 'export const owner = {};\n')
+        await writeFile(join(runnerRoot, 'package.json'), JSON.stringify({ name: 'hapi-dsh-runner', type: 'module', main: './index.js' }))
+        await writeFile(join(runnerRoot, 'index.js'), 'export { owner } from "@deepseek-ai/cordis";\n')
+        const runnerEntry = await import(pathToFileURL(join(dependencies['hapi-dsh-runner']!.slice('link:'.length), 'index.js')).href) as { owner: unknown }
+        const runtimeEntry = await import(pathToFileURL(join(ownerRoot, 'index.js')).href) as { owner: unknown }
+        assert.equal(runnerEntry.owner, runtimeEntry.owner, 'Runner imports the runtime singleton, without a profile copy')
+        const resolution = await ops.auditResolution(harness.releaseRoot('a'))
+        const cordis = resolution.packages.find(item => item.name === '@deepseek-ai/cordis')
+        assert.equal(cordis?.resolvedBy, 3, 'the actual Runner entry is included beside DSH and Host in the audit')
+        assert.equal(cordis?.shared, true)
         assert.equal(dependencies['hapi-dsh'], undefined)
         const state = await harness.state()
         assert.equal(state.profiles[harness.profile]!.role, 'runner')
@@ -80,6 +114,53 @@ test('the runner role installs the Host-only runner bundle into its profile', as
         const again = await harness.install('a', { role: 'runner' })
         assert.equal(again.changed, false)
         assert.equal(again.idempotent, true)
+        const profilePath = join(harness.dshHome, 'profiles', harness.profile, 'package.json')
+        const incomplete = JSON.parse(await readFile(profilePath, 'utf8'))
+        delete incomplete.dependencies['hapi-dsh-session-provider']
+        await writeFile(profilePath, JSON.stringify(incomplete))
+        const repaired = await harness.install('a', { role: 'runner' })
+        assert.equal(repaired.ok, true, repaired.error)
+        assert.notEqual(repaired.idempotent, true, 'a missing source-provider link cannot bypass activation health')
+    } finally {
+        await rm(harness.root, { recursive: true, force: true })
+    }
+})
+
+test('an interrupted Runner dependency install resumes with its bundle selected and preserves other profile choices', async () => {
+    const harness = await createHarness()
+    try {
+        await seedProfile(harness.dshHome, harness.profile)
+        // Stage the immutable runtime without activating a profile, then retain
+        // the dependency-only state observed after the real installer was interrupted.
+        const staged = await harness.install('a', { role: 'runner', env: { HAPI_DSH_FAKE_FAIL: 'plugin' } })
+        assert.equal(staged.ok, false)
+        const path = join(harness.dshHome, 'profiles', harness.profile, 'package.json')
+        const manifest = JSON.parse(await readFile(path, 'utf8'))
+        const target = join(harness.releaseRoot('a'), 'runtime', 'node_modules', 'hapi-dsh', 'dist', 'runner')
+        manifest.dependencies['hapi-dsh-runner'] = `link:${target}`
+        manifest.dsh.profile = { ...manifest.dsh.profile,
+            bundles: ['@deepseek-ai/dsh-web-app', '@synthetic/user-bundle'], patchReload: 'live' }
+        await writeFile(path, JSON.stringify(manifest))
+
+        const resumed = await harness.install('a', { role: 'runner' })
+        assert.equal(resumed.ok, true, resumed.error)
+        assert.equal(resumed.state, 'healthy')
+        const selected = JSON.parse(await readFile(path, 'utf8'))
+        assert.deepEqual(selected.dsh.profile.bundles,
+            ['@deepseek-ai/dsh-web-app', '@synthetic/user-bundle', 'hapi-dsh-runner'])
+        assert.equal(selected.dsh.profile.patchReload, 'live')
+        assert.equal(selected.dependencies['hapi-dsh-runner'], `link:${target}`)
+
+        // A missing selection cannot be reported as an unchanged healthy install
+        // merely because its release pointer and dependency link still match.
+        selected.dsh.profile.bundles.pop()
+        await writeFile(path, JSON.stringify(selected))
+        const repaired = await harness.install('a', { role: 'runner' })
+        assert.equal(repaired.ok, true, repaired.error)
+        assert.notEqual(repaired.idempotent, true)
+        assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).dsh.profile.bundles,
+            ['@deepseek-ai/dsh-web-app', '@synthetic/user-bundle', 'hapi-dsh-runner'])
+        assert.equal((await harness.install('a', { role: 'runner' })).idempotent, true)
     } finally {
         await rm(harness.root, { recursive: true, force: true })
     }

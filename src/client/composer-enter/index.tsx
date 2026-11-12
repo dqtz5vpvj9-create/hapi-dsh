@@ -8,6 +8,7 @@ import { readComposerEnterPreference, writeComposerEnterPreference } from './pre
 import type { ComposerEnterAttachments } from './attachments.ts'
 import { arbitrateComposerEnter } from './triggers.ts'
 import { useWorkspacePane } from '../surface/pane-context.tsx'
+import { isSourceSessionId } from '../../remote/protocol.ts'
 
 const issues: Record<ComposerEnterIssue, readonly [string, string]> = {
   unavailable: ['The original attachment owner is not ready. Your draft and files are retained.', '原附件组件尚未就绪。草稿和附件均已保留。'],
@@ -35,6 +36,7 @@ export function installComposerEnter(ctx: Context, composer: ComposerEnterAttach
           const input = owner.conversation.input.for(binding.ctx)
           return {
             identity: binding, actions: latest.inputActions, state: input.state.getSnapshot(),
+            inlineAttachmentFeedback: isSourceSessionId(latest.sessionId),
             blocked: owner.conversation.blocks.storeFor(latest.sessionId).getSnapshot() !== undefined
               || current.current.pane?.state.getSnapshot().visible === false,
             arbitrate: () => arbitrateComposerEnter(owner.inputTriggers.sessionOf(binding.ctx)),

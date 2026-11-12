@@ -27,13 +27,13 @@ export function nativeMetadataFixture(snapshot: () => readonly { turn: NativeTur
             turns.push({ ...value.turn, startedAt: value.turn.startedAt ?? 0, completedAt: value.turn.completedAt ?? null, ordinal: start, endOrdinal: end });
         }
         const userOnly = 'userOnly' in request && request.userOnly === true;
-        const all = [...items.filter(item => !userOnly || users.has(JSON.stringify([item.turnId, item.itemId]))).map(item => ({ ordinal: item.ordinal, item, turnId: item.turnId })),
+        const all: Array<{ ordinal: number; item?: NativeMetadataItem; turnId: string }> = [...items.filter(item => !userOnly || users.has(JSON.stringify([item.turnId, item.itemId]))).map(item => ({ ordinal: item.ordinal, item, turnId: item.turnId })),
             ...turns.flatMap(turn => userOnly || turn.endOrdinal === null ? [] : [{ ordinal: turn.endOrdinal, turnId: turn.id }])];
         const direction = request.after === undefined ? -1 : 1, boundary = request.around ?? request.before ?? request.after;
         const selected = all.filter(value => boundary === undefined || (direction === -1 ? value.ordinal <= boundary : value.ordinal >= boundary))
             .sort((a, b) => direction * (a.ordinal - b.ordinal)).slice(0, request.limit);
         const ids = new Set(selected.map(value => value.turnId)), positions = selected.map(value => value.ordinal);
-        return { items: selected.flatMap(value => 'item' in value ? [value.item] : []), turns: turns.filter(turn => ids.has(turn.id)),
+        return { items: selected.flatMap(value => value.item ? [value.item] : []), turns: turns.filter(turn => ids.has(turn.id)),
             hasBefore: positions.length > 0 && all.some(value => value.ordinal < Math.min(...positions)),
             hasAfter: positions.length > 0 && all.some(value => value.ordinal > Math.max(...positions)), coordinates: 'synthetic-native-positions-v1', first: positions.length ? Math.min(...positions) : null, last: positions.length ? Math.max(...positions) : null };
     };

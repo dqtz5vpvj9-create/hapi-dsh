@@ -1,7 +1,7 @@
 /** Original source search semantics, including exact field boundaries. */
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildSidebarSearchIndex, collectSidebarSearchFields, compareSidebarSearch, hasSidebarSearchBoundary, matchesSidebarSearch, sourceWorktreeLabel, type SidebarSearchRow } from '../src/workspace/sidebar-search.ts'
+import { buildSidebarSearchIndex, collectSidebarSearchFields, compareSidebarSearch, hasSidebarSearchBoundary, matchesSidebarSearch, type SidebarSearchRow } from '../src/workspace/sidebar-search.ts'
 const row = (id: string, patch: Partial<SidebarSearchRow> = {}): SidebarSearchRow => ({ id: id as SidebarSearchRow['id'], displayTitle: id, updatedAt: 0, ...patch })
 const location = () => ({ engine: 'codex', machineName: 'Laptop' })
 
@@ -19,14 +19,14 @@ test('source title/boundary/exact phrase rank ahead of newer incidental path and
     assert.equal(matchesSidebarSearch('homelab', 'home'), true)
 })
 
-test('AND terms can match different source fields; original source and native identities stay searchable', () => {
-    const value = row('display-id', { displayTitle: 'Fresh feature', sourceSummary: 'Resolve ledger races',
-        sourceSubagentSearch: ['reviewer', 'src/ledger.ts', 'native-child'], projectionValues: { hapi: { hapiSessionId: 'source-identity' } } as never })
+test('AND terms search current published paths and exact native/source identities without retired projections', () => {
+    const value = row('display-id', { displayTitle: 'Fresh feature', cwd: '/src/ledger.ts', sourceSessionId: 'source-identity',
+        projectionValues: { hapi: { hapiSessionId: 'retired-identity' } } as never })
     const index = buildSidebarSearchIndex([value], 'ledger laptop codex', location)
     assert.equal(index.matchedIds.has(value.id), true)
     assert.equal(buildSidebarSearchIndex([value], 'ledger missing', location).matchedIds.size, 0)
-    assert.equal(buildSidebarSearchIndex([value], 'native-child', location).matchedIds.size, 1)
     assert.equal(buildSidebarSearchIndex([value], 'source-identity', location).matchedIds.size, 1)
+    assert.equal(buildSidebarSearchIndex([value], 'retired-identity', location).matchedIds.size, 0)
     assert.equal(buildSidebarSearchIndex([value], 'runtime-thread', () => ({ ...location(), nativeId: 'runtime-thread' })).matchedIds.size, 1)
 })
 
@@ -34,16 +34,14 @@ test('wildcards match whole individual fields, preserve Unicode ?, and never int
     for (const [text, pattern, expected] of [['src/file.ts', '*.ts', true], ['src/file.ts.bak', '*.ts', false], ['file-01.ts', 'file-??.ts', true],
         ['file-001.ts', 'file-??.ts', false], ['file+.ts', 'file+.ts', true], ['fileX.ts', 'file+.ts', false], ['x😀y', 'x?y', true],
         ['a'.repeat(1000), '*a*a*a*a*a*a*b', false]] as const) assert.equal(matchesSidebarSearch(text, pattern), expected)
-    const value = row('worktree', { cwd: '/repo/worktrees/task', sourceWorktree: { name: 'task', basePath: '/repo/main', branch: 'feat/task', worktreePath: '/repo/worktrees/task' } })
+    const value = row('worktree', { cwd: '/repo/main' })
     assert.equal(buildSidebarSearchIndex([value], '*repo/main', location).matchedIds.size, 1)
     assert.equal(buildSidebarSearchIndex([value], '*main laptop*', location).matchedIds.size, 0)
 })
 
-test('worktree labels use actual source names or actual paths without inventing a worktree path', () => {
-    const value = row('label', { cwd: 'C:\\source\\tree\\', sourceWorktree: { name: '', basePath: 'C:\\source', branch: 'feature' } })
-    assert.equal(sourceWorktreeLabel(value), 'tree')
+test('directory search uses the published path verbatim without inventing another source root', () => {
+    const value = row('label', { cwd: 'C:\\source\\tree\\' })
     const fields = collectSidebarSearchFields(value, location())
-    assert.deepEqual(fields.path, ['C:\\source\\tree\\', 'C:\\source'])
-    assert.deepEqual(fields.worktreeLabel, ['tree'])
-    assert.equal(sourceWorktreeLabel(row('plain', { cwd: '/source/tree' })), null)
+    assert.deepEqual(fields.path, ['C:\\source\\tree\\'])
+    assert.deepEqual(collectSidebarSearchFields(row('plain'), location()).path, [])
 })

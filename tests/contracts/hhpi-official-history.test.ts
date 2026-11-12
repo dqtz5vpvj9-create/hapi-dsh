@@ -4,6 +4,7 @@ import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { Context } from '@deepseek-ai/cordis'
+import { officialBrowserAsset } from './official-browser-library.ts'
 import { RemoteStream, RemoteStreamCarrierError, type RemoteStreamFactory } from '@deepseek-ai/dsh-api-gateway/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { RemoteSourceHistory } from '../../src/client/remote-history.ts'
@@ -36,7 +37,7 @@ function browserModule(name: string): Record<string, unknown> {
   new Function('window', readFileSync(require.resolve(`${name}/client`), 'utf8'))({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })
   assert.ok(registration)
   const unused = new Proxy({}, { get: (_target, key) => () => { throw new Error(`Unexpected UI rendering ${String(key)}`) } })
-  return registration.factory(id => id === '@deepseek-ai/dsh-client-ui-primitives' ? unused : require(id))
+  return registration.factory(Object.assign((id: string) => id === '@deepseek-ai/dsh-client-ui-primitives' ? unused : require(id), { asset: officialBrowserAsset }))
 }
 function definitions(): { assembler(): Assembler; close(): Promise<void> } {
   const core = browserModule('@deepseek-ai/dsh-client-ui-conversation') as unknown as { ConversationEventRegistry: new (ctx: Context) => Registry; ConversationViewRegistry: new (ctx: Context) => Registry }

@@ -3,7 +3,6 @@ import { createElement, useState } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SourceSessions } from '../../src/client/source-sessions.ts'
 import type { RemoteSessions } from '../../src/client/remote-sessions.ts'
 import type { WorkspacePaneNavigation } from '../../src/client/pane-navigation.ts'
 import { installSessionViewHost } from '../../src/client/surface/session-view.tsx'
@@ -17,7 +16,7 @@ function state<T>(initial: T) {
   return { getSnapshot: () => value, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
     set(next: T) { value = next; for (const listener of listeners) listener() } }
 }
-export async function mountColdOpenLab(ctx: Context, canonical: SessionReference, sessions: SourceSessions, remote: RemoteSessions) {
+export async function mountColdOpenLab(ctx: Context, canonical: SessionReference, sessions: RemoteSessions, remote: RemoteSessions) {
   const start = performance.now(), failures: string[] = [], ready = new Set<string>(), readyAt = new Map<string, number>()
   const paneStates = { a: state({ visible: true, focused: true }), b: state({ visible: innerWidth > 600, focused: false }) }
   const navigations = Object.fromEntries((['a', 'b'] as const).map(id => [id, { hostId: 'local', paneId: id,
@@ -65,7 +64,7 @@ export async function mountColdOpenLab(ctx: Context, canonical: SessionReference
     async reopen() { ready.delete('a'); await handles.a.dispose(); handles.a = mount('a') },
     async dispose() {
       await Promise.all([handles.a.dispose(), handles.b.dispose()]); stopAdmission(); unmount()
-      canonical.release(); sessions.dispose(); remote.dispose(); await ctx.fiber.dispose()
+      canonical.release(); remote.dispose(); await ctx.fiber.dispose()
     },
   }
 }

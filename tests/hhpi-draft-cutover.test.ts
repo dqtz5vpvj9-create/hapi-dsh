@@ -39,6 +39,6 @@ test('cutover preserves an existing new draft and exposes the old copy in recove
     assert.ok(store.getItem(`dsh.conversation.${origin.sessionId}`))
 })
 test('HHPI sidebar locations keep native machine and engine identities', () => {
-    assert.deepEqual(sessionLocation({ projectionValues: { hhpiSource: { machineId: 'native-machine', engine: 'codex', nativeId: 'native' } } }),
+    assert.deepEqual(sessionLocation({ id: 'hhpi:native-machine:original-source:codex:native' as never }),
         { engine: 'codex', machineId: 'native-machine', nativeId: 'native' })
 })

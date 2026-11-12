@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DSH_VERSION, HAPI_REVISION, resolveHapiToken, type RuntimeConfig } from './config.ts';
+import { DSH_VERSION, type RuntimeConfig } from './config.ts';
 import { findPackageRoot, resolveDshCommand, runCommand, runtimeEnvironment, verifyBundleArtifacts, verifyDshVersion, type Command, type CommandRunner } from './runtime.ts';
 import { ops, redactBundleText } from './release.ts';
 
@@ -13,7 +13,7 @@ export interface DoctorCheck {
 export interface DoctorResult {
     ok: boolean;
     checks: DoctorCheck[];
-    expectedUpstream: { dsh: string; hapiRevision: string };
+    expectedUpstream: { dsh: string };
 }
 
 export interface DoctorOptions {
@@ -21,80 +21,7 @@ export interface DoctorOptions {
     env?: NodeJS.ProcessEnv;
     command?: Command;
     run?: CommandRunner;
-    fetch?: typeof globalThis.fetch;
     packageRoot?: string;
-}
-
-/** Validate only the schema needed for connectivity, without logging response bodies or credentials. */
-async function requestJson(fetcher: typeof globalThis.fetch, url: string, init: RequestInit): Promise<Record<string, unknown>> {
-    let response: Response;
-    try {
-        response = await fetcher(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(10_000) });
-    } catch {
-        throw new Error('HAPI request failed or timed out; check the configured URL, TLS, and Hub process');
-    }
-    if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error(`HAPI returned HTTP ${response.status}; check the Hub access token and namespace`);
-    }
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('HAPI returned an empty response');
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    try {
-        for (;;) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            length += chunk.value.byteLength;
-            if (length > 8 * 1024 * 1024) {
-                await reader.cancel();
-                throw new Error('HAPI diagnostic response exceeds 8 MiB');
-            }
-            chunks.push(chunk.value);
-        }
-    } finally {
-        reader.releaseLock();
-    }
-    let value: unknown;
-    try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-    catch { throw new Error('HAPI returned invalid JSON'); }
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('HAPI returned an unexpected response schema');
-    return value as Record<string, unknown>;
-}
-
-/** Authenticate against the pinned HAPI contract, then read both catalogs using its issued Web JWT. */
-export async function checkHapi(config: RuntimeConfig, options: Pick<DoctorOptions, 'env' | 'fetch'> = {}): Promise<DoctorCheck[]> {
-    if (!config.hapi) return [{ name: 'hapi', status: 'skipped', detail: 'No legacy HAPI source is configured; native DSH federation and direct sources require no HAPI token' }];
-    const accessToken = resolveHapiToken(config, options.env);
-    const fetcher = options.fetch ?? globalThis.fetch;
-    const base = `${config.hapi.url}/`;
-    const auth = await requestJson(fetcher, new URL('api/auth', base).href, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json' },
-        body: JSON.stringify({ accessToken }),
-    });
-    if (typeof auth.token !== 'string' || auth.token.length === 0 || /[\r\n]/.test(auth.token)) {
-        throw new Error('HAPI authentication did not return a Web access token');
-    }
-    const checks: DoctorCheck[] = [{ name: 'hapi-auth', status: 'pass', detail: 'HAPI accepted the access token and issued a Web credential' }];
-    const catalogs = await Promise.allSettled(['sessions', 'machines'].map(async (catalog): Promise<DoctorCheck> => {
-        const result = await requestJson(fetcher, new URL(`api/${catalog}`, base).href, {
-            headers: { authorization: `Bearer ${auth.token}`, accept: 'application/json' },
-        });
-        if (!Array.isArray(result[catalog])) throw new Error(`HAPI ${catalog} response has an unexpected schema`);
-        const count = result[catalog].length;
-        return { name: `hapi-${catalog}`, status: catalog === 'machines' && count === 0 ? 'warn' : 'pass',
-            detail: catalog === 'machines' && count === 0
-                ? 'Hub is reachable but no Runner is online in this namespace'
-                : `${count} ${catalog} visible in this namespace` };
-    }));
-    for (let index = 0; index < catalogs.length; index++) {
-        const result = catalogs[index]!;
-        checks.push(result.status === 'fulfilled' ? result.value : {
-            name: index === 0 ? 'hapi-sessions' : 'hapi-machines', status: 'fail', detail: safeError(result.reason),
-        });
-    }
-    return checks;
 }
 
 function safeError(error: unknown): string {
@@ -314,7 +241,7 @@ async function bundleChecks(config: RuntimeConfig, options: DoctorOptions): Prom
     return checks;
 }
 
-/** These checks distinguish configuration, installed artifacts, and observed remote connectivity. */
+/** These read-only checks validate the local profile and pinned release, without claiming remote connectivity. */
 export async function doctor(config: RuntimeConfig, configFile: string, options: DoctorOptions = {}): Promise<DoctorResult> {
     const checks: DoctorCheck[] = [];
     const major = Number(process.versions.node.split('.')[0]);
@@ -348,15 +275,11 @@ export async function doctor(config: RuntimeConfig, configFile: string, options:
         checks.push({ name: 'profile', status: 'fail', detail });
     }
     checks.push(...await bundleChecks(config, options));
-    if (options.offline) {
-        checks.push({ name: 'hapi', status: 'skipped', detail: 'Hub authentication and Runner connectivity were not checked (--offline)' });
-    } else {
-        try { checks.push(...await checkHapi(config, options)); }
-        catch (error) { checks.push({ name: 'hapi', status: 'fail', detail: safeError(error) }); }
-    }
+    checks.push({ name: 'source-connectivity', status: 'skipped', detail: options.offline
+        ? 'Remote source connectivity was not checked (--offline).'
+        : 'Doctor checks the local profile and runtime; remote connectivity is reported by the authenticated source owners.' });
     return {
         ok: checks.every((check) => check.status !== 'fail'), checks,
-        // The public HAPI API does not report a source commit. This is a requirement, not a detected version.
-        expectedUpstream: { dsh: DSH_VERSION, hapiRevision: HAPI_REVISION },
+        expectedUpstream: { dsh: DSH_VERSION },
     };
 }

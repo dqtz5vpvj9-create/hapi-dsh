@@ -20,7 +20,7 @@ export interface SourceReadingCheckpoint {
   pages?: SourcePage[] | undefined
 }
 interface SavedReading extends SourceReadingCheckpoint { positions: Record<string, SavedPosition> }
-interface IndexEntry { id: string; used: number; bytes: number; session?: SourceSession | undefined }
+interface IndexEntry { id: string; used: number; bytes: number; session?: SourceSession | undefined; reading?: { epoch: string; positions: Record<string, SavedPosition> } | undefined }
 export interface SourceReadingStorage { storage: Storage; scope: string }
 const MAX_SESSIONS = 8, MAX_BYTES = 4 * 1024 * 1024, MAX_SESSION_BYTES = 1024 * 1024, MAX_WINDOWS = 8
 const seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), key = z.string().min(1).max(2048)
@@ -31,7 +31,8 @@ const position = z.object({ anchorKey: key, anchorOwnerKey: key.optional(), anch
 const record = z.object({ session: sourceSessionSchema, epoch: key, version: seq, head: page,
   windows: z.array(z.object({ viewId: key, page })).max(MAX_WINDOWS),
   positions: z.record(key, z.object({ value: position.nullable(), seq: seq.optional() })).refine(value => Object.keys(value).length <= MAX_WINDOWS) }) satisfies z.ZodType<SavedReading>
-const index = z.array(z.object({ id: key, used: z.number().finite(), bytes: seq.max(MAX_SESSION_BYTES), session: sourceSessionSchema.optional() })).max(MAX_SESSIONS)
+const index = z.array(z.object({ id: key, used: z.number().finite(), bytes: seq.max(MAX_SESSION_BYTES), session: sourceSessionSchema.optional(),
+  reading: z.object({ epoch: key, positions: record.shape.positions }).optional() })).max(MAX_SESSIONS)
   .refine(values => values.reduce((sum, value) => sum + value.bytes, 0) <= MAX_BYTES)
 const encoder = new TextEncoder()
 const sequences = new WeakMap<SourcePage, Set<number>>()
@@ -124,6 +125,9 @@ export class SourceReadingCache {
   private readonly entries = new Map<string, IndexEntry>()
   private readonly records = new Map<string, SavedReading>()
   private readonly dirty = new Set<string>()
+  /** Small exact anchors survive optional body compaction until an explicit update checkpoint. */
+  private readonly pendingPositions = new Map<string, { epoch: string; positions: Record<string, SavedPosition> }>()
+  private revisionValue = 0
   private timer: ReturnType<typeof setTimeout> | undefined
   private idle: number | undefined
   private disposed = false
@@ -148,6 +152,7 @@ export class SourceReadingCache {
     this.window?.document.addEventListener('visibilitychange', this.hidden)
   }
   get scope(): string { return this.access.scope }
+  get revision(): number { return this.revisionValue }
   get maxSessions(): number { return MAX_SESSIONS }
   get maxWindows(): number { return MAX_WINDOWS }
   private storageKey(id: string): string { return `${this.prefix}${id}` }
@@ -164,6 +169,7 @@ export class SourceReadingCache {
     if (!this.entries.has(id)) return undefined
     try {
       const raw = this.access.storage.getItem(this.storageKey(id))
+      if (!raw && (this.entries.get(id)?.reading || this.pendingPositions.has(id))) return undefined
       if (!raw || encoder.encode(raw).byteLength > MAX_SESSION_BYTES) { this.remove(id); return undefined }
       const value = deserialize(raw)
       if (!value) { this.remove(id); return undefined }
@@ -178,6 +184,7 @@ export class SourceReadingCache {
   write(checkpoint: SourceReadingCheckpoint): void {
     if (this.disposed) return
     const prior = this.load(checkpoint.session.id)
+    if (this.pendingPositions.get(checkpoint.session.id)?.epoch !== checkpoint.epoch) this.pendingPositions.delete(checkpoint.session.id)
     // An accepted source replacement invalidates the old durable epoch even
     // when its replacement cannot fit or the browser exits before batching.
     if (prior && prior.epoch !== checkpoint.epoch) this.remove(checkpoint.session.id)
@@ -194,19 +201,29 @@ export class SourceReadingCache {
     const page = saved.windows.find(window => window.viewId === viewId)?.page ?? saved.head
     return position.seq === undefined || contains(page, position.seq) ? position.value : null
   }
+  /** An explicit resume target survives bounded body eviction within its epoch. */
+  readAnchor(id: string, viewId: string): { epoch: string; seq: number } | undefined {
+    const saved = this.load(id), reading = this.entries.get(id)?.reading, position = reading?.positions[viewId] ?? saved?.positions[viewId]
+    const epoch = reading?.epoch ?? saved?.epoch
+    return epoch && position?.value && position.seq !== undefined ? { epoch, seq: position.seq } : undefined
+  }
   writePosition(id: string, viewId: string, value: SourceReadingPosition | null, target?: number): boolean {
     if (this.disposed) return false
     const saved = this.load(id)
     if (!saved) return false
     const page = saved.windows.find(window => window.viewId === viewId)?.page ?? saved.head
     if (value && target !== undefined && !contains(page, target)) return false
+    const entry = this.entries.get(id)
+    if (entry) delete entry.reading
     saved.positions[viewId] = { value, ...target === undefined ? {} : { seq: target } }
     const keys = Object.keys(saved.positions)
     for (const key of keys.slice(0, Math.max(0, keys.length - MAX_WINDOWS))) delete saved.positions[key]
+    this.pendingPositions.set(id, { epoch: saved.epoch, positions: { ...saved.positions } })
     this.changed(id)
     return true
   }
   private changed(id: string): void {
+    this.revisionValue++
     this.dirty.add(id)
     if (this.timer !== undefined || this.idle !== undefined) return
     this.timer = setTimeout(() => {
@@ -230,7 +247,10 @@ export class SourceReadingCache {
       if (!bounded) {
         // Keep the previous valid checkpoint if a live turn has outgrown its
         // budget. Inventing a truncated turn loses native tool dependencies.
-        if (!this.entries.get(id)?.bytes) this.remove(id)
+        if (!this.entries.get(id)?.bytes) {
+          if (this.pendingPositions.has(id)) { this.records.delete(id); this.entries.set(id, { id, used: Date.now(), bytes: 0, session: saved.session }); this.evict(id) }
+          else this.remove(id)
+        }
         else { this.records.delete(id); this.load(id) }
         continue
       }
@@ -250,6 +270,45 @@ export class SourceReadingCache {
     this.dirty.clear()
     this.saveIndex()
   }
+  /** Explicit update preparation: unlike optional flush(), storage failures reject the update. */
+  checkpoint(): void {
+    if (this.disposed) throw new Error('The original reading cache is closed. The page has not been updated.')
+    const revision = this.revisionValue
+    const prepared: Array<{ id: string; saved: SavedReading; data: string; bytes: number }> = []
+    const anchors = new Map<string, { epoch: string; positions: Record<string, SavedPosition> }>()
+    for (const id of new Set([...this.records.keys(), ...this.pendingPositions.keys()])) {
+      const saved = this.load(id), pending = this.pendingPositions.get(id)
+      if (pending) anchors.set(id, pending)
+      if (!saved) { if (pending && Object.values(pending.positions).some(position => position.value && position.seq === undefined)) throw new Error('The current reading position has no exact native source anchor. Reopen its source window before updating.'); continue }
+      const bounded = boundedCheckpoint(saved)
+      if (!bounded) { if (!pending) continue; if (Object.values(pending.positions).some(position => position.value && position.seq === undefined)) throw new Error('The current reading position has no exact native source anchor. Reopen its source window before updating.'); continue }
+      if (pending?.epoch === saved.epoch) bounded.saved.positions = { ...pending.positions }
+      const data = serialize(bounded.saved), bytes = encoder.encode(data).byteLength
+      if (bytes > MAX_SESSION_BYTES) throw new Error('The current reading position could not fit in its checkpoint. The page remains open.')
+      prepared.push({ id, saved: bounded.saved, data, bytes })
+    }
+    if (prepared.length > MAX_SESSIONS || prepared.reduce((sum, item) => sum + item.bytes, 0) > MAX_BYTES) throw new Error('The current reading checkpoints exceed their storage budget. The page remains open.')
+    const next = new Map(this.entries)
+    for (const item of prepared) next.set(item.id, { ...next.get(item.id), id: item.id, used: Date.now(), bytes: item.bytes, session: item.saved.session })
+    for (const [id, reading] of anchors) {
+      const entry = next.get(id)
+      if (!entry) throw new Error('The current reading source is no longer retained. The page remains open.')
+      next.set(id, { ...entry, reading })
+    }
+    if (next.size > MAX_SESSIONS || [...next.values()].reduce((sum, item) => sum + item.bytes, 0) > MAX_BYTES) throw new Error('The reading cache is still trimming older checkpoints. Try the update again after it finishes.')
+    for (const item of prepared) {
+      this.access.storage.setItem(this.storageKey(item.id), item.data)
+    }
+    this.access.storage.setItem(this.indexKey, JSON.stringify([...next.values()]))
+    if (revision !== this.revisionValue || this.disposed) throw new Error('The reading position or source changed while saving. Try the update again.')
+    for (const [id, entry] of next) this.entries.set(id, entry)
+    for (const item of prepared) { this.records.set(item.id, item.saved); this.dirty.delete(item.id) }
+    const bodies = new Set(prepared.map(item => item.id))
+    for (const id of anchors.keys()) {
+      this.dirty.delete(id)
+      if (!bodies.has(id)) this.records.delete(id)
+    }
+  }
   private evict(keep: string): void {
     let total = [...this.entries.values()].reduce((sum, entry) => sum + entry.bytes, 0)
     for (const old of [...this.entries.values()].filter(entry => entry.id !== keep).sort((a, b) => a.used - b.used)) {
@@ -260,6 +319,7 @@ export class SourceReadingCache {
   private saveIndex(): void { try { this.access.storage.setItem(this.indexKey, JSON.stringify([...this.entries.values()])) } catch { /* Optional read cache. */ } }
   remove(id: string): void {
     this.records.delete(id); this.entries.delete(id); this.dirty.delete(id)
+    this.pendingPositions.delete(id); this.revisionValue++
     try { this.access.storage.removeItem(this.storageKey(id)) } catch { /* Optional read cache. */ }
     this.saveIndex()
   }

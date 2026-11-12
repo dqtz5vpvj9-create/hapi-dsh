@@ -5,7 +5,9 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readStreams, requestPolicy, streamPolicy } from './test-history-smoke.mjs';
+import { readStreams, requestPolicy, streamPolicy } from './smoke-read-policy.mjs';
+import { appServiceInputs, appServiceOutputs } from '../src/workspace/app-service-types.ts';
+import { ReadStateService } from '../src/workspace/read-state-service.ts';
 
 const configDir = join(homedir(), '.config/hapi-dsh');
 const fail = code => { throw Object.assign(new Error(code), { smokeCode: code }); };
@@ -72,6 +74,9 @@ async function collectFailureDiagnostics(page, result) {
       paneCount: document.querySelectorAll('.hapi-pane[data-session-id]').length,
       scrollportCount: document.querySelectorAll('[data-conversation-scroll]').length,
       editorCount: document.querySelectorAll('[data-composer-input]').length,
+      documentElements: document.querySelectorAll('*').length,
+      workspaceElements: document.querySelector('[data-hapi-workspace]')?.querySelectorAll('*').length ?? 0,
+      sidebarElements: document.querySelector('[data-slot="sidebar"]')?.querySelectorAll('*').length ?? 0,
       performanceMarks: performance.getEntriesByType('mark').map(entry => entry.name),
       reading: window.__hhpiSmoke?.rows ? (() => { const r = window.__hhpiSmoke.rows(); return {
         exists: r.exists, top: Math.round(r.top), max: Math.round(r.max), viewport: Math.round(r.viewport ?? 0),
@@ -80,6 +85,7 @@ async function collectFailureDiagnostics(page, result) {
     }));
     result.diagnostics = { available: true, workspaceCount: value.workspaceCount, paneCount: value.paneCount,
       scrollportCount: value.scrollportCount, editorCount: value.editorCount,
+      documentElements: value.documentElements, workspaceElements: value.workspaceElements, sidebarElements: value.sidebarElements,
       performanceMarks: safeHhpiDiagnosticMarks(value.performanceMarks), reading: value.reading };
   } catch { /* Keep only the non-sensitive unavailable/count skeleton. */ }
 }
@@ -97,6 +103,27 @@ export function canonicalHhpiSessionId(value) {
 
 export function hhpiRequestPolicy(method, body, targetId) {
   const args = body?.payload?.args ?? {};
+  if (method === 'sourceNavigation/locatePosition') {
+    return canonicalHhpiSessionId(targetId) && args.request?.sessionId === targetId ? requestPolicy(method, body) : 'block';
+  }
+  if (method === 'hhpi/nativeCapabilities') {
+    if (!canonicalHhpiSessionId(targetId)) return 'block';
+    const [, , sourceId, engine] = targetId.split(':').map(decodeURIComponent);
+    return engine === 'codex' && args.request?.sourceId === sourceId && Object.keys(args.request).length === 1 ? 'read' : 'block';
+  }
+  if (method === 'sourceWorkspace/resolve') {
+    return canonicalHhpiSessionId(targetId) && args.request?.sessionId === targetId
+      && Object.keys(args.request).length === 1 ? 'read' : 'block';
+  }
+  const appRead = method.startsWith('appServices/') ? method.slice('appServices/'.length) : null;
+  if (appRead === 'appReadStateWrite') {
+    const parsed = appServiceInputs.appReadStateWrite.safeParse(args.request);
+    return parsed.success && canonicalHhpiSessionId(targetId) && parsed.data.source.kind === 'hhpi'
+      && parsed.data.source.sessionId === targetId ? 'isolate-app-read-state' : 'block';
+  }
+  if (['appNotificationSettings', 'appReadState', 'appReadStates', 'appNotificationResolve', 'appShareResolve'].includes(appRead)) {
+    return appServiceInputs[appRead].safeParse(args.request).success ? 'read' : 'block';
+  }
   if (method === 'hhpi/nativeCall') {
     if (!canonicalHhpiSessionId(targetId)) return 'block';
     const [, , sourceId, , nativeId] = targetId.split(':').map(decodeURIComponent);
@@ -113,18 +140,57 @@ export function hhpiRequestPolicy(method, body, targetId) {
   return requestPolicy(method, body);
 }
 
+/** Real CAS semantics over an in-memory SQLite store. No browser write reaches the Host. */
+export function createSmokeReadStateIsolation(scope, targetId, hostId = 'local') {
+  const service = new ReadStateService({ path: ':memory:' });
+  const exact = source => source.kind === 'hhpi' && source.sessionId === targetId
+    && canonicalHhpiSessionId(targetId) && source.hostId === hostId;
+  const context = { scope, authorizeSource(source) { if (!exact(source)) throw new Error('smoke-read-state-source-mismatch'); } };
+  return {
+    async read(input) {
+      const request = appServiceInputs.appReadState.parse(input);
+      return exact(request.source) ? service.appReadState(context, request) : null;
+    },
+    async readMany(input) {
+      const request = appServiceInputs.appReadStates.parse(input);
+      return Promise.all(request.sources.map(source => exact(source) ? service.appReadState(context, { source }) : null));
+    },
+    write(input) { return service.appReadStateWrite(context, input); },
+    close() { service.close(); },
+  };
+}
+
 function normalizeText(value) { return String(value ?? '').normalize('NFKC').replace(/\s+/gu, ' ').trim(); }
 function compactText(value) { return normalizeText(value).replace(/\s/gu, ''); }
-function bodyText(entry) {
+function bodyTexts(entry) {
   const event = entry?.event, data = event?.data;
-  if (event?.type === 'tool/call' && typeof data?.name === 'string') return data.name;
+  if (event?.type === 'tool/call' && typeof data?.name === 'string') {
+    const texts = [data.name];
+    let input = data.arguments;
+    if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = null; } }
+    if (input && typeof input === 'object' && !Array.isArray(input)) {
+      // Source command views display source-provided action semantics instead
+      // of the transport tool name. Each candidate still requires the exact
+      // call anchor below; a matching command on another call is insufficient.
+      if (typeof input.description === 'string') texts.push(input.description);
+      const actions = input.command_actions ?? input.commandActions;
+      if (Array.isArray(actions)) for (const action of actions) {
+        const subject = action?.type === 'read' ? action.name ?? action.path
+          : action?.type === 'search' ? action.query : action?.type === 'listFiles' ? action.path : null;
+        if (typeof subject === 'string') texts.push(subject);
+      }
+      const command = input.command ?? input.cmd;
+      if (typeof command === 'string') texts.push(command.split('\n')[0].trim().slice(0, 117));
+    }
+    return texts;
+  }
   if (event?.type === 'user/message' && Array.isArray(data?.content)) {
-    return data.content.flatMap(block => typeof block?.text === 'string' ? [block.text] : []).join('\n');
+    return [data.content.flatMap(block => typeof block?.text === 'string' ? [block.text] : []).join('\n')];
   }
   if (event?.type === 'assistant/message' && Array.isArray(data?.message?.content)) {
-    return data.message.content.flatMap(block => block?.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n');
+    return [data.message.content.flatMap(block => block?.type === 'text' && typeof block.text === 'string' ? [block.text] : []).join('\n')];
   }
-  return '';
+  return [];
 }
 function textMarks(value) {
   const compact = compactText(value), chars = [...compact];
@@ -136,7 +202,7 @@ function textMarks(value) {
 function pageBodies(record) {
   const context = new Set(record.page?.context ?? []);
   return (record.page?.entries ?? []).flatMap(entry => {
-    const seq = entry?.event?.seq, text = bodyText(entry);
+    const seq = entry?.event?.seq;
     const callId = entry?.event?.type === 'tool/call' && entry.event.data?.callId;
     const event = entry?.event, data = event?.data;
     // Pinned Conversation context identities survive Markdown rendering. Text
@@ -144,9 +210,9 @@ function pageBodies(record) {
     const contextKind = event?.type === 'assistant/message' ? 'assistant-step' : event?.type === 'user/message' ? 'input-message' : null;
     const contextId = contextKind === 'assistant-step' && Number.isSafeInteger(data?.turn) && Number.isSafeInteger(data?.step)
       ? `${data.turn}:${data.step}` : contextKind === 'input-message' && typeof data?.id === 'string' ? data.id : null;
-    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) && text ? [{ seq, text: normalizeText(text), marks: textMarks(text),
+    return Number.isSafeInteger(seq) && seq >= 0 && !context.has(seq) ? bodyTexts(entry).filter(Boolean).map(text => ({ seq, text: normalizeText(text), marks: textMarks(text),
       ...(contextKind && contextId !== null ? { nodeKey: `${contextKind.length}:${contextKind}${contextId}` } : {}),
-      ...(typeof callId === 'string' ? { anchor: `call:${callId}` } : {}) }] : [];
+      ...(typeof callId === 'string' ? { anchor: `call:${callId}` } : {}) })) : [];
   });
 }
 function sourceRowText(row) { return normalizeText(row?.bodyText ?? row?.text ?? ''); }
@@ -223,12 +289,14 @@ export function syntheticWorkspace(sessionId) {
     activeWindowId: 'hhpi-smoke-window', focused: { 'hhpi-smoke-window': 'hhpi-smoke-pane' }, zoomed: {} };
 }
 
-export function installObserver({ sessionId, allowedReadStreams, profile = false }) {
+export function installObserver({ sessionId, allowedReadStreams, profile = false, geometryProfile = profile }) {
   const state = window.__hhpiSmoke = { sessionId, blocked: 0, isolatedWorkspace: 0, isolatedReadState: 0,
-    isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], monitor: false, lastFrame: null };
-  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {}; state.mutationReads = [];
-  if (profile && typeof HTMLElement === 'function') {
-    const pendingMutations = [], seenRows = new WeakSet();
+    isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], frameHitches: [], monitor: false, lastFrame: null };
+  state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {}; state.mutationReads = []; state.slowGeometryReads = [];
+  if (geometryProfile && typeof HTMLElement === 'function') {
+    const pendingMutations = [], rowIds = new WeakMap(), seenRows = new WeakSet();
+    let nextRowId = 0;
+    const rowId = row => { if (!rowIds.has(row)) rowIds.set(row, ++nextRowId); return rowIds.get(row); };
     const mutationObserver = new MutationObserver(records => pendingMutations.push(...records));
     const observeMutations = () => mutationObserver.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true });
     if (document.documentElement) observeMutations();
@@ -237,28 +305,51 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
       const original = HTMLElement.prototype[method];
       HTMLElement.prototype[method] = function(...args) {
         if (method === 'getClientRects' && this.hasAttribute('data-chat-virtual-rows')) {
-          const records = pendingMutations.splice(0).concat(mutationObserver.takeRecords()), counts = {};
+          const records = pendingMutations.splice(0).concat(mutationObserver.takeRecords()), counts = {}, rowChanges = new Map();
           for (const record of records) {
             const target = record.target instanceof Element ? record.target : record.target.parentElement;
             if (!target || !this.contains(target)) continue;
             const key = record.type === 'attributes' ? `attribute:${record.attributeName}` : record.type;
             counts[key] = (counts[key] ?? 0) + 1;
+            const row = target.closest('[data-chat-virtual-row]');
+            if (row) {
+              const id = rowId(row), changes = rowChanges.get(id) ?? {};
+              const change = `${target === row ? 'row' : 'content'}:${key}`;
+              changes[change] = (changes[change] ?? 0) + 1;
+              rowChanges.set(id, changes);
+            }
           }
           const rows = [...this.querySelectorAll('[data-chat-virtual-row]')];
-          const fresh = rows.filter(row => !seenRows.has(row)).length;
+          const fresh = rows.filter(row => !seenRows.has(row)).map(rowId);
           for (const row of rows) seenRows.add(row);
-          state.mutationReads.push({ at: performance.now(), phase: state.phase, rows: rows.length, fresh, counts });
+          state.mutationReads.push({ at: performance.now(), phase: state.phase, rows: rows.length,
+            fresh: fresh.length, rowIds: rows.map(rowId), freshRowIds: fresh,
+            rowChanges: [...rowChanges].map(([row, changes]) => ({ row, changes })), counts });
         }
         const started = performance.now(), value = original.apply(this, args), duration = performance.now() - started;
         const kind = this.hasAttribute('data-chat-virtual-rows') ? 'virtual-list' : this.hasAttribute('data-chat-virtual-row') ? 'virtual-row' : this.hasAttribute('data-conversation-scroll') ? 'scrollport' : this.hasAttribute('data-chat-anchor-key') ? 'anchor' : 'other';
         const key = `${method}:${kind}`, record = state.nativeReads[key] ??= { count: 0, total: 0, max: 0 };
         record.count++; record.total += duration;
-        if (duration > record.max) { record.max = duration; record.maxAt = started; record.phase = state.phase; record.stack = new Error().stack?.split('\n').slice(2, 6).map(line => line.replace(/https?:[^ )]*?(?=:\d+:\d+(?:[ )]|$))/gu, '<script>')); }
+        if (duration > record.max || duration > 4) {
+          const stack = new Error().stack?.split('\n').slice(2, 6).map(line => line.replace(/https?:[^ )]*?(?=:\d+:\d+(?:[ )]|$))/gu, '<script>'));
+          if (duration > record.max) { record.max = duration; record.maxAt = started; record.phase = state.phase; record.stack = stack; }
+          if (duration > 4) {
+            state.slowGeometryReads.push({ at: started, duration, phase: state.phase, method, kind,
+              ...kind === 'virtual-row' ? { row: rowId(this) } : {}, stack });
+            if (state.slowGeometryReads.length > 64) state.slowGeometryReads.shift();
+          }
+        }
         return value;
       };
     }
   }
-  const phase = name => { state.phase = name; if (profile) state.phases.push({ start: performance.now(), phase: name }); };
+  const phase = name => {
+    state.phase = name;
+    if (profile) {
+      state.phases.push({ start: performance.now(), phase: name });
+      performance.mark(`hhpi-smoke:${name}`);
+    }
+  };
   phase('opening');
   if (profile && typeof PerformanceObserver === 'function') {
     new PerformanceObserver(list => { for (const entry of list.getEntries()) state.longTasks.push({ start: entry.startTime, duration: entry.duration }); }).observe({ type: 'longtask', buffered: true });
@@ -287,20 +378,39 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
     if (closeStream) streams.delete(message.streamId);
     return originalSend.call(this, data);
   };
+  const readerIntent = event => {
+    const port = event.target instanceof Element ? event.target.closest('[data-conversation-scroll]') : null;
+    if (!port) return;
+    const tracker = trackScroll(port);
+    tracker.inputVersion++; tracker.inputStartScrolls = tracker.scrolls; tracker.awaitingEnd = true;
+  };
   window.addEventListener('wheel', event => {
-    if (event.target instanceof Element && event.target.closest('[data-conversation-scroll]')) { state.lastInput = performance.now(); phase('reader-input'); }
+    if (event.target instanceof Element && event.target.closest('[data-conversation-scroll]')) { readerIntent(event); state.lastInput = performance.now(); phase('reader-input'); }
   }, { capture: true, passive: true });
   const frame = timestamp => {
-    if (state.monitor && state.lastFrame !== null) { state.frameGaps.push(timestamp - state.lastFrame); if (profile) state.frameEvents.push({ start: state.lastFrame, end: timestamp, gap: timestamp - state.lastFrame }); }
+    if (state.monitor && state.lastFrame !== null) {
+      const gap = timestamp - state.lastFrame;
+      state.frameGaps.push(gap);
+      if (profile) state.frameEvents.push({ start: state.lastFrame, end: timestamp, gap });
+      // Retain only failed intervals in ordinary acceptance. This adds no
+      // geometry calls, CPU sampling or per-good-frame diagnostic objects.
+      if (gap > 80) {
+        state.frameHitches.push({ start: state.lastFrame, end: timestamp, gap,
+          phaseAtStart: state.lastFramePhase, phaseAtEnd: state.phase });
+        state.frameHitches.sort((a, b) => b.gap - a.gap);
+        state.frameHitches.length = Math.min(8, state.frameHitches.length);
+      }
+    }
     state.lastFrame = state.monitor ? timestamp : null;
+    state.lastFramePhase = state.phase;
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
   const trackScroll = port => {
     if (state.scrollTracking?.port === port) return state.scrollTracking;
-    const tracker = state.scrollTracking = { port, scrolls: 0, ended: 0, supportsScrollEnd: 'onscrollend' in port };
+    const tracker = state.scrollTracking = { port, scrolls: 0, ended: 0, inputVersion: 0, inputStartScrolls: 0, awaitingEnd: false, supportsScrollEnd: 'onscrollend' in port };
     port.addEventListener('scroll', () => { tracker.scrolls++; }, { passive: true });
-    port.addEventListener('scrollend', () => { tracker.ended = tracker.scrolls; }, { passive: true });
+    port.addEventListener('scrollend', () => { tracker.ended = tracker.scrolls; tracker.awaitingEnd = false; }, { passive: true });
     return tracker;
   };
   state.rows = () => {
@@ -335,7 +445,7 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
           top: rect.top, bottom: rect.bottom, visible: rect.bottom > box.top && rect.top < box.bottom
             && rect.height > 0 && row.closest('[hidden]') === null };
       });
-    if (profile) state.probeTasks.push({ kind: 'rows', phase: state.phase, start: probeStarted, duration: performance.now() - probeStarted, rows: rows.length, chars: rows.reduce((total, row) => total + row.text.length, 0) });
+    if (geometryProfile) state.probeTasks.push({ kind: 'rows', phase: state.phase, start: probeStarted, duration: performance.now() - probeStarted, rows: rows.length, chars: rows.reduce((total, row) => total + row.text.length, 0) });
     return { exists: true, rows, top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight),
       viewport: scroll.clientHeight };
   };
@@ -344,17 +454,20 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
   state.layoutCommits = [];
   const waitForInputIdle = async port => {
     const tracker = trackScroll(port), deadline = performance.now() + 3000;
-    let last = port.scrollTop, priorScrolls = tracker.scrolls, stable = 0, quietSince = performance.now(), inputSettled = false;
+    let last = port.scrollTop, priorScrolls = tracker.scrolls, priorInput = tracker.inputVersion, stable = 0, quietSince = performance.now(), inputSettled = false;
     while (performance.now() < deadline) {
       await new Promise(requestAnimationFrame);
       const current = port.scrollTop;
-      if (current !== last || tracker.scrolls !== priorScrolls || state.touchActive) { stable = 0; quietSince = performance.now(); }
+      if (current !== last || tracker.scrolls !== priorScrolls || tracker.inputVersion !== priorInput || state.touchActive) { stable = 0; quietSince = performance.now(); }
       else stable++;
-      const nativePending = tracker.supportsScrollEnd && tracker.ended < tracker.scrolls;
+      const nativePending = tracker.supportsScrollEnd && tracker.awaitingEnd && tracker.scrolls > tracker.inputStartScrolls;
       if (!state.touchActive && !nativePending && stable >= 6 && performance.now() - quietSince >= 250) { inputSettled = true; break; }
-      last = current; priorScrolls = tracker.scrolls;
+      last = current; priorScrolls = tracker.scrolls; priorInput = tracker.inputVersion;
     }
     if (!inputSettled) throw new Error('Input did not settle before publication.');
+    // A quiet edge gesture can finish without moving. Later layout clamps are
+    // not a new native gesture and must not wait for another scrollend.
+    tracker.awaitingEnd = false;
   };
   state.waitForGestureSettled = async () => {
     const port = state.scrollTracking?.port;
@@ -378,12 +491,21 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
       if (node.dataset.chatFlowKind === 'turn-process' || node.closest('[hidden]')) return false;
       const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
     });
+    const bodyAnchor = [...port.querySelectorAll('[data-chat-node-key][data-chat-anchor-key]')].find(node => {
+      if (node.dataset.chatFlowKind === 'turn-process' || node.closest('[hidden]')) return false;
+      const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
+    });
+    // Official paging can regroup a partial prefix. A group header has no
+    // source-node identity; prefer the actual visible body when one is present.
+    // Group-only views still retain their strict physical header check below.
     const anchor = visible?.dataset.chatGroupKey === undefined ? visible
-      : [...visible.querySelectorAll('[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)')].find(node => {
+      : bodyAnchor ?? [...visible.querySelectorAll('[data-step-process-content] > [data-chat-anchor-key]:not(:empty):not([hidden]):not([hidden] *)')].find(node => {
         const rect = node.getBoundingClientRect(); return rect.height > 0 && rect.bottom > bounds.top && rect.top < bounds.bottom;
       }) ?? visible;
     const row = anchor?.closest('[data-chat-virtual-row]');
     if (!anchor || !row) throw new Error('No physical reading anchor at publication.');
+    const bodyKey = bodyAnchor?.dataset.chatAnchorKey, bodyOwner = bodyAnchor?.dataset.chatNodeKey;
+    const bodyTop = bodyAnchor ? bodyAnchor.getBoundingClientRect().top - bounds.top : null;
     const key = anchor.dataset.chatAnchorKey, oldIndex = row.dataset.index;
     const inputAtArm = state.lastInput, scrollAtArm = port.scrollTop;
     const loadButton = port.querySelector('[data-chat-flow] > div > button:disabled');
@@ -391,7 +513,11 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
     const semanticOwner = anchor.closest('[data-chat-node-key]')?.dataset.chatNodeKey;
     const record = { done: false, retained: false, delta: null, kind: key?.startsWith('call:') ? 'tool' : key?.startsWith('group:') ? 'group' : key?.startsWith('[') ? 'segmented' : 'node',
       visibleBefore: anchor.getBoundingClientRect().bottom > bounds.top && anchor.getBoundingClientRect().top < bounds.bottom,
-      flowKind: anchor.dataset.chatFlowKind ?? null, oldIndex: Number(oldIndex), anchorTop: Math.round(top), scrollAtArm: Math.round(scrollAtArm) };
+      flowKind: anchor.dataset.chatFlowKind ?? null, oldIndex: Number(oldIndex), anchorTop: Math.round(top), scrollAtArm: Math.round(scrollAtArm),
+      bodyKind: bodyAnchor?.dataset.chatFlowKind ?? null, bodyTop, bodyDelta: null,
+      maxAtArm: port.scrollHeight - port.clientHeight, viewportAtArm: port.clientHeight,
+      spacerTopAtArm: port.querySelector('[data-chat-turn-spacer]')?.getBoundingClientRect().top - bounds.top,
+      spacerHeightAtArm: port.querySelector('[data-chat-turn-spacer]')?.getBoundingClientRect().height };
     const token = state.layoutCommits.push(record) - 1;
     const observer = new MutationObserver(() => {
       const current = [...port.querySelectorAll('[data-chat-anchor-key]')].find(node => node.dataset.chatAnchorKey === key);
@@ -411,10 +537,15 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
         record.retained = !!settled;
         record.inputDuringCommit = state.lastInput !== inputAtArm;
         record.scrollAtSettle = Math.round(port.scrollTop);
+        record.maxAtSettle = port.scrollHeight - port.clientHeight;
+        record.viewportAtSettle = port.clientHeight;
         record.anchorConnected = anchor.isConnected;
         record.rowConnected = row.isConnected;
         record.ownerRetained = semanticOwner === undefined ? null : [...port.querySelectorAll('[data-chat-node-key]')].some(node => node.dataset.chatNodeKey === semanticOwner);
         record.delta = settled ? settled.getBoundingClientRect().top - port.getBoundingClientRect().top - top : null;
+        const settledBody = bodyAnchor && [...port.querySelectorAll('[data-chat-node-key][data-chat-anchor-key]')]
+          .find(node => node.dataset.chatAnchorKey === bodyKey && node.dataset.chatNodeKey === bodyOwner);
+        record.bodyDelta = settledBody ? settledBody.getBoundingClientRect().top - port.getBoundingClientRect().top - bodyTop : null;
         record.done = true;
         phase('reader-settled');
       }));
@@ -422,7 +553,7 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
     observer.observe(port, { subtree: true, childList: true, attributes: true, attributeFilter: ['data-index', 'disabled'] });
     return token;
   };
-  window.addEventListener('touchstart', () => { state.touchActive = true; }, { capture: true, passive: true });
+  window.addEventListener('touchstart', event => { state.touchActive = true; readerIntent(event); }, { capture: true, passive: true });
   for (const type of ['touchend', 'touchcancel']) window.addEventListener(type, () => { state.touchActive = false; }, { capture: true, passive: true });
 }
 
@@ -437,6 +568,7 @@ async function parseOptions(argv) {
     else if (key === '--scenario' && ['both', 'desktop', 'mobile'].includes(value)) config.scenario = value;
     else if (key === '--timeout-ms') config.timeoutMs = Number(value);
     else if (key === '--pages') config.pages = Number(value);
+    else if (key === '--opening-seq') config.openingSeq = Number(value);
     else if (key === '--report') config.report = value;
     else fail('invalid-arguments');
   }
@@ -444,6 +576,7 @@ async function parseOptions(argv) {
   if (!canonicalHhpiSessionId(config.sessionId)) fail('canonical-hhpi-session-id-required');
   if (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1 || config.timeoutMs > 60_000) fail('invalid-time-budget');
   if (!Number.isSafeInteger(config.pages) || config.pages < 6) fail('invalid-page-count');
+  if (config.openingSeq !== undefined && (!Number.isSafeInteger(config.openingSeq) || config.openingSeq < 0)) fail('invalid-opening-sequence');
   const url = new URL((await readFile(config.urlFile, 'utf8')).trim());
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) fail('invalid-launch-url');
   config.url = url.href;
@@ -453,13 +586,25 @@ async function parseOptions(argv) {
 function unwrap(value) { return value?.ok === true && 'value' in value ? value.value : value; }
 function hapiPath(appUrl, method) { return new URL(`api/${method}`, appUrl).href; }
 
+/** Include reads queued by accepted publications before inspecting or navigating. */
+export async function settleReadPublications(publications, responses, checkpoint) {
+  for (;;) {
+    const count = publications.length;
+    await Promise.all([...publications, ...responses]);
+    await checkpoint();
+    if (publications.length === count && responses.size === 0) return;
+  }
+}
+
 async function runScenario(browser, config, name) {
   const result = { name, status: 'not-run', durationMs: 0, earlierPagesVisible: 0, targetReads: 0,
     cachedTailReadDelta: null, changesStreams: 0, maxFrameGapMs: 0, blockedWrites: 0, blockedStreams: 0 };
   const start = performance.now(); let context, page, cdp, deadline, timedOut = false;
-  let diagnosticCapture, traceCompletion;
-  const profile = process.env.HAPI_DSH_SMOKE_PROFILE === '1';
-  const sourcePages = [], pending = new Set(), layoutCommits = [], socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
+  let diagnosticCapture, traceCompletion, readStateIsolation;
+  const traceOnly = process.env.HAPI_DSH_SMOKE_TRACE_ONLY === '1';
+  const profile = traceOnly || process.env.HAPI_DSH_SMOKE_PROFILE === '1';
+  const sourcePages = [], sourceChanges = [], pending = new Set(), layoutCommits = [], socketPages = new Map(), openedReadStreams = new Map(), anchorSnapshots = new Map();
+  const sourceRecords = () => [...sourcePages, ...sourceChanges];
   let activePageProbe = null;
   const awaiting = async (step, promise) => { result.step = step; return await promise; };
   const blocked = method => { result.blockedWrites++; result.blockedMethod ??= cleanMethod(method); };
@@ -485,6 +630,8 @@ async function runScenario(browser, config, name) {
       return unwrap(envelope.result.value);
     };
     const catalog = await awaiting('resolve-canonical-session', bootstrap('hhpi/catalog'));
+    const appSettings = appServiceOutputs.appNotificationSettings.parse(await bootstrap('appServices/appNotificationSettings', { request: { deviceId: 'hhpi-smoke-isolation' } }));
+    readStateIsolation = createSmokeReadStateIsolation(appSettings.scope, config.sessionId);
     if (!Array.isArray(catalog?.sessions)) fail('catalog-response-invalid');
     if (!catalog.sessions.some(session => session.id === config.sessionId && canonicalHhpiSessionId(session.id))) {
       // A freshly started Host may still be discovering its sidebar. Exercise
@@ -493,35 +640,17 @@ async function runScenario(browser, config, name) {
       if (resolved?.id !== config.sessionId || !canonicalHhpiSessionId(resolved.id)) fail('canonical-session-not-in-hhpi-catalog');
     }
     const workspace = syntheticWorkspace(config.sessionId);
-    let legacyResource, migratedSource;
-    if (catalog.legacyHapi === false) {
-      const saved = await awaiting('read-saved-reference-for-terminal-state-check', bootstrap('hapi/workspaceGet'));
-      const findLegacy = value => {
-        if (!value || typeof value !== 'object') return undefined;
-        if (value.type === 'pane' && value.resource?.sourceSessionId) return value.resource;
-        if (value.type === 'pane' && value.resource?.kind === 'chat' && value.resource.draftOrigin?.sourceSessionId
-          && value.resource.draftOrigin?.sourceHubId) return { kind: 'chat', ...value.resource.draftOrigin };
-        for (const child of Object.values(value)) {
-          if (child && typeof child === 'object') { const found = findLegacy(child); if (found) return found; }
-        }
-      };
-      legacyResource = findLegacy(saved.state);
-      if (legacyResource) {
-        const matches = catalog.sessions.filter(session => session.legacyOrigin?.hubId === legacyResource.sourceHubId
-          && session.legacyOrigin?.sessionId === legacyResource.sourceSessionId && canonicalHhpiSessionId(session.id));
-        if (matches.length === 1) migratedSource = matches[0];
-        if (migratedSource?.id === config.sessionId) workspace.windows[0].root.resource = legacyResource;
-        workspace.windows.push({ id: 'saved-source-window', name: 'Saved source', autoName: false,
-          root: { type: 'pane', id: 'saved-source-pane', resource: legacyResource } });
-        workspace.focused['saved-source-window'] = 'saved-source-pane';
-      }
-    }
     appUrl.searchParams.delete('hapiSession'); appUrl.searchParams.delete('hapiHub');
     appUrl.searchParams.delete('hapiMessage'); appUrl.searchParams.delete('hapiRequest');
+    if (config.openingSeq !== undefined) {
+      appUrl.searchParams.set('hapiSession', config.sessionId);
+      appUrl.searchParams.set('hapiMessage', String(config.openingSeq));
+      result.opening = 'exact-source-position';
+    }
     await awaiting('install-synthetic-workspace-bootstrap', context.addInitScript(({ origin, sessionId }) => {
       if (location.origin === origin) localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId }));
     }, { origin: appUrl.origin, sessionId: config.sessionId }));
-    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, allowedReadStreams: [...readStreams], profile }));
+    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, allowedReadStreams: [...readStreams], profile, geometryProfile: profile && !traceOnly }));
     await awaiting('install-write-isolation-routes', context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url());
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) return route.continue();
@@ -529,22 +658,25 @@ async function runScenario(browser, config, name) {
       const method = url.pathname.replace(/^.*\/api\//, '');
       const validApi = request.method() === 'POST' && url.pathname.includes('/api/') && body?.method === method;
       const policy = validApi ? hhpiRequestPolicy(method, body, config.sessionId) : 'block';
-      const savedRequest = body?.payload?.args?.request;
-      if (catalog.legacyHapi === false && legacyResource && policy === 'display-lease' && method === 'hapi/sourceSessionResolve'
-        && savedRequest.hubId === legacyResource.sourceHubId && savedRequest.sourceSessionId === legacyResource.sourceSessionId) {
-        // The verified HAPI-free shell only returns source_not_connected here;
-        // unlike a legacy resolver, it cannot materialize a display or execution.
-        result.savedLegacyResolutionReads = (result.savedLegacyResolutionReads ?? 0) + 1;
-        return route.continue();
-      }
+      const input = body?.payload?.args?.request;
       if (policy === 'read' && method === 'hapi/workspaceGet') {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId,
           result: { ok: true, value: { revision: 0, state: workspace } } }) });
       }
+      if (method === 'appServices/appReadState' && policy === 'read'
+        || method === 'appServices/appReadStates' && policy === 'read' || policy === 'isolate-app-read-state') {
+        const value = method === 'appServices/appReadState' ? await readStateIsolation.read(input)
+          : method === 'appServices/appReadStates' ? await readStateIsolation.readMany(input) : await readStateIsolation.write(input);
+        if (policy === 'isolate-app-read-state') result.isolatedAppReadStateWrites = (result.isolatedAppReadStateWrites ?? 0) + 1;
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId, result: { ok: true, value } }) });
+      }
       if (policy === 'read' && method === 'hhpi/read') {
+        const publication = { ordinal: (result.readPublications ??= []).length + 1, stage: 'fetch' };
+        result.readPublications.push(publication);
         const task = (async () => {
           let upstream;
           try { upstream = await route.fetch(); } catch { return route.continue(); }
+          publication.stage = 'capture-baseline';
           let snapshot = { anchor: null, baselineVerdict: 'pre-response-anchor-unavailable', mountedRows: 0, visibleRows: 0 };
           try {
             const state = await page?.evaluate(() => window.__hhpiSmoke?.rows?.() ?? null);
@@ -553,7 +685,7 @@ async function runScenario(browser, config, name) {
                 ? sourceAnchorVerdict(activePageProbe.anchor, state.rows) : null;
               recordAnchorVerdict(result, 'baselineAtResponse', baselineVerdict);
               snapshot = {
-                anchor: captureVisibleSourceAnchor(state.rows, sourcePages, activePageProbe?.anchor),
+                anchor: captureVisibleSourceAnchor(state.rows, sourceRecords(), activePageProbe?.anchor),
                 baselineVerdict: baselineVerdict ?? 'no-page-baseline',
                 mountedRows: state.rows.length,
                 visibleRows: state.rows.filter(row => row.visible).length,
@@ -562,10 +694,14 @@ async function runScenario(browser, config, name) {
           } catch { /* Keep only the anonymous unavailable snapshot. */ }
           if (typeof body.rpcId === 'string') anchorSnapshots.set(body.rpcId, snapshot);
           const older = Number.isFinite(body.payload?.args?.request?.before);
+          publication.stage = 'wait-input-idle';
           const token = older ? await page.evaluate(() => window.__hhpiSmoke.armLayoutCommit()) : null;
+          publication.stage = 'fulfill';
           await route.fulfill({ response: upstream });
+          publication.stage = token === null ? 'complete' : 'wait-dom-commit';
           if (token !== null) await page.waitForFunction(index => window.__hhpiSmoke.layoutCommits[index]?.done || document.querySelector('[data-history-page-error]'),
             token, { timeout: 5000 });
+          publication.stage = 'complete';
           return;
         })();
         layoutCommits.push(task);
@@ -575,14 +711,10 @@ async function runScenario(browser, config, name) {
         return task.catch(() => {});
       }
       if (policy === 'read') return route.continue();
-      const input = body?.payload?.args?.request;
       let value;
       if (policy === 'isolate-workspace' && Number.isInteger(input?.expectedRevision) && input?.state) {
         result.isolatedWorkspaceWrites = (result.isolatedWorkspaceWrites ?? 0) + 1;
         value = { status: 'applied', revision: input.expectedRevision + 1, state: input.state };
-      } else if (policy === 'isolate-read-state' && Number.isInteger(input?.expectedVersion)) {
-        result.isolatedReadStateWrites = (result.isolatedReadStateWrites ?? 0) + 1;
-        value = { applied: true, state: { version: input.expectedVersion + 1, seenAt: input.seenAt, manualUnreadAt: input.manualUnreadAt } };
       } else if (policy === 'isolate-inspect-manifest') {
         result.isolatedInspectManifests = (result.isolatedInspectManifests ?? 0) + 1; value = null;
       } else { blocked(method); return route.abort('blockedbyclient'); }
@@ -633,7 +765,8 @@ async function runScenario(browser, config, name) {
         if (pageValue?.session?.id !== config.sessionId || !Array.isArray(pageValue.entries)) {
           sourcePages.push({ request, anchorSnapshot, error: 'wrong-source-or-invalid-page' }); return;
         }
-        if (profile) { result.sourcePayloads ??= []; result.sourcePayloads.push({ bytes: Buffer.byteLength(JSON.stringify(envelope)), events: pageValue.entries.length, context: pageValue.context?.length ?? 0, older: Number.isFinite(request.before) }); }
+        result.sourcePayloads ??= [];
+        result.sourcePayloads.push({ bytes: Buffer.byteLength(JSON.stringify(envelope)), events: pageValue.entries.length, context: pageValue.context?.length ?? 0, older: Number.isFinite(request.before) });
         sourcePages.push({ request, page: pageValue, anchorSnapshot, receivedAt: performance.now(), used: false });
       })().catch(() => { sourcePages.push({ request: {}, error: 'read-capture-failed' }); });
       pending.add(task); void task.finally(() => pending.delete(task));
@@ -641,8 +774,10 @@ async function runScenario(browser, config, name) {
     await awaiting('install-blocked-stream-counter', page.exposeBinding('hhpiSmokeBlocked', () => { result.blockedStreams++; }));
     cdp = await awaiting('attach-browser-network-inspector', context.newCDPSession(page));
     if (profile && name === 'desktop' && process.env.HAPI_DSH_SMOKE_SKIP_TRACE !== '1') {
+      await cdp.send('Debugger.enable');
       traceCompletion = new Promise(resolve => cdp.once('Tracing.tracingComplete', resolve));
-      await cdp.send('Tracing.start', { categories: 'devtools.timeline,v8.execute,disabled-by-default-v8.cpu_profiler', transferMode: 'ReturnAsStream' });
+      const categories = ['devtools.timeline', 'v8.execute', 'disabled-by-default-v8.cpu_profiler', 'blink.user_timing'];
+      await cdp.send('Tracing.start', { categories: categories.join(','), transferMode: 'ReturnAsStream' });
     }
     await awaiting('enable-browser-network-inspector', cdp.send('Network.enable'));
     const socketUrls = new Map();
@@ -663,6 +798,16 @@ async function runScenario(browser, config, name) {
     });
     cdp.on('Network.webSocketFrameReceived', event => {
       let message; try { message = JSON.parse(event.response?.payloadData ?? ''); } catch {}
+      if (message?.type === 'item' && openedReadStreams.has(`${event.requestId}:${message.streamId}`)) {
+        const change = message.value;
+        if (change?.session?.id !== config.sessionId || typeof change.epoch !== 'string'
+          || !Number.isSafeInteger(change.base) || !Number.isSafeInteger(change.version) || !Array.isArray(change.upserts) || !Array.isArray(change.removed)) {
+          result.changesErrors = (result.changesErrors ?? 0) + 1;
+        } else {
+          sourceChanges.push({ page: { ...change, entries: change.upserts, context: [] }, receivedAt: performance.now() });
+          result.changeFrames = (result.changeFrames ?? 0) + 1;
+        }
+      }
       if (message?.type === 'error' && openedReadStreams.has(`${event.requestId}:${message.streamId}`)) result.changesErrors = (result.changesErrors ?? 0) + 1;
       if (message?.type === 'end') openedReadStreams.delete(`${event.requestId}:${message.streamId}`);
     });
@@ -679,8 +824,17 @@ async function runScenario(browser, config, name) {
       const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
       return !!pane?.querySelector('[data-conversation-scroll] [data-chat-node-key][data-chat-anchor-key]');
     }, config.sessionId, { timeout: 10_000 }));
-    if (migratedSource?.id === config.sessionId) result.savedLegacyReference = 'native-body-and-editor-restored';
     await awaiting('wait-for-initial-source-read', Promise.all([...pending]));
+    if (config.openingSeq !== undefined) {
+      await awaiting('wait-for-exact-opening-source-read', (async () => {
+        const deadline = performance.now() + 5000;
+        while (performance.now() < deadline) {
+          if (sourcePages.some(record => record.request?.around === config.openingSeq && record.page && !record.error)) return;
+          await pause(25);
+        }
+        fail('exact-opening-source-read-not-observed');
+      })());
+    }
     result.step = 'validate-initial-source-read';
     if (!result.targetReads || sourcePages.some(item => item.error)) fail('initial-source-page-unavailable');
     if (result.legacyHistoryStreams) fail('legacy-source-history-path-used');
@@ -691,18 +845,26 @@ async function runScenario(browser, config, name) {
     const readRows = step => awaiting(step, page.evaluate(() => window.__hhpiSmoke.rows()));
     const allSourceMatches = rows => {
       const matches = [];
-      for (const row of rows) for (const record of sourcePages) for (const body of pageBodies(record)) {
+      for (const row of rows) for (const record of sourceRecords()) for (const body of pageBodies(record)) {
         if (rowMatchesSource(row, body)) matches.push({ seq: body.seq, key: row.key, row });
       }
       return matches;
     };
-    const initialRows = await readRows('read-initial-source-rows');
+    let initialRows = await readRows('read-initial-source-rows');
+    if (config.openingSeq !== undefined) {
+      const deadline = performance.now() + 5000;
+      while (!allSourceMatches(initialRows.rows.filter(row => row.visible)).some(item => item.seq === config.openingSeq)) {
+        if (performance.now() >= deadline) fail('exact-opening-source-body-not-visible');
+        await awaiting('wait-for-exact-opening-body-publication', pause(25));
+        initialRows = await readRows('read-exact-opening-source-rows');
+      }
+    }
     if (!initialRows.exists) fail('conversation-scrollport-missing');
     let visibleMatches = allSourceMatches(initialRows.rows.filter(row => row.visible));
-    let knownMatches = allSourceMatches(initialRows.rows);
     if (!visibleMatches.length) fail('initial-source-body-not-correlated');
-    let headSeq = Math.max(...visibleMatches.map(item => item.seq));
-    const latestSeq = Math.max(...knownMatches.map(item => item.seq));
+    result.initialReading = { viewport: initialRows.viewport, mountedRows: initialRows.rows.length,
+      visibleRows: initialRows.rows.filter(row => row.visible).length, visibleSourceBodies: visibleMatches.length,
+      contentBottom: Math.max(0, ...initialRows.rows.filter(row => row.visible).map(row => row.bottom ?? 0)) };
     const moveEarlier = async step => {
       const box = await awaiting(`${step}-locate-scrollport`, scroll.boundingBox()); if (!box) fail('conversation-scrollport-disappeared');
       if (name === 'mobile') {
@@ -726,7 +888,8 @@ async function runScenario(browser, config, name) {
       }
       await awaiting(`${step}-allow-scroll-and-fetch`, pause(90));
       await awaiting(`${step}-wait-for-source-read`, Promise.all([...pending]));
-      await awaiting(`${step}-wait-for-dom-publication`, Promise.all(layoutCommits));
+      await awaiting(`${step}-wait-for-dom-publication`, settleReadPublications(layoutCommits, pending,
+        () => page.evaluate(() => window.__hhpiSmoke.waitForGestureSettled())));
     };
     const matchesForPage = (rows, previousKeys, previousSeqs, priorHead) => {
       for (const record of sourcePages) {
@@ -743,7 +906,7 @@ async function runScenario(browser, config, name) {
       const previousSeqs = new Set(allSourceMatches(before.rows).map(item => item.seq));
       const priorHead = Math.min(...previousSeqs);
       if (!Number.isFinite(priorHead)) fail('source-page-sequence-not-correlated');
-      const oldAnchor = captureVisibleSourceAnchor(before.rows, sourcePages);
+      const oldAnchor = captureVisibleSourceAnchor(before.rows, sourceRecords());
       if (!oldAnchor) {
         result.anchorDiagnostic = before.rows.filter(row => row.visible).slice(0, 8).map(row => ({
           kind: row.kind, chars: sourceRowText(row).length,
@@ -769,9 +932,7 @@ async function runScenario(browser, config, name) {
           // The exact pixel check runs at publication, before later gestures can
           // legitimately move this source body outside the virtual range.
           visibleMatches = allSourceMatches(after.rows.filter(row => row.visible));
-          knownMatches = allSourceMatches(after.rows);
           if (!visibleMatches.some(item => item.seq === committed.match.seq && item.key === committed.match.key)) fail('new-source-body-not-visible');
-          headSeq = Math.min(...knownMatches.map(item => item.seq));
           activePageProbe = null;
           break;
         }
@@ -782,7 +943,31 @@ async function runScenario(browser, config, name) {
       if (result.earlierPagesVisible !== iteration + 1) fail('nonconsecutive-earlier-page');
     }
 
-    await awaiting('wait-for-final-source-reads', Promise.all([...pending]));
+    // An accepted page can queue one more head read after the gesture's task
+    // snapshot. Let it commit before Latest cancels the old direction; a
+    // cancelled pre-navigation task cannot certify the cached-tail exercise.
+    await awaiting('wait-for-final-source-publications', settleReadPublications(layoutCommits, pending,
+      () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))));
+    if (config.openingSeq === undefined) {
+      // Six source pages may collapse to less than one inertial swipe of visible
+      // content. Populate enough resident runway before testing cache reuse;
+      // crossing the 600px paging lead asks for NEW history, not cached history.
+      // Keep the real gesture and all publication/frame assertions unchanged.
+      const setupReads = result.targetReads;
+      let resident = await readRows('resident-tail-setup-baseline');
+      const required = name === 'mobile' ? resident.viewport * 3 : Math.min(resident.viewport, 600) + 252;
+      let gestures = 0;
+      while (resident.max < required && gestures < 8) {
+        await moveEarlier(`resident-tail-setup-${++gestures}`);
+        await awaiting('resident-tail-setup-publications', settleReadPublications(layoutCommits, pending,
+          () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))));
+        if (sourcePages.some(record => record.error)) fail('source-page-read-failed');
+        resident = await readRows('resident-tail-setup-position');
+      }
+      result.residentRunway = { requiredPx: Math.ceil(required), availablePx: Math.round(resident.max),
+        extraGestures: gestures, sourceReadDelta: result.targetReads - setupReads };
+      if (resident.max < required) fail('resident-tail-setup-insufficient-range');
+    }
     const corrections = await page.evaluate(() => window.__hhpiSmoke.layoutCommits);
     result.layoutCommits = corrections;
     if (corrections.length < config.pages || corrections.some(item => !item.done || !item.retained || item.delta === null || Math.abs(item.delta) > 2)) fail('reading-anchor-publication-jump');
@@ -790,61 +975,50 @@ async function runScenario(browser, config, name) {
     if (result.changesErrors) fail('hhpi-change-stream-failed');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
 
-    result.step = 'return-latest-and-read-cached-tail';
-    const latest = pane.getByRole('button', { name: /^(回到底部|Back to bottom)$/ }).first();
-    await awaiting('wait-for-return-to-latest-control', latest.waitFor({ state: 'visible' }));
-    await awaiting('activate-return-to-latest', latest.click());
-    await awaiting('wait-for-latest-scroll-position', page.waitForFunction(sessionId => {
-      const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
-      const scroll = pane?.querySelector('[data-conversation-scroll]');
-      return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
-    }, config.sessionId, { timeout: 5_000 }));
-    const readCount = result.targetReads;
-    result.cachedTailCycles = [];
-    // Check three complete returns to the same resident tail. Three cumulative
-    // inertial swipes can cross the loaded head and correctly fetch a new page;
-    // that is a pagination exercise, not a cache-hit exercise.
-    for (let index = 0; index < 3; index++) {
-      if (index > 0) {
-        await awaiting(`cached-tail-${index + 1}-return-latest`, latest.click());
-        await awaiting(`cached-tail-${index + 1}-wait-latest`, page.waitForFunction(sessionId => {
-          const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
-          const scroll = pane?.querySelector('[data-conversation-scroll]');
-          return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
-        }, config.sessionId, { timeout: 5_000 }));
+    if (config.openingSeq === undefined) {
+      result.step = 'return-latest-and-read-cached-tail';
+      const latest = pane.getByRole('button', { name: /^(回到底部|Back to bottom)$/ }).first();
+      await awaiting('wait-for-return-to-latest-control', latest.waitFor({ state: 'visible' }));
+      await awaiting('activate-return-to-latest', latest.click());
+      await awaiting('wait-for-latest-scroll-position', page.waitForFunction(sessionId => {
+        const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
+        const scroll = pane?.querySelector('[data-conversation-scroll]');
+        return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
+      }, config.sessionId, { timeout: 5_000 }));
+      const readCount = result.targetReads;
+      result.cachedTailCycles = [];
+      // Check three complete returns to the same resident tail. Three cumulative
+      // inertial swipes can cross the loaded head and correctly fetch a new page;
+      // that is a pagination exercise, not a cache-hit exercise.
+      for (let index = 0; index < 3; index++) {
+        if (index > 0) {
+          await awaiting(`cached-tail-${index + 1}-return-latest`, latest.click());
+          await awaiting(`cached-tail-${index + 1}-wait-latest`, page.waitForFunction(sessionId => {
+            const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
+            const scroll = pane?.querySelector('[data-conversation-scroll]');
+            return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
+          }, config.sessionId, { timeout: 5_000 }));
+        }
+        const latestRows = await readRows(`read-latest-position-${index + 1}`);
+        if (latestRows.max < result.residentRunway.requiredPx - 1) fail('resident-tail-range-lost-on-return');
+        const latestSeq = Math.max(...allSourceMatches(latestRows.rows.filter(row => row.visible)).map(item => item.seq));
+        if (!Number.isSafeInteger(latestSeq)) fail('latest-source-body-not-correlated');
+        await moveEarlier(`cached-tail-gesture-${index + 1}`);
+        const residentRows = await readRows(`read-resident-tail-after-scroll-${index + 1}`);
+        const cachedEarlier = allSourceMatches(residentRows.rows.filter(row => row.visible)).some(item => item.seq < latestSeq);
+        const moved = Math.round(latestRows.top - residentRows.top);
+        result.cachedTailReadDelta = result.targetReads - readCount;
+        result.cachedTailMovedPx = moved;
+        result.cachedTailCycles.push({ movedPx: moved, sourceReadDelta: result.cachedTailReadDelta, earlierBodyVisible: cachedEarlier });
+        if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
+        if (moved < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
       }
-      const latestRows = await readRows(`read-latest-position-${index + 1}`);
-      await moveEarlier(`cached-tail-gesture-${index + 1}`);
-      const residentRows = await readRows(`read-resident-tail-after-scroll-${index + 1}`);
-      const cachedEarlier = allSourceMatches(residentRows.rows.filter(row => row.visible)).some(item => item.seq < latestSeq);
-      const moved = Math.round(latestRows.top - residentRows.top);
-      result.cachedTailReadDelta = result.targetReads - readCount;
-      result.cachedTailMovedPx = moved;
-      result.cachedTailCycles.push({ movedPx: moved, sourceReadDelta: result.cachedTailReadDelta, earlierBodyVisible: cachedEarlier });
-      if (result.cachedTailReadDelta !== 0) fail('resident-tail-triggered-extra-source-read');
-      if (moved < 150 || !cachedEarlier) fail('resident-tail-content-not-readable');
-    }
+    } else result.cachedTail = 'not-run-fixed-position-diagnostic';
     const maxFrameGap = await awaiting('read-frame-gap-verdict', page.evaluate(() => {
       const state = window.__hhpiSmoke; state.monitor = false; return Math.max(0, ...state.frameGaps);
     }));
     result.maxFrameGapMs = Math.round(maxFrameGap);
     const frameHitch = maxFrameGap > 80;
-    if (legacyResource) {
-      await awaiting('select-preserved-legacy-reference', page.locator('.hapi-window-tabs').getByRole('tab').nth(1).click());
-      if (migratedSource) {
-        const pane = page.locator('.hapi-window-active .hapi-pane').filter({ has: page.locator('[data-composer-input]') });
-        await awaiting('wait-for-migrated-native-source-body', pane.locator('[data-conversation-scroll] [data-chat-anchor-key]').first().waitFor({ state: 'visible', timeout: 5000 }));
-        await awaiting('wait-for-migrated-native-source-editor', pane.locator('[data-composer-input]').waitFor({ state: 'visible', timeout: 5000 }));
-        if (await pane.locator('.hapi-lease-error').count()) fail('migrated-native-source-still-unavailable');
-        result.savedLegacyReference = 'native-body-and-editor-restored';
-      } else {
-        const unavailable = page.locator('.hapi-window-active .hapi-lease-error');
-        await awaiting('wait-for-terminal-legacy-source-state', unavailable.waitFor({ state: 'visible', timeout: 5000 }));
-        const message = await awaiting('read-terminal-legacy-source-state', unavailable.innerText());
-        if (!/source that is not connected to this HHPI Host|来源尚未接入当前 HHPI Host/u.test(message)) fail('legacy-source-state-not-explicit');
-        result.savedLegacyReference = 'source-not-connected';
-      }
-    }
     if (frameHitch) fail('history-scroll-frame-hitch');
     if (result.blockedWrites || result.blockedStreams) fail('unexpected-production-write-blocked');
     if (result.pageErrors || result.consoleErrors) fail('browser-page-error');
@@ -852,6 +1026,17 @@ async function runScenario(browser, config, name) {
   } catch (error) {
     if (page && !page.isClosed()) {
       result.layoutCommits ??= await page.evaluate(() => window.__hhpiSmoke?.layoutCommits ?? []).catch(() => []);
+      if (process.env.HHPI_SMOKE_PRIVATE_DIAGNOSTICS) {
+        const details = await page.locator('[data-history-page-error]').allTextContents().catch(() => []);
+        const rows = await page.evaluate(() => window.__hhpiSmoke?.rows?.()).catch(() => null);
+        const readingViews = await page.evaluate(() => window.__hhpiSmoke?.readingViews ?? []).catch(() => []);
+        const windowMeasures = await page.evaluate(() => window.__hhpiSmoke?.windowMeasures ?? []).catch(() => []);
+        const measureAnchors = await page.evaluate(() => window.__hhpiSmoke?.measureAnchors ?? []).catch(() => []);
+        const dom = await page.locator('[data-hapi-workspace]').evaluate(element => element.outerHTML).catch(() => null);
+        const retry = process.env.HHPI_SMOKE_DIAGNOSTIC_RETRY === '1' && details.length
+          ? await page.evaluate(() => window.__hhpiSmoke?.retryReading?.()).catch(error => ({ message: error.message })) : null;
+        await writeFile(process.env.HHPI_SMOKE_PRIVATE_DIAGNOSTICS, JSON.stringify({ name, details, rows, dom, sourcePages, sourceChanges, readingViews, windowMeasures, measureAnchors, retry }), { mode: 0o600 });
+      }
     }
     await collectFailureDiagnostics(page, result);
     result.status = 'failed';
@@ -859,10 +1044,13 @@ async function runScenario(browser, config, name) {
   } finally {
     clearTimeout(deadline);
     if (page && !page.isClosed()) {
-      const gap = await page.evaluate(() => { const state = window.__hhpiSmoke; if (!state) return 0; state.monitor = false; return Math.max(0, ...state.frameGaps); }).catch(() => 0);
-      result.maxFrameGapMs = Math.max(result.maxFrameGapMs ?? 0, Math.round(gap));
+      const frames = await page.evaluate(() => { const state = window.__hhpiSmoke; if (!state) return { max: 0, hitches: [] }; state.monitor = false;
+        return { max: Math.max(0, ...state.frameGaps), hitches: state.frameHitches }; }).catch(() => ({ max: 0, hitches: [] }));
+      result.maxFrameGapMs = Math.max(result.maxFrameGapMs ?? 0, Math.round(frames.max));
+      result.frameHitches = frames.hitches;
     }
-    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(() => ({ longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [], nativeReads: window.__hhpiSmoke?.nativeReads ?? {}, mutationReads: window.__hhpiSmoke?.mutationReads ?? [] })).catch(() => null);
+    if (profile && page && !page.isClosed()) result.profile = await page.evaluate(geometryInstrumentation => ({ geometryInstrumentation,
+      longTasks: window.__hhpiSmoke?.longTasks ?? [], probes: window.__hhpiSmoke?.probeTasks ?? [], frames: window.__hhpiSmoke?.frameEvents ?? [], phases: window.__hhpiSmoke?.phases ?? [], nativeReads: window.__hhpiSmoke?.nativeReads ?? {}, mutationReads: window.__hhpiSmoke?.mutationReads ?? [], slowGeometryReads: window.__hhpiSmoke?.slowGeometryReads ?? [] }), !traceOnly).catch(() => null);
     if (traceCompletion) {
       let traceDeadline;
       const saveTrace = async () => {
@@ -870,7 +1058,31 @@ async function runScenario(browser, config, name) {
         const { stream } = await traceCompletion; const chunks = [];
         for (;;) { const chunk = await cdp.send('IO.read', { handle: stream }); chunks.push(chunk.base64Encoded ? Buffer.from(chunk.data, 'base64') : Buffer.from(chunk.data)); if (chunk.eof) break; }
         await cdp.send('IO.close', { handle: stream });
-        await writeFile('/mnt/cache/data-cache/hhpi-opening-frame-trace.json', Buffer.concat(chunks), { mode: 0o600 });
+        const bytes = Buffer.concat(chunks);
+        await writeFile('/mnt/cache/data-cache/hhpi-opening-frame-trace.json', bytes, { mode: 0o600 });
+        // Module factories can execute without a source URL. Resolve sampled
+        // frames against their original script instead of guessing which
+        // bundle owns a minified name shared by several unrelated functions.
+        const frames = new Map(), weights = new Map();
+        const events = JSON.parse(bytes).traceEvents ?? [];
+        for (const event of events) {
+          const cpu = event.args?.data?.cpuProfile;
+          if (!cpu) continue;
+          // Chrome can emit Profile and ProfileChunk on different threads.
+          // Their process/profile identity still owns the same sampled nodes.
+          const profileId = JSON.stringify([event.pid, event.id, event.id2]);
+          for (const node of cpu.nodes ?? []) frames.set(`${profileId}:${node.id}`, node.callFrame);
+          for (const id of cpu.samples ?? []) { const key = `${profileId}:${id}`; weights.set(key, (weights.get(key) ?? 0) + 1); }
+        }
+        const sources = new Map(), hot = [];
+        for (const [id, samples] of [...weights].sort((left, right) => right[1] - left[1]).slice(0, 16)) {
+          const frame = frames.get(id);
+          if (!frame?.scriptId || frame.scriptId === '0') continue;
+          if (!sources.has(frame.scriptId)) sources.set(frame.scriptId, await cdp.send('Debugger.getScriptSource', { scriptId: String(frame.scriptId) }).then(value => value.scriptSource).catch(() => ''));
+          const line = sources.get(frame.scriptId).split('\n')[frame.lineNumber] ?? '';
+          hot.push({ frame, samples, source: line.slice(Math.max(0, frame.columnNumber - 80), frame.columnNumber + 500) });
+        }
+        await writeFile('/mnt/cache/data-cache/hhpi-opening-hot-frames.json', JSON.stringify(hot), { mode: 0o600 });
         result.profileTrace = 'private-local-file';
       };
       try {
@@ -880,6 +1092,7 @@ async function runScenario(browser, config, name) {
     }
     await diagnosticCapture?.catch(() => {});
     await context?.close().catch(() => {});
+    readStateIsolation?.close();
     result.durationMs = Math.round(performance.now() - start);
   }
   return result;
@@ -892,9 +1105,20 @@ export async function main() {
     coverage: 'Canonical HHPI source catalog/read/changes, six visible earlier body pages, anchor continuity, latest return and cached-tail reads.' };
   try {
     config = await parseOptions(process.argv.slice(2));
-    report.coverage = `Canonical HHPI source catalog/read/changes, ${config.pages} visible earlier source-content pages, anchor continuity, latest return, cached-tail reads, and any preserved legacy reference's terminal source state.`;
+    if (process.env.HAPI_DSH_SMOKE_TRACE_ONLY === '1') {
+      report.mode = 'hhpi-read-only-trace-diagnostic';
+      report.sampling = 'Native CPU trace and phase/frame records; geometry methods are unmodified. Frame timings are diagnostic, not release acceptance.';
+    } else if (process.env.HAPI_DSH_SMOKE_PROFILE === '1') {
+      report.mode = 'hhpi-read-only-geometry-diagnostic';
+      report.sampling = 'Native geometry calls are wrapped for call-site and anonymous mutation attribution. Instrumented timings are diagnostic, not release acceptance.';
+    }
+    if (config.openingSeq === undefined) report.coverage = `Canonical HHPI source catalog/read/changes, ${config.pages} visible earlier source-content pages, anchor continuity, latest return and cached-tail reads.`;
+    else {
+      report.mode = 'hhpi-read-only-fixed-position-diagnostic';
+      report.coverage = `Exact original source-position opening, ${config.pages} visible earlier source-content pages, anchor continuity and frame gaps. Latest return and cached-tail acceptance are not run in this diagnostic; default release acceptance remains separate.`;
+    }
     if (config.help) {
-      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--url-file FILE] [--scenario both|desktop|mobile] [--pages 6..N] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Workspace persistence is synthetic; no screenshot is captured.\n');
+      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--url-file FILE] [--scenario both|desktop|mobile] [--pages 6..N] [--opening-seq N] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Optional opening-seq follows the original exact-position link for a controlled diagnostic; default opening remains latest. Workspace persistence is synthetic; no screenshot is captured.\n');
       return;
     }
     const { applyEnv } = await import(pathToFileURL(process.env.HAPI_DSH_WEBSHOT_TOOLCHAIN ?? '/home/chris/.agents/tools/webshot/lib/toolchain.mjs').href);

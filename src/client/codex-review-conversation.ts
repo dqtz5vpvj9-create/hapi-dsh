@@ -1,5 +1,5 @@
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceCodexReviewOf, type SourceCodexReviewRecord } from '../hapi-agent/codex-review.ts'
+import { sourceCodexReviewOf, type SourceCodexReviewRecord } from '../shared/codex-review.ts'
 
 export const SOURCE_REVIEW_DATA = 'hapi-codex-review'
 export type SourceReviewTurn = readonly SourceCodexReviewRecord[]

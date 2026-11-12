@@ -181,7 +181,7 @@ test('authenticated catalog adopts its storage scope and explicit Host revocatio
   assert.equal(cleared.read(session.id), undefined); cleared.dispose()
 })
 
-test('reloading offline restores cached body and each persistent Pane position without source reads', async t => {
+test('offline reopen keeps cached latest readable and restores an old window only on explicit request', async t => {
   const storage = new BrowserStorage(), access = { storage, scope: 'authenticated-owner-host-a' }
   const cache = new SourceReadingCache(access), owner = new RemoteSourceHistory(session.id, { read: async request => page(request), changes: idle }, undefined, cache)
   const historic = await owner.openView('pane-a:1', budget, undefined, 'pane-a')
@@ -196,18 +196,19 @@ test('reloading offline restores cached body and each persistent Pane position w
 
   const restored = new SourceReadingCache(access)
   let reads = 0
-  const offline = new RemoteSourceHistory(session.id, { read: async () => { ++reads; throw new Error('No network available') }, changes: idle }, undefined, restored)
+  const offline = new RemoteSourceHistory(session.id, { read: async () => { ++reads; throw new SourceError('TARGET_UNAVAILABLE', 'No network available') }, changes: idle }, undefined, restored)
   t.after(() => { offline.dispose(); restored.dispose() })
   assert.equal(restored.sessions()[0]?.id, session.id)
-  const a = await offline.openView('pane-a:99', budget, undefined, 'pane-a'), b = await offline.openView('pane-b:100', budget, undefined, 'pane-b')
+  const a = await offline.openView('pane-a:99', budget, undefined, 'pane-a', { kind: 'around', seq: 120 }), b = await offline.openView('pane-b:100', budget, undefined, 'pane-b')
   assert.ok(a.initial.entries.some(entry => entry.event.seq === 120))
   assert.ok(b.initial.entries.some(entry => entry.event.seq === 799))
-  assert.equal(reads, 0, 'cached source pages are immediately readable while transport is absent')
+  assert.equal(reads, 2, 'one failed fresh read per requested window falls back without retrying or waiting for replay')
+  assert.equal(b.initial.hasAfter, true, 'an offline snapshot does not claim to be the current source tail')
   assert.deepEqual(restored.readPosition(session.id, 'pane-a'), { anchorKey: 'message-120', anchorTop: 27, scrollTop: 890 })
   assert.equal(restored.readPosition(session.id, 'pane-b'), null)
 })
 
-test('closing and reopening a retained source while offline reuses its authorized reading checkpoint', async t => {
+test('a warm source reopens latest instead of implicitly restoring its old Pane interval', async t => {
   const cache = new SourceReadingCache({ storage: new BrowserStorage(), scope: 'owner' })
   let reads = 0
   const owner = new RemoteSourceHistory(session.id, { read: async request => { ++reads; return page(request) }, changes: idle }, undefined, cache)
@@ -218,8 +219,9 @@ test('closing and reopening a retained source while offline reuses its authorize
   first.release()
   const previousReads = reads
   const reopened = await owner.openView('pane:2', budget, undefined, 'pane')
-  assert.ok(reopened.initial.entries.some(entry => entry.event.seq === 120))
-  assert.equal(reads, previousReads, 'a released Pane must not make its cached body depend on a new network request')
+  assert.ok(reopened.initial.entries.some(entry => entry.event.seq === 799))
+  assert.ok(!reopened.initial.entries.some(entry => entry.event.seq === 120))
+  assert.equal(reads, previousReads + 1, 'reopening revalidates the current tail even inside the unsubscribe debounce')
 })
 
 test('unpublished and discarded navigation never replaces the durable reader window', async t => {

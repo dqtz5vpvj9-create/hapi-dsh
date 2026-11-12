@@ -11,14 +11,13 @@ import { composedTerminalBody, type TerminalBodyFace } from './source-terminal/v
 import { en, zh, type TerminalTranslationKey } from './source-terminal/locales.ts'
 import { terminalStyles } from './source-terminal/styles.ts'
 import type { TerminalPublicView } from './source-terminal/input.ts'
-import type { HapiRemoteApi } from '../client-api.ts'
 import { terminalTheme } from './appearance/terminal-theme.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' { interface LocaleNamespaceMap { hapiTerminalKeys: TerminalTranslationKey } }
 export const OFFICIAL_TERMINAL_SEAT = '@deepseek-ai/dsh-client-ui-sidebar-terminal'
 
 /** Public registry only: preserve the pinned original inject/locale; restore on dispose/reload. */
-export function installSourceTerminalActions(ctx: Context, api?: Pick<HapiRemoteApi, 'nativeTerminalText'>): () => void {
+export function installSourceTerminalActions(ctx: Context): () => void {
   const unlocale = ctx.locale.register('hapiTerminalKeys', { en, zh })
   const style = document.createElement('style'); style.dataset.hapiTerminalActions = ''; style.textContent = terminalStyles; document.head.append(style)
   const removeScope = ctx.slots.inject('sidebar.right.pane.tab', () => {
@@ -33,7 +32,7 @@ export function installSourceTerminalActions(ctx: Context, api?: Pick<HapiRemote
         // The pinned terminal seat owns no store or child-slot subtree. A
         // different owner contract is left to that plugin instead of stolen.
         if (!entry || entry.children || entry.store || typeof entry.inject !== 'function') return
-        wrapped = composedTerminalBody(ctx, entry.component as ComponentType<TerminalBodyFace>, ctx.locale.bind('hapiTerminalKeys'), api)
+        wrapped = composedTerminalBody(ctx, entry.component as ComponentType<TerminalBodyFace>, ctx.locale.bind('hapiTerminalKeys'))
         const inject = entry.inject as (sessionId: SessionId) => { view: (key: string) => TerminalPublicView; hooks: { theme: HostObservable<ThemeSnapshot> } }
         remove = ctx.slots.register({ name: 'sidebar.right.pane.tab', key: OFFICIAL_TERMINAL_SEAT,
           priority: (entry.options.priority ?? 0) - 1,

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { EXTENSION_NAMES, verifyExtensionSet } from '../scripts/dsh-ext/install-extension.mjs';
-import { UPSTREAM_COMMIT, UPSTREAM_VERSION, run } from '../scripts/dsh-ext/prepare.mjs';
+import { ROOT, EXTENSION_PACKAGES, UPSTREAM_COMMIT, UPSTREAM_VERSION, run } from '../scripts/dsh-ext/prepare.mjs';
 const digest = value => createHash('sha256').update(value).digest('hex');
 
 // Only package bytes are synthetic. Validation uses the production installer;
@@ -38,10 +39,49 @@ async function fixture(t, alter = () => {}, nativeIdentity = false) {
   return { directory, manifest };
 }
 
-test('verifies the complete fourteen-package source-built package identities and archive checksums', async t => {
+test('verifies the complete source-built package identities and archive checksums', async t => {
   const { directory } = await fixture(t);
   const result = await verifyExtensionSet(directory);
   assert.deepEqual(result.packages.map(item => item.name), EXTENSION_NAMES);
+  assert.equal(result.packages.length, 22);
+  assert.ok(result.packages.some(item => item.name === '@deepseek-ai/dsh-client-ui-workspace'));
+  assert.ok(result.packages.some(item => item.name === '@deepseek-ai/dsh-client-ui-theme'));
+});
+
+test('source offer restores every local module needed to import the actual builder', async t => {
+  const { directory } = await fixture(t);
+  const source = join(directory, 'source'), output = join(directory, 'release');
+  await mkdir(join(source, 'scripts'), { recursive: true });
+  for (const path of EXTENSION_PACKAGES) {
+    await mkdir(join(source, path), { recursive: true });
+    await writeFile(join(source, path, 'fixture.ts'), '// synthetic source offer fixture\n');
+  }
+  for (const path of ['LICENSE', 'package.json', 'pnpm-lock.yaml', 'tsconfig.base.json', 'tsdown.config.ts', 'scripts/generate-typert.ts']) {
+    await writeFile(join(source, path), '// source offer fixture\n');
+  }
+  // Package contents are synthetic; the production release assembler copies
+  // the real source tools. No dependency install or compiler executes here.
+  run(process.execPath, [join(ROOT, 'scripts/dsh-ext/create-release.mjs'), source, directory, output]);
+  const release = JSON.parse(await readFile(join(output, 'release.json'), 'utf8'));
+  const restored = join(directory, 'restored/scripts/dsh-ext');
+  await mkdir(restored, { recursive: true });
+  for (const name of ['build-extension.mjs', 'prepare.mjs', 'cache.mjs', 'install-extension.mjs']) {
+    const offered = `source/${name}.txt`;
+    assert.ok(release.sourceOffer.includes(offered), `Missing builder dependency in source offer: ${name}`);
+    const bytes = await readFile(join(output, offered));
+    assert.deepEqual(bytes, await readFile(join(ROOT, 'scripts/dsh-ext', name)));
+    await writeFile(join(restored, name), bytes);
+  }
+  const moduleUrl = pathToFileURL(join(restored, 'build-extension.mjs')).href;
+  run(process.execPath, ['--input-type=module', '-e', `const builder = await import(${JSON.stringify(moduleUrl)}); if (typeof builder.buildExtension !== 'function') throw Error('Missing builder export');`]);
+  for (const document of ['text-interaction-area-selection-architecture.md', 'text-interaction-area-selection-upstream-pr.md',
+    'batched-virtual-row-measurement-architecture.md', 'batched-virtual-row-measurement-upstream-pr.md',
+    'incremental-window-preparation-architecture.md', 'incremental-window-preparation-upstream-pr.md',
+    'workspace-navigation-ownership-architecture.md', 'workspace-navigation-ownership-upstream-pr.md',
+    'programmatic-live-edge-architecture.md', 'programmatic-live-edge-upstream-pr.md',
+    'focused-control-modality-architecture.md', 'focused-control-modality-upstream-pr.md']) {
+    assert.ok(release.sourceOffer.includes(`source/${document}`));
+  }
 });
 
 test('rejects an incomplete extension set before npm is invoked', async t => {
@@ -78,10 +118,10 @@ test('rejects duplicate packages and paths outside the package set', async t => 
 });
 
 
-test('accepts independently marked native packages while retaining the eleven UI source identities', async t => {
+test('accepts independently marked native packages while retaining the complete UI source identities', async t => {
   const { directory, manifest } = await fixture(t, () => {}, true);
   const result = await verifyExtensionSet(directory);
-  assert.equal(result.packages.length, 14);
+  assert.equal(result.packages.length, EXTENSION_NAMES.length);
   const native = result.packages.filter(item => item.name.startsWith('@deepseek-ai/dsh-session-'));
   assert.equal(native.length, 3);
   assert.ok(native.every(item => item.identity.patchSetSha256 !== manifest.patchSetSha256));

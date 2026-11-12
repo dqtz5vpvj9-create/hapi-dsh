@@ -1,19 +1,46 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import type { AssistantActionOwnerProps } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client';
+import type { ConversationBinding } from '@deepseek-ai/dsh-client-ui-conversation/client';
 import { loadCapture } from './client-chunks.ts';
 import { captureShareTurn, type TurnShareSnapshot } from './turn-share-dom.ts';
 import { loadShareTurn, shareImageScale, shareTurnOf } from './turn-share-model.ts';
+import { useWorkspacePane } from './surface/pane-context.tsx';
+import { sourceRoute } from '../shared/source-capability.ts';
+import type { AppShareTarget } from '../workspace/app-service-types.ts';
+import type {} from './source-share.ts';
+import { sourceReadingPosition } from './source-reading-commit.ts';
 
 type ActionProps = PropsRuntime<'conversation.chat.assistant-actions'> & AssistantActionOwnerProps;
 type Metadata = { id: string; name: string; value: string };
 const errorText = (value: unknown) => value instanceof Error ? value.message : String(value);
 const frame = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 
-function ShareDialog({ ctx, binding, surface, messageId, metadata, language, close }: {
-    ctx: Context; binding: SessionBinding; surface: HTMLElement; messageId: string; metadata: Metadata[]; language: string; close(): void;
+/** A link names the clicked readable message in this exact accepted occurrence. */
+function shareTarget(binding: SessionBinding, conversation: ConversationBinding, messageId: string, hostId: string): AppShareTarget | undefined {
+    const view = conversation.readingView?.snapshot.getSnapshot();
+    if (view && (view.phase !== 'ready' || view.busy || view.correction === 'failed')) return undefined;
+    const snapshot = conversation.target('chat').getSnapshot();
+    if (!snapshot) return undefined;
+    const node = [...snapshot.nodes.values()].find(node => node.kind === 'assistant-step'
+        && (node.data as { finalNode?: { messageId?: string } }).finalNode?.messageId === messageId);
+    if (!node) return undefined;
+    const read = sourceReadingPosition(binding, node, view?.entries ?? binding.eventSource.getSnapshot().entries, view?.version);
+    return read ? { kind: 'reading', source: sourceRoute(hostId, binding.sessionId, 'local'), position: read.position } : undefined;
+}
+
+function samePosition(left: AppShareTarget, right: AppShareTarget | undefined): boolean {
+    if (left.kind !== 'reading' || right?.kind !== 'reading') return false;
+    if (left.position.kind === 'native' || right.position.kind === 'native') return false;
+    return left.position.kind === right.position.kind && left.position.seq === right.position.seq
+        && (left.position.kind !== 'hhpi' || right.position.kind === 'hhpi' && left.position.epoch === right.position.epoch);
+}
+
+function ShareDialog({ ctx, binding, surface, messageId, metadata, target, current, language, close }: {
+    ctx: Context; binding: SessionBinding; surface: HTMLElement; messageId: string; metadata: Metadata[]; target?: AppShareTarget; current(): boolean; language: string; close(): void;
 }) {
     const tr = (en: string, zh: string) => language.startsWith('zh') ? zh : en;
     const dialog = useRef<HTMLDialogElement>(null), preview = useRef<HTMLDivElement>(null);
@@ -21,6 +48,7 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
     const [width, setWidth] = useState(960), [wrap, setWrap] = useState(true), [busy, setBusy] = useState(false);
     const [chosen, setChosen] = useState(() => new Set(['title']));
     const [status, setStatus] = useState('');
+    const [sourceLink, setSourceLink] = useState('');
     const lifetime = useRef<AbortController>();
     const revision = useRef(0), gate = useRef(false);
     useEffect(() => {
@@ -29,7 +57,6 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
     useEffect(() => {
         const abort = new AbortController(); lifetime.current = abort;
         const timeout = setTimeout(() => abort.abort(new Error(tr('Preparing this turn timed out. Reopen Share to retry.', '准备回合超时，请重新打开分享后重试。'))), 30_000);
-        const current = () => ctx.sessions.binding(binding.sessionId) === binding && surface.isConnected;
         void (async () => {
             const turn = await loadShareTurn({ binding, conversation: ctx.uiConversation.binding(binding), messageId, current, signal: abort.signal });
             await frame(); await frame(); abort.signal.throwIfAborted();
@@ -39,14 +66,14 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
         })().catch(failure => { if (lifetime.current === abort && !dialog.current?.hasAttribute('data-closing')) setError(errorText(failure)); })
             .finally(() => clearTimeout(timeout));
         return () => { lifetime.current = undefined; abort.abort(); clearTimeout(timeout); };
-    }, [ctx, binding, surface, messageId]);
+    }, [ctx, binding, surface, messageId, current]);
     useLayoutEffect(() => {
         const root = preview.current;
         if (!root || !snapshot) return;
         for (const [key, value] of Object.entries(snapshot.styles)) root.style.setProperty(key, value);
         revision.current++;
     }, [snapshot, width, wrap, chosen]);
-    const active = () => !!lifetime.current && !lifetime.current.signal.aborted && ctx.sessions.binding(binding.sessionId) === binding;
+    const active = () => !!lifetime.current && !lifetime.current.signal.aborted && current();
     const render = async (): Promise<Blob> => {
         const node = preview.current, currentRevision = revision.current;
         if (!node || !snapshot || !active()) throw new Error(tr('This share preview is no longer active.', '这份分享预览已经关闭。'));
@@ -71,10 +98,10 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
                 ? navigator.clipboard.write([new ClipboardItem({ 'image/png': png })])
                 : png.then(async blob => {
                 if (!active()) return;
-                const file = new File([blob], `hapi-turn-${new Date().toISOString().replace(/[:.]/gu, '-')}.png`, { type: 'image/png' });
+                const file = new File([blob], `hhpi-turn-${new Date().toISOString().replace(/[:.]/gu, '-')}.png`, { type: 'image/png' });
                 if (kind === 'share') {
                     if (!navigator.canShare?.({ files: [file] })) throw new Error(tr('File sharing is unavailable in this browser. Save the PNG instead.', '当前浏览器不支持分享文件，请先保存 PNG。'));
-                    await navigator.share({ files: [file], title: metadata.find(item => item.id === 'title')?.value ?? 'HAPI turn' });
+                    await navigator.share({ files: [file], title: metadata.find(item => item.id === 'title')?.value ?? 'Conversation turn' });
                 } else {
                     const url = URL.createObjectURL(blob), anchor = document.createElement('a');
                     anchor.href = url; anchor.download = file.name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
@@ -115,6 +142,16 @@ function ShareDialog({ ctx, binding, surface, messageId, metadata, language, clo
         <footer><button type="button" disabled={!snapshot || busy} onClick={() => run('save')}>{busy ? tr('Preparing image…', '正在生成图片…') : tr('Save PNG', '保存 PNG')}</button>
             {typeof ClipboardItem !== 'undefined' && !!navigator.clipboard?.write && <button type="button" disabled={!snapshot || busy} onClick={() => run('copy')}>{tr('Copy image', '复制图片')}</button>}
             {typeof navigator.share === 'function' && <button type="button" disabled={!snapshot || busy} onClick={() => run('share')}>{tr('Share image…', '分享图片…')}</button>}
+            {target && ctx.get('sourceSharing') && <button type="button" disabled={busy} onClick={() => {
+                const sharing = ctx.get('sourceSharing'), signal = lifetime.current?.signal;
+                if (!sharing || !signal) return;
+                if (!active()) { setError(tr('The original conversation changed. Reopen Share from its message.', '原会话已经变化，请从原消息重新打开分享。')); return; }
+                setBusy(true); setError(null);
+                void sharing.create(target, signal).then(url => { if (active()) setSourceLink(url); }, failure => { if (active()) setError(errorText(failure)); })
+                    .finally(() => { if (active()) setBusy(false); });
+            }}>{tr('Create account link', '创建账号内链接')}</button>}
+            {sourceLink && <label>{tr('Sign in to this account to open the exact original turn', '登录此账号后打开原始回合')}
+                <input readOnly value={sourceLink} aria-label={tr('Source share link', '原始来源分享链接')} onFocus={event => event.currentTarget.select()}/></label>}
             {status && <output>{status}</output>}
         </footer>
     </dialog>;
@@ -125,19 +162,25 @@ export function installTurnSharing(ctx: Context): () => void {
     const Action = (props: ActionProps) => {
         const language = useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot().active);
         const tr = (en: string, zh: string) => language.startsWith('zh') ? zh : en;
-        const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), source = native ?? observed;
+        const pane = useWorkspacePane(ctx);
+        const binding = props.sessionBinding ?? (!pane ? ctx.sessions.binding(props.sessionId) : undefined);
+        const owner = useRef({ binding, messageId: props.messageId }); owner.current = { binding, messageId: props.messageId };
         const title = props.useSessions(value => value.byId[props.sessionId]?.displayTitle ?? props.sessionId);
         const turn = props.useChat(value => shareTurnOf(value, props.messageId));
-        const [opened, setOpened] = useState<{ binding: SessionBinding; surface: HTMLElement; metadata: Metadata[] } | null>(null);
-        if (turn?.status !== 'closed' || !turn.end) return null;
+        const [opened, setOpened] = useState<{ binding: SessionBinding; surface: HTMLElement; metadata: Metadata[]; target?: AppShareTarget; current(): boolean } | null>(null);
+        if (!binding || turn?.status !== 'closed' || !turn.end) return null;
         const open = (button: HTMLButtonElement) => {
-            const binding = ctx.sessions.binding(props.sessionId), surface = button.closest<HTMLElement>('[data-pane-id]') ?? button.closest<HTMLElement>('.hapi-host-frame');
+            const surface = button.closest<HTMLElement>('[data-pane-id]') ?? button.closest<HTMLElement>('.hapi-host-frame');
             if (!binding || !surface) return;
             const metadata: Metadata[] = [{ id: 'title', name: tr('Title', '标题'), value: title }];
-            if (source?.machineName) metadata.push({ id: 'machine', name: tr('Machine', '机器'), value: source.machineName });
-            if (source?.model) metadata.push({ id: 'model', name: tr('Model', '模型'), value: source.model });
+            const source = sourceRoute(pane?.hostId ?? 'local', binding.sessionId, 'local');
+            metadata.push({ id: 'machine', name: tr('Machine', '机器'), value: source.kind === 'hhpi' ? source.identity.machineId : source.hostId });
             if (turn.start?.time) metadata.push({ id: 'time', name: tr('Time', '时间'), value: new Date(turn.start.time).toLocaleString() });
-            setOpened({ binding, surface, metadata });
+            const conversation = ctx.uiConversation.binding(binding), hostId = pane?.hostId ?? 'local', messageId = props.messageId;
+            const target = shareTarget(binding, conversation, messageId, hostId);
+            const current = () => owner.current.binding === binding && owner.current.messageId === messageId && surface.isConnected
+                && !binding.session.getSnapshot().removed && (!target || samePosition(target, shareTarget(binding, conversation, messageId, hostId)));
+            setOpened({ binding, surface, metadata, current, ...(target ? { target } : {}) });
         };
         return <><button type="button" className="hapi-turn-share-action" data-hapi-share-exclude aria-label={tr('Share this turn', '分享当前回合')} title={tr('Share this turn', '分享当前回合')} onClick={event => open(event.currentTarget)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M12 15V3m-4 4 4-4 4 4M5 11v9h14v-9"/></svg>

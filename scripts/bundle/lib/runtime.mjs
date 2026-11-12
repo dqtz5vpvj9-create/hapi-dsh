@@ -8,13 +8,67 @@
  * every consumer resolves one physical copy.
  */
 import { createRequire } from 'node:module';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readTgz } from './tar.mjs';
-import { sha256Bytes } from './digest.mjs';
+import { canonicalJson, sha256Bytes } from './digest.mjs';
+import { verifyReleaseDirectory } from './release.mjs';
 
 const RUNTIME_INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
 const RUNTIME_IDENTITY_FILE = 'runtime-identity.json';
+
+const runtimeManifest = (releaseRoot, manifest) => ({
+    name: 'hapi-dsh-runtime', private: true, version: String(manifest.version),
+    // Both consumers resolve from this private closure, without a profile copy.
+    dependencies: { '@deepseek-ai/dsh': manifest.release.upstreamVersion,
+        'hapi-dsh': `file:${join(releaseRoot, manifest.payload.hapi.tarball)}` },
+});
+
+/** Seed only an absent target lock from the current profile's verified active runtime. */
+export async function reuseRuntimeLockfile({ releaseRoot, manifest, previousReleaseRoot, pnpmVersion, logger = () => {} }) {
+    const target = join(releaseRoot, 'runtime', 'pnpm-lock.yaml');
+    if (await lstat(target).then(() => true).catch(error => { if (error.code === 'ENOENT') return false; throw error; })) return;
+    if (!previousReleaseRoot || !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(pnpmVersion ?? '')) return;
+    try {
+        const previous = await verifyReleaseDirectory(previousReleaseRoot);
+        if (previous.manifest.release.upstreamVersion !== manifest.release.upstreamVersion) throw new Error('upstream versions differ');
+        const directory = join(previousReleaseRoot, 'runtime');
+        const regular = async file => { if (!(await lstat(file)).isFile()) throw new Error('previous runtime metadata is not a regular file'); return readFile(file); };
+        if (!(await lstat(directory)).isDirectory() || (await lstat(directory)).isSymbolicLink()) throw new Error('previous runtime is not a private directory');
+        const inspected = await inspectRuntime({ releaseRoot: previousReleaseRoot, manifest: previous.manifest });
+        if (!inspected.ok) throw new Error('previous runtime identity is not intact');
+        const pkg = JSON.parse(await regular(join(directory, 'package.json')));
+        if (canonicalJson(pkg) !== canonicalJson(runtimeManifest(previousReleaseRoot, previous.manifest))) throw new Error('previous runtime inputs differ');
+        const modules = (await regular(join(directory, 'node_modules/.modules.yaml'))).toString('utf8');
+        let manager;
+        // pnpm 11 writes JSON to this historical .yaml path; older installs
+        // may still carry the plain YAML scalar. Neither format is guessed.
+        try { manager = JSON.parse(modules).packageManager; }
+        catch { manager = /^packageManager:\s*['"]?(pnpm@[^\s'"]+)['"]?\s*$/m.exec(modules)?.[1]; }
+        const seal = await readJson(join(directory, RUNTIME_IDENTITY_FILE), 'previous runtime identity');
+        if (manager !== `pnpm@${pnpmVersion}` || (seal.packageManager && seal.packageManager !== manager)) throw new Error('pnpm versions differ');
+        const bytes = await regular(join(directory, 'pnpm-lock.yaml'));
+        const installed = await regular(join(directory, 'node_modules/.pnpm/lock.yaml'));
+        if (!bytes.equals(installed)) throw new Error('previous lock differs from the installed lock');
+        const sha256 = sha256Bytes(bytes);
+        if (seal.files?.['pnpm-lock.yaml'] && seal.files['pnpm-lock.yaml'] !== sha256) throw new Error('previous lock changed after identity verification');
+        // The source is read-only. A competing preparation may already have
+        // written a target lock; wx preserves it instead of replacing its work.
+        await writeFile(target, bytes, { flag: 'wx' });
+        const source = { releaseId: previous.releaseId, sha256, packageManager: manager };
+        logger(`runtime: reused active release ${previous.releaseId} lockfile (${source.sha256.slice(0, 12)})`);
+        return source;
+    } catch (error) {
+        logger(`runtime: previous lockfile not reused (${error instanceof Error ? error.message : String(error)}); using normal pnpm install`);
+    }
+}
+
+/** Resolve a sealed file within its runtime using the platform's path rules. */
+export function runtimeFilePath(directory, file, paths = { resolve, relative, isAbsolute, sep }) {
+    const target = paths.resolve(directory, file), within = paths.relative(directory, target);
+    if (!within || within === '..' || within.startsWith(`..${paths.sep}`) || paths.isAbsolute(within)) return undefined;
+    return target;
+}
 
 /** Flat sha256 map for one installed package directory, relative to the runtime root. */
 async function hashPackageTree(runtimeDirectory, packageDirectory) {
@@ -118,27 +172,19 @@ async function overlayPackage(runtimeDirectory, tarballPath, item, logger) {
  * Build the pinned runtime under the release directory and overlay ext packages.
  * @returns {Promise<{directory: string, dshBinary: string, dshVersion: string, packages: Array<{name: string, version: string, sha256: string}>}>}
  */
-export async function prepareRuntime({ run, pnpm, env, releaseRoot, manifest, logger = () => {} }) {
+export async function prepareRuntime({ run, pnpm, pnpmVersion, env, releaseRoot, manifest, previousReleaseRoot, logger = () => {} }) {
     const directory = join(releaseRoot, 'runtime');
     const upstreamVersion = manifest.release.upstreamVersion;
     await mkdir(directory, { recursive: true });
     const manifestPath = join(directory, 'package.json');
     const existing = await readPackageJson(manifestPath);
-    const wanted = {
-        name: 'hapi-dsh-runtime',
-        private: true,
-        version: String(manifest.version),
-        // The plugin is a runtime dependency so its @deepseek-ai/* imports
-        // resolve to the same physical packages the DSH runtime loads.
-        dependencies: {
-            '@deepseek-ai/dsh': upstreamVersion,
-            'hapi-dsh': `file:${join(releaseRoot, manifest.payload.hapi.tarball)}`,
-        },
-    };
+    const wanted = runtimeManifest(releaseRoot, manifest);
     if (JSON.stringify(existing) !== JSON.stringify(wanted)) {
         await writeFile(manifestPath, `${JSON.stringify(wanted, null, 2)}\n`);
-        rm(join(directory, 'pnpm-lock.yaml'), { force: true }).catch(() => {});
     }
+    // pnpm reconciles changed file: payloads and dependency inputs itself. Keep
+    // existing resolution state instead of deleting it whenever its path moves.
+    const lockfileSource = await reuseRuntimeLockfile({ releaseRoot, manifest, previousReleaseRoot, pnpmVersion, logger });
     const install = await run({ ...pnpm, args: [...pnpm.args, 'install', '--prod', '--ignore-scripts', '--no-frozen-lockfile'] },
         { env, cwd: directory, timeoutMs: RUNTIME_INSTALL_TIMEOUT_MS });
     if (install.exitCode !== 0) {
@@ -157,6 +203,9 @@ export async function prepareRuntime({ run, pnpm, env, releaseRoot, manifest, lo
         packages.push(await overlayPackage(directory, join(releaseRoot, item.tarball), item, logger));
     }
     const files = {};
+    for (const path of ['package.json', 'pnpm-lock.yaml', 'node_modules/.pnpm/lock.yaml', 'node_modules/.modules.yaml']) {
+        files[path] = sha256Bytes(await readFile(join(directory, path)));
+    }
     // Seal the DSH launcher's own files (not its nested dependency closure) so
     // start-time verification stays cheap but covers the code we execute.
     const dshDirectory2 = join(directory, 'node_modules', '@deepseek-ai', 'dsh');
@@ -179,6 +228,8 @@ export async function prepareRuntime({ run, pnpm, env, releaseRoot, manifest, lo
         schemaVersion: 1,
         upstreamVersion,
         extRelease: manifest.release.extRelease,
+        ...(pnpmVersion ? { packageManager: `pnpm@${pnpmVersion}` } : {}),
+        ...(lockfileSource ? { lockfileSource } : {}),
         packages: manifest.payload.dshExt.map(item => ({ name: item.name, version: item.version })),
         files,
     }, null, 2)}\n`);
@@ -199,8 +250,8 @@ export async function verifyRuntimeSeal(releaseRoot, manifest) {
         problems.push('the sealed runtime identity does not match the bundle manifest');
     }
     for (const [path, expected] of Object.entries(seal.files ?? {})) {
-        const target = resolve(directory, path);
-        if (!target.startsWith(resolve(directory) + '/')) { problems.push(`sealed path escapes the runtime: ${path}`); continue; }
+        const target = runtimeFilePath(directory, path);
+        if (!target) { problems.push(`sealed path escapes the runtime: ${path}`); continue; }
         try {
             if (sha256Bytes(await readFile(target)) !== expected) problems.push(`runtime file changed since sealing: ${path}`);
         } catch {
@@ -246,8 +297,8 @@ export const RESOLUTION_SINGLETONS = Object.freeze([
 ]);
 
 /**
- * Resolve the shared singleton packages from both runtime consumers (the DSH
- * launcher and the plugin) and report any version split. Same-version peer
+ * Resolve the shared singleton packages from the actual runtime consumers (the DSH
+ * launcher, Host plugin and Host-only Runner plugin) and report any version split. Same-version peer
  * variants are pnpm layout, not a split; only different versions fail.
  * @param {string} releaseRoot - installed release directory.
  */
@@ -259,6 +310,7 @@ export async function auditRuntimeResolution(releaseRoot) {
     for (const packageFile of [
         join(directory, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
         join(directory, 'node_modules', 'hapi-dsh', 'package.json'),
+        join(directory, 'node_modules', 'hapi-dsh', 'dist', 'runner', 'package.json'),
     ]) {
         let manifest;
         try { manifest = JSON.parse(await readFile(packageFile, 'utf8')); } catch { consumerFiles.push(packageFile); continue; }

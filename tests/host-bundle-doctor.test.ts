@@ -17,13 +17,10 @@ import { ops, release } from '../src/cli/release.ts'
 
 import { createDoctorPackage } from './fixtures/doctor-package.ts'
 
-const TOKEN = 'doctor-secret-token-value'
-
 function configFor(harness: Harness): RuntimeConfig {
     return {
         version: 1,
         dsh: { home: harness.dshHome, profile: harness.profile },
-        hapi: { id: '00000000-0000-4000-8000-000000000000', url: 'http://127.0.0.1:9', tokenEnv: 'HAPI_DSH_TOKEN', token: TOKEN },
         server: { host: '127.0.0.1', port: 0 },
     }
 }
@@ -45,7 +42,7 @@ function check(result: DoctorResult, name: string): DoctorCheck {
     return found
 }
 
-test('doctor verifies an installed bundle release without leaking paths or credentials', async () => {
+test('doctor verifies an installed bundle release without leaking the private home path', async () => {
     const harness = await createHarness()
     try {
         await seedProfile(harness.dshHome, harness.profile)
@@ -53,7 +50,6 @@ test('doctor verifies an installed bundle release without leaking paths or crede
         const result = await runDoctor(harness)
         const report = JSON.stringify(result)
         assert.ok(!report.includes(harness.dshHome), 'doctor output must redact the DSH home path')
-        assert.ok(!report.includes(TOKEN), 'doctor output must never contain the HAPI token')
         assert.equal(result.ok, true, JSON.stringify(result.checks.filter((entry) => entry.status === 'fail')))
 
         assert.equal(check(result, 'node').status, 'pass')

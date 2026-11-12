@@ -7,8 +7,13 @@ export class SupersededObservation extends SourceError {
 }
 export class CodexObservation {
     private readonly scope = new WorkScope();
+    private readonly historyScope = new WorkScope();
     invalidate(): void { this.scope.invalidate(); }
+    /** Source replacement/loss invalidates fixed pages as well as live observations. */
+    invalidateHistory(): void { this.scope.invalidate(); this.historyScope.invalidate(); }
     capture(...facts: Array<() => unknown>): () => boolean { return this.scope.capture(...facts); }
+    /** A revision-verified fixed page may merge across unrelated tail publications. */
+    captureHistory(...facts: Array<() => unknown>): () => boolean { return this.historyScope.capture(...facts); }
     commit<T>(current: () => boolean, apply: () => T): T {
         if (!current()) throw new SupersededObservation();
         const value = apply();

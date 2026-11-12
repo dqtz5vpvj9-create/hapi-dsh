@@ -7,13 +7,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-attachment/client'
 import { isSourceSessionId } from '../remote/protocol.ts'
 import { useLiveDisclosure } from './live-disclosure.ts'
 import { SourcePlanActions, proposedPlanText } from './source-plan.tsx'
+import type { SourceFileClient } from './source-workspace-provider.ts'
 
 type Props = PropsRuntime<'conversation.chat.node', 'assistant-step'> & PropsRenderFactories
 type OfficialProps = Props & Pick<PropsRenderSlots<'conversation.chat.reasoning.body' | 'conversation.chat.message.images'>, 'renderSlot'>
 type BodyOwner = OwnerOf<'conversation.chat.reasoning.body'>
 type ImageOwner = OwnerOf<'conversation.chat.message.images'>
 
-export function installSourceTranscript(ctx: Context): () => void {
+export function installSourceTranscript(ctx: Context, client?: SourceFileClient): () => void {
     return ctx.slots.inject('conversation.chat.node', () => {
         let original: StoredEntry | undefined, remove: (() => void) | undefined, updating = false
         const own = new Set<unknown>()
@@ -32,9 +33,10 @@ export function installSourceTranscript(ctx: Context): () => void {
                         return useLiveDisclosure(props.useDisclosure, running)
                     }, [props.useDisclosure, running])
                     // Both are public official factories. No child slot is redeclared or borrowed.
-                    const renderSlot = ((_key: string, owner: BodyOwner | ImageOwner) => 'text' in owner
-                        ? props.renderFactorySlot('conversation.chat.reasoning.content', owner)
-                        : props.renderFactorySlot('conversation.images.content', owner)) as OfficialProps['renderSlot']
+                    const renderSlot = ((_key: string, owner: BodyOwner | ImageOwner) => {
+                        if ('text' in owner) return props.renderFactorySlot('conversation.chat.reasoning.content', owner)
+                        return props.renderFactorySlot('conversation.images.content', owner)
+                    }) as OfficialProps['renderSlot']
                     const plan = source && props.groupPart !== 'reasoning' ? proposedPlanText(props.node.data.blocks) : null
                     return <>{createElement(Official, { ...props, renderSlot, useDisclosure: source ? useDisclosure : props.useDisclosure })}
                         {plan && !running && <SourcePlanActions key={`${props.sessionId}:${props.node.key}`} ctx={ctx} sessionId={props.sessionId} planId={props.node.key} text={plan}

@@ -1,14 +1,16 @@
+import { isSourceSessionId } from '../remote/protocol.ts'
+import { resolveMountedChatForPane, subscribePaneMountedChat } from './mounted-chat-control.ts'
 import { readingCandidates } from './reading-candidates.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionSeq } from '@deepseek-ai/dsh-session/types'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import type { PaneReadingIntent } from './reading-intent.ts'
-import { findChatElement, messageNodeTarget, parseReloadReadingAnchor, placeReadingAnchor, revealChatElement, type ReloadReadingAnchor } from './reading-anchor.ts'
+import { findChatElement, messageNodeTarget, type ReloadReadingAnchor } from './reading-anchor.ts'
 import { keyIntent } from './seamless/intent.ts'
-import { loadHistoryThrough } from './history-navigation.ts'
-import type {} from './source-navigation.ts'
-import type { SourceViewportSession } from './source-sessions.ts'
+import { registerOrdinaryReadingCheckpoint } from './ordinary-reading-checkpoint.ts'
+import type { RemotePaneSession } from './remote-reading-session.ts'
+import type { SourceViewportSession } from './source-session-types.ts'
 
 const latestCancellations = new WeakMap<HTMLElement, () => void>()
 
@@ -60,7 +62,7 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     const window = root.ownerDocument.defaultView
     if (!window) return () => {}
     const source = navigation.reading
-    type ReadingRequest = { intent: PaneReadingIntent | undefined; reload?: ReloadReadingAnchor | undefined;
+    type ReadingRequest = { intent: PaneReadingIntent | undefined; reload?: ReloadReadingAnchor | undefined; updateRestore?: boolean;
         phase: 'waiting' | 'running' | 'done' | 'error' | 'reader'; error?: unknown; recovery?: boolean }
     let disposed = false, ready = false, observed = false, observedIntent: PaneReadingIntent | undefined
     let request: ReadingRequest | undefined
@@ -74,19 +76,14 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     let eventRevision = reference.binding.eventSource.getSnapshot().revision
     const sourceWindow = (reference.binding.session as Partial<SourceViewportSession>).sourceWindow
     let bodyVersion = sourceWindow?.getSnapshot()
-    const projected = ctx.sessions.list.getSnapshot().byId[reference.sessionId]?.projectionValues
-    const native = projected?.hapi ?? projected?.hapiObserved
-    const sourceIdentity = native ? [native.hubId, native.hapiSessionId] : reference.sessionId
-    const sourceAnchors = new Map<number, string>()
-    let anchorTimer: number | undefined
-    const storageKey = `hapi-dsh:reload-reading:${JSON.stringify([navigation.hostId, navigation.paneId, sourceIdentity])}`
-    let restored: ReloadReadingAnchor | undefined
-    try {
-        const entry = window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
-        const saved = parseReloadReadingAnchor(window.sessionStorage.getItem(storageKey))
-        if (entry?.type === 'reload' || saved?.sourceMessageId && saved.displayId !== reference.sessionId) restored = saved
-        window.sessionStorage.removeItem(storageKey)
-    } catch { /* A disabled browser store does not block conversation navigation. */ }
+    const checkpoint = isSourceSessionId(reference.sessionId) ? undefined : registerOrdinaryReadingCheckpoint(ctx, reference.binding, {
+        updates: navigation.updates, application: navigation.application,
+        target: { hostId: navigation.hostId, sessionId: reference.sessionId, paneId: navigation.paneId },
+        storage: window.sessionStorage,
+        reload: (window.performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)?.type === 'reload',
+        reader: () => resolveMountedChatForPane(root),
+        current: () => !disposed && root.isConnected && ctx.sessions.binding(reference.sessionId) === reference.binding,
+    })
 
     const waitFor = <T,>(read: () => T | undefined, signal: AbortSignal, extraScopes: readonly HTMLElement[] = []): Promise<T> => new Promise((resolve, reject) => {
         const finish = (value?: T, error?: unknown): void => {
@@ -126,19 +123,24 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         clearFailure(); root.dataset.hapiReading = 'loading'
         try {
             await reference.ready; signal.throwIfAborted()
-            const scrollport = await waitFor(() => root.querySelector<HTMLElement>('[data-conversation-scroll]') ?? undefined, signal)
+            await waitFor(() => root.querySelector<HTMLElement>('[data-conversation-scroll]') ?? undefined, signal)
             const target = reload ? undefined : intent?.target
             if (target?.kind === 'message') {
-                const service = ctx.get('hapiMessageNavigation')
-                if (!service) throw new Error('Source message navigation is not ready.')
-                const located = await service.locate(reference.sessionId, target.messageId, signal)
-                signal.throwIfAborted()
-                // A source reconciliation can publish a successor display ID.
-                // Keep the explicit destination across that public rebind.
-                if (located.sessionId !== reference.sessionId) {
-                    navigation.openSession(located.sessionId, { target }); return
+                const seq = Number(target.messageId)
+                if (!Number.isSafeInteger(seq) || seq < 0 || String(seq) !== target.messageId) throw new Error('The original message position is invalid.')
+                const conversation = ctx.uiConversation.binding(reference.binding), reading = conversation.readingView
+                if (!reading) throw new Error('This conversation has no official reading window.')
+                const find = () => messageNodeTarget(conversation.target('chat').getSnapshot(), seq,
+                    reference.binding.eventSource.getSnapshot().entries)
+                let node = find()
+                if (!node) {
+                    await reading.read({ kind: 'around', target: { key: target.messageId, seq: seq as SessionSeq } }, signal)
+                    signal.throwIfAborted(); node = find()
                 }
-                await service.revealSequence(reference.sessionId, located.seq, signal, root)
+                if (!node) throw new Error('The original event has no readable conversation content.')
+                const control = resolveMountedChatForPane(root)
+                if (!control) throw new Error('The original conversation reader is not mounted.')
+                await control.reveal({ key: node.key, seq }, signal)
             } else if (target?.kind === 'approval' || target?.kind === 'delivery') {
                 const selector = target.kind === 'approval' ? '[data-hapi-request-id]' : '[data-hapi-delivery-id]'
                 // Mobile source receipts are portalled outside the pane. Only
@@ -157,25 +159,27 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                     if (boundaries.includes(ancestor)) break
                 }
                 row.scrollIntoView({ block: 'nearest' }); row.tabIndex = -1; row.focus({ preventScroll: true })
+            } else if (current.updateRestore) {
+                if (!await checkpoint?.restore(signal)) {
+                    if (request === current) request = undefined
+                    delete root.dataset.hapiReading
+                    retainedAnchor = readAnchor()
+                    return
+                }
             } else if (reload) {
                 let seq = reload.seq, key = reload.key
-                if (reload.sourceMessageId) {
-                    const service = ctx.get('hapiMessageNavigation')
-                    if (!service) throw new Error('Source navigation is not ready.')
-                    const located = await service.locate(reference.sessionId, reload.sourceMessageId, signal)
-                    if (located.sessionId !== reference.sessionId) {
-                        window.sessionStorage.setItem(storageKey, JSON.stringify(reload))
-                        navigation.openSession(located.sessionId); return
-                    }
-                    seq = located.seq
-                    await loadHistoryThrough(reference.binding.session, located.seq, signal); signal.throwIfAborted()
-                    key = messageNodeTarget(ctx.uiConversation.binding(reference.binding).target('chat').getSnapshot(), seq)?.key ?? key
-                } else await loadHistoryThrough(reference.binding.session, seq as SessionSeq, signal)
+                if (reload.sourceEpoch !== undefined && reload.sourceEpoch !== (reference.binding.session as RemotePaneSession).sourceEpoch)
+                    throw new Error('The original source replaced this reading position. Reopen an exact source target before navigating.')
+                if (reload.sourceMessageId) throw new Error('This saved position belongs to a retired display. Open its exact original conversation before navigating.')
+                const conversation = ctx.uiConversation.binding(reference.binding), reading = conversation.readingView
+                if (!reading) throw new Error('This conversation has no official reading window.')
+                await reading.read({ kind: 'around', target: { key, seq: seq as SessionSeq } }, signal)
                 signal.throwIfAborted()
-                const clicked = new WeakSet<HTMLElement>()
-                const row = await waitFor(() => revealChatElement(root, { key, kind: 'message' }, clicked), signal)
+                key = messageNodeTarget(conversation.target('chat').getSnapshot(), seq)?.key ?? key
+                const control = resolveMountedChatForPane(root)
+                if (!control) throw new Error('The original conversation reader is not mounted.')
+                await control.reveal({ key, seq }, signal)
                 signal.throwIfAborted()
-                placeReadingAnchor(scrollport, row, reload.offset)
             } else if (target?.kind === 'latest') {
                 const session = reference.binding.session as typeof reference.binding.session & {
                     returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>
@@ -189,7 +193,23 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
                     throw new Error('The latest source window could not be opened.')
                 }
                 signal.throwIfAborted()
-                await activateOfficialLatest(root, signal)
+                // A fully opened ordinary blank uses the official hero editor
+                // and deliberately has no Chat/to-bottom owner. Metadata alone
+                // is insufficient: the exact rendered occurrence and its Chat
+                // snapshot must both confirm that no history is being hidden.
+                const state = session.getSnapshot()
+                let emptyHero = false
+                if (!isSourceSessionId(reference.sessionId) && state.openState === 'open'
+                    && state.blank && !state.hasMore && !state.running && !state.promptAttempted
+                    && root.querySelector('[data-conversation-content][data-content-phase="hero"] [data-composer-input]') !== null) {
+                    const chat = ctx.uiConversation.binding(reference.binding).target('chat')
+                    // Hero does not mount Chat. Its public subscription activates
+                    // the target snapshot without creating a second reader.
+                    const stop = chat.subscribe(() => {})
+                    try { emptyHero = chat.getSnapshot()?.order.length === 0 }
+                    finally { stop() }
+                }
+                if (!emptyHero) await activateOfficialLatest(root, signal)
             }
             signal.throwIfAborted(); current.phase = readerOwned ? 'reader' : 'done'; root.dataset.hapiReading = 'ready'
             retainedAnchor = readAnchor()
@@ -209,9 +229,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             cancelLatestNavigation(root)
             pending?.abort(); pending = undefined; clearFailure()
             retainedAnchor = undefined; readerOwned = false
-            const reload = !next || next.target.kind === 'latest' ? restored : undefined
-            request = next || reload ? { intent: next, reload, phase: 'waiting' } : undefined
-            restored = undefined
+            request = next ? { intent: next, phase: 'waiting' }
+                : checkpoint ? { intent: undefined, updateRestore: true, phase: 'waiting' } : undefined
         }
         if (!visible()) {
             cancelLatestNavigation(root)
@@ -226,7 +245,10 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             }
             clearFailure(); return
         }
-        if (request?.phase === 'waiting' && !(request.recovery && readerMoving)) void apply(request)
+        if (request?.phase === 'waiting' && !(request.recovery && readerMoving)) {
+            if (request.updateRestore && (!navigation.application.getSnapshot() || !resolveMountedChatForPane(root))) return
+            void apply(request)
+        }
         else if (request?.phase === 'error' && !failure) {
             const current = request
             showFailure(current.error, () => retry(current))
@@ -246,16 +268,14 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             && rail?.getAttribute('aria-label') === t('chat.turnNavigation.label')
         if (!latest && !turn) return
         pending?.abort(); pending = undefined; request = undefined
-        retainedAnchor = undefined; restored = undefined; readerOwned = true
+        retainedAnchor = undefined; readerOwned = true
         readerMoving = touchHeld = pointerHeld = readerScrolled = false
         if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
-        if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
         if (settleTimer !== undefined) window.clearTimeout(settleTimer)
         if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
-        sampleFrame = anchorTimer = settleTimer = settleFrame = undefined
+        sampleFrame = settleTimer = settleFrame = undefined
         clearFailure()
         root.dataset.hapiReading = 'reader'
-        try { window.sessionStorage.removeItem(storageKey) } catch { /* optional bookmark */ }
     }
     const reader = (event: Event): void => {
         // Real gestures win over outstanding history I/O. No focus/store event
@@ -349,7 +369,8 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             // A mixed Assistant can have separate reasoning/response seats.
             // Retain its public flow anchor, not their shared node identity.
             const seq = Math.max(0, Math.floor(node.anchorSeq))
-            return { key: element.dataset.chatAnchorKey ?? nodeKey, seq, offset: box.top - top, displayId: reference.sessionId, ...(sourceAnchors.has(seq) ? { sourceMessageId: sourceAnchors.get(seq)! } : {}) }
+            return { key: element.dataset.chatAnchorKey ?? nodeKey, seq, offset: box.top - top, displayId: reference.sessionId,
+                ...(isSourceSessionId(reference.sessionId) ? { sourceEpoch: (reference.binding.session as RemotePaneSession).sourceEpoch } : {}) }
         }
     }
     const scheduleSample = (): void => {
@@ -359,24 +380,6 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
             if (ready && visible() && !pending && !reference.binding.session.getSnapshot().loadingOlder
                 && request?.phase !== 'waiting' && request?.phase !== 'error') {
                 retainedAnchor = readAnchor()
-                if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
-                const anchor = retainedAnchor
-                if (!anchor) { try { window.sessionStorage.removeItem(storageKey) } catch { /* optional bookmark */ } }
-                if (anchor?.sourceMessageId) { try { window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)) } catch { /* optional bookmark */ } }
-                if (native && anchor && !anchor.sourceMessageId) anchorTimer = window.setTimeout(() => {
-                    anchorTimer = undefined
-                    const service = ctx.get('hapiMessageNavigation')
-                    if (!service) return
-                    const version = bodyVersion
-                    void service.sourceAnchor(reference.sessionId, anchor.seq).then(id => {
-                        if (!id || disposed || retainedAnchor?.seq !== anchor.seq
-                            || version?.historyId !== bodyVersion?.historyId || version?.historyVersion !== bodyVersion?.historyVersion) return
-                        if (sourceAnchors.size >= 32) sourceAnchors.clear()
-                        sourceAnchors.set(anchor.seq, id)
-                        retainedAnchor = { ...retainedAnchor, sourceMessageId: id }
-                        try { window.sessionStorage.setItem(storageKey, JSON.stringify(retainedAnchor)) } catch { /* optional bookmark */ }
-                    }).catch(() => {})
-                }, 250)
             }
         })
     }
@@ -391,14 +394,11 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     const sourceWindowChanged = (): void => {
         const next = sourceWindow!.getSnapshot(), previous = bodyVersion
         bodyVersion = next
-        // HAPI publishes window metadata after its body commit. Only a new
+        // A source publishes window metadata after its body commit. Only a new
         // source history identity/version invalidates this reader's window;
         // paging and same-item revisions can also use the public replace API.
         if (previous?.historyId !== undefined && next.historyId !== undefined && previous.historyId !== next.historyId
             || previous?.historyVersion !== undefined && next.historyVersion !== undefined && previous.historyVersion !== next.historyVersion) {
-            if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
-            anchorTimer = undefined
-            sourceAnchors.clear()
             recoverReading()
         }
     }
@@ -410,12 +410,9 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         // Ordinary DSH Session replacement still carries its reconnect signal.
         recoverReading()
     }
-    const remember = (): void => {
-        const anchor = readAnchor() ?? retainedAnchor
-        try { if (anchor) window.sessionStorage.setItem(storageKey, JSON.stringify(anchor)); else window.sessionStorage.removeItem(storageKey) } catch { /* optional anchor persistence */ }
-    }
     const stops = [navigation.state.subscribe(update), reference.binding.eventSource.subscribe(eventWindowChanged),
-        ...(sourceWindow ? [sourceWindow.subscribe(sourceWindowChanged)] : []), ...(source ? [source.subscribe(update)] : [])]
+        ...(sourceWindow ? [sourceWindow.subscribe(sourceWindowChanged)] : []), ...(source ? [source.subscribe(update)] : []),
+        ...(checkpoint ? [navigation.application.subscribe(update), subscribePaneMountedChat(root, update)] : [])]
     const events = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const
     for (const event of events) root.addEventListener(event, reader, { capture: true, passive: true })
     root.addEventListener('click', officialNavigation, { capture: true })
@@ -423,12 +420,10 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
     root.addEventListener('scrollend', scrollend, { capture: true, passive: true })
     for (const event of ['touchend', 'touchcancel']) root.addEventListener(event, releaseReader, { capture: true, passive: true })
     for (const event of ['pointerup', 'pointercancel']) window.addEventListener(event, releaseReader, { capture: true, passive: true })
-    window.addEventListener('pagehide', remember)
     void reference.ready.then(() => { if (!disposed) { ready = true; update() } }, () => {})
     return () => {
         cancelLatestNavigation(root)
-        remember(); disposed = true; pending?.abort(); clearFailure()
-        if (anchorTimer !== undefined) window.clearTimeout(anchorTimer)
+        checkpoint?.dispose(); disposed = true; pending?.abort(); clearFailure()
         if (sampleFrame !== undefined) window.cancelAnimationFrame(sampleFrame)
         if (settleTimer !== undefined) window.clearTimeout(settleTimer)
         if (settleFrame !== undefined) window.cancelAnimationFrame(settleFrame)
@@ -439,7 +434,6 @@ export function bindPaneReading(ctx: Context, root: HTMLElement, reference: Sess
         root.removeEventListener('scrollend', scrollend, { capture: true })
         for (const event of ['touchend', 'touchcancel']) root.removeEventListener(event, releaseReader, { capture: true })
         for (const event of ['pointerup', 'pointercancel']) window.removeEventListener(event, releaseReader, { capture: true })
-        window.removeEventListener('pagehide', remember)
         delete root.dataset.hapiReading
     }
 }

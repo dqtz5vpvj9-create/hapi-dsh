@@ -9,9 +9,14 @@ import type {} from '@deepseek-ai/dsh-client-ui-deliverables/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-files/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
 import type {} from '@deepseek-ai/dsh-client-ui-session/client'
-import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { WorkbenchSource } from '../workbench-types.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
+import { isSourceSessionId } from '../remote/protocol.ts'
+import { sourceFileAccess, type SourceFileClient } from './source-workspace-provider.ts'
 import { errorMessage } from './controller.ts'
 import type { WorkspaceTranslate } from './locales.ts'
 
@@ -27,7 +32,7 @@ type ActionSlot = keyof typeof actionSlots
 type ActionKind = typeof actionSlots[ActionSlot]
 type ActionProps = PropsRuntime<'conversation.session.header.utilities'> & { absolutePath?: string }
 type ActionComponent = (props: ActionProps) => ReactNode
-type DownloadApi = Pick<HapiRemoteApi, 'nativeDocument'>
+type DownloadApi = SourceFileClient
 
 /** The explicit projection owns the source address, including child read views. */
 export function sourcePathAddress(value: unknown): WorkbenchSource | null {
@@ -38,62 +43,47 @@ export function sourcePathAddress(value: unknown): WorkbenchSource | null {
     return { sourceSessionId: sessionId, sourceHubId: hubId, ...(typeof machineId === 'string' && machineId ? { machineId } : {}) }
 }
 
-/** Resolve through the source-aware API and download its authenticated bytes. */
-export async function downloadSourceFile(api: DownloadApi, source: WorkbenchSource, path: string, origin: string,
-    fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<{ blob: Blob; fileName: string }> {
-    signal?.throwIfAborted()
-    const document = remoteValue(await api.nativeDocument({ source, document: { kind: 'file', path, ...(source.machineId ? { machineId: source.machineId } : {}) } }))
-    signal?.throwIfAborted()
-    const address = new URL(document.downloadUrl, origin)
-    if (address.origin !== new URL(origin).origin || !['http:', 'https:'].includes(address.protocol)) throw new Error('The source download must use this authenticated Host')
-    const response = await fetcher(address.href, { credentials: 'same-origin', cache: 'no-store', redirect: 'error', ...(signal ? { signal } : {}) })
-    if (!response.ok) throw new Error(`Source download failed (${response.status})`)
-    return { blob: await response.blob(), fileName: document.fileName }
+/** Download the exact source's authenticated binary result; no browser-supplied URL is opened. */
+export async function downloadSourceFile(client: SourceFileClient, sessionId: string, path: string,
+    signal: AbortSignal = new AbortController().signal): Promise<{ blob: Blob; fileName: string }> {
+    const context = await client.resolve(sessionId, signal); signal.throwIfAborted()
+    if (context.owner.binding.target.sessionId !== sessionId) throw new Error('The download belongs to another source session.')
+    const bytes = await context.services.files.readBytes(path, {}, sourceFileAccess(context.owner, signal)); signal.throwIfAborted()
+    return { blob: new Blob([new Uint8Array(bytes.data).buffer], { type: 'application/octet-stream' }),
+        fileName: bytes.absolutePath.split(/[\\/]/).at(-1) || 'download' }
 }
 
-function SourceDownload({ api, source, path, t }: { api: DownloadApi; source: WorkbenchSource; path: string; t: WorkspaceTranslate }) {
+function SourceDownload({ client, sessionId, path, t }: { client: DownloadApi; sessionId: string; path: string; t: WorkspaceTranslate }) {
     const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null)
     const active = useRef<AbortController | null>(null)
     useEffect(() => {
         active.current = null; setBusy(false); setError(null)
         return () => { active.current?.abort(); active.current = null }
-    }, [path, source.sourceSessionId, source.sourceHubId])
+    }, [client, path, sessionId])
     const download = async (): Promise<void> => {
         if (active.current) return
         const abort = new AbortController(); active.current = abort; setBusy(true); setError(null)
         try {
-            const result = await downloadSourceFile(api, source, path, location.href, fetch, abort.signal)
-            abort.signal.throwIfAborted()
+            const result = await downloadSourceFile(client, sessionId, path, abort.signal); abort.signal.throwIfAborted()
             const link = document.createElement('a'), url = URL.createObjectURL(result.blob)
             link.href = url; link.download = result.fileName; link.click()
             setTimeout(() => { URL.revokeObjectURL(url) }, 30_000)
         } catch (error) { if (!abort.signal.aborted) setError(errorMessage(error)) }
         finally { if (active.current === abort) { active.current = null; if (!abort.signal.aborted) setBusy(false) } }
     }
-    return <span className="hapi-source-download"><button type="button" disabled={busy} title={t('sourcePathHelp')} onClick={() => { void download() }}>{busy ? t('sourceDownloading') : t('sourceDownload')}</button>
+    return <span className="hapi-source-download" style={{ display: 'inline-flex', flexShrink: 0 }}><Button type="button" variant="toolbar" size="sm" disabled={busy}
+        aria-label={busy ? t('sourceDownloading') : t('sourceDownload')} title={t('sourcePathHelp')} style={{ flexShrink: 0, width: 32, height: 32, padding: 6 }} onClick={() => { void download() }}>
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M8 1v9m-3-3 3 3 3-3M2 10v4h12v-4"/></svg>
+    </Button>
         {error && <span className="hapi-error" role="alert">{error}</span>}</span>
 }
 
-/** Preserve the original renderer and injected face for every ordinary DSH session. */
-export function guardedPathAction(Official: ComponentType<ActionProps>, kind: ActionKind, api: DownloadApi, t: WorkspaceTranslate): ActionComponent {
+/** Ordinary local and federated DSH retain their official opener and injected face. */
+export function guardedPathAction(Official: ComponentType<ActionProps>, kind: ActionKind, client: DownloadApi, t: WorkspaceTranslate): ActionComponent {
     return function SourceAwarePathAction(props) {
-        const liveNative = props.useProjection('hapi'), liveObserved = props.useProjection('hapiObserved')
-        const catalog = props.useSessions(state => state.byId[props.sessionId])
-        // The retained Session's projection can hydrate after its catalog row.
-        // Source ownership is already explicit in that public row; do not
-        // briefly mount a serving-Host opener while the Session is opening.
-        const native = liveNative ?? catalog?.projectionValues?.hapi
-        const observed = liveObserved ?? catalog?.projectionValues?.hapiObserved
-        const source = sourcePathAddress(native ?? observed)
-        // Catalog and retained projections may both be empty while an existing
-        // display generation rehydrates. Our own reserved source namespace is
-        // sufficient to refuse a serving-Host opener during that interval; it
-        // is deliberately insufficient to manufacture a source download URL.
-        if (!native && !observed) return catalog && !isSourceDisplayId(props.sessionId) ? createElement(Official, props) : null
-        // Delivery slots carry event coordinates, not a file path. Their normal
-        // Sidebar preview remains available; never reinterpret those coordinates.
-        return source && kind === 'document' && props.absolutePath
-            ? <SourceDownload api={api} source={source} path={props.absolutePath} t={t}/>
+        if (!isSourceSessionId(props.sessionId)) return isSourceDisplayId(props.sessionId) ? null : createElement(Official, props)
+        return kind === 'document' && props.absolutePath
+            ? <SourceDownload client={client} sessionId={props.sessionId} path={props.absolutePath} t={t}/>
             : null
     }
 }
@@ -145,8 +135,9 @@ export function installSourcePathActions(ctx: Context, api: DownloadApi): () => 
     // event. Consume only its real configured gesture while that view is source-owned.
     disposers.push(ctx.shortcuts.observeFixedInput(input => {
         if (input.type === 'reset' || !sourceOpenShortcutMatches(ctx.shortcuts, input) || ctx.layout.panelInfo.getSnapshot().activePanelId !== null) return
-        const selected = Object.values(ctx.sessions.list.getSnapshot().byId).find(row => (row.retainedBy.mainView ?? 0) > 0)
-        if (selected && (isSourceDisplayId(selected.id) || selected.projectionValues?.hapi || selected.projectionValues?.hapiObserved)) input.consume()
+        const sessions = ctx.sessions as unknown as ISessions
+        const selected = Object.values(sessions.list.getSnapshot().byId).find(row => (row.retainedBy.mainView ?? 0) > 0)
+        if (selected && (isSourceSessionId(selected.id) || isSourceDisplayId(selected.id))) input.consume()
     }))
     return () => { for (const dispose of disposers.reverse()) dispose() }
 }

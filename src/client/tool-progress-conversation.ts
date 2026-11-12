@@ -1,6 +1,6 @@
 import type { ChatNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { ConversationNodeDefinition } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import { sourceToolProgressOf, type SourceToolProgress } from '../hapi-agent/tool-progress.ts'
+import { sourceToolProgressOf, type SourceToolProgress } from '../shared/tool-progress.ts'
 
 export const SOURCE_TOOL_PROGRESS = 'hapi-tool-progress'
 export type ToolProgressDisplay = SourceToolProgress

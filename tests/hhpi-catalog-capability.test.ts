@@ -8,7 +8,6 @@ import { Context } from '@deepseek-ai/cordis'
 import type { ISessions, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { HhpiRemoteApi } from '../src/hhpi-api.ts'
 import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
-import { installWithLegacyHapiCapability } from '../src/client/source-notifications/capability.ts'
 import type { HhpiCatalogCapability, HhpiCatalogCapabilityStore } from '../src/client/remote-sessions.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -48,6 +47,10 @@ function metadata(): SourceSession {
     status: 'idle', activeTurnId: null, capabilities: { send: true, steer: true, cancel: true, approve: false, files: false }, pendingRequests: [] }
 }
 
+function emptyChanges(): ReturnType<HhpiRemoteApi['changes']> {
+  return { [Symbol.asyncIterator]: async function* () {}, send() { throw new Error('Source changes are read only') }, end() {}, dispose() {} }
+}
+
 test('the session list stays pending until the first HHPI catalog result publishes source metadata', async () => {
   const source = metadata()
   let answer!: (value: Awaited<ReturnType<HhpiRemoteApi['catalog']>>) => void
@@ -55,7 +58,7 @@ test('the session list stays pending until the first HHPI catalog result publish
   const api: HhpiRemoteApi = {
     catalog: () => catalog,
     read: async request => ({ ok: true, value: { session: source, epoch: 'epoch-one', version: 1, entries: [], before: null, after: null, hasBefore: false, hasAfter: false, context: [] } }),
-    changes: async function* () {}, operate: async () => { throw new Error('not used') }, create: async () => { throw new Error('not used') }, resource: async () => { throw new Error('not used') },
+    changes: emptyChanges, operate: async () => { throw new Error('not used') }, create: async () => { throw new Error('not used') }, resource: async () => { throw new Error('not used') },
   }
   const originalList = store({ ids: [], byId: {}, phase: 'ready' as const, projectionsBySession: {} })
   const original = { list: originalList, windowCommit: {}, searchResultLimit: 100,
@@ -78,7 +81,8 @@ test('the session list stays pending until the first HHPI catalog result publish
     assert.equal(remote.list.getSnapshot().phase, 'ready')
     assert.ok(remote.list.getSnapshot().ids.includes(source.id as never))
     const row = remote.list.getSnapshot().byId[source.id as never]
-    assert.deepEqual(Reflect.get(row, 'projectionValues'), { hhpiSource: source, hhpiDiscovery: 'advertised', subagentCatalog: [] }, 'the advertised row must carry native machine/engine identity for workspace migration')
+    assert.ok(row)
+    assert.deepEqual(row.projectionValues, { hhpiSource: source, hhpiDiscovery: 'advertised', subagentCatalog: [] }, 'the advertised row must carry native machine/engine identity for workspace migration')
     assert.ok(retained, 'a source row listener can retain the just-advertised source in the same publication')
     assert.deepEqual(remote.capabilities.getSnapshot(), { catalogReady: true, legacyHapi: false })
   } finally {
@@ -86,50 +90,7 @@ test('the session list stays pending until the first HHPI catalog result publish
   }
 })
 
-test('an HHPI-only catalog never installs HAPI-only surfaces, while legacy HAPI remains dynamically available', () => {
-  let state: HhpiCatalogCapability = { catalogReady: false, legacyHapi: false }
-  const listeners = new Set<() => void>()
-  const capability: HhpiCatalogCapabilityStore = { getSnapshot: () => state, subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) } }
-  const publish = (next: HhpiCatalogCapability): void => { state = next; for (const listener of listeners) listener() }
-  const surfaces = new Set<string>()
-  let disposals = 0
-  const dispose = installWithLegacyHapiCapability(capability, () => {
-    for (const surface of ['source-read-sync', 'notifications', 'admin']) surfaces.add(surface)
-    return () => { surfaces.clear(); disposals++ }
-  })
-  try {
-    publish({ catalogReady: true, legacyHapi: false })
-    assert.deepEqual([...surfaces], [])
-    publish({ catalogReady: true, legacyHapi: true })
-    publish({ catalogReady: true, legacyHapi: true })
-    assert.deepEqual([...surfaces].sort(), ['admin', 'notifications', 'source-read-sync'])
-    publish({ catalogReady: true, legacyHapi: false })
-    assert.deepEqual([...surfaces], [])
-    assert.equal(disposals, 1)
-  } finally { dispose() }
-  publish({ catalogReady: true, legacyHapi: true })
-  assert.deepEqual([...surfaces], [])
-  assert.equal(disposals, 1)
-})
-
-test('the capability watcher follows the actual legacyHapi value returned by HHPI catalog', async () => {
-  const api: HhpiRemoteApi = { catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi: true, sessions: [], sources: [] } }),
-    read: async () => { throw new Error('not used') }, changes: async function* () {}, operate: async () => { throw new Error('not used') },
-    create: async () => { throw new Error('not used') }, resource: async () => { throw new Error('not used') } }
-  const ctx = new Context(), original = { list: store({ ids: [], byId: {}, phase: 'ready' as const, projectionsBySession: {} }),
-    windowCommit: {}, refresh: async () => {}, retainInfo: () => store({ referenceCount: 0, retainedBy: {} }) } as unknown as ISessions
-  const remote = new runtime.RemoteSessions(ctx, original, api)
-  let installs = 0
-  const disposeFeatures = installWithLegacyHapiCapability(remote.capabilities, () => { installs++; return () => {} })
-  try {
-    assert.equal(installs, 0)
-    await remote.refresh()
-    assert.deepEqual(remote.capabilities.getSnapshot(), { catalogReady: true, legacyHapi: true })
-    assert.equal(installs, 1)
-  } finally { disposeFeatures(); remote.dispose(); await ctx.fiber.dispose() }
-})
-
-test('HHPI-only hides stale known HAPI display rows while compatibility mode preserves them', async () => {
+test('retired display rows stay hidden even if an old server advertises compatibility', async () => {
   const nativeDisplay = `hapi-codex-${'a'.repeat(32)}`
   const observedDisplay = `hapi-observed-${'b'.repeat(32)}-r2`
   const ordinaryDsh = 'native-session-from-dsh'
@@ -142,13 +103,18 @@ test('HHPI-only hides stale known HAPI display rows while compatibility mode pre
   } as unknown as ISessions)
   const makeApi = (legacyHapi: boolean): HhpiRemoteApi => ({
     catalog: async () => ({ ok: true, value: { protocol: 1, legacyHapi, sessions: [], sources: [] } }),
-    read: async () => { throw new Error('not used') }, changes: async function* () {}, operate: async () => { throw new Error('not used') },
+    read: async () => { throw new Error('not used') }, changes: emptyChanges, operate: async () => { throw new Error('not used') },
     create: async () => { throw new Error('not used') }, resource: async () => { throw new Error('not used') },
   })
   const hhpiContext = new Context(), hhpiOriginal = makeOriginal()
   const hhpi = new runtime.RemoteSessions(hhpiContext, hhpiOriginal, makeApi(false))
   try {
-    assert.equal(hhpi.list.getSnapshot().phase, 'pending', 'the first catalog must settle before source-mode filtering is applied')
+    const initial = hhpi.list.getSnapshot()
+    assert.equal(initial.phase, 'ready', 'usable ordinary DSH rows must not wait for the first native catalog')
+    assert.equal(hhpi.capabilities.getSnapshot().catalogReady, false, 'usable ordinary rows do not mean that native discovery has settled')
+    assert.ok(initial.ids.includes(ordinaryDsh as never))
+    assert.equal(initial.ids.includes(nativeDisplay as never), false, 'retired identities are hidden before catalog settlement too')
+    assert.equal(initial.ids.includes(observedDisplay as never), false)
     await hhpi.refresh()
     const snapshot = hhpi.list.getSnapshot()
     assert.equal(snapshot.ids.includes(nativeDisplay as never), false)
@@ -164,8 +130,8 @@ test('HHPI-only hides stale known HAPI display rows while compatibility mode pre
   try {
     await compatibility.refresh()
     const snapshot = compatibility.list.getSnapshot()
-    assert.ok(snapshot.ids.includes(nativeDisplay as never))
-    assert.ok(snapshot.ids.includes(observedDisplay as never))
+    assert.equal(snapshot.ids.includes(nativeDisplay as never), false)
+    assert.equal(snapshot.ids.includes(observedDisplay as never), false)
     assert.ok(snapshot.ids.includes(ordinaryDsh as never))
   } finally { compatibility.dispose(); await compatibilityContext.fiber.dispose() }
 })

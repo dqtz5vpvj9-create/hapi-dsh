@@ -88,6 +88,7 @@ export class RemoteOutbox {
   private readonly snapshots = new Map<string, readonly SourceDelivery[]>()
   private readonly retireListeners = new Set<(id: string, observed: boolean) => void>()
   private readonly sending = new Set<string>()
+  private readonly ownerChecks = new Map<string, Promise<void>>()
   private readonly staged = new Set<string>()
   private readonly stopWake: () => void
   private generation = 0
@@ -208,6 +209,28 @@ export class RemoteOutbox {
     this.retireListeners.add(listener); return () => { this.retireListeners.delete(listener) }
   }
   get(operationId: string): SourceDelivery | undefined { return this.entries.get(operationId) }
+
+  /** One restored admission may locate its already-consumed body, never dispatch again. */
+  checkOwnerAdmission(operationId: string): Promise<void> {
+    const active = this.ownerChecks.get(operationId)
+    if (active) return active
+    const entry = this.entries.get(operationId), generation = this.generation
+    if (!entry || entry.state !== 'owner-accepted' || !this.lookup) return Promise.resolve()
+    const work = this.lookup(entry.operation).then(receipt => {
+      if (!this.owns(entry, generation) || receipt?.status !== 'accepted' || !receipt.observed
+        || receipt.operationId !== operationId || receipt.sessionId !== entry.operation.sessionId) return
+      const ownerAdmission = receipt.ownerAdmission ?? entry.receipt?.ownerAdmission
+      this.write({ ...this.entries.get(operationId)!, receipt: { ...receipt, ...(ownerAdmission ? { ownerAdmission } : {}) } })
+    }).catch(() => { /* Missing proof leaves the exact original pending content intact. */ })
+      .finally(() => { if (this.ownerChecks.get(operationId) === work) this.ownerChecks.delete(operationId) })
+    this.ownerChecks.set(operationId, work)
+    return work
+  }
+  /** Only the same source's confirmed consumed position can retire an old admission. */
+  settleOwnerAdmission(operationId: string): void {
+    const entry = this.entries.get(operationId)
+    if (entry?.state === 'owner-accepted' && entry.receipt?.status === 'accepted' && entry.receipt.observed) this.remove(operationId, true)
+  }
 
   /** Must finish before the official input commits its draft. No network work occurs here. */
   enqueue(operation: SourceOperation): SourceDelivery {

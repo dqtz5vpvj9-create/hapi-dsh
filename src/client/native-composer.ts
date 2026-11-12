@@ -2,7 +2,6 @@ import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { ComposerBlock, ComposerBlocks } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { WorkspaceTranslate } from './locales.ts'
-import type {} from '../hapi-agent/projection-types.ts'
 import type {} from './remote-sessions.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 
@@ -27,13 +26,11 @@ export function installNativeComposerAdmission(
             // Submitted HHPI messages have their own durable delivery lifetime.
             // An offline observation cannot establish a permanent capability refusal.
             const source = row.projectionValues?.hhpiSource
-            const observed = row.projectionValues?.hapiObserved
-            const engineOwned = Boolean(observed && (observed.controlledByUser || observed.readOnlyReason === 'engine-owned'))
             const readOnly = source && !sourceIsOffline(source) && !source.capabilities.send
-            if (!readOnly && !engineOwned) continue
+            if (!readOnly) continue
             const id = row.id
             needed.add(id)
-            const reason = locale.t(readOnly ? 'sourceReadOnly' : 'sourceLocallyControlled')
+            const reason = locale.t('sourceReadOnly')
             const store = blocks.storeFor(id)
             let entry = entries.get(id)
             if (entry && entry.store !== store) { remove(id, entry); entry = undefined }

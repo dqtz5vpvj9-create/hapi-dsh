@@ -3,14 +3,35 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
 
 const HMR = '@deepseek-ai/dsh-client-hmr';
 
-// Account owns a large authorization bundle. It and HMR (whose first frame
-// reconciles the full Host roster) load only after Settings is opened. All
-// other UI plugins register their locale/outlets before transcript mounting:
-// late global locale revisions otherwise re-render every retained outlet.
+// Only independent views wait. Chat/input/attachment renderers, source services,
+// theme/locale, General's real Settings launcher and first-run Models remain in
+// the initial graph. Unknown plugins also remain initial; required closures win.
+const RESOURCE_VIEWS = new Set([
+    '@deepseek-ai/dsh-client-ui-file-actions',
+    '@deepseek-ai/dsh-client-ui-open-in-app',
+    '@deepseek-ai/dsh-client-ui-sidebar-documentpreview',
+    '@deepseek-ai/dsh-client-ui-sidebar-terminal',
+    '@deepseek-ai/dsh-client-ui-sidebar-files',
+    // Independent additive header/inspector entries also need to become
+    // reachable without asking the user to open an unrelated Settings page.
+    '@deepseek-ai/dsh-client-ui-jobs',
+    '@deepseek-ai/dsh-client-ui-schedule',
+    '@deepseek-ai/dsh-session-log-export',
+    '@deepseek-ai/dsh-experimental-client-ui-agent-team',
+]);
 const SECOND_STAGE = new Set([
+    ...RESOURCE_VIEWS,
     HMR,
     '@deepseek-ai/dsh-client-ui-settings-account',
     '@deepseek-ai/dsh-client-product-analytics',
+    '@deepseek-ai/dsh-client-ui-shortcuts',
+    '@deepseek-ai/dsh-client-ui-settings-plugin-inventory',
+    '@deepseek-ai/dsh-client-ui-settings-subagent',
+    '@deepseek-ai/dsh-client-ui-settings-web-search',
+    '@deepseek-ai/dsh-client-ui-settings-plugins',
+    '@deepseek-ai/dsh-client-ui-settings-shell',
+    '@deepseek-ai/dsh-client-ui-settings-session-log',
+    '@deepseek-ai/dsh-client-ui-settings-agent-loop',
 ]);
 
 type BootEntry = WebBootGraph['entries'][number];
@@ -28,6 +49,30 @@ export function workspaceBootGraph(graph: WebBootGraph): WebBootGraph {
     const keep = new Set<string>();
     for (const row of graph.entries) if (!SECOND_STAGE.has(row.id)) includeDependencies(rows, row.id, keep);
     return independentBootBatches({ ...graph, entries: graph.entries.filter(row => keep.has(row.id)) });
+}
+
+/** One cumulative resource/utility stage, loaded on resource demand or after the
+ * selected reader is complete. Settings subpages stay on explicit demand. */
+export function workspaceResourceBootGraph(graph: WebBootGraph): WebBootGraph {
+    const rows = new Map(graph.entries.map(row => [row.id, row]));
+    const keep = new Set(workspaceBootGraph(graph).entries.map(row => row.id));
+    for (const id of RESOURCE_VIEWS) includeDependencies(rows, id, keep);
+    return independentBootBatches({ ...graph, entries: graph.entries.filter(row => keep.has(row.id)) });
+}
+
+/** A newly fetched optional roster may add entries, but cannot replace an
+ * already running reader/source/input. Revision changes use controlled update. */
+export function assertStableBootEntries(graph: WebBootGraph,
+    active: readonly Pick<BootEntry, 'id' | 'rev' | 'inject' | 'external'>[]): void {
+    const rows = new Map(graph.entries.map(row => [row.id, row]));
+    const signature = (row: Pick<BootEntry, 'rev' | 'inject' | 'external'>): string =>
+        JSON.stringify([row.rev, row.inject ?? [], row.external ?? []]);
+    for (const row of active) {
+        const next = rows.get(row.id);
+        if (!next || signature(next) !== signature(row)) {
+            throw new Error(`Deferred graph changes active entry ${row.id}; a controlled update is required`);
+        }
+    }
 }
 
 /** Each official sync adds one optional entry and its complete dependency

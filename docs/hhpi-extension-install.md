@@ -1,58 +1,44 @@
-# HHPI source extension installation
+# HHPI 的 DSH 源码扩展
 
-This procedure builds and installs the optional official DSH reading extensions in a development checkout. It does not deploy a site. Verification results and remaining release acceptance are recorded in [the implementation checkpoint](hhpi-implementation-checkpoint.md).
+当前固定上游为 DSH `0.2.2-rc.1`、提交 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`，源构建使用 upstream 锁定的 `pnpm@11.28.5`。机器可读输入以 [UPSTREAMS.json](../UPSTREAMS.json)、[源码说明](../source-snapshots/dsh-ext/README.md)和 [manifest](../source-snapshots/manifest.json)为准，不把开发目录名或相同 npm rc 视为同一构建。
 
-## Pinned inputs
+当前完整集合由 `scripts/dsh-ext/prepare.mjs` 的 `EXTENSION_PACKAGES` 定义，共二十二包，涵盖客户端/Session、Terminal owner、FileSystem、原生持久化、文件导航器、工作区导航和动态主题。截至 2026-11-11，中央 Host 已部署源码发行 `hhpi-dsh-022-20261107.27`；实际包集合与身份以该发行的 manifest 为准，各 Runner 的安装状态须按实际 consumer 分别核对。`.27` 为 QueueDock 增加可选来源 delivery 与逐行 Steer 状态，显式来源授权可在恢复后的 idle 状态保留操作；缺少投影的普通 DSH 仍沿用 running-only 规则。本批仅修改六个冻结 Conversation 文件，其余 `.26` 来源与完整二十二包集合保留。`.26` 增加 QueueDock 可选 `editText` 正文投影，按源端队列编辑正文并保留附件与 typed 输入身份；缺少该字段的普通 DSH 仍使用原编辑路径。其余 `.25` 功能与完整二十二包集合保留，来源仅增加冻结的五个 Conversation 文件。`.25` 让 InputBar 空输入提示、键盘操作及 InputHub 每次实际调用统一读取 queueActions，任一队列行禁用 Steer 时不执行整个 steer-all；typed draft steering 与缺少投影的默认 DSH 行为保持。`.24` 在完整 `.23` 基线上增加 QueueDock 可选逐行 queueActions 投影，并在精确匹配的源队列交接中保留原提交者附件预览；缺少投影或行时沿用普通 DSH 行为。六叶来源、契约及 ADR/上游 PR 草稿随同批集合归档。`.23` 合入注册表候选失败保留已接纳正文、同一 root host 注册间隙后的恢复，以及公开 historySource 整窗确认、恢复与代际内 provider 选择；对应源码、契约、ADR 和上游 PR 草稿一并归档。该 `.23` 批次十三叶输入及来源身份先于正式 SDK 构建冻结；安装及实际路径验收另行记录。`.22` 在既有 `.21` 基线上修正迟到的发送确认清除新草稿的问题，保留新文本、引用及尝试之外的附件；对应源补丁、具名回归和 ADR/PR 随发行提供。`.15` 首次构建因未声明的 controller 客户端模块请求被官方 purity 检查拒绝；该失败输入保留，修正与工作区导航开关共同进入 `.16`，不覆写旧归档。`.17` 增加已证实的焦点控件局部模态样式修复；`.18` 修正 ui-chat 对实测值恰等于估值的尺寸修订误判，保留 `.17` 归档及全部负证据。`.19` 组合 range-only 几何提交与非读者布局滚动的锚点保护，其实际搜索/Zoom暴露布局快照反复改写阅读 pin 的缺陷，`.20` 将 pin 选择收回到真实阅读采样与确切导航落点，但实际 Zoom 仍暴露尺寸偏移误判为 reader sample、阻断恢复后保存中间位置的问题；`.21` 统一尺寸归属与 pending semantic owner，来源契约已通过，实际路径仍待验证。正式 390px 的 100ms 仍未归因；阅读性能仍须按原 80ms 门槛实测。此前 rc 的补丁在 `source-snapshots/dsh-ext/releases/0.2.1-rc.3` 保留，不能重放到当前 rc 上。
 
-- DSH release: `0.2.1-rc.3`.
-- DSH source revision: `1f81c047fc48fa190a683e469daa699857e9afe8`.
-- Source build package manager: `pnpm@11.28.5` with the pinned upstream lockfile.
-- Verified runtime: Node 24.19.0, Linux x86-64, git, tar and npm.
-- Source inputs: `source-snapshots/dsh-ext/source.patch`, `native-persistence.patch`, optional `ui-chat-layout.patch`, delivered source overrides and the `scripts/dsh-ext` source transformations. `prepare.mjs` records their checksums.
+## 从源码准备、构建和安装
 
-The complete set contains fourteen packages. Eleven UI packages under `@deepseek-ai/`: `dsh-api-session-controller`, `dsh-client-ui-slots`, `dsh-client-ui-renderer`, `dsh-client-ui-session`, `dsh-client-ui-conversation`, `dsh-client-ui-chat`, `dsh-client-ui-trajectory`, `dsh-client-ui-tool`, `dsh-client-ui-plan`, `dsh-client-ui-input-trigger`, and `dsh-client-ui-commands`. Three native packages are `dsh-session-persistence`, `dsh-session-persistence-jsonl`, and `dsh-session-format-v3-to-v4`. The history detail packages cover readers outside Chat; Input Trigger and Commands resolve each pane's retained binding so Slash, popups and composer input stay pane-local while legacy consumers keep canonical lookup. Ordinary registry packages carrying the same rc version do not contain these extensions. The installer rejects incomplete or mixed sets.
-
-## Build and install from the checkout
+在项目根目录执行。临时输入放 `/mnt/cache/data-cache`，每次使用新的输出目录，保留上一套可回滚产物：
 
 ```sh
 npm ci
-mkdir -p .tmp
-node scripts/dsh-ext/prepare.mjs .tmp/hhpi-source > .tmp/hhpi-source.json
-DSH_SOURCE=$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync(".tmp/hhpi-source.json", "utf8")).directory)')
-node scripts/dsh-ext/build-extension.mjs "$DSH_SOURCE" .tmp/hhpi-extension-packages
-node scripts/dsh-ext/install-extension.mjs .tmp/hhpi-extension-packages
-HHPI_DSH_SOURCE="$DSH_SOURCE" node --import tsx --test \
-  tests/contracts/hhpi-reading-occurrences.test.ts \
-  tests/contracts/hhpi-reading-dom.test.ts
-npm run check
+node scripts/dsh-ext/prepare.mjs /mnt/cache/data-cache/hhpi-source-preparation > /mnt/cache/data-cache/hhpi-source-preparation.json
 ```
 
-The package output directory must not already contain tarballs from a previous build. A fresh output path preserves the earlier set and avoids mixing builds. Preparation creates an isolated source directory and requires no operator DSH profile, production credentials or original author's workspace.
+读取 JSON 的 `directory` 字段，将其作为下面的 `PREPARED_SOURCE`。其余大写路径也应替换为新的实际绝对路径：
 
-Only the fourteen approved package roots are selected for build and packaging; TypeScript follows their declared upstream dependency references. Native persistence uses its normal ESM entry and the committed JSONL configuration builds both the standalone migration verifier and separate indexed-reading worker. Neither worker is omitted from its archive.
-
-The official Typert source generator runs before the official TypeScript project-reference build. Packages use the pinned upstream compiler preset. Source transformations and approved source patches are applied before compilation; compiled JavaScript is not rewritten to implement an extension. Native persistence adds optional `readPage` and `prepareReadIndex`, enabled only by `indexedReading: true`. It uses the source-side sparse index and original event dependencies; ordinary native restoration remains unchanged. An unindexed archive needs a cancellable source-side preparation scan, and a single Zstandard frame remains an indivisible decode unit.
-
-The installer validates the entire manifest before invoking npm: exact package names, unique filenames, archive checksums, pinned upstream revision and matching per-package source markers. `manifest.json.packageIdentities` and `.tmp/hhpi-ext/installed.json.packageIdentities` distinguish the eleven UI inputs from the three native inputs; a missing per-package entry uses the recorded global UI identity. A composed release can therefore retain unchanged packages without falsely labeling them with a new layout identity. It subsequently verifies installed package identities and records `.tmp/hhpi-ext/installed.json`.
-
-Tracked `package.json` and `package-lock.json` remain unchanged. This explicit source overlay is separately identified by its manifest and archive hashes. Running `npm ci` restores the unextended dependency baseline, so the complete extension set must be installed again before testing direct HHPI reading occurrences. This is a development-checkout installer, not an atomic production rollout mechanism.
-
-The same verified set may be installed in another checkout:
-
-```sh
-node scripts/dsh-ext/install-extension.mjs /absolute/path/to/package-set /absolute/path/to/checkout
+```text
+node scripts/dsh-ext/build-extension.mjs PREPARED_SOURCE NEW_PACKAGE_DIRECTORY --expected-source /mnt/cache/data-cache/hhpi-source-preparation.json
+node scripts/dsh-ext/create-release.mjs PREPARED_SOURCE NEW_PACKAGE_DIRECTORY NEW_RELEASE_DIRECTORY
+node scripts/dsh-ext/install-extension.mjs NEW_PACKAGE_DIRECTORY
 ```
 
-Host and Runner installations must preserve matching source-extension inputs. A matching version string is insufficient: `upstreamCommit`, `patchSetSha256`, every archive checksum and installed package markers identify the actual set. This command does not update remote machines.
+已有正式冻结清单时，构建命令的 `--expected-source` 使用该清单，不能换成 prepared 目录自己声明的 metadata。本轮 `.17` 的对应命令模板为：
 
-## Reading capability and default behavior
+```text
+node scripts/dsh-ext/build-extension.mjs PREPARED_SOURCE NEW_PACKAGE_DIRECTORY --expected-source artifacts/development/hhpi-delivery-20261107/I6-extension20-layout-pin-frozen-20261108.json
+```
 
-`windowCommit.readingOccurrences:1` enables independent official reading/input bindings. Each occurrence retains its canonical native Session ID, with a separate view ID for the reading window and local presentation stores. The native Session continues to own send, cancel and approval operations.
+prepare 精确还原固定提交并应用 active `source.patch`。build 在调用工具链或编译前先核对 expected 与 prepared 的 top/native 来源身份；expected 已提供 `sourceSha256`（或正式 manifest 的 `build.sourceSha256`）时同时核对整树 hash，未提供则不声称验过整树。build 再使用同一 upstream lock、Typert 生成器、官方编译 preset 与 project references，打包完整集合；不改写编译后的 JS 实现能力。create-release 收集完整补丁、实际 package 源码、锁文件、许可、ADR 和上游 PR 草稿。没有完整真实集合时，fixture archive 只能用于安装器机制测试。
 
-Setting `globalThis.__DSH_CLIENT_READING_OCCURRENCES = 'off'` before graph construction disables direct-source occurrence admission. Native DSH bindings without a view ID retain their ordinary event-feed and per-Session input paths. Missing extension capability produces an explicit error rather than a fallback to an incorrect reader.
+开发 installer 先校验集合与对应源码身份，再安装并核对每包 marker；`package.json` / `package-lock.json` 保持原有固定依赖。`npm ci` 会还原原版依赖，之后须重装完整扩展再验证依赖这些能力的契约。它不会原子升级远端 Host/Runner，也不替代[正式 bundle 流程](distribution.md)。
 
-## Validation boundaries
+## 公开能力与默认路径
 
-`tests/hhpi-extension-install.test.mjs` uses synthetic archives to verify rejection before installation. The installed-extension workflow separately compiles and installs the real fourteen-package set, tests actual official Session/Conversation/Input Trigger/Commands/Chat ownership, runs project types, all behavior tests, history and fault checks, and builds the plugin. Source-build caches are keyed by exact source inputs; the package identity check still runs on every installation.
+阅读扩展提供 reading occurrence、统一 window commit、mounted reader 的逐节点 render proof 与 `checkpointReading`。结构化引用保留官方输入与裁决事务。文件上传使用公开 owner/provider 和实际接受回调。Terminal 的 `createTerminalOwner` 允许在真实源 cwd/subprocess 上组合终端，不需要 fake Agent context。FileSystem 的 `writeBytes` 和发布前 checkpoint 复用正式原子提交及 Windows DACL 路径。
 
-The reading contracts use the actual official renderer and view/input implementations. Source RPC and unused external services are controlled fixtures. Component geometry in jsdom does not establish real-browser scrolling, viewport layout, physical keyboard behavior or desktop/mobile release acceptance. Those remain separate bounded acceptance scenarios.
+这些能力默认保持普通 DSH 路径，缺少能力时明确不可用，不能替换成另一读者、中央文件系统或假本地执行。各扩展的契约、必要性和上游提案保存在 `docs/adr` 与对应 `docs/upstream-pr-*` 中。
+
+## 版本与验收
+
+Host、Runner 和客户端运行图必须消费同一套正式集合。现有发行校验核对上游提交、补丁输入、tarball 和每包 marker，安装后再检查真实 consumer 的解析路径；不能仅比较版本字符串或因为开发 checkout 已安装就推断远端已升级。
+
+实际官方 Session/Conversation/Chat 的契约验证和源码/补丁重放分别记录；源 RPC 与外部服务的 fixture 不证明真实源或生产行为。部署与行为验收按具体 Host、Runner 和用户路径分别记录，已有发布记录见[发行说明](hhpi-retirement-release-notes.md)。源码契约通过不表示所有平台与功能均已验收；物理设备输入/通知及未记录的路径不在本文中标记为通过。

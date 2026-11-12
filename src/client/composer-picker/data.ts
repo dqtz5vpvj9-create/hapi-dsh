@@ -1,24 +1,28 @@
-import type { NativeSettingChange, NativeSettings } from '../../client-api.ts'
-import type { ObservedModelValue, ObservedSettingChange, ObservedSettings } from '../../hapi-agent/control-types.ts'
-
 export interface PickerChoice<T> { value: T; label: string; detail?: string }
 export interface PickerData {
-    model: ObservedModelValue
-    models: readonly PickerChoice<ObservedModelValue>[]
+    model: string | null
+    models: readonly PickerChoice<string | null>[]
     effort: string | null
     efforts: readonly PickerChoice<string | null>[]
     permission: string | null
     permissions: readonly string[]
+    approvalPolicy?: string | null
+    approvalPolicies?: readonly string[]
     readOnly: boolean
     serviceTier: string | null
     fast: boolean
     fastAvailable: boolean
-    editable: { model: boolean; effort: boolean; permission: boolean; fast: boolean }
+    editable: { model: boolean; effort: boolean; permission: boolean; fast: boolean; approvalPolicy?: boolean }
     warnings: readonly string[]
 }
-export type PickerAction = { kind: 'model'; value: ObservedModelValue }
+export type PickerAction = { kind: 'model'; value: string | null }
     | { kind: 'effort'; value: string | null } | { kind: 'permission'; value: string } | { kind: 'fast'; value: boolean }
-export interface PickerPending { operationId: string; change: ObservedSettingChange }
+    | { kind: 'approvalPolicy'; value: string }
+export type PickerChange = { kind: 'model'; value: string | null } | { kind: 'effort'; value: string | null }
+    | { kind: 'permission'; value: string } | { kind: 'serviceTier'; value: string }
+    | { kind: 'collaboration'; value: string }
+    | { kind: 'approvalPolicy'; value: string }
+export interface PickerPending { operationId: string; change: PickerChange }
 
 /** An explicitly reported Medium is still explicit even when the model's
  * catalog default is Medium. Only an actual default/empty value is folded. */
@@ -31,56 +35,12 @@ export function visibleServiceTier(value: string | null): string | null {
 /** Capability belongs to the source; connection/read-only is a separate lock.
  * A locked but supported permission picker can still show the current value. */
 export function permissionPickerAvailable(capable: boolean, data: PickerData | null): boolean {
-    return capable && (data === null || data.permissions.length > 0)
+    return capable && (data === null || data.permissions.length > 0 || !!data.approvalPolicies?.length)
 }
-export function nativePickerPending(pending: { operationId: string; change: NativeSettingChange } | null): PickerPending | null {
-    if (!pending) return null
-    const { change, operationId } = pending
-    if (change.kind === 'reasoningEffort') return { operationId, change: { kind: 'effort', value: change.value } }
-    if (change.kind === 'permissionMode') return { operationId, change: { kind: 'permission', value: change.value } }
-    if (change.kind === 'collaborationMode') return { operationId, change: { kind: 'collaboration', value: change.value } }
-    return { operationId, change }
-}
-
-/** Pi model values are compound source identities, never display labels. */
-export function modelKey(value: ObservedModelValue): string {
-    return value && typeof value === 'object' ? JSON.stringify([value.provider, value.modelId]) : JSON.stringify(value)
-}
-export function modelLabel(value: ObservedModelValue, choices: readonly PickerChoice<ObservedModelValue>[]): string | null {
-    const known = choices.find(choice => modelKey(choice.value) === modelKey(value))
-    return known?.label ?? (typeof value === 'string' ? value : value?.modelId ?? null)
-}
-
-export function nativePickerData(data: NativeSettings): PickerData {
-    const model = data.models.find(row => row.id === data.values.model)
-    const writable = !data.readOnly
-    return {
-        model: data.values.model, models: data.models.map(row => ({ value: row.id, label: row.name })),
-        effort: data.values.reasoningEffort,
-        efforts: model?.reasoningEfforts.length ? [{ value: null, label: 'Default' }, ...model.reasoningEfforts.map(value => ({ value, label: value }))] : [],
-        permission: data.values.permissionMode, permissions: ['default', 'read-only', 'yolo'], readOnly: data.readOnly,
-        serviceTier: data.values.serviceTier,
-        fast: data.values.serviceTier === 'fast', fastAvailable: model?.serviceTiers.includes('fast') ?? false,
-        editable: { model: writable && data.models.length > 0, effort: writable && Boolean(model?.reasoningEfforts.length),
-            permission: writable, fast: writable && Boolean(model?.serviceTiers.includes('fast')) },
-        warnings: data.warnings,
-    }
-}
-
-export function observedPickerData(data: ObservedSettings): PickerData {
-    const writable = !data.readOnly
-    return {
-        model: data.values.model,
-        models: data.models.map(row => ({ value: row.value, label: row.label, ...(row.provider ? { detail: row.provider } : {}) })),
-        effort: data.values.effort, efforts: data.efforts, permission: data.values.permission, permissions: data.permissions,
-        readOnly: data.readOnly, serviceTier: data.values.serviceTier,
-        fast: data.values.serviceTier === 'fast', fastAvailable: data.serviceTiers.includes('fast'),
-        editable: { model: writable && data.editable.model && data.models.length > 0,
-            effort: writable && data.editable.effort && data.efforts.length > 0,
-            permission: writable && data.editable.permission && data.permissions.length > 0,
-            fast: writable && data.editable.serviceTier && data.serviceTiers.includes('standard') && data.serviceTiers.includes('fast') },
-        warnings: data.warnings,
-    }
+/** Model identifiers are source values; labels never become operation values. */
+export function modelKey(value: string | null): string { return JSON.stringify(value) }
+export function modelLabel(value: string | null, choices: readonly PickerChoice<string | null>[]): string | null {
+    return choices.find(choice => choice.value === value)?.label ?? value
 }
 
 /** Recheck the latest capability snapshot at dispatch, including after a popup
@@ -90,18 +50,6 @@ export function validPickerAction(data: PickerData, action: PickerAction): boole
     if (action.kind === 'model') return data.models.some(row => modelKey(row.value) === modelKey(action.value))
     if (action.kind === 'effort') return data.efforts.some(row => row.value === action.value)
     if (action.kind === 'permission') return data.permissions.includes(action.value)
+    if (action.kind === 'approvalPolicy') return data.approvalPolicies?.includes(action.value) === true
     return data.fastAvailable
-}
-export function nativePickerChange(data: PickerData, action: PickerAction): NativeSettingChange | undefined {
-    if (!validPickerAction(data, action)) return undefined
-    if (action.kind === 'model') return typeof action.value === 'string' ? { kind: 'model', value: action.value } : undefined
-    if (action.kind === 'effort') return { kind: 'reasoningEffort', value: action.value }
-    if (action.kind === 'fast') return { kind: 'serviceTier', value: action.value ? 'fast' : 'standard' }
-    return action.value === 'default' || action.value === 'read-only' || action.value === 'yolo'
-        ? { kind: 'permissionMode', value: action.value } : undefined
-}
-export function observedPickerChange(data: PickerData, action: PickerAction): ObservedSettingChange | undefined {
-    if (!validPickerAction(data, action)) return undefined
-    if (action.kind === 'fast') return { kind: 'serviceTier', value: action.value ? 'fast' : 'standard' }
-    return action
 }

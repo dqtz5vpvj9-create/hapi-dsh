@@ -103,9 +103,5 @@ export interface DirectCodexConfig {
     /** Source-local, read-only native metadata helper for a forwarded app-server. */
     historyMetadata?: { command: string; args?: string[] };
 }
-/** Native DSH body stays in its official persistence; the existing owner retains all writes. */
-export interface DirectDshConfig {
-    id: string; machineId: string; engine: 'dsh'; root: string;
-    owner: { hubId: string; url: string; tokenEnv: string };
-}
-export type DirectSourceConfig = DirectCodexConfig | DirectDshConfig;
+/** Native DSH uses its official paired Host, without an HHPI adapter. */
+export type DirectSourceConfig = DirectCodexConfig;

@@ -1,14 +1,66 @@
-/** Browser-safe workbench contract, matching HAPI 0f8ef697's public session routes. */
+/** Browser-safe workbench requests and source-workspace resource identities. */
 import { z } from 'zod';
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
 
 export const MAX_EDITABLE_BYTES = 4 * 1024 * 1024;
 export const MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
-export const MAX_TERMINAL_TEXT_BYTES = 2 * 1024 * 1024;
-export const MAX_TERMINAL_TEXT_ROWS = 5_000;
 const id = z.string().min(1).max(512).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Invalid identity');
 const path = z.string().min(1).max(8192).refine(value => !value.includes('\0'), 'Invalid path');
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
+
+/** The selected binding, never the focused pane or a caller-selected execution provider. */
+export const workspaceTargetSchema = z.strictObject({ hostId: id, sessionId: z.string().min(1).max(8192)
+    .refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Invalid session identity') });
+export type WorkspaceTarget = z.infer<typeof workspaceTargetSchema>;
+/** Provider-issued freshness tokens are opaque; they need not be content hashes. */
+export const workspaceVersionSchema = z.string().min(1).max(4096);
+export const workspaceFileBaselineSchema = z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('absent') }),
+    z.strictObject({ kind: z.literal('version'), version: workspaceVersionSchema }),
+]);
+export type WorkspaceFileBaseline = z.infer<typeof workspaceFileBaselineSchema>;
+export const workspaceDocumentRefSchema = z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('file'), path }),
+    z.strictObject({ kind: z.literal('artifact'), id: path }),
+    z.strictObject({ kind: z.literal('generated-media'), id: path }),
+]);
+export type WorkspaceDocumentRef = z.infer<typeof workspaceDocumentRefSchema>;
+export const workspaceResourceSchema = z.strictObject({ target: workspaceTargetSchema, document: workspaceDocumentRefSchema });
+export type WorkspaceResource = z.infer<typeof workspaceResourceSchema>;
+export const workspaceFileSaveRequestSchema = z.strictObject({ target: workspaceTargetSchema, operationId: id,
+    path, baseline: workspaceFileBaselineSchema, text: z.string().max(MAX_EDITABLE_BYTES),
+    format: z.strictObject({ bom: z.boolean(), eol: z.enum(['\n', '\r\n']) }).optional() });
+export type WorkspaceFileSaveRequest = z.infer<typeof workspaceFileSaveRequestSchema>;
+export const workspaceFileOperationSchema = z.discriminatedUnion('action', [
+    z.strictObject({ action: z.literal('create-file'), path }),
+    z.strictObject({ action: z.literal('create-directory'), path }),
+    z.strictObject({ action: z.literal('rename'), path, destination: path, expectedVersion: workspaceVersionSchema }),
+    z.strictObject({ action: z.literal('move'), path, destination: path, expectedVersion: workspaceVersionSchema }),
+    z.strictObject({ action: z.literal('copy'), path, destination: path, expectedVersion: workspaceVersionSchema }),
+    z.strictObject({ action: z.literal('delete'), path, expectedVersion: workspaceVersionSchema, recursive: z.boolean() }),
+]);
+export type WorkspaceFileOperation = z.infer<typeof workspaceFileOperationSchema>;
+export const workspaceFileManageRequestSchema = z.strictObject({ target: workspaceTargetSchema, operationId: id,
+    operation: workspaceFileOperationSchema });
+export type WorkspaceFileManageRequest = z.infer<typeof workspaceFileManageRequestSchema>;
+export const workspaceUploadDestinationSchema = z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('file'), path, baseline: workspaceFileBaselineSchema }),
+    z.strictObject({ kind: z.literal('attachment'), name: z.string().min(1).max(1024) }),
+]);
+export type WorkspaceUploadDestination = z.infer<typeof workspaceUploadDestinationSchema>;
+/** Size is the binary byte count; source limits are returned before any body is transferred. */
+export const workspaceUploadStartSchema = z.strictObject({ target: workspaceTargetSchema, operationId: id,
+    destination: workspaceUploadDestinationSchema, bytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    mimeType: z.string().min(1).max(256) });
+export type WorkspaceUploadStart = z.infer<typeof workspaceUploadStartSchema>;
+export const workspaceUploadRequestSchema = z.strictObject({ target: workspaceTargetSchema, uploadId: id });
+export type WorkspaceUploadRequest = z.infer<typeof workspaceUploadRequestSchema>;
+export const workspaceUploadChunkSchema = workspaceUploadRequestSchema.extend({
+    offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), data: z.instanceof(Uint8Array),
+});
+export type WorkspaceUploadChunk = z.infer<typeof workspaceUploadChunkSchema>;
+
+/** Existing HAPI consumers remain until their replacement is integrated and their owners retire. */
 export const workbenchSourceSchema = z.strictObject({ sourceSessionId: id, sourceHubId: id.optional(), machineId: id.optional() });
 export type WorkbenchSource = z.infer<typeof workbenchSourceSchema>;
 export const nativeDocumentRefSchema = z.discriminatedUnion('kind', [
@@ -44,12 +96,6 @@ export const nativeFileOperationSchema = z.discriminatedUnion('action', [
     z.strictObject({ action: z.literal('delete'), path, expectedRevision: hash, recursive: z.boolean() }),
 ]);
 export const nativePreviewSchema = z.object({ previewId: id, length: z.number().int().nonnegative().max(MAX_DOCUMENT_BYTES), version: z.string(), modified: z.number().optional(), size: z.number().optional(), url: z.string() });
-export const nativeTerminalTextSchema = z.strictObject({
-    terminalId: z.string().regex(/^[\w-]{1,128}$/u), title: z.string(), cwd: path,
-    sequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), capturedAt: z.number().int().nonnegative(),
-    lines: z.array(z.string().max(MAX_TERMINAL_TEXT_BYTES)).max(MAX_TERMINAL_TEXT_ROWS),
-    sourceHistory: z.literal('bounded-unknown'), localLimitReached: z.boolean(),
-});
 export const workbenchInputs = {
     nativeDirectory: z.strictObject({ ...source, path: path.optional() }),
     nativeFileSearch: z.strictObject({ ...source, query: z.string().max(8192), limit: z.number().int().min(1).max(500).optional() }),
@@ -60,38 +106,16 @@ export const workbenchInputs = {
     nativeFileManage: z.strictObject({ ...source, operation: nativeFileOperationSchema }),
     nativeFileUpload: z.strictObject({ ...source, path, content: z.string().max(Math.ceil(MAX_DOCUMENT_BYTES / 3) * 4) }),
     nativePreview: z.strictObject({ ...source, document: nativeDocumentRefSchema, version: z.string().min(1).max(512).optional() }),
-    nativeTerminalText: z.strictObject({ ...source, terminalId: nativeTerminalTextSchema.shape.terminalId }),
 };
 export const workbenchOutputs = {
     nativeDirectory: nativeDirectorySchema, nativeFileSearch: nativeFileSearchSchema, nativeGit: nativeGitSchema,
     nativeDocument: nativeDocumentSchema, nativeFileSave: nativeFileSaveSchema, nativeFileInspect: nativeFileManagementSchema,
     nativeFileManage: nativeFileManagementSchema, nativeFileUpload: nativeFileManagementSchema, nativePreview: nativePreviewSchema,
-    nativeTerminalText: nativeTerminalTextSchema,
 };
 export type WorkbenchMethod = keyof typeof workbenchInputs;
 export type WorkbenchRequest<K extends WorkbenchMethod> = z.infer<(typeof workbenchInputs)[K]>;
 export type WorkbenchResponse<K extends WorkbenchMethod> = z.infer<(typeof workbenchOutputs)[K]>;
-export type NativeWorkbenchApi = { [K in WorkbenchMethod]: K extends 'nativeTerminalText'
-    ? (request: WorkbenchRequest<K>, signal?: AbortSignal) => Promise<RemoteResult<WorkbenchResponse<K>>>
-    : (request: WorkbenchRequest<K>) => Promise<RemoteResult<WorkbenchResponse<K>>> };
+export type NativeWorkbenchApi = { [K in WorkbenchMethod]: (request: WorkbenchRequest<K>) => Promise<RemoteResult<WorkbenchResponse<K>>> };
 
-export const terminalOutputCursorSchema = z.strictObject({ epoch: z.string().min(1).max(512), offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER) });
-export const terminalOutputStreamSchema = z.strictObject({ version: z.literal(1), epoch: z.string().min(1).max(512), startOffset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), endOffset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), replay: z.boolean(), truncated: z.boolean().optional(), gap: z.enum(['history-truncated', 'epoch-changed', 'cursor-ahead']).optional() });
-export type TerminalOutputCursor = z.infer<typeof terminalOutputCursorSchema>;
-export type TerminalOutputStream = z.infer<typeof terminalOutputStreamSchema>;
-export const terminalClientFrameSchema = z.discriminatedUnion('type', [
-    z.strictObject({ type: z.literal('open'), ...source, terminalId: id, cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000), outputCursor: terminalOutputCursorSchema.optional() }),
-    z.strictObject({ type: z.literal('write'), data: z.string().min(1).max(65536) }),
-    z.strictObject({ type: z.literal('resize'), cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) }),
-]);
-export const terminalServerFrameSchema = z.discriminatedUnion('type', [
-    z.strictObject({ type: z.literal('ready'), replayProtocol: z.literal(1).optional() }),
-    z.strictObject({ type: z.literal('output'), data: z.string().max(4 * 1024 * 1024), stream: terminalOutputStreamSchema.optional() }),
-    z.strictObject({ type: z.literal('exit'), code: z.number().int().nullable(), signal: z.string().nullable() }),
-    z.strictObject({ type: z.literal('error'), message: z.string().max(8192), code: z.enum(['unavailable', 'protocol', 'input-not-delivered', 'source-error']) }),
-]);
-export type TerminalClientFrame = z.infer<typeof terminalClientFrameSchema>;
-export type TerminalServerFrame = z.infer<typeof terminalServerFrameSchema>;
 export const WORKBENCH_DOCUMENT_PATH = '/hapi-dsh/workbench/document';
 export const WORKBENCH_PREVIEW_PATH = '/hapi-dsh/workbench/preview';
-export const WORKBENCH_TERMINAL_PATH = '/hapi-dsh/terminal';

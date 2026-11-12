@@ -1,204 +1,115 @@
 # 安装与运行
 
-首次使用预构建 `.tgz` 的同学先看[快速安装指南](../QUICKSTART.md)，Windows、macOS 和 Linux 使用同一个包。下面补充 HAPI 准备、远程部署和高级配置。
+首次使用从[快速指南](../QUICKSTART.md)开始。当前运行时只接入普通 DSH 和 HHPI 原生 Codex；技术包名仍为 `hapi-dsh`。旧 HAPI Hub 的连接、认证和来源注册不再属于启动配置。
 
-## 准备 HAPI
+本文说明正式 bundle 的安装顺序。安装后核对运行中的 Host、Runner 实际 release 和完整扩展集合；行为变更及验证范围见[发行说明](hhpi-retirement-release-notes.md)。升级保留原 profile、机器配对和原生执行身份。
 
-本插件接入已经运行的 HAPI Hub。要保留本仓库所适配的原生 Codex 身份、队列、审批和恢复语义，Hub 与其 HAPI Runner 使用同一固定源码：
+## 先确定运行位置
 
-```bash
-git clone https://github.com/dqtz5vpvj9-create/hapi.git
-cd hapi
-git checkout 55166cf8d87814ccfb383b538a8e8c55283bed81
-bun install --frozen-lockfile
-bun run build:single-exe
-```
-
-固定源码的 `package.json` 指定 Bun 1.4.0。单文件产物在 `cli/dist-exe/<平台目标>/hapi`；把本机对应产物放入你的可执行路径，再按该版本 HAPI 的说明启动 `hapi hub` 和 `hapi runner start`。HAPI Runner 通过自己的 `HAPI_API_URL`、`CLI_API_TOKEN` 连接 HAPI Hub。Codex 登录、Codex home 和工作目录仍由 HAPI Runner 管理。
-
-现有 HAPI 部署无需重新构建，前提是实际运行的二进制来自上述提交。HAPI 的公开 API 不报告源码 SHA；`doctor` 能验证认证与 API 连通性，不能替你证明部署来源。
-
-## 两个 Hub / Runner 的职责
-
-| 进程 | 负责什么 | 凭据 |
+| 角色 | 使用的配置 | 所有权 |
 | --- | --- | --- |
-| HAPI Hub | 原生 Codex 的机器目录、历史、队列与控制 API | HAPI 访问令牌及其签发的 Web JWT |
-| HAPI Runner | 在指定机器运行 Codex 原生 app-server / 原生桥 | 现有 HAPI Runner 配置 |
-| HAPI DSH 主 Host | 官方 DSH Web、统一工作区、HAPI 适配器、DSH 机器目录 | 官方 DSH 浏览器登录，加本地 HAPI 访问令牌 |
-| HAPI DSH Runner | 官方 DSH Web 的完整远端 Host 和反向传输 | 每台机器独立的配对凭据 |
+| 工作区主 Host | `RuntimeConfig` | 浏览器登录、统一目录、布局和账号级应用服务 |
+| 原 DSH Host / 配对 Runner | `RunnerConfig` | 原 DSH Session、插件和本机资源 |
+| Codex 源 | Host 或 Runner 的 `sources` | 原 app-server、原 native thread 和源历史 |
+| Codex 资源 owner | 同一真实源 OS 的 `sourceWorkspaces` | 该 OS 用户的文件、上传和 PTY |
 
-同一机器可以运行两种 Runner。它们并不互相替代。仅使用 HAPI 原生 Codex 时不必在该机器额外安装 DSH Runner；希望该机器承载 DSH 会话和 DSH 插件时才安装。
+安装官方 DSH `0.2.2-rc.1`、Node 24.x 与 pnpm 11.28.5。Host 与每个 Runner 使用相同正式 bundle 的全部扩展；只匹配 npm 版本号不够。[扩展说明](hhpi-extension-install.md)区分开发覆盖安装和正式发行安装。
 
-## 主 Host 安装
+## 主 Host 配置
 
-需要 Node.js 24 或更新版本，以及 `PATH` 中可执行的 pnpm。固定官方 DSH 的 `dsh plugin` 命令通过 pnpm 管理 profile 依赖；本项目沿用上游固定版本 pnpm 11.28.5。主 Host 与 DSH Runner 所在机器都需要这一安装前提。以下用源码入口演示；从 `.tgz` 全局安装后，将 `node dist/cli.js` 换为 `hapi-dsh`。
+`init` 创建私有配置和专用官方 Web profile；`--config-only` 只写配置，适用于 profile 已由完整 bundle 安装的情形。已有实例用 `install` 更新原 profile。
 
-```bash
-npm install --global pnpm@11.28.5
-npm ci
-npm run build
-node dist/cli.js init \
-  --hapi-url http://127.0.0.1:3006 \
-  --profile hapi \
-  --port 3080
+```text
+hapi-dsh init --profile hapi --port 3080
+hapi-dsh doctor
+hapi-dsh start --no-open
 ```
 
-默认配置路径是 `$XDG_CONFIG_HOME/hapi-dsh/config.json`；没有 `XDG_CONFIG_HOME` 时使用用户配置目录中的 `hapi-dsh/config.json`。可用 `--config /absolute/path/config.json` 或环境变量 `HAPI_DSH_CONFIG_FILE` 指定路径。DSH 数据位置来自 `DSH_HOME`，否则使用默认用户 DSH 目录；`--dsh-home` 可显式指定。
+默认配置位于 `$XDG_CONFIG_HOME/hapi-dsh/config.json`，未设置时为 `~/.config/hapi-dsh/config.json`。`--config` 或 `HAPI_DSH_CONFIG_FILE` 可指定另一文件；`DSH_HOME` / `--dsh-home` 控制 DSH 数据目录。服务、安装器和后续 CLI 使用同一 home、profile 与配置。
 
-配置里 `hapi.id` 在首次创建时随机生成，它代表稳定的 HAPI Hub 身份。修改 Hub 地址或轮换访问令牌时保留这个 ID；不要从地址或令牌重新生成。旧配置缺少该字段时会在锁保护下自动持久化一个随机 ID。
-
-输入令牌、检查、启动：
-
-```bash
-node dist/cli.js login
-node dist/cli.js doctor
-node dist/cli.js start --no-open
-```
-
-`login` 交互输入不回显，并保存到已有私有配置；自动化可使用 `login --stdin`。已有环境变量仍优先于保存值。命名空间使用 HAPI 所接受的访问令牌形式。插件先向 `/api/auth` 交换 Web JWT，随后使用 JWT 访问会话和机器目录；不会把 CLI 令牌当作现成 JWT。
-
-`doctor --offline` 只检查本机版本、产物和 profile；`doctor --json` 提供结构化结果。缺少在线 HAPI Runner 会给出提示，原生会话创建需要 Runner 真正在线。
-
-进入工作区后，通过统一的新建入口选择 DSH 或原生 Codex。Codex 的机器、home 和模型来自 HAPI Runner；创建请求被接收后，原生身份元数据可能稍后才出现。界面会保留创建记录，重开窗口或重启主 Host 后可以继续查询和接入原来的 thread，不需要重新创建。原生设置、消息分支、计划操作和不确定结果的恢复见[原生 Codex 使用与恢复](native-codex.md)。
-
-## 本地配置
-
-下面是字段示例，路径和地址应替换为自己的值。它不包含令牌：
+最小配置示例中的绝对路径需按本机替换：
 
 ```json
 {
   "version": 1,
-  "dsh": {
-    "home": "/home/alice/.dsh",
-    "profile": "hapi"
-  },
-  "hapi": {
-    "id": "2aef3072-69d0-4407-9ab7-d97fd742db13",
-    "url": "http://127.0.0.1:3006",
-    "tokenEnv": "HAPI_DSH_TOKEN"
-  },
-  "server": {
-    "host": "127.0.0.1",
-    "port": 3080,
-    "publicUrl": "https://work.example.test",
-    "trustedHosts": ["work.example.test:443"]
-  },
-  "federation": {
-    "credentialsFile": "/home/alice/.config/hapi-dsh/runner-pairings.json"
-  }
+  "dsh": { "home": "/home/alice/.dsh", "profile": "hapi" },
+  "server": { "host": "127.0.0.1", "port": 3080 },
+  "federation": { "credentialsFile": "/home/alice/.config/hapi-dsh/runner-pairings.json" }
 }
 ```
 
-配置、Runner 邀请和配对策略必须是普通文件；程序拒绝符号链接以及 Unix 上允许组或其他用户读取的权限。新建文件使用 `0600`，更新采用原子替换，并在支持目录同步的 Unix 平台同步目录项。可在私有配置的 `hapi.token` 中存储访问令牌；`hapi.tokenEnv` 指定的环境变量优先。令牌不会进入 Cordis 配置行、浏览器配置或命令参数。
+配置、邀请和配对策略保持私有普通文件；Unix 使用 `0600`，程序拒绝符号链接与过宽权限，写入沿用原子替换。`config` 只显示当前模式认可的配置；`runner config` 隐去配对凭据。官方 DSH 登录链接或 `server.loginPasswordFile` 属于浏览器准入，与机器配对是两条独立边界。
 
-`hapi-dsh config` 和 `hapi-dsh runner config` 仅输出脱敏配置。需要绝对路径的字段包括 DSH home、配对策略文件以及 TLS 证书/密钥文件。
+`doctor` 核对本机版本、构建、profile 与受管 release。它不会把远程源或浏览器未测状态标成成功；`--offline` 只用于本机检查。
 
 ## 远程访问与反向代理
 
-主 Host 默认仅在回环地址监听。给主 Host 配置外部入口时，两项设置各司其职：
+默认监听回环地址。配置外部入口时设置 `server.publicUrl` 和 `server.trustedHosts`，例如：
 
-```bash
-hapi-dsh init \
-  --hapi-url http://127.0.0.1:3006 \
-  --public-url https://work.example.test \
-  --trusted-host work.example.test:443
+```json
+{
+  "host": "127.0.0.1",
+  "port": 3080,
+  "publicUrl": "https://work.example.test",
+  "trustedHosts": ["work.example.test:443"]
+}
 ```
 
-已有配置直接修改 `server.publicUrl` 与 `server.trustedHosts`，再重启，不要重新执行 `init`。需要多个可信域名时在 JSON 中增加数组元素。域名不带端口表示允许该域名的任意端口；带端口则限定该 authority。
+这是 `server` 字段内容。代理保留原 Host、正确转发 HTTP 与 WebSocket；路径前缀部署还需正确处理 Cookie Path、前缀重写与末尾斜线。HTTPS Cookie 保留 Secure。机器通道使用正式配对认证，不能要求 Runner 在握手前完成交互式网页登录。首次部署优先使用独立域名根路径。
 
-DSH 的[官方代理说明](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/docs/user/guide/public-deployments.md)要求代理保留浏览器的 `Host`、转发 HTTP 和 WebSocket 升级，并在使用路径前缀时去掉该前缀、重写 Cookie Path、将裸前缀重定向到以 `/` 结尾的入口。HTTPS 代理还要为外部 Cookie 设置 `Secure`。该要求同样适用于 `/hapi-dsh/*` 机器路由和 Runner 反向 WebSocket。
+也可配置 `server.tls.certFile` / `keyFile` 使用官方 HTTPS listener。路径必须绝对、证书必须受客户端信任，程序不会关闭 TLS 校验。已有配置直接更新这些字段后按发布流程重启，不重新初始化。
 
-首次部署建议使用独立域名的根路径，以减少前缀和 Cookie 重写配置。Runner 邀请的 `hubUrl` 必须是 Runner 能访问的相同入口，不能使用另一台机器的 `127.0.0.1`。代理不能要求 Runner 在 WebSocket 握手前经过交互式网页登录；机器认证使用配对 Bearer 凭据。
+## 配对 DSH Runner
 
-也可以使用官方 DSH 自带的 HTTPS listener：
+主 Host 创建单独的机器凭据：
 
-```bash
-hapi-dsh init \
-  --hapi-url http://127.0.0.1:3006 \
-  --host 192.0.2.10 \
-  --public-url https://work.example.test:3080 \
-  --trusted-host work.example.test:3080 \
-  --tls-cert /private/tls/fullchain.pem \
-  --tls-key /private/tls/privkey.pem
+```text
+hapi-dsh pair --name lab-workstation --hub-url https://work.example.test --output PRIVATE_INVITATION.json
 ```
 
-把文档示例 IP 替换为本机实际接口 IP。证书必须由客户端信任并覆盖访问名称；本插件不签发或续期证书，也不关闭 TLS 校验。证书更新后重启官方 listener。官方 DSH 登录链接包含启动凭据，只提供给预期的工作区使用者。
+目标机器安装同版完整 bundle，初始化独立配置：
 
-## DSH 机器配对、撤销与恢复
-
-主 Host 上创建独立机器身份和凭据：
-
-```bash
-hapi-dsh pair --name lab-workstation \
-  --hub-url https://work.example.test \
-  --output /private/lab-runner-invitation.json
-```
-
-默认机器 ID 随机生成；需要固定人类可读 ID 时可用 `--machine-id lab-workstation`。ID 使用字母、数字、点、下划线或连字符，不能复用仍然配对的 ID。主机策略文件只保存凭据的 SHA-256 摘要；原始凭据只写入私有邀请。
-
-在目标机器安装同版本 `.tgz`，私下传入邀请，并初始化：
-
-```bash
-hapi-dsh runner init \
-  --pairing-file /private/lab-runner-invitation.json \
-  --profile hapi-runner
+```text
+hapi-dsh runner init --pairing-file PRIVATE_INVITATION.json --profile hapi-runner
 hapi-dsh runner start
 ```
 
-Runner 的配置默认是 `hapi-dsh/runner.json`，可通过 `--config` 或 `HAPI_DSH_RUNNER_CONFIG_FILE` 改变。它保存机器 ID、名字、Hub 地址、独立 DSH home/profile 及私有凭据。安装完成后邀请不再参与运行，可以由操作者安全移除。
+已用 bundle 安装 Runner profile 时，初始化加 `--config-only`。`RunnerConfig` 默认在 `~/.config/hapi-dsh/runner.json`，`--config` 或 `HAPI_DSH_RUNNER_CONFIG_FILE` 可改路径。Runner 监听本机 `127.0.0.1`，主动连接主 Host，原 DSH Cookie 留在所属机器。每个机器 ID 同时只有一个连接；未知结果的写操作不会在重连时自动重发。
 
-Runner 只监听本机回环地址，Hub 不需要向 Runner 打开入站端口。原始 DSH Cookie 留在 Runner 进程内；Hub 凭据、主 Host Cookie 和 HAPI 令牌不进入远端浏览器包。协议握手严格要求同一 DSH 版本；同一机器身份同一时刻仅允许一个连接。
-
-撤销使用 `hapi-dsh revoke --machine-id ID`。文件监控通常立即生效，另有最多 15 秒的定时刷新；配对策略损坏时 Hub 会关闭现有 Runner 连接并拒绝继续授权。重新配对之前需先撤销旧记录，再生成新的邀请，并显式更新接收方私有配置；`runner init` 不覆盖已有文件。
-
-连接恢复会重新建立传输并同步目录。未完成请求返回连接失败；如果远端可能已执行，不会盲目自动重试。会话本身仍属于远端官方 DSH，Runner 不复制或回放引擎执行。
-
-### 接入已经运行的 DSH Web
-
-统一列表只包含主 Host 和已配对的 Host；同机另一个 DSH Web 的会话不会自动进入列表。要保留原 Web 的执行归属和插件配置，在它的现有 profile 中挂载 Runner 插件，不要新开一个指向相同数据目录的 DSH 进程。
-
-先用 `hapi-dsh pair` 为现有 Web 生成独立邀请，再执行 `hapi-dsh runner init --pairing-file PRIVATE_FILE --config /absolute/existing-web-runner.json --dsh-home EXISTING_HOME --config-only`。这一步只生成私有配对配置；不要执行 `runner start`。在原 Web profile 的 `cordis.patch.yml` 追加以下配置，将两个路径替换为实际安装位置：
+已有 DSH Web 保留原 Session 与插件，使用 `runner init --config-only --dsh-home EXISTING_HOME` 生成配对配置，再把受管 runtime 的 `hapi-dsh/dist/runner/index.js` 挂到原 profile：
 
 ```yaml
 - insert:
-    - id: hapi-dsh-existing-web-runner
-      name: /absolute/hapi-dsh/dist/runner/index.js
+    - id: hhpi-existing-web-runner
+      name: /absolute/release/runtime/node_modules/hapi-dsh/dist/runner/index.js
       config:
-        configFile: /absolute/existing-web-runner.json
+        configFile: /absolute/private/existing-runner.json
 ```
 
-插件直接使用该 Web 的官方连接、客户端模块和监听服务；配置中的 `dsh.profile`、`server` 仅供独立 Runner 启动器使用，在这种挂载方式下不启动新实例。原 Web 必须使用固定 DSH 版本并监听 `127.0.0.1`。认证仍由原 Web 与配对凭据共同控制，原始 Web 登录令牌不传给浏览器。
+这种挂载不执行 `runner start`，不启动第二个 Host。原 Web 应符合固定版本、同版扩展及回环 listener 要求。需要重启时先检查原执行状态，不能用新建替代进程绕过原 owner。
 
-配置通常通过官方 HMR 生效。如果插件管理接口报告 `restart-required`，先确认原 Web 没有正在执行的会话，再正常重启原进程。接入后，通过主 Host 的机器目录及该机器路由下的 `hapi-dsh/bootstrap`、`api/session/list` 检查连通性和原会话 ID。Agent 还须按 [UI 验收流程](ui-acceptance.md) 运行对应的官方组件交互、过程采样和截图视觉检查，分别报告合成源、生产只读及真机覆盖；HTTP 可用不能代替界面验收。
+`hapi-dsh revoke --machine-id MACHINE_ID` 撤销机器。配对策略损坏时会关闭连接并拒绝继续授权。重新配对先处理旧记录并保留原机器身份，不能仅改名字冒充迁移。
 
-## Profile 与插件管理
+## 原生源与源 OS 资源
 
-`init` 对新 profile 执行官方的 `--from-default-profile web`，随后执行 `dsh plugin ... add link:...`。`install` 对既有 Web profile 只安装 bundle，并通过 `--dump-config` 验证结果。现有目录缺少 manifest 或 profile 类型不兼容时会停止，保留原始内容供人工修复。
+在真正承载 Codex 的 Host/Runner 私有配置中增加 `sources`，保留 machine/source/engine/nativeId。[原生接入](hhpi-native-attachment.md)给出已有 Unix socket、SSH/named-pipe bridge 和只读历史元数据 helper 的边界。
 
-主 profile 包含根 bundle `hapi-dsh`；Runner profile 只安装 `dist/runner` 中的 `hapi-dsh-runner`。后者故意没有 `dsh.client`，因此不会在每台 Runner 重复安装统一工作区 shell。第三方插件继续通过所属机器的官方 DSH 插件机制安装和管理。
+要支持新建后的任务在原生卸载后重开继续工作，不能只复制 `ownership: "shared"` 的最小示例。先核实该源与所有共享写者参与兼容的原生线程锁，再按[同机 app-server 配置](hhpi-native-attachment.md#同机-app-server)增加 `writerLock: "native"`；未核实则保留只读边界。Linux 与 Windows 源分别核对，更新显示服务配置不意味着可以重启或接管原生执行。
 
-从源码或全局 npm 路径安装后，profile 使用 link 指向该位置，运行期间不要删除或移动包目录。升级包后运行相应的 `install` / `runner install` 再重启。DSH 固定版本有变化时需要协同升级所有主 Host 和 Runner，并重新执行真实官方集成测试。
+只有运行在源 OS 用户上下文的服务才可配置：
 
-## 持久运行与数据备份
+```json
+{ "sourceWorkspaces": [{ "sourceId": "native", "provider": "local-system" }] }
+```
 
-可用系统服务管理器执行 `hapi-dsh start --no-open --config /absolute/config.json` 或 `hapi-dsh runner start --config /absolute/runner.json`。服务使用 Node 24 的固定可执行路径，并从服务私有环境文件或 `0600` 配置提供凭据。CLI 转发 SIGINT/SIGTERM 和退出码，不自行守护或隐藏子进程失败。
+这里 `native` 必须是该配置中真实的 Codex source ID。资源服务按请求的已认证来源授权，并以系统用户权限运行；它不是 Codex sandbox 的权限替身。中央 SSH RPC 转发不能注册成 Windows 本机资源服务。
 
-需要保留的数据：私有配置及稳定 ID、配对策略、完整 DSH profile 数据，以及原 HAPI Hub/Runner 的数据。插件自己的布局、原生投递与审批状态、创建/设置/分支/计划回执在 `DSH_HOME/profiles/<profile>/data/hapi-dsh`。删除回执会丢失工作区对未确定操作的恢复依据；备份与迁移时完整保留该目录和原 HAPI 数据。不要把 DSH 布局写入 HAPI 只接受其原生会话 ID 的工作区 API。
+Windows 需在 Windows 以原 machine ID 正式配对独立源 Runner，保留既有 Runner 的身份和原 DSH 入口；profile/data 分离，接同一个既有 Codex app-server。路由迁移可以改变 Host，但不能改变 source/engine/nativeId 或复制历史创建替代执行。升级后从实际 Runner 核对扩展集合、Session 0 单实例监督、来源在线及原 app-server 身份。开机恢复、回滚和界面能力按各自的实际验证记录确认。
 
-配置迁移、安装、配对和布局写入使用官方 `withFileLock` 协调同机进程。锁记录的 PID 确认已退出时可自动接管；仍存活、无法确认或记录不完整时等待后报错。不要仅因文件旧就删除锁，也不要把同一 DSH home 放在跨机器或跨 PID namespace 共享写入的网络目录。残缺锁或 PID 复用需先由操作者确认没有相关进程再清理。
+## 升级、备份与旧配置
 
-## 常见问题
+正式 bundle 在受管 release 中安装，保留完整源码、许可、旧 release、profile manifest/lock 和现有数据；遵守 idle、健康检查与回滚。[分发文档](distribution.md)说明具体入口。系统服务监督 CLI 的退出、重启及子进程生命周期，避免同一配置双实例；任务管理器显示 Ready 不能证明 Runner 正在运行。
 
-| 现象 | 检查 |
-| --- | --- |
-| `doctor` 报 DSH 版本不匹配 | 使用包自带的固定 DSH；移除错误的 `dsh.command` override |
-| `init` 报配置已存在 | 用 `install` 重试安装；要新实例时指定另一配置文件和 profile |
-| 远程浏览器 API 返回 403 | 校验 `trustedHosts`、代理保留的 Host、Origin 和挂载前缀 |
-| HAPI 认证 401 | 确认令牌和命名空间、私有文件/环境变量来源；不要把 Web JWT 当作长期 CLI 令牌 |
-| 原生会话只能看历史 | 检查 HAPI Runner 在线、native connection 为 attached、Codex 原生身份完整 |
-| 新建会话停在 accepted / indeterminate | 打开创建记录继续检查；已有来源会话时只等待原生身份，不再创建另一个会话 |
-| 原生设置、分支或计划结果不确定 | 检查原操作回执与原生状态；不要以刷新页面或新建操作 ID 代替结果确认 |
-| DSH Runner 一直断开重连 | 检查邀请 URL、HTTPS 信任、配对是否撤销、固定 DSH 版本及机器 ID 是否被另一进程占用 |
-| 窗口状态保存冲突 | 选择界面提供的本地或服务端布局；不会静默覆盖并发修改 |
+备份私有配置、机器配对、原 DSH home/profile、HHPI 数据目录和浏览器原始存储。`DSH_HOME/profiles/PROFILE/data/hapi-dsh` 中的账号、布局、操作回执等数据随版本保留；回滚不回放写操作、不撤销原生任务结果。锁仍按真实进程状态处理，不能按文件年龄随意删除。
 
-验证分层和已知验收边界见[验证文档](validation.md)。
+产品解析器明确拒绝旧 `hapi` 字段、旧来源注册和旧登录参数。离线迁移工具才可读取保留下来的旧数据。先核对原机器、native ID、精确别名和布局，再准备当前配置；旧草稿、附件、布局和回执的恢复不按新账号猜测归属，不自动发送。

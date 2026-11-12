@@ -11,6 +11,15 @@ export const nativeThreadSchema = z.object({ id, cwd: z.string(), preview: z.str
     createdAt: z.number().finite(), updatedAt: z.number().finite(), status: z.object({ type: z.string() }).passthrough(),
     model: z.string().nullable().optional(), modelProvider: z.string().optional(), turns: z.array(nativeTurnSchema).optional() }).passthrough();
 export type NativeThread = z.infer<typeof nativeThreadSchema>;
+/** Native task names take precedence over the random AgentControl nickname. */
+export function nativeThreadTitle(thread: NativeThread): string {
+    for (const value of [thread.name, thread.preview]) if (typeof value === 'string' && value.trim()) return value.trim();
+    const source = isRecord(thread.source) && isRecord(thread.source.subAgent) ? thread.source.subAgent : undefined;
+    const spawn = source && isRecord(source.thread_spawn) ? source.thread_spawn : undefined;
+    const path = spawn && typeof spawn.agent_path === 'string' ? spawn.agent_path.split('/').filter(Boolean).at(-1)?.trim() : undefined;
+    if (path && path !== 'root' && path !== thread.id && !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(path)) return path;
+    return typeof thread.parentThreadId === 'string' ? 'Subtask' : 'Untitled conversation';
+}
 export const threadResponseSchema = z.object({ thread: nativeThreadSchema }).passthrough();
 export const threadListSchema = z.object({ data: z.array(nativeThreadSchema), nextCursor: z.string().nullable() }).passthrough();
 export const loadedListSchema = z.object({ data: z.array(id), nextCursor: z.string().nullable() }).passthrough();

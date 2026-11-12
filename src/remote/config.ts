@@ -10,23 +10,14 @@ const codex = z.strictObject({
     cwd: nonempty.optional(), codexHome: nonempty.optional(), ownership: z.enum(['shared', 'exclusive']).optional(), writerLock: z.literal('native').optional(),
     historyMetadata: z.strictObject({ command: nonempty, args: z.array(nonempty).max(64).optional() }).optional(),
 });
-const dsh = z.strictObject({
-    id: label, machineId: label, engine: z.literal('dsh'), root: nonempty,
-    owner: z.strictObject({ hubId: label, url: nonempty, tokenEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/) }),
-});
 /** Only an operator-authored private config can select executables or source endpoints. */
 export function parseSources(value: unknown): DirectSourceConfig[] {
-    const sources = z.array(z.discriminatedUnion('engine', [codex, dsh])).max(32).parse(value);
+    if (Array.isArray(value) && value.some(source => source && typeof source === 'object' && source.engine === 'dsh')) throw new Error('The HAPI-owned DSH source has been retired. Recover its exact session aliases offline and pair the original DSH Host; do not create a replacement Agent.');
+    const sources = z.array(codex).max(32).parse(value);
     const ids = new Set<string>();
     for (const source of sources) {
         if (ids.has(source.id)) throw new Error('Source IDs must be unique on one Host');
         ids.add(source.id);
-        if (source.engine === 'dsh') {
-            if (!isAbsolute(source.root)) throw new Error('DSH source root must be absolute');
-            const url = new URL(source.owner.url);
-            if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw new Error('DSH owner URL must be HTTP(S) without embedded credentials');
-            continue;
-        }
         if (source.cwd !== undefined && !isAbsolute(source.cwd) || source.codexHome !== undefined && !isAbsolute(source.codexHome)) throw new Error('Source cwd and codexHome must be absolute');
         if (source.endpoint) {
             const url = new URL(source.endpoint);
@@ -39,4 +30,18 @@ export function parseSources(value: unknown): DirectSourceConfig[] {
         }
     }
     return sources as DirectSourceConfig[];
+}
+
+/** Operator assertion that these services run in the source OS user context. */
+export interface SourceWorkspaceConfig { sourceId: string; provider: 'local-system' }
+export function parseSourceWorkspaces(value: unknown, sources: readonly DirectSourceConfig[]): SourceWorkspaceConfig[] {
+    const entries = z.array(z.strictObject({ sourceId: label, provider: z.literal('local-system') })).max(32).parse(value);
+    const ids = new Set<string>();
+    for (const entry of entries) {
+        if (ids.has(entry.sourceId)) throw new Error('Each source has one workspace provider');
+        ids.add(entry.sourceId);
+        const source = sources.find(source => source.id === entry.sourceId);
+        if (!source || source.engine !== 'codex') throw new Error('Local source services require an explicitly configured Codex source');
+    }
+    return entries;
 }

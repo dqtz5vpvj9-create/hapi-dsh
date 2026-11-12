@@ -1,7 +1,7 @@
 import { useWorkspacePane } from './surface/pane-context.tsx'
 import { randomId } from './random-id.ts'
 /** A live official composer endpoint; neither editor nor submission is replaced. */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
 import type { InputState, ReferenceInsert } from '@deepseek-ai/dsh-client-ui-conversation/client';
@@ -10,6 +10,7 @@ import type { SourceComposerBridge } from './source-composer.tsx';
 import { handoffDraftMatches, type HandoffDraft, type HandoffEndpoint, type HandoffReference } from './draft-handoff.ts';
 import type {} from './workspace-ui.ts';
 import type {} from './pane-navigation.ts';
+import { isSourceDisplayId } from '../shared/source-display-id.ts';
 
 /** InputState publishes clipboard coordinates; public mutation spans use one cell per chip. */
 export function handoffDetectEnd(state: Pick<InputState, 'draft' | 'occurrences' | 'claim'>): number {
@@ -26,19 +27,21 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
     const scope = ctx.inject(['hapiWorkspaceUi', 'sessions'], owner => {
         const handoffs = owner.hapiWorkspaceUi.handoffs;
         const Receiver = (props: Props) => {
-            const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed;
             const input = props.useInput(value => value), pane = useWorkspacePane(owner);
-            const latest = useRef({ props, projection, observed }); latest.current = { props, projection, observed };
-            const source = useMemo(() => projection && !observed?.sidechain && pane ? {
-                hubId: projection.hubId, sessionId: projection.hapiSessionId, displayId: props.sessionId, hostId: pane.hostId,
-            } : null, [projection?.hubId, projection?.hapiSessionId, observed?.sidechain, props.sessionId, pane]);
+            const application = useSyncExternalStore(owner.hapiWorkspaceUi.application.subscribe, owner.hapiWorkspaceUi.application.getSnapshot);
+            const latest = useRef({ props, application }); latest.current = { props, application };
+            // The persisted hubId field is an opaque namespace, now the exact
+            // authenticated application and serving Host. It never contacts a Hub.
+            const source = useMemo(() => application && pane && !isSourceDisplayId(props.sessionId) ? {
+                hubId: JSON.stringify([application.scope, pane.hostId]), sessionId: props.sessionId,
+                displayId: props.sessionId, hostId: pane.hostId,
+            } : null, [application, props.sessionId, pane]);
             useEffect(() => {
                 if (!source || !pane) return;
                 let generation: ReturnType<typeof owner.sessions.binding>, bindingId = randomId();
                 const live = () => {
-                    const current = latest.current, binding = owner.sessions.binding(props.sessionId);
-                    if (!binding || current.observed?.sidechain || current.projection?.hubId !== source.hubId
-                        || current.projection?.hapiSessionId !== source.sessionId) throw new Error('The original source composer binding changed. Both drafts are retained.');
+                    const current = latest.current, binding = current.props.sessionBinding ?? owner.sessions.binding(current.props.sessionId);
+                    if (!binding || current.props.sessionId !== source.sessionId || current.application !== application || application?.signal.aborted) throw new Error('The original source composer binding changed. Both drafts are retained.');
                     if (generation !== binding) { generation = binding; bindingId = randomId(); }
                     return { binding, facade: owner.conversation.input.for(binding.ctx) };
                 };
@@ -48,12 +51,12 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
                     return { bindingId, paneId: pane.paneId, revision: state.draftRev, text: state.draft,
                         references: references(state), attachmentIds: [...state.attachmentIds],
                         ...(state.claim ? { command: state.claim.token } : {}),
-                        files: bridge.captureFiles(props.sessionId, state.attachmentIds).map(file => ({ id: file.id, file: file.file })) };
+                        files: bridge.captureFiles(props.sessionId, state.attachmentIds, props.inputActions).map(file => ({ id: file.id, file: file.file })) };
                 };
                 const writable = (): boolean => {
                     try {
                         const state = live().facade.state.getSnapshot(), view = pane.state.getSnapshot();
-                        return !latest.current.projection?.readOnly && view.visible && view.focused && !['adjudicating', 'submitting'].includes(state.phase);
+                        return owner.conversation.blocks.storeFor(props.sessionId).getSnapshot() === undefined && view.visible && view.focused && !['adjudicating', 'submitting'].includes(state.phase);
                     } catch { return false; }
                 };
                 const endpoint: HandoffEndpoint = {
@@ -69,7 +72,7 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
                         signal.throwIfAborted();
                         if (live().binding !== initial.binding || !writable() || !handoffDraftMatches(capture(), expected)) throw new Error('The target changed while restoring its command catalog.');
                         const files = draft.files.map(item => item.file);
-                        const undoFiles = await bridge.addFiles(props.sessionId, files, signal);
+                        const undoFiles = await bridge.addFiles(props.sessionId, files, signal, props.inputActions);
                         let textChanged = false;
                         try {
                             signal.throwIfAborted();
@@ -117,7 +120,7 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
                     clear(expected) {
                         try {
                             if (!handoffDraftMatches(capture(), expected)) return false;
-                            latest.current.props.inputActions.setDraft(''); bridge.removeFiles(props.sessionId, expected.files);
+                            latest.current.props.inputActions.setDraft(''); bridge.removeFiles(props.sessionId, expected.files, latest.current.props.inputActions);
                             latest.current.props.inputActions.persistDraft();
                             const after = capture(); return after.text === '' && !after.attachmentIds.length;
                         } catch { return false; }
@@ -126,8 +129,8 @@ export function installDraftHandoffReceiver(ctx: Context, bridge: SourceComposer
                 };
                 const unregister = handoffs.register(endpoint), stop = pane.state.subscribe(handoffs.changed);
                 return () => { stop(); unregister(); };
-            }, [handoffs, source, pane, props.sessionId]);
-            useEffect(handoffs.changed, [handoffs, input, projection]);
+            }, [handoffs, source, pane, props.sessionId, application]);
+            useEffect(handoffs.changed, [handoffs, input, application]);
             return null;
         };
         return owner.slots.inject('conversation.input.dock', () => owner.slots.register({ name: 'conversation.input.dock', id: 'hapi.draft-handoff', order: -81 }, Receiver));

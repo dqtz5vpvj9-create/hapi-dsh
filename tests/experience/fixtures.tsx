@@ -7,18 +7,12 @@ import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { Context } from '@deepseek-ai/cordis'
 import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { NativeActionLedger } from '../../src/client/native-state.ts'
-import type { NativeActionsApi } from '../../src/client/native-actions.tsx'
 import { en, type WorkspaceTranslate } from '../../src/client/locales.ts'
 import type { WorkspacePaneNavigation } from '../../src/client/pane-navigation.ts'
 
 export const t: WorkspaceTranslate = key => en[key]
 export function deferred<T>() {
   return Promise.withResolvers<T>()
-}
-export function nativeApi(): NativeActionsApi {
-  return { ledger: new NativeActionLedger(), cancel: vi.fn(), steer: vi.fn(), retry: vi.fn(), answer: vi.fn(), resume: vi.fn(),
-    queuedEditing: { busy: false, label: 'Edit queued message', edit: vi.fn() } }
 }
 export function pane(id: string) {
   const state = createSnapshotStore({ visible: true, focused: true })

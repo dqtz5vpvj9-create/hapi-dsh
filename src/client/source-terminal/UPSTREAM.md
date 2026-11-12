@@ -19,7 +19,7 @@ The HAPI source records TermBeam at
 | `locales.ts` | HAPI `web/src/lib/locales/en.ts` and `zh-CN.ts`, terminal accessory strings |
 | `types.ts` | HAPI terminal key and modifier contracts |
 | `preferences.ts`, `input.ts`, `dialog.tsx`, `clipboard.ts`, `snapshot.ts` | This integration's public DSH view / workspace adapters |
-| `view.tsx` copy paging; Host `hapi/terminal-text.ts` wrapping rule | Adapted from pinned HAPI `termbeam/SelectOverlay.tsx`; the source transport and read-only decoder are this integration's adapters |
+| `view.tsx` copy paging | Adapted from pinned HAPI `termbeam/SelectOverlay.tsx`; the removed Hub terminal transport/decoder is not part of the current adapter |
 | `gestures.ts` | Pinned HAPI `termbeam/terminalGestures.ts`; lazy touch capture, pinch bounds/debounce, normal-buffer momentum and cancellation are adapted to the retained official body |
 
 `source-terminal-actions.tsx` uses DSH's public keyed slot shadowing. The original
@@ -36,24 +36,14 @@ Preferences are validated, and failed browser storage is shown as an error while
 retaining the current view's customization.
 
 Copy uses the original terminal's standard DOM copy event for its current
-selection. For a source-owned terminal without a selection, it requests one
-retained screen snapshot through a separate authenticated HAPI machine viewer.
-Pinned HAPI `attach` reads its replay without acquiring control; `claim` is a
-separate command and is never sent by this reader. Closing the reader releases
-only its own connection. This does not call DSH `terminal.attach`, which assigns
-control to its caller.
-
-The Host decodes the original serialized screen with the public buffer API of
-`@xterm/headless@6.0.0`, with no input callback. The browser shows a plain-text
-copy accessory, initially 200 logical lines, preserving scroll position as older
-lines are revealed. It explicitly reports source retention as unknown and local
-truncation. A failed read never falls back to a control attachment. Its public
-RPC cancellation is signalled on close, hide and disposal.
-
-Ordinary DSH terminals keep their original selection and the explicitly labelled
-visible-row fallback. The original component does not expose its xterm buffer:
-this integration does not access private emulator fields or claim that visible
-rows contain unrendered scrollback.
+selection. Without a selection it copies only the explicitly labelled visible
+rows. The original component does not expose its xterm buffer: this integration
+does not access private emulator fields or claim that visible rows contain
+unrendered scrollback. Both ordinary and HHPI terminals retain the same mounted
+official Terminal owner. No HAPI machine viewer, legacy SessionTerminal decoder,
+second attachment or control claim is opened for copying. The plain-text dialog
+starts with 200 lines and preserves its own position when earlier captured lines
+are revealed; closing, hiding or replacing the occurrence cancels the read.
 
 Touch pinch changes only the occurrence's public theme hook, which the original
 Terminal component uses to resize its actual font and grid. The original

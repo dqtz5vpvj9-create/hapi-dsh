@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { access, lstat, mkdir, readFile, realpath, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DSH_VERSION, type RuntimeConfig, resolveHapiToken } from './config.ts';
+import { DSH_VERSION, type RuntimeConfig } from './config.ts';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import { parseDocument } from 'yaml';
 import { OFFICIAL_PROVIDERS, OFFICIAL_PROVIDER_PACKAGES, ROUTING_PROVIDERS, type OfficialProviderId } from '../shared/official-provider.ts';
@@ -245,7 +245,8 @@ export async function findPackageRoot(anchor: string = import.meta.url): Promise
     }
 }
 
-export const CLIENT_CHUNKS = ['client.voice.js', 'client.capture.js', 'client.native-panels.js', 'client.session-panels.js', 'client.administration.js'] as const;
+import { CLIENT_CHUNKS } from '../shared/client-artifacts.ts';
+export { CLIENT_CHUNKS } from '../shared/client-artifacts.ts';
 
 export async function verifyBundleArtifacts(packageRoot: string, expectedName: 'hapi-dsh' | 'hapi-dsh-runner' = 'hapi-dsh'): Promise<void> {
     const manifest: {
@@ -317,6 +318,20 @@ export async function installProfile(
                 throw new Error('Existing profile is not based on the official Web profile; it was left unchanged');
             }
         }
+        if (bundleName === 'hapi-dsh-runner') {
+            const providerRoot = resolve(await realpath(packageRoot), '../session-provider');
+            const provider = JSON.parse(await readFile(join(providerRoot, 'package.json'), 'utf8'));
+            if (provider.name !== 'hapi-dsh-session-provider' || !provider.dsh?.client || !provider.exports?.['./client']) {
+                throw new Error('The Runner release is missing its built source provider');
+            }
+            const linked = await run({ ...command, args: [...command.args, 'plugin', '--profile', config.dsh.profile, 'add', `link:${providerRoot}`] }, { env, timeoutMs: 300_000 });
+            if (linked.exitCode !== 0) throw new Error('Official DSH source-provider installation failed; the Runner was not activated');
+            const providerDependency = JSON.parse(await readFile(profilePath, 'utf8')).dependencies?.['hapi-dsh-session-provider'];
+            const resolvedClient = createRequire(profilePath).resolve('hapi-dsh-session-provider/client');
+            if (providerDependency !== `link:${providerRoot}` || await realpath(resolvedClient) !== await realpath(join(providerRoot, 'client.js'))) {
+                throw new Error('The official source-provider package/client did not resolve to this Runner release');
+            }
+        }
         const installed = await run({ ...command, args: [...command.args, 'plugin', '--profile', config.dsh.profile, 'add', `link:${resolve(packageRoot)}`] }, { env, timeoutMs: 300_000 });
         if (installed.exitCode === 127 && installed.stderr.split(/\r?\n/).includes('dsh: pnpm was not found; install pnpm and make it available on PATH.')) {
             throw new Error('The official DSH plugin manager requires pnpm on PATH. Install pnpm 11.28.5, then retry installation; the existing profile was preserved');
@@ -371,7 +386,6 @@ export async function writeLaunchUrl(configFile: string, url: string): Promise<v
 
 /** DSH owns all application boot and teardown; this wrapper only forwards signals and exit status. */
 export async function startProfile(config: RuntimeConfig, configFile: string, noOpen = false): Promise<number> {
-    if (config.hapi) resolveHapiToken(config);
     const command = await resolveDshCommand(config);
     const env = runtimeEnvironment(config, configFile);
     await verifyDshVersion(command, env);

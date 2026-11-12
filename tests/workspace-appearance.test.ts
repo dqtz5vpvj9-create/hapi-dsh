@@ -10,9 +10,8 @@ import { AppearanceState, bindAppearanceTheme } from '../src/client/appearance/s
 import { DEFAULT_HEADER, parseColors, parseHeader, readAppearance } from '../src/client/appearance/preferences.ts'
 import { appearanceTokens, keyColors } from '../src/client/appearance/tokens.ts'
 import { terminalTheme } from '../src/client/appearance/terminal-theme.ts'
-import { sourceHeaderFacts, sourceHeaderModel } from '../src/client/appearance/header.tsx'
-import type { HapiProjection } from '../src/codex/projection-types.ts'
-import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
+import { sourceHeaderFacts } from '../src/client/appearance/header.tsx'
+import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
 
 function storage(entries: Array<[string, string]> = []) {
     const values = new Map(entries)
@@ -120,31 +119,21 @@ test('terminal adapter is referentially stable, preserves original snapshot and 
     original.preferences.dispose()
 })
 
-test('source header never fabricates creation/activity times from a display proxy or a different Hub', () => {
-    const source = { engine: 'codex', hubId: 'source-hub', hapiSessionId: 'source-id', machineName: 'Actual machine', machineId: 'machine',
-        model: 'native-model', reasoningEffort: 'high' } as NonNullable<HapiProjection>
-    const catalog = { id: 'display', updatedAt: 1000, sourceCreatedAt: 400, sourceLastActiveAt: 800,
-        sourceWorktree: { name: 'actual', basePath: '/actual', branch: 'source/branch' }, sourceRowState: { serviceTier: 'fast' },
-        projectionValues: { hapi: source } } as WorkspaceCatalogRow
-    const header = { ...DEFAULT_HEADER, createdAt: true, updatedAt: true }
-    const actual = sourceHeaderFacts(source, null, catalog, header, 'en', 1500)
-    assert.equal(actual.find(row => row.key === 'createdAt')?.absolute, 400)
-    assert.equal(actual.find(row => row.key === 'lastActive')?.absolute, 800)
-    assert.equal(actual.find(row => row.key === 'fastMode')?.value, 'FAST')
-    assert.equal(actual.find(row => row.key === 'worktree')?.value, 'source/branch')
-    const wrong = { ...catalog, projectionValues: { hapi: { ...source, hubId: 'other-hub' } } } as WorkspaceCatalogRow
-    assert.equal(sourceHeaderFacts(source, null, wrong, header, 'en').some(row => row.absolute !== undefined || row.key === 'worktree' || row.key === 'fastMode'), false)
-    assert.equal(sourceHeaderFacts(source, null, undefined, header, 'en').some(row => row.absolute !== undefined), false)
-    assert.equal(sourceHeaderFacts(source, null, catalog, { ...header, model: false, machine: false }, 'en').some(row => row.key === 'model' || row.key === 'machine'), false)
-})
-
-test('source header presents the real DSH provider/model pair without changing its opaque identity', () => {
-    const model = JSON.stringify(['example-provider', 'deepseek-flash'])
-    assert.equal(sourceHeaderModel(model, 'dsh'), 'DeepSeek-Flash · example-provider')
-    assert.equal(sourceHeaderModel('custom-model', 'dsh'), 'custom-model')
-    assert.equal(sourceHeaderModel('["one"]', 'dsh'), '["one"]')
-    assert.equal(sourceHeaderModel(model, 'codex'), model)
-    assert.equal(sourceHeaderModel(null, 'dsh'), null)
+test('source header uses current HHPI metadata and omits facts the source has not reported', () => {
+    const identity = { machineId: 'Workstation', sourceId: 'source', engine: 'codex', nativeId: 'thread' }
+    const source: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Actual title', cwd: '/actual', updatedAt: 1000,
+        status: 'idle', activeTurnId: null, capabilities: { send: true, steer: true, cancel: true, approve: true, files: true }, pendingRequests: [],
+        codex: { model: 'native-model', reasoningEffort: 'high', parentThreadId: null, agentNickname: null } }
+    const header = { ...DEFAULT_HEADER, createdAt: true, updatedAt: true, worktree: true, fastMode: true }
+    const actual = sourceHeaderFacts(source, header, 'en')
+    assert.equal(actual.find(row => row.key === 'agent')?.value, 'Codex')
+    assert.equal(actual.find(row => row.key === 'model')?.value, 'native-model')
+    assert.equal(actual.find(row => row.key === 'reasoning')?.value, 'High')
+    assert.equal(actual.find(row => row.key === 'machine')?.value, 'Workstation')
+    assert.equal(actual.find(row => row.key === 'updatedAt')?.absolute, 1000)
+    for (const key of ['createdAt', 'lastActive', 'worktree', 'fastMode']) assert.equal(actual.some(row => row.key === key), false)
+    assert.deepEqual(sourceHeaderFacts(undefined, header, 'en'), [], 'ordinary DSH retains its official header')
+    assert.equal(sourceHeaderFacts(source, { ...header, model: false, machine: false }, 'en').some(row => row.key === 'model' || row.key === 'machine'), false)
 })
 
 test('storage failure keeps the new page appearance and exposes that it did not persist', () => {

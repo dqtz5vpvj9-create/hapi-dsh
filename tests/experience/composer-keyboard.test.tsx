@@ -8,7 +8,7 @@ import { installComposerEnter } from '../../src/client/composer-enter/index.tsx'
 import { createWorkspaceUiPreferences } from '../../src/client/ui-preferences.ts'
 import { COMPOSER_ENTER_KEY } from '../../src/client/composer-enter/preferences.ts'
 import { WorkspacePaneProvider } from '../../src/client/surface/pane-context.tsx'
-import type { ComposerEnterAttachments } from '../../src/client/composer-enter/attachments.ts'
+import type { ComposerEnterAttachments, ComposerAttachmentAdmission } from '../../src/client/composer-enter/attachments.ts'
 import { context, input, pane, slots } from './fixtures.tsx'
 
 const disposers: Array<() => void> = []
@@ -20,7 +20,7 @@ function fixture() {
   preferences.setItem(COMPOSER_ENTER_KEY, 'newline')
   const blocked = createSnapshotStore<unknown>(undefined)
   const menu = createSnapshotStore({ open: false, groups: [] })
-  const arbitrate = vi.fn(() => 'pass' as const), inspectSubmission = vi.fn(() => 'ready' as const)
+  const arbitrate = vi.fn(() => 'pass' as const), inspectSubmission = vi.fn((): ComposerAttachmentAdmission => 'ready')
   const bindings = new Map<string, { ctx: ReturnType<typeof input> }>()
   const ctx = context({ slots: registered.registry, hapiWorkspaceUi: { preferences },
     locale: { getSnapshot: () => ({ active: 'en' }), subscribe: () => () => {} },
@@ -44,8 +44,39 @@ function fixture() {
     const element = <Card id={id} editor={editor} navigation={navigation}/>
     return { ...editor, Pane: () => element, navigation, element }
   }
-  return { add, blocked, menu, arbitrate, inspectSubmission, officialKeymap }
+  return { add, blocked, menu, arbitrate, inspectSubmission, officialKeymap, preferences }
 }
+
+test('source upload progress owns pending Enter feedback without sending, retrying or losing the draft', () => {
+  const f = fixture(), current = f.add('hhpi:machine:source:codex:thread')
+  f.preferences.setItem(COMPOSER_ENTER_KEY, 'send')
+  render(<current.Pane/>)
+  const editor = screen.getByRole('textbox'); editor.focus()
+  for (const status of ['uploading', 'error'] as const) {
+    f.inspectSubmission.mockReturnValue(status)
+    for (const modifiers of [{}, { ctrlKey: true }, { metaKey: true }]) {
+      const event = new KeyboardEvent('keydown', { key: 'Enter', ...modifiers, bubbles: true, cancelable: true })
+      fireEvent(editor, event); expect(event.defaultPrevented).toBe(true)
+    }
+  }
+  expect(f.officialKeymap).not.toHaveBeenCalled(); expect(current.actions.submit).not.toHaveBeenCalled()
+  expect(current.composer.notify).not.toHaveBeenCalled()
+  expect(current.composer.state.getSnapshot().draft).toBe('Draft hhpi:machine:source:codex:thread')
+  f.inspectSubmission.mockReturnValue('ready')
+  fireEvent.keyDown(editor, { key: 'Enter' })
+  expect(f.officialKeymap).toHaveBeenCalledOnce(); expect(current.actions.submit).not.toHaveBeenCalled()
+})
+
+test('a source attachment shortcut in newline mode keeps inline feedback and still inserts ordinary newlines', () => {
+  const f = fixture(), current = f.add('hhpi:machine:source:codex:thread')
+  f.inspectSubmission.mockReturnValue('uploading')
+  render(<current.Pane/>)
+  const editor = screen.getByRole('textbox'); editor.focus()
+  fireEvent.keyDown(editor, { key: 'Enter', ctrlKey: true })
+  expect(current.actions.submit).not.toHaveBeenCalled(); expect(current.composer.notify).not.toHaveBeenCalled()
+  const newline = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+  fireEvent(editor, newline); expect(newline.defaultPrevented).toBe(false)
+})
 
 test('keyboard listeners stay on the focused pane and a hidden pane cannot submit', async () => {
   const f = fixture(), left = f.add('Left'), right = f.add('Right'), user = userEvent.setup()

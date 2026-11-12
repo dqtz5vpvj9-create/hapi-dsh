@@ -9,18 +9,18 @@ const file = 'tests/history-reading-journey.test.ts'
 const journey = 'continuous history survives older-page commits and a down/up round trip'
 const faults = [
   { name: 'short-client-page', test: journey,
-    assertion: 'each interactive history request uses HAPI’s normal 50-row page budget' },
-  { name: 'replace-on-prepend', test: journey,
-    assertion: 'one bounded page reaches the official Conversation as one prepend' },
+    assertion: 'each interactive history request uses the native 160-event page budget' },
+  { name: 'reuse-stale-tail', test: 'explicit historical navigation returns to the actual native head without inventing continuity',
+    assertion: 'latest navigation must not reuse a historical body as the live head' },
   { name: 'evict-resident-history', test: journey,
-    assertion: 'a committed page never evicts previously loaded source rows' },
+    assertion: 'a committed page never evicts previously accepted source entries' },
 ] as const
 const env = { ...process.env }
-delete env.HAPI_DSH_HISTORY_FAULT
+delete env.HHPI_HISTORY_FAULT
 function run(fault?: typeof faults[number], selectJourney = fault !== undefined) {
   return spawnSync(process.execPath, ['--import', 'tsx', '--test', '--test-reporter=tap',
-    ...(selectJourney ? ['--test-name-pattern', `^${journey}$`] : []), file], {
-    cwd: root, env: { ...env, ...(fault ? { HAPI_DSH_HISTORY_FAULT: fault.name } : {}) },
+    ...(selectJourney ? ['--test-name-pattern', `^${fault?.test ?? journey}$`] : []), file], {
+    cwd: root, env: { ...env, ...(fault ? { HHPI_HISTORY_FAULT: fault.name } : {}) },
     encoding: 'utf8', timeout: 30_000, maxBuffer: 4 * 1024 * 1024,
   })
 }

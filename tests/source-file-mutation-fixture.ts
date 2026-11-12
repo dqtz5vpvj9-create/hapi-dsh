@@ -22,7 +22,7 @@ export class SourceFileStorageFixture implements SourceFileMutationStorage {
     const previous = value === undefined ? null : sourceFileMutationEntrySchema.parse(value)
     if ((previous?.revision ?? null) !== expected) throw new Error('CAS conflict')
     if (previous && sourceFileMutationKey(previous.owner) !== sourceFileMutationKey(owner)) throw new Error('Wrong saved owner')
-    const next = sourceFileMutationEntrySchema.parse({ version: 1, revision: crypto.randomUUID(), owner, receipt })
+    const next = sourceFileMutationEntrySchema.parse({ version: 2, revision: crypto.randomUUID(), owner, receipt })
     this.rows.set(sourceFileMutationKey(owner), structuredClone(next)); return structuredClone(next)
   }
 }

@@ -1,24 +1,12 @@
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
-import { sessionLocation } from '../client/controller.ts'
-import { isSourceChild, sourceIdentity } from './legacy.ts'
-import { nativeProjection, observedProjection } from './presentation.ts'
+import { parseSourceSessionId, isSourceSessionId } from '../remote/protocol.ts'
 
-/** Source identity and lifecycle are distinct from the serving display row. */
+/** The current provider owns identity; no old Hub projection is consulted. */
 export function sidebarActionFacts(row: WorkspaceCatalogRow) {
-    const child = isSourceChild(row), source = sourceIdentity(row)
-    const native = nativeProjection(row), observed = observedProjection(row)
-    const location = sessionLocation(row)
-    const active = typeof row.sourceActive === 'boolean' ? row.sourceActive
-        : typeof observed?.active === 'boolean' ? observed.active
-        : native?.nativeConnection === 'history' ? false : native?.nativeConnection === 'attached' ? true : null
-    return {
-        child, source, localSource: row.hostId === 'local' && source !== null,
-        sourceActive: source ? active : null,
-        sourceId: source?.sessionId ?? null,
-        nativeId: source && !child ? location.nativeId ?? null : null,
-        displayId: row.sourceSessionId,
-        canMigrate: row.hostId === 'local' && Boolean(source && native?.nativeId && native.nativeHome),
-    }
+    const source = isSourceSessionId(row.sourceSessionId) ? parseSourceSessionId(row.sourceSessionId) : null
+    return { source,
+        sourceId: source?.sourceId ?? null, nativeId: source?.nativeId ?? null,
+        displayId: row.sourceSessionId }
 }
 
 export type MenuPoint = { x: number; y: number }

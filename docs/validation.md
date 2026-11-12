@@ -1,5 +1,7 @@
 # 可复现验证与验收边界
 
+本文保留退休前 HAPI 运行链的历史记录，下面的旧命令、目录和通过数量不适用于当前 HHPI 发行。当前三条来源、测试入口与各验收层分别见[架构](architecture.md)、[测试说明](testing.md)和[本轮执行证据](../artifacts/development/hhpi-delivery-20261107/R0-current-stage-and-recovery.md)。正式发行以对应产物的当前证据为准。
+
 这份记录区分原始 HAPI/Runner 协议 fixture、真实传输、未修改的官方 DSH 进程、真实浏览器与实际账号执行。某一层通过不能替代下一层。功能和 UX 尚未等价的项目继续列在 [功能对照表](feature-parity.md)，不因构建或单测通过而自动标成完成。
 
 ## 开发回路与发版回路

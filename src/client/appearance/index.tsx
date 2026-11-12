@@ -4,9 +4,9 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type {} from '../workspace-ui.ts'
 import { AppearanceState, bindAppearanceTheme } from './state.ts'
 import { COLOR_THEME_OPTIONS, type ColorScheme } from './palettes.ts'
-import { COLOR_KEYS, DEFAULT_HEADER, FONT_SCALES, TERMINAL_FONT_SIZES, type ColorKey, type HeaderField } from './preferences.ts'
+import { COLOR_KEYS, FONT_SCALES, TERMINAL_FONT_SIZES, type ColorKey } from './preferences.ts'
 import { keyColors } from './tokens.ts'
-import { HEADER_LABELS, sourceHeader } from './header.tsx'
+import { CURRENT_HEADER_FIELDS, HEADER_LABELS, sourceHeader } from './header.tsx'
 
 const labels: Record<ColorKey, [string, string]> = {
     background: ['Background', '背景'], surface: ['Surface', '表面'], text: ['Text', '文字'], hint: ['Secondary text', '次要文字'],
@@ -33,10 +33,10 @@ export function installSourceAppearance(ctx: Context): () => void {
                 else delete updated[scheme]![key]
                 state.write('hapi-theme-colors', JSON.stringify(updated))
             }
-            return <section className="hapi-appearance-settings" aria-label={tr('HAPI appearance', 'HAPI 外观')}>
-                <h2>{tr('HAPI appearance', 'HAPI 外观')}</h2>
-                <p>{tr('Original HAPI colors and preferences are shared across this workspace. DSH and other plugins keep their own views and controls.', '原 HAPI 的配色与偏好在整个工作区共享。DSH 与其他插件保留各自的视图和控件。')}</p>
-                <label className="hapi-appearance-toggle"><input type="checkbox" checked={value.enabled} onChange={event => state.write('hapi-dsh-appearance-enabled', String(event.currentTarget.checked))}/>{tr('Use HAPI appearance', '使用 HAPI 外观')}</label>
+            return <section className="hapi-appearance-settings" aria-label={tr('Workspace appearance', '工作区外观')}>
+                <h2>{tr('Workspace appearance', '工作区外观')}</h2>
+                <p>{tr('Colors and typography are shared across this workspace. Each plugin keeps its own views and controls.', '配色与字体在整个工作区共享，各插件保留自己的视图和控件。')}</p>
+                <label className="hapi-appearance-toggle"><input type="checkbox" checked={value.enabled} onChange={event => state.write('hapi-dsh-appearance-enabled', String(event.currentTarget.checked))}/>{tr('Customize workspace appearance', '自定义工作区外观')}</label>
                 {value.saveError && <p role="alert">{tr('The change works in this page but could not be saved for reload: ', '修改在本页生效，但无法保存以供刷新恢复：')}{value.saveError}</p>}
                 <fieldset disabled={!value.enabled}>
                     <legend>{tr('Colors and typography', '配色与字体')}</legend>
@@ -68,14 +68,14 @@ export function installSourceAppearance(ctx: Context): () => void {
                 </fieldset>
                 <fieldset><legend>{tr('Source session header', '源会话页头')}</legend>
                     <p>{tr('Choose which original source facts appear beside the official header. Fields the source has not reported stay absent.', '选择官方页头旁显示的源会话信息。源端未报告的字段保持为空。')}</p>
-                    <div className="hapi-appearance-header-options">{(Object.keys(DEFAULT_HEADER) as HeaderField[]).map(key => <label key={key}><input type="checkbox" checked={value.header[key]} onChange={event => state.write('hapi-session-header-metadata', JSON.stringify({ ...value.header, [key]: event.currentTarget.checked }))}/>{HEADER_LABELS[key][chinese ? 1 : 0]}</label>)}</div>
+                    <div className="hapi-appearance-header-options">{CURRENT_HEADER_FIELDS.map(key => <label key={key}><input type="checkbox" checked={value.header[key]} onChange={event => state.write('hapi-session-header-metadata', JSON.stringify({ ...value.header, [key]: event.currentTarget.checked }))}/>{HEADER_LABELS[key][chinese ? 1 : 0]}</label>)}</div>
                     <button type="button" onClick={() => state.write('hapi-session-header-metadata', null)}>{tr('Reset header fields', '重置页头字段')}</button>
                 </fieldset>
             </section>
         }
         const style = document.createElement('style'); style.dataset.hapiAppearance = ''; style.textContent = styles; document.head.append(style)
         const section = owner.slots.inject('settings.section', () => owner.slots.register({ name: 'settings.section', id: 'hapi-appearance', order: 32,
-            label: () => language().startsWith('zh') ? 'HAPI 外观' : 'HAPI appearance' }, Section))
+            label: () => language().startsWith('zh') ? '工作区外观' : 'Workspace appearance' }, Section))
         const header = owner.slots.inject('conversation.session.header.utilities', () => owner.slots.register({
             name: 'conversation.session.header.utilities', id: 'hapi.source-header-metadata', order: -50,
         }, sourceHeader(owner, state)))

@@ -1,7 +1,8 @@
 /** Load the actual official UI library with its pinned browser-graph dependencies in Node. */
 import { build } from 'esbuild'
 import { createRequire } from 'node:module'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 const require = createRequire(import.meta.url)
 let primitives: Record<string, unknown> | undefined
 
@@ -33,3 +34,10 @@ export function resolveOfficialBrowserDependency(id: string): unknown {
   }
   return require(id)
 }
+
+/** Official module-loader asset boundary; resolve the actual installed file. */
+export function officialBrowserAsset(id: string): string {
+  const marker = id.indexOf('/assets/'), name = id.slice('plugins/'.length, marker)
+  return pathToFileURL(resolve(dirname(require.resolve(`${name}/client`)), decodeURIComponent(id.slice(marker + 1)))).href
+}
+Object.assign(resolveOfficialBrowserDependency, { asset: officialBrowserAsset })

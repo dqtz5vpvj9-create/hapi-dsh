@@ -10,7 +10,6 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HapiController } from '../src/index.ts';
 import { FederationHub } from '../src/hub/federation.ts';
 import { WorkspaceRepository } from '../src/hub/workspaces.ts';
 import { WorkspaceShell } from '../src/hub/workspace-shell.ts';
@@ -40,7 +39,7 @@ async function mount() {
         receipt: async request => { lookups.push(request.sessionId); return receipts.get(JSON.stringify([request.sessionId, request.operationId])) ?? null; },
         dispose: () => {},
     };
-    const source = new SourceGateway([adapter], false);
+    const source = new SourceGateway([adapter]);
     new HhpiSourceService(ctx, source, '/synthetic/installation');
     registerSourceContract(ctx);
     const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}));
@@ -57,36 +56,27 @@ async function mount() {
 }
 const denied = (error: unknown): boolean => error instanceof RemoteError && ['remote-access/denied', 'hhpi/source'].includes(error.code);
 
-for (const legacyHapi of [true, false]) test(`real Host registers HHPI and workspace RPCs together (${legacyHapi ? 'HAPI compatibility' : 'HAPI-free'})`, async () => {
+test('real Host registers HHPI and workspace RPCs without a compatibility controller', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'hhpi-host-contract-'));
     const ctx = new Context();
     try {
         await ctx.plugin(TypertRegistry);
         new RemoteAccessService(ctx);
-        installSources(ctx, [], join(directory, 'sources'), legacyHapi);
+        installSources(ctx, [], join(directory, 'sources'));
         const workspace = new WorkspaceRepository(join(directory, 'workspace.json'));
-        if (legacyHapi) {
-            // Native transport is the boundary fixture; both production Remote
-            // controllers and the registry/gateway execute unchanged.
-            new HapiController(ctx, {
-                client: { subscribeCatalog: () => () => {} }, codex: {}, observed: {},
-                historyWindows: { clear() {} }, workspace,
-            } as unknown as ConstructorParameters<typeof HapiController>[1]);
-        } else {
-            new WorkspaceShell(ctx, new FederationHub({ credentialsFile: join(directory, 'pairings.json') }), workspace, directory);
-        }
+        new WorkspaceShell(ctx, new FederationHub({ credentialsFile: join(directory, 'pairings.json') }), workspace, directory);
         const gateway = new TypertGatewayService(ctx, TypertGatewayService.Config({}));
         const peer: PeerScope = { id: 'host-contract' as PeerId, ctx, principal: { kind: 'owner' },
             interactions: 'answer', signal: new AbortController().signal, dispose: async () => {} };
         const catalog = await gateway.invoke({ peer, namespace: 'hhpi', method: 'catalog', args: {} }) as SourceCatalog;
-        assert.equal(catalog.legacyHapi, legacyHapi);
+        assert.equal(catalog.legacyHapi, false);
         assert.equal(catalog.storageScope, sourceStorageScope(join(directory, 'sources')), 'owner bootstrap and authenticated invocation use the same stable installation scope');
         assert.deepEqual(catalog.sources, []);
         assert.deepEqual(await gateway.invoke({ peer, namespace: 'hapi', method: 'workspaceGet', args: {} }), await workspace.get());
-        if (!legacyHapi) await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
+        await assert.rejects(gateway.invoke({ peer, namespace: 'hapi', method: 'sourceSessionResolve',
             args: { request: { hubId: 'saved-legacy-hub', sourceSessionId: 'saved-session' } } }),
-        error => error instanceof RemoteError && error.details?.sourceCode === 'source_not_connected',
-        'a saved legacy pane must receive a terminal source state instead of waiting for an unregistered service');
+        /no active Remote method/,
+        'the retired online Hub resolver must not be registered; finite offline aliases have their own authenticated service');
         assert.equal(ctx.typert.listPackages({ package: 'hapi-dsh', face: 'host' }).length, 1);
     } finally {
         await ctx.fiber.dispose();

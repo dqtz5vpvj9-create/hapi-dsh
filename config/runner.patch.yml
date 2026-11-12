@@ -7,6 +7,10 @@
     surfaceContext: true
 
 - insert:
+    # The official installer links this existing package by its own name.
+    # Relative '..' paths would escape the profile's Runner symlink.
+    - id: hapi-dsh-session-provider
+      name: hapi-dsh-session-provider
     - id: hapi-dsh-runner
       name: hapi-dsh-runner
       config:

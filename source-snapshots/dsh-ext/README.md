@@ -3,7 +3,7 @@
 The active baseline is official DSH `0.2.2-rc.1`, commit
 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`. `source.patch` contains the
 consolidated source changes and contract tests for this rc. Restore with
-`scripts/dsh-ext/prepare.mjs`, build all 15 packages with
+`scripts/dsh-ext/prepare.mjs`, build all 22 packages with
 `scripts/dsh-ext/build-extension.mjs`, then assemble a source-bearing release with
 `scripts/dsh-ext/create-release.mjs`. Use upstream's pinned pnpm 11.28.5.
 

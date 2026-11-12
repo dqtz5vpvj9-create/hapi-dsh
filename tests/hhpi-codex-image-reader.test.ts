@@ -5,10 +5,26 @@ import test, { type TestContext } from 'node:test';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { CodexImageReader, MAX_NATIVE_IMAGE_BYTES } from '../src/remote/codex-image-reader.ts';
 import { CodexRpc, type NativeRequest } from '../src/remote/codex-rpc.ts';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { DirectCodexConfig } from '../src/remote/protocol.ts';
 
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6foAAAAASUVORK5CYII=';
 const metadata = { isFile: true, isDirectory: false, isSymlink: false, createdAtMs: 1, modifiedAtMs: 1 };
+
+test('an explicitly local source previews a large saved original without transporting it through Codex RPC', async t => {
+    const directory = await mkdtemp('/mnt/cache/data-cache/hhpi-large-preview-');
+    const path = join(directory, 'original.png');
+    const validPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC';
+    const original = Buffer.concat([Buffer.from(validPng, 'base64'), Buffer.alloc(17 * 1024 * 1024)]);
+    await writeFile(path, original);
+    const reader = new CodexImageReader({ id: 'local', machineId: 'source', engine: 'codex', endpoint: 'ws://127.0.0.1:1' }, 100, true);
+    t.after(async () => { await reader.dispose(); await rm(directory, { recursive: true, force: true }); });
+    const result = await reader.read(path);
+    assert.ok(Buffer.byteLength(result.dataBase64, 'base64') < 2 * 1024 * 1024);
+    assert.deepEqual(await readFile(path), original, 'preview preparation never replaces the saved original');
+    await assert.rejects(reader.read(directory), { code: 'INVALID_REQUEST' });
+});
 interface Peer { socket: WebSocket; methods: string[]; responses: unknown[]; closed: Promise<void> }
 interface Boundary {
     metadata?: (path: string, peer: Peer) => unknown;

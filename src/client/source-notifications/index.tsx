@@ -2,14 +2,16 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
+import type {} from '@deepseek-ai/dsh-client-locale/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client';
-import type { SourceNotificationsApi } from '../../notification-types.ts';
+import type { AppNotificationsApi } from '../../notification-types.ts';
 import { SourceNotificationsRuntime, type SourceNotificationsUiOptions } from './runtime.ts';
 import { HAPI_DSH_BUILD_ID, HAPI_DSH_VERSION, DSH_VERSION, HAPI_SOURCE_REVISION } from '../../build-info.ts';
 export type { SourceNotificationsUiOptions } from './runtime.ts';
 
-export function installSourceNotifications(ctx: Context, api: SourceNotificationsApi, options: SourceNotificationsUiOptions): () => void {
+export function installSourceNotifications(ctx: Context, api: AppNotificationsApi, options: SourceNotificationsUiOptions): () => void {
     const runtime = new SourceNotificationsRuntime(api, options), disposers: Array<() => void> = [];
     const language = () => ctx.locale.getSnapshot().active;
     function useWords() {
@@ -23,14 +25,14 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
             {state.error && <p role="alert" className="hapi-notification-error">{state.error}</p>}
             {state.presenceError && <p role="alert" className="hapi-notification-error">{state.presenceError}</p>}
             <h3>{tr('Push notifications', 'Push 通知')}</h3>
-            <p>{tr('Receive original HAPI task and approval notifications when this workspace is not visible. Notifications open the same source conversation in the unified sidebar.', '工作区不可见时接收原 HAPI 任务与审批通知。点击通知后，在统一侧边栏打开相同的源会话。')}</p>
+            <p>{tr('Receive task and approval notifications when this workspace is not visible. Notifications return to the original task after authentication.', '工作区不可见时接收任务与审批通知；认证后回到原任务。')}</p>
             <p role="status">{!state.supported ? tr('This browser does not support Web Push on this origin. Use HTTPS or a supported local browser.', '此来源上的浏览器不支持 Web Push，请使用 HTTPS 或受支持的本地浏览器。')
                 : state.permission === 'denied' ? tr('Notification permission is blocked in the browser. Change its site permission to enable Push.', '浏览器已阻止通知权限，请在站点设置中允许通知后再启用。')
-                : state.push === 'on' ? tr('This browser subscription was accepted by the original Hub.', '原 Hub 已接受此浏览器的订阅。')
-                : state.push === 'unknown' ? tr('A browser subscription may exist, but Hub registration is not confirmed. No request has been automatically repeated.', '浏览器可能已有订阅，但 Hub 注册结果未确认。系统没有自动重复请求。')
+                : state.push === 'on' ? tr('Notifications are enabled for this browser.', '已为此浏览器开启通知。')
+                : state.push === 'unknown' ? tr('Notification setup could not be confirmed. Retry to finish enabling notifications.', '未能确认通知是否开启，请重试。')
                 : tr('Push notifications are off for this browser.', '此浏览器尚未启用 Push 通知。')}</p>
             <div className="hapi-notification-actions"><button type="button" disabled={state.busy || !state.supported || state.permission === 'denied'} onClick={() => { void runtime.enablePush(); }}>
-                {state.busy ? tr('Applying…', '处理中…') : state.push === 'unknown' ? tr('Register this browser explicitly', '明确注册此浏览器') : tr('Enable Push notifications', '启用 Push 通知')}</button>
+                {state.busy ? tr('Applying…', '处理中…') : state.push === 'unknown' ? tr('Retry notification setup', '重试开启通知') : tr('Enable Push notifications', '启用 Push 通知')}</button>
                 <button type="button" disabled={state.busy || !state.supported} onClick={() => { void runtime.disablePush(); }}>{tr('Disable Push notifications', '停用 Push 通知')}</button>
                 <button type="button" disabled={state.busy} onClick={() => { void runtime.refreshPush(); }}>{tr('Refresh browser status', '刷新浏览器状态')}</button></div>
             <h3>{tr('App icon badge', '应用图标角标')}</h3>
@@ -48,10 +50,10 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
                 <button type="button" disabled={state.updating} onClick={() => { void runtime.applyUpdate(); }}>{state.updating ? tr('Saving open editors…', '正在保存已打开的编辑器…') : state.updateReady ? tr('Save drafts and update', '保存草稿并更新') : tr('Save drafts and reload workspace', '保存草稿并刷新工作区')}</button></div>
             <details><summary>{tr('Version and source licenses', '版本与源代码许可')}</summary>
                 <p>HAPI DSH {HAPI_DSH_VERSION} · DSH {DSH_VERSION}<br/>{HAPI_DSH_BUILD_ID.slice(0, 16)}</p>
-                <p>{tr('HAPI-derived code is AGPL-3.0-only. Official DSH dependencies remain unmodified and MIT licensed.', 'HAPI 衍生代码采用 AGPL-3.0-only；官方 DSH 依赖保持原样，采用 MIT 许可。')}</p>
+                <p>{tr('HAPI-derived code is AGPL-3.0-only. Official DSH dependencies and published source extensions are MIT licensed.', 'HAPI 衍生代码采用 AGPL-3.0-only；官方 DSH 依赖与已公开源码的扩展采用 MIT 许可。')}</p>
                 <p><a href="https://github.com/dqtz5vpvj9-create/hapi-dsh" target="_blank" rel="noreferrer">{tr('Source and notices', '源代码与许可声明')}</a> · <a href={`https://github.com/dqtz5vpvj9-create/hapi/tree/${HAPI_SOURCE_REVISION}`} target="_blank" rel="noreferrer">{tr('Original HAPI baseline', '原 HAPI 基线')}</a></p>
             </details>
-            <p><small>{state.connected ? tr('Original Hub notification stream connected.', '原 Hub 通知连接正常。') : tr('Reconnecting the original Hub notification stream. Source Push remains independent of this page.', '正在重连原 Hub 通知流；源 Push 投递不依赖此页面。')}</small></p>
+            <p><small>{state.connected ? tr('Notification connection is active.', '通知连接正常。') : tr('Notification connection interrupted. Reconnecting…', '通知连接已断开，正在重连…')}</small></p>
         </section>;
     }
     // Only real source notifications float above the workspace. Installation and
@@ -62,13 +64,16 @@ export function installSourceNotifications(ctx: Context, api: SourceNotification
         const saving = useRef<HTMLDialogElement>(null);
         useEffect(() => { if (state.updating) saving.current?.showModal(); else saving.current?.close(); }, [state.updating]);
         const notices = state.notices.slice(-5);
-        if (!state.updating && !notices.length) return null;
+        if (!state.updating && !notices.length && !state.navigationFailure) return null;
         return <div className="hapi-notification-stack" aria-label={tr('Source notifications', '源会话通知')}>
             <dialog ref={saving} className="hapi-update-dialog" aria-label={tr('Saving workspace drafts', '保存工作区草稿')} onCancel={event => event.preventDefault()}>
                 <p role="status">{tr('Saving open editors and original attachment bytes before updating…', '正在保存已打开的编辑器和附件原始内容，随后更新…')}</p>
             </dialog>
+            {state.navigationFailure && <article role="alert"><div><strong>{tr('Could not open this notification', '暂时无法打开这条通知')}</strong>
+                <p>{state.navigationFailure.message}</p><button type="button" disabled={state.openingId !== null} onClick={() => { void runtime.retryNavigation().catch(() => {}); }}>{tr('Retry', '重试')}</button></div>
+                <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss navigation error', '关闭跳转提示')} onClick={() => runtime.dismissNavigationError()}>×</button></article>}
             {notices.map(notice => <article key={notice.id} role="status"><div><strong>{notice.title}</strong><p>{notice.body}</p>
-                <button type="button" onClick={() => { void runtime.open(notice).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{tr('Open conversation', '打开会话')}</button></div>
+                <button type="button" disabled={state.openingId === notice.id} onClick={() => { void runtime.open(notice).then(() => runtime.dismiss(notice.id)).catch(() => {}); }}>{state.openingId === notice.id ? tr('Opening…', '正在打开…') : tr('Open conversation', '打开会话')}</button></div>
                 <button type="button" className="hapi-notification-dismiss" aria-label={tr('Dismiss notification', '关闭通知')} onClick={() => runtime.dismiss(notice.id)}>×</button></article>)}
         </div>;
     }

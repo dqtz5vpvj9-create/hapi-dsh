@@ -6,9 +6,6 @@
   "include": [
     "src/index.ts",
     "src/client-api.ts",
-    "src/hapi/**/*.ts",
-    "src/hapi-agent/**/*.ts",
-    "src/codex/**/*.ts",
     "src/shared/**/*.ts",
     "src/session-provider/**/*.ts",
     "src/hub/**/*.ts",
@@ -26,7 +23,16 @@
     "tests/hhpi-ledger.test.ts",
     "tests/hhpi-codex-native.test.ts",
     "tests/hhpi-gateway.test.ts",
-    "tests/hhpi-no-hapi.test.ts"
+    "tests/hhpi-no-hapi.test.ts",
+    "tests/workspace-source-composition.test.ts",
+    "tests/workspace-source-upload-composition.test.ts",
+    "tests/workspace-source-services.test.ts",
+    "tests/workspace-source-terminal.test.ts",
+    "tests/workspace-source-files.test.ts",
+    "tests/workspace-source-artifacts.test.ts",
+    "tests/workspace-source-uploads.test.ts",
+    "tests/host-app-notifications.test.ts",
+    "src/workspace/ordinary-*.ts"
   ],
   "exclude": [
     "node_modules",

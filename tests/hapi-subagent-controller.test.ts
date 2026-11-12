@@ -16,7 +16,7 @@ import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import RemoteAccessService from '@deepseek-ai/dsh-api-remote-access'
 import { validateTypertManifest } from '@deepseek-ai/dsh-typert-loader'
 import { TypertRemoteService, Remote, principalOf, type PeerId, type PeerScope, type Principal } from '@deepseek-ai/dsh-typert-protocol'
-import plugin, { SourceAwareSubagentController } from '../src/hapi-agent/subagent-controller.ts'
+import plugin, { OrdinarySubagentController } from '../src/workspace/ordinary-subagent-controller.ts'
 import { officialDelegateFixture } from './official-provider-fixture.ts'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
@@ -77,7 +77,7 @@ test('routing provider waits for original module realm and service, and disappea
     const originalFiber = await app.isolated.plugin(RecordingOrdinary)
     await app.ctx.fiber.await()
     await consumer.await()
-    assert.ok(app.ctx.get('subagents') instanceof SourceAwareSubagentController)
+    assert.ok(app.ctx.get('subagents') instanceof OrdinarySubagentController)
     assert.ok(app.isolated.get('subagents') instanceof RecordingOrdinary)
     assert.equal(activeConsumers, 1, 'A public consumer installed before either provider must wake when the routing service activates')
     assert.equal(consumerStarts, 1)
@@ -86,7 +86,7 @@ test('routing provider waits for original module realm and service, and disappea
     assert.equal(activeConsumers, 0)
     const replacement = await app.isolated.plugin(RecordingOrdinary)
     await consumer.await()
-    assert.ok(app.ctx.get('subagents') instanceof SourceAwareSubagentController)
+    assert.ok(app.ctx.get('subagents') instanceof OrdinarySubagentController)
     assert.equal(activeConsumers, 1)
     assert.equal(consumerStarts, 2, 'The same waiting consumer resumes after the exact original provider returns')
     await replacement.dispose(); await consumer.await()
@@ -114,7 +114,7 @@ test('ordinary public methods and exported Team host adapters delegate unchanged
       'drainDescendants', 'drainChildren', 'listChildren', 'listDescendants', 'registerProvider', 'getProvider', 'list', 'unregisterProvider', 'hostAdapter', 'hostAdapter'])
     assert.equal(original.calls[1]!.args[0], spec); assert.equal(original.calls[3]!.args[0], parent); assert.equal(original.calls[3]!.args[2], content)
     assert.equal(original.calls[13]!.args[5], 'queue'); assert.equal(original.calls[14]!.args[5], 'steer')
-    assert.equal(SourceAwareSubagentController.Config, SubagentRuntime.Config)
+    assert.equal(OrdinarySubagentController.Config, SubagentRuntime.Config)
   } finally { await app.close() }
 })
 

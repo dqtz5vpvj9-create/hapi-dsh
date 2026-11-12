@@ -1,29 +1,33 @@
-import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
-import { sourceIdentity } from '../workspace/legacy.ts'
-import { waitForCatalogSession } from './catalog-readiness.ts'
-import { SourceResolutionError } from './source-session-state.ts'
+import { remoteValue } from '../client-api.ts'
+import type { AppSourceRoute } from '../workspace/app-service-types.ts'
+import { sourceAliasResultSchema, type SourceAliasApi } from '../workspace/source-alias-api.ts'
+import { legacySourceReferenceSchema, type LegacySourceReference, type RecoveryReference } from '../workspace/source-aliases.ts'
+import { SourceResolutionError, type SourceResolutionFailure } from './source-session-state.ts'
 
-/** A Host resolution is usable only after this official graph confirms its source projection. */
+export class SourceAliasResolutionError extends SourceResolutionError {
+    constructor(resolution: SourceResolutionFailure, message: string, readonly recovery: readonly RecoveryReference[]) { super(resolution, message) }
+}
+
+/** Resolve a finite migrated reference; the returned Host owns ordinary catalog/retain. */
 export async function resolveOriginalSession(
-    api: Pick<HapiRemoteApi, 'sourceSessionResolve'>,
-    sessions: Pick<ISessions, 'list' | 'refresh'>,
-    source: { hubId: string; sourceSessionId: string },
+    api: SourceAliasApi,
+    reference: LegacySourceReference,
     signal: AbortSignal,
-): Promise<void> {
+): Promise<AppSourceRoute> {
     signal.throwIfAborted()
-    const requested = { hubId: source.hubId, sourceSessionId: source.sourceSessionId }
-    const result = remoteValue(await api.sourceSessionResolve(requested))
+    const request = legacySourceReferenceSchema.parse(reference)
+    const result = sourceAliasResultSchema.parse(remoteValue(await api.resolve({ reference: request }, signal)))
     signal.throwIfAborted()
-    if (result.hubId !== requested.hubId || result.sourceSessionId !== requested.sourceSessionId) throw new SourceResolutionError('identity', 'The Host returned another original session. Its display has not been opened.')
-    try { await waitForCatalogSession(sessions, result.sessionId as SessionId, signal, {
-        accept: row => {
-            const identity = sourceIdentity(row)
-            return identity?.hubId === requested.hubId && identity.sessionId === requested.sourceSessionId
-        },
-    }) } catch (error) {
-        signal.throwIfAborted()
-        throw new SourceResolutionError('not-ready', 'The original session is loaded, but this Client has not received its verified source identity yet. Retry after its connection recovers.', { cause: error })
+    const fail = (resolution: SourceResolutionFailure, message: string): never => {
+        throw new SourceAliasResolutionError(resolution, message, 'recovery' in result ? result.recovery : [])
+    }
+    switch (result.status) {
+        case 'resolved': return result.source
+        case 'unmapped': return fail('not-found', 'This saved reference has no installed migration mapping. Its original reference is preserved for recovery or export.')
+        case 'ambiguous': return fail('ambiguous', 'This saved reference has more than one migrated target. Choose its exact Host before restoring it.')
+        case 'unavailable': return fail('not-connected', 'The mapped conversation is unavailable from its original Host. Reconnect that Host and retry; the saved reference is preserved.')
+        case 'denied': case 'scope-invalid': return fail('denied', 'The current application account cannot restore this saved reference. Its original reference is preserved.')
+        case 'aborted': return fail('transport', 'Restoring this saved reference was cancelled. Retry from the current connection.')
+        default: return fail('identity', 'This saved reference is invalid. Preserve it for recovery instead of choosing another conversation.')
     }
 }

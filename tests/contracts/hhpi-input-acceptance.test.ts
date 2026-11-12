@@ -63,6 +63,10 @@ async function fixture(t: TestContext, options: { quota?: number; acceptEarly?: 
   const dom = new JSDOM('<!doctype html><html><body><div contenteditable="true"></div></body></html>', {
     url: 'https://synthetic.invalid/', pretendToBeVisual: true, storageQuota: options.quota ?? 4096,
   })
+  // jsdom has no Range layout. These tests assert semantic draft retention,
+  // not selection geometry or browser scrolling.
+  Object.defineProperty(dom.window.Range.prototype, 'getBoundingClientRect', { configurable: true, value: () => new dom.window.DOMRect() })
+  Object.defineProperty(dom.window.Range.prototype, 'getClientRects', { configurable: true, value: () => [] })
   const restores: (() => void)[] = []
   for (const key of ['window', 'document', 'navigator', 'Node', 'Element', 'HTMLElement', 'MutationObserver', 'localStorage', 'getComputedStyle', 'DOMRect', 'Range']) {
     const old = Object.getOwnPropertyDescriptor(globalThis, key)
@@ -83,7 +87,7 @@ async function fixture(t: TestContext, options: { quota?: number; acceptEarly?: 
   const session = {
     sessionId: 'synthetic-input',
     projections: { faceOf: () => emptyStore },
-    getSnapshot: () => ({ sessionId: 'synthetic-input', blank: false, running: false }),
+    getSnapshot: () => ({ sessionId: 'synthetic-input', blank: false, running: false, subagent: null }),
     beginSubmission(input: { text: string; onAccept?: () => void }) {
       const requestId = `operation-${++nextId}`
       // The browser's real Storage quota fails synchronously inside the real
@@ -98,7 +102,7 @@ async function fixture(t: TestContext, options: { quota?: number; acceptEarly?: 
   const binding = { session, sessionId: session.sessionId, ctx } as SessionBinding
   ctx.reflect.provide('sessions', { sessionOf: () => session, binding: () => binding } as unknown as Context['sessions'])
   const hub = new InputHub(ctx, key => key)
-  new ConversationController(ctx, { input: hub, blocks: {}, maxConcurrentFileUploads: 1 })
+  new ConversationController(ctx, { input: hub, blocks: { storeFor: () => emptyStore }, maxConcurrentFileUploads: 1 })
   const shell = hub.shellFor(binding)
   // The actual Lexical root is mounted, so assertions also inspect the editor DOM.
   shell.editor.setRootElement(dom.window.document.querySelector('[contenteditable]') as HTMLElement)
@@ -157,6 +161,54 @@ test('durable onAccept commits before paint and a late result cannot clear the n
   f.gate.reject(new Error('late transport failure after acceptance'))
   await flush()
   assert.equal(f.shell.snapshot.draft, 'the next draft')
+})
+
+test('a delayed successful acknowledgement preserves voice text added after its captured draft', { timeout: 15000 }, async t => {
+  const f = await fixture(t)
+  f.shell.setDraft('captured message')
+  f.shell.submit('queue', 'click')
+  await f.prompted
+  // Public editor mutation models a queued IME/dictation or plugin update.
+  // This is real Lexical content, not a claim about physical speech hardware.
+  f.shell.setDraft('captured message new dictated words')
+  f.gate.resolve({ ok: true, value: { accepted: true } })
+  await flush()
+  assert.equal(f.shell.snapshot.draft, ' new dictated words')
+  assert.equal(f.dom.window.document.querySelector('[contenteditable]')!.textContent, ' new dictated words')
+})
+
+test('an acknowledgement never clears a rewritten draft', { timeout: 15000 }, async t => {
+  const f = await fixture(t)
+  f.shell.setDraft('captured message')
+  f.shell.submit('queue', 'click')
+  await f.prompted
+  f.shell.setDraft('a replacement dictated phrase')
+  f.gate.resolve({ ok: true, value: { accepted: true } })
+  await flush()
+  assert.equal(f.shell.snapshot.draft, 'a replacement dictated phrase')
+})
+
+test('a failed send retains the captured message and later dictated text', { timeout: 15000 }, async t => {
+  const f = await fixture(t)
+  f.shell.setDraft('captured message')
+  f.shell.submit('queue', 'click')
+  await f.prompted
+  f.shell.setDraft('captured message new dictated words')
+  f.gate.reject(new Error('source did not accept'))
+  await flush()
+  assert.equal(f.shell.snapshot.draft, 'captured message new dictated words')
+})
+
+test('equal visible prefix text cannot conceal a changed semantic quote from an old acknowledgement', { timeout: 15000 }, async t => {
+  const f = await fixture(t)
+  assert.equal(f.shell.insertQuote('captured quote'), true)
+  const captured = f.shell.snapshot.draft
+  f.shell.submit('queue', 'click')
+  await f.prompted
+  f.shell.setDraft(captured + ' new text')
+  f.gate.resolve({ ok: true, value: { accepted: true } })
+  await flush()
+  assert.equal(f.shell.snapshot.draft, captured + ' new text', 'the replaced quote is no longer the captured prefix')
 })
 
 test('disposing the native composer ignores late settlement', { timeout: 15000 }, async t => {

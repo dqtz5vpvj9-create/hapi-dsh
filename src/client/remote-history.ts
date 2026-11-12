@@ -53,6 +53,8 @@ interface CachedEntry { entry: SourceEntry; version: number; used: number }
 interface PendingRead { promise: Promise<HistorySnapshotV1>; abort: AbortController; users: number; settled: boolean }
 interface PendingPage { promise: Promise<SourcePage>; abort: AbortController; users: number; settled: boolean }
 interface WindowMetadata { epoch: string; navigation: number; context: readonly number[]; budget: Budget }
+export type RemoteReadingIntent = { kind: 'latest' } | { kind: 'around'; seq: number }
+export interface AcceptedReadingPosition { epoch: string; seq: number; at: number }
 
 export class RemoteSourceHistory {
   private readonly accepted = new RemoteSessionState()
@@ -76,6 +78,8 @@ export class RemoteSourceHistory {
   private lastSession: SourceSession | undefined
   private restoredMetadata = false
   private cachedOpening: SourcePage | undefined
+  /** Only an opening read in this lifetime can establish the current tail. */
+  private preparedOpening: SourcePage | undefined
   private cacheRevoked = false
   private readonly cachedWindows = new Map<string, SourcePage>()
   constructor(readonly sessionId: string, private readonly transport: RemoteHistoryTransport,
@@ -110,10 +114,16 @@ export class RemoteSourceHistory {
   }
   get sourceEpoch(): string { if (!this.epoch) throw new Error('Source baseline is not open'); return this.epoch }
   get sourceVersion(): number { return this.version }
+  /** Read only the exact window the official reader accepted, never a prepared successor. */
+  acceptedReadingPosition(viewId: string, version: string, seq: number): AcceptedReadingPosition | undefined {
+    if (this.lifetime.signal.aborted) return undefined
+    return this.windows.get(viewId)?.acceptedReadingPosition(version, seq)
+  }
   get retainedBytes(): number { return [...this.entries.values()].reduce((total, value) => total + size(value.entry), 0) }
   get retainedEvents(): number { return this.entries.size }
   /** An inactive warm reader owns no live subscription or native execution. */
   suspend(): void {
+    this.preparedOpening = undefined
     if (this.windows.size !== 0 || this.releaseTimer !== undefined) return
     this.releaseTimer = setTimeout(() => {
       this.releaseTimer = undefined
@@ -125,43 +135,57 @@ export class RemoteSourceHistory {
   get recoveryTarget(): string { return JSON.stringify([this.epoch, this.generation]) }
   reconcilePages(pages: readonly SourcePage[]): SourcePage { return this.accepted.merge(pages, this.sourceEpoch, this.version, this.lastSession ?? pages.at(-1)!.session) }
   get metadataFromCache(): boolean { return this.restoredMetadata }
-  prepare(signal?: AbortSignal): Promise<SourcePage> { return this.initialize(signal) }
-  async openView(viewId: string, budget: Budget, signal?: AbortSignal, cacheId = viewId): Promise<HistoryFeedV1> {
+  savedAnchor(cacheId: string): { epoch: string; seq: number } | undefined { return this.cacheRevoked ? undefined : this.cache?.readAnchor(this.sessionId, cacheId) }
+  prepare(signal?: AbortSignal): Promise<SourcePage> {
+    // Cached metadata may prepare the canonical operation owner immediately.
+    // The Pane separately obtains its requested authoritative reading window.
+    if (this.cachedOpening) return Promise.resolve(this.cachedOpening)
+    return this.initialize({ kind: 'latest' }, signal).then(page => { this.preparedOpening = page; return page })
+  }
+  async openView(viewId: string, budget: Budget, signal?: AbortSignal, cacheId = viewId, intent: RemoteReadingIntent = { kind: 'latest' }): Promise<HistoryFeedV1> {
     this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted()
     const existing = this.windows.get(viewId)
     if (existing) return existing
     if (this.releaseTimer !== undefined) { clearTimeout(this.releaseTimer); this.releaseTimer = undefined }
-    const baseline = await this.initialize(signal)
+    const baseline = intent.kind === 'latest' && this.preparedOpening
+      ? this.materializePage(this.preparedOpening) : await this.initialize(intent, signal)
+    this.preparedOpening = undefined
     this.lifetime.signal.throwIfAborted(); signal?.throwIfAborted()
     const current = this.windows.get(viewId)
     if (current) return current
-    const cached = this.cachedWindows.get(cacheId)
-    const window = new RemoteHistoryWindow(this, viewId, cached && cached.epoch === this.epoch ? this.materializePage(cached) : baseline, budget, cacheId)
+    const window = new RemoteHistoryWindow(this, viewId, baseline, budget, cacheId)
     this.cachedWindows.delete(cacheId)
     this.windows.set(viewId, window); this.startFollow(); this.persist()
     return window
   }
-  private async initialize(signal: AbortSignal = this.lifetime.signal): Promise<SourcePage> {
+  private async initialize(intent: RemoteReadingIntent, signal: AbortSignal = this.lifetime.signal): Promise<SourcePage> {
     this.lifetime.signal.throwIfAborted()
-    for (const window of this.windows.values()) {
-      const head = window.cachedHead(this.lastSession)
-      if (head && !this.connectionError) return head
+    // A new Pane is a new navigation, not a request to replay its saved tail.
+    // Existing readers keep their own window and stream checkpoint.
+    // A quick remount still owns the source subscription through the release
+    // debounce. Revalidate the tail without tearing down that live cursor.
+    const baseline = this.windows.size === 0 && (!this.connection || this.connection.signal.aborted)
+    if (baseline) { this.connection?.abort(); this.connection = undefined }
+    const saved = intent.kind === 'latest' ? this.cachedOpening : [...this.cachedWindows.values(), ...(this.cachedOpening ? [this.cachedOpening] : [])]
+      .find(page => page.entries.some(entry => entry.event.seq === intent.seq))
+    try {
+      const page = await this.fetchPage({ sessionId: this.sessionId, limit: PAGE_EVENTS,
+        ...(intent.kind === 'around' ? { around: intent.seq } : {}) }, baseline, true, signal, Boolean(saved))
+      return this.materializePage(page)
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!saved || this.cacheRevoked || !recoverableSourceRead(error)) throw error
+      // Offline content remains readable, but its historical tail is not a
+      // current-tail claim. Returning to latest will perform a live read.
+      return { ...saved, hasAfter: true }
     }
-    if (!this.cacheRevoked && !this.cachedOpening && !this.windows.size) {
-      const saved = this.cache?.read(this.sessionId)
-      if (saved && saved.epoch === this.epoch && saved.version === this.version) this.restoreCache(saved)
-    }
-    if (this.cachedOpening && this.cachedOpening.epoch === this.epoch) return this.materializePage(this.cachedOpening)
-    const page = await this.fetchPage({ sessionId: this.sessionId, limit: PAGE_EVENTS }, this.windows.size === 0, false, signal)
-    await this.waitVersion(page.version, signal)
-    return this.materializePage(page)
   }
   async page(request: Omit<SourceReadRequest, 'sessionId'>, signal: AbortSignal): Promise<SourcePage> {
     this.lifetime.signal.throwIfAborted(); signal.throwIfAborted()
     if (this.connectionError) { this.connectionError = undefined; this.startFollow() }
     const result = await this.fetchPage({ ...request, sessionId: this.sessionId, epoch: this.sourceEpoch, limit: request.limit ?? PAGE_EVENTS }, false, false, signal)
     if (result.epoch !== this.epoch) throw new RemoteHistoryError('STALE_VERSION', 'The history changed while this page was loading.')
-    await this.waitVersion(result.version, signal)
+    if (request.before !== undefined || request.after !== undefined) await this.waitVersion(result.version, signal)
     return this.materializePage(result)
   }
   /** A replay gap revalidates the retained range using authoritative source pages, not stale resident tails. */
@@ -188,10 +212,13 @@ export class RemoteSourceHistory {
     ++pending.users
     return waitFor(pending.promise, signal).finally(() => { if (--pending.users === 0 && !pending.settled) pending.abort.abort() })
   }
-  private fetchPage(request: SourceReadRequest, baseline = false, fresh = false, signal: AbortSignal = this.lifetime.signal): Promise<SourcePage> {
+  private fetchPage(request: SourceReadRequest, baseline = false, fresh = false, signal: AbortSignal = this.lifetime.signal, once = false): Promise<SourcePage> {
     signal.throwIfAborted()
     const key = this.key(request), cached = this.pages.get(key)
-    if (!fresh && cached && cached.seqs.every(seq => this.entries.has(seq))) {
+    if (!fresh && cached && cached.seqs.every(seq => {
+      const entry = this.entries.get(seq)
+      return entry !== undefined && entry.version <= Math.max(cached.page.version, this.version)
+    })) {
       cached.used = ++this.clock
       return Promise.resolve({ ...cached.page, entries: cached.seqs.map(seq => this.entries.get(seq)!.entry) })
     }
@@ -199,8 +226,10 @@ export class RemoteSourceHistory {
     if (pending && !pending.abort.signal.aborted) return this.sharePage(pending, signal)
     const expectedEpoch = this.epoch, generation = this.generation
     const abort = new AbortController()
-    const read = this.readAvailable(request, AbortSignal.any([this.lifetime.signal, abort.signal])).then(page => {
+    const lifetime = AbortSignal.any([this.lifetime.signal, abort.signal]), releaseSnapshot = this.beginSnapshot()
+    const read = (once ? boundedSourceRead(live => this.transport.read(request, live), lifetime) : this.readAvailable(request, lifetime)).then(received => {
       this.lifetime.signal.throwIfAborted()
+      let page = received
       if (page.session.id !== this.sessionId) throw new RemoteHistoryError('TARGET_UNAVAILABLE', 'A history page belongs to another source.')
       if (generation !== this.generation || expectedEpoch && this.epoch !== expectedEpoch) throw new RemoteHistoryError('STALE_VERSION', 'A late history page was superseded.')
       if (!this.epoch || baseline) {
@@ -210,8 +239,10 @@ export class RemoteSourceHistory {
           ++this.generation
           this.pages.clear(); if (page.epoch !== this.epoch) this.entries.clear(); this.removed.clear(); this.metadataVersion = -1; this.cachedOpening = undefined; this.cachedWindows.clear()
         }
+        if (this.windows.size === 0) { this.entries.clear(); this.pages.clear() }
         this.epoch = page.epoch; this.version = page.version; this.connectionError = undefined
       } else if (page.epoch !== this.epoch) throw new RemoteHistoryError('STALE_VERSION', 'The source history was replaced.')
+      if (page.version < this.version) page = this.accepted.materialize(page, this.sourceEpoch, this.version, this.lastSession ?? page.session)
       if (baseline && !page.hasAfter && page.before !== null) {
         const present = new Set<number>(page.entries.map(entry => entry.event.seq))
         for (const seq of this.entries.keys()) if (seq >= page.before && !present.has(seq)) this.entries.delete(seq)
@@ -234,7 +265,8 @@ export class RemoteSourceHistory {
       }
       this.persist()
       return page
-    }).finally(() => {
+    }).catch(error => { if (revokedSourceRead(error)) this.revokeCachedReading(); throw error }).finally(() => {
+      releaseSnapshot()
       held.settled = true
       if (this.reads.get(key) === held) this.reads.delete(key)
       if (this.reads.size === 0) this.removed.clear()
@@ -245,7 +277,11 @@ export class RemoteSourceHistory {
   }
   private materializePage(page: SourcePage): SourcePage {
     if (page.epoch !== this.epoch) throw new RemoteHistoryError('STALE_VERSION', 'The history baseline was replaced.')
-    const entries = page.entries.flatMap(entry => { const accepted = this.entries.get(entry.event.seq); return accepted ? [accepted.entry] : [] })
+    const version = Math.max(page.version, this.version)
+    const entries = page.entries.flatMap(entry => {
+      const accepted = this.entries.get(entry.event.seq)
+      return accepted ? [accepted.version <= version ? accepted.entry : entry] : []
+    })
     const appended = page.hasAfter ? [] : this.entriesAfter(page.after ?? -1)
     return { ...page, version: Math.max(page.version, this.version), session: this.lastSession ?? page.session,
       entries: entriesBySeq([...entries, ...appended]) as SourceEntry[],
@@ -274,7 +310,7 @@ export class RemoteSourceHistory {
                 this.epoch = change.epoch; this.version = change.version; this.metadataVersion = -1
                 if (replaced) this.entries.clear()
                 this.pages.clear(); this.removed.clear(); this.cachedOpening = undefined; this.cachedWindows.clear()
-                for (const entry of change.upserts) this.entries.set(entry.event.seq, { entry, version: change.version, used: ++this.clock })
+                for (const entry of change.upserts) if (this.entries.has(entry.event.seq)) this.entries.set(entry.event.seq, { entry, version: change.version, used: ++this.clock })
                 this.acceptSession(change.session, change.version)
                 this.notifyEntries(change.upserts)
                 for (const window of this.windows.values()) void window.recover().catch(error => { window.fail(error) })
@@ -282,12 +318,19 @@ export class RemoteSourceHistory {
               }
               if (change.version <= this.version) continue
               if (change.base !== this.version) throw new RemoteHistoryError('STALE_VERSION', 'The source update stream has a version gap; accepted history remains readable.')
-              for (const seq of change.removed) { this.entries.delete(seq); this.removed.set(seq, change.version) }
+              const retainedUpdates = new Set([...this.windows.values()].flatMap(window => window.relevantUpdates(change).map(entry => entry.event.seq)))
+              for (const seq of change.removed) {
+                if ((this.entries.get(seq)?.version ?? -1) <= change.version) this.entries.delete(seq)
+                this.removed.set(seq, change.version)
+              }
               const acceptedUpserts = change.upserts.map(entry => {
                 this.removed.delete(entry.event.seq)
-                const previous = this.entries.get(entry.event.seq)?.entry
+                const resident = this.entries.get(entry.event.seq), previous = resident?.entry
+                if (resident && resident.version > change.version) return entry
                 const accepted = previous && (previous === entry || JSON.stringify(previous) === JSON.stringify(entry)) ? previous : entry
-                this.entries.set(entry.event.seq, { entry: accepted, version: change.version, used: ++this.clock })
+                if (resident || retainedUpdates.has(entry.event.seq)) {
+                  this.entries.set(entry.event.seq, { entry: accepted, version: change.version, used: ++this.clock })
+                }
                 return accepted
               })
               this.accepted.record(change)
@@ -295,7 +338,7 @@ export class RemoteSourceHistory {
               this.notifyEntries(acceptedUpserts)
               if (this.cachedOpening?.epoch === change.epoch && this.cachedOpening.version <= change.version) {
                 const head = this.cachedOpening, seqs = head.entries.map(entry => entry.event.seq)
-                this.cachedOpening = { ...head, session: change.session, version: change.version,
+                this.cachedOpening = !head.hasAfter && change.upserts.some(entry => entry.event.seq > (head.after ?? -1) && !this.entries.has(entry.event.seq)) ? undefined : { ...head, session: change.session, version: change.version,
                   entries: entriesBySeq([...this.currentEntries(seqs), ...head.hasAfter ? [] : this.entriesAfter(head.after ?? -1)]) as SourceEntry[],
                   after: head.hasAfter ? head.after : Math.max(head.after ?? 0, ...change.upserts.map(entry => entry.event.seq)) }
               }
@@ -433,6 +476,7 @@ export class RemoteSourceHistory {
     }
     this.windows.delete(window.viewId); this.trimCache()
     if (this.windows.size === 0) {
+      this.preparedOpening = undefined
       this.suspend()
       // A durable retain may restore this checkpoint; memory-only callers
       // still obtain a fresh baseline before opening another live view.
@@ -456,6 +500,8 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   readonly publication: HistoryPublication<WindowMetadata>
   private state: HistorySnapshotV1
   private stateEpoch: string
+  /** A target page may be ahead of the shared stream without blocking its Pane. */
+  private sourceVersion: number
   private seqs: number[]
   private context = new Set<number>()
   private revision = 0
@@ -471,7 +517,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
   private readonly recoveryTask = new RemoteRecovery()
   private get recovery(): Promise<void> | undefined { return this.recoveryTask.pending }
   constructor(private readonly owner: RemoteSourceHistory, readonly viewId: string, page: SourcePage, private budget: Budget, readonly cacheId: string) {
-    this.stateEpoch = page.epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
+    this.stateEpoch = page.epoch; this.sourceVersion = page.version; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.initial = this.state
     this.publication = new HistoryPublication(record => {
       this.abort.signal.throwIfAborted()
@@ -480,13 +526,29 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     this.stage()
   }
   sequences(): number[] { return [...new Set([...this.seqs, ...this.publication.windows().flatMap(record => record.snapshot.entries.map(entry => entry.event.seq))])] }
+  relevantUpdates(change: Pick<SourceChanges, 'upserts' | 'version'>): SourceEntry[] {
+    if (this.stateEpoch !== this.owner.sourceEpoch || change.version <= this.sourceVersion) return []
+    const present = new Set(this.sequences()), tail = this.state.after ? parseCursor(this.state.after, this.stateEpoch) : -1
+    const updates = change.upserts.filter(entry => present.has(entry.event.seq) || !this.state.hasAfter && entry.event.seq > tail)
+    // A large reconnect backlog is an unread range, not one giant UI append.
+    // Preserve revisions to the retained body; latest navigation seeks its tail.
+    return updates.length > this.budget.events || windowBytes(updates) > this.budget.bytes
+      ? updates.filter(entry => present.has(entry.event.seq)) : updates
+  }
   private snapshot(entries: readonly SessionEventLikeEntry[], before: number | null, after: number | null, hasBefore: boolean, hasAfter: boolean): HistorySnapshotV1 {
-    const snapshot = { version: token(this.owner.sourceEpoch, this.owner.sourceVersion, ++this.revision), entries: entriesBySeq(entries), before: cursor(this.owner.sourceEpoch, before), after: cursor(this.owner.sourceEpoch, after), hasBefore, hasAfter }
-    this.coveredVersions.set(snapshot, this.owner.sourceVersion)
+    const snapshot = { version: token(this.stateEpoch, this.sourceVersion, ++this.revision), entries: entriesBySeq(entries), before: cursor(this.stateEpoch, before), after: cursor(this.stateEpoch, after), hasBefore, hasAfter }
+    this.coveredVersions.set(snapshot, this.sourceVersion)
     return snapshot
   }
   private stage(): void {
     this.publication.stage(this.state, { epoch: this.stateEpoch, navigation: this.navigation, context: [...this.context], budget: this.budget }, windowBytes(this.state.entries))
+  }
+  acceptedReadingPosition(version: string, seq: number): AcceptedReadingPosition | undefined {
+    const published = this.publication.published
+    if (this.abort.signal.aborted || !published || published.snapshot.version !== version
+      || published.metadata.epoch !== this.owner.sourceEpoch) return undefined
+    const entry = published.snapshot.entries.find(entry => entry.type === 'event' && entry.event.seq === seq)
+    return entry ? { epoch: published.metadata.epoch, seq, at: entry.event.time } : undefined
   }
   cachePage(session: SourceSession): SourcePage | undefined {
     const published = this.publication.published
@@ -502,6 +564,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (!accepted || accepted.order > discarded.order || discarded.metadata.navigation !== this.navigation || this.abort.signal.aborted) return
     ++this.navigation
     this.state = accepted.snapshot; this.stateEpoch = accepted.metadata.epoch; this.budget = accepted.metadata.budget
+    this.sourceVersion = this.coveredVersions.get(accepted.snapshot) ?? this.owner.sourceVersion
     this.context = new Set(accepted.metadata.context); this.seqs = accepted.snapshot.entries.map(entry => entry.event.seq)
     this.journal.length = 0; this.journalBytes = 0
     if (this.stateEpoch !== this.owner.sourceEpoch) { void this.recover().catch(error => { this.fail(error) }); return }
@@ -509,7 +572,10 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     const tail = this.state.after ? parseCursor(this.state.after, this.stateEpoch) : -1
     const appended = this.state.hasAfter ? [] : this.owner.entriesAfter(tail), removed = this.seqs.filter(seq => !present.has(seq))
     if (removed.length || appended.length || entries.some((entry, index) => entry !== this.state.entries[index])) {
-      this.accept({ upserts: [...entries, ...appended], removed })
+      // Reapply changes already covered by the discarded candidate.
+      const version = this.owner.sourceVersion
+      this.sourceVersion = Math.min(this.sourceVersion, version - 1)
+      this.accept({ upserts: [...entries, ...appended], removed, version })
     }
     this.owner.trimCache()
   }
@@ -554,7 +620,7 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (page.entries.length > budget.events || windowBytes(page.entries) > budget.bytes) {
       throw new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source page and its dependencies exceed the reading admission budget.')
     }
-    let entries = entriesBySeq(extending ? [...this.owner.currentEntries(this.seqs), ...page.entries] : page.entries)
+    let entries = entriesBySeq(extending ? [...this.state.entries, ...page.entries] : page.entries)
     const nextContext = new Set(extending ? [...this.context, ...page.context] : page.context)
     for (const entry of page.entries) if (!page.context.includes(entry.event.seq)) nextContext.delete(entry.event.seq)
     let hasBefore = request.kind === 'after' ? this.state.hasBefore : page.hasBefore
@@ -577,29 +643,33 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
       if (admitted.at(-1) !== entries.at(-1)) { after = admitted.filter(entry => !nextContext.has(entry.event.seq)).at(-1)?.event.seq ?? null; hasAfter = true }
       entries = admitted
     }
-    this.budget = budget; this.stateEpoch = epoch; this.context = nextContext; this.seqs = entries.map(entry => entry.event.seq); this.error = undefined
+    this.budget = budget; this.stateEpoch = epoch; this.sourceVersion = page.version; this.context = nextContext; this.seqs = entries.map(entry => entry.event.seq); this.error = undefined
     this.state = this.snapshot(entries, before, after, hasBefore, hasAfter); this.stage(); this.owner.trimCache()
     return this.state
   }
-  accept(change: Pick<SourceChanges, 'upserts' | 'removed'>): void {
+  accept(change: Pick<SourceChanges, 'upserts' | 'removed' | 'version'>): void {
     if (this.abort.signal.aborted || this.stateEpoch !== this.owner.sourceEpoch) return
+    if (change.version <= this.sourceVersion) return
     const previous = this.state, present = new Set(this.seqs), tail = previous.after ? parseCursor(previous.after, this.stateEpoch) : -1
-    const updates = change.upserts.filter(entry => present.has(entry.event.seq) || !previous.hasAfter && entry.event.seq > tail)
+    const updates = this.relevantUpdates(change)
+    const deferredTail = !previous.hasAfter && change.upserts.some(entry => entry.event.seq > tail)
+      && !updates.some(entry => entry.event.seq > tail)
+    this.sourceVersion = change.version
     const removed = new Set(change.removed)
-    const headChanged = previous.hasAfter && change.upserts.some(entry => entry.event.seq > tail)
+    const headChanged = deferredTail || previous.hasAfter && change.upserts.some(entry => entry.event.seq > tail)
     if (updates.length > this.budget.events || windowBytes(updates) > this.budget.bytes) {
       this.fail(new RemoteHistoryError('CAPACITY_EXCEEDED', 'This source revision exceeds the reading admission budget.')); return
     }
-    let entries = entriesBySeq([...this.owner.currentEntries(this.seqs).filter(entry => !removed.has(entry.event.seq)), ...updates])
+    let entries = entriesBySeq([...previous.entries.filter(entry => !removed.has(entry.event.seq)), ...updates])
     try { entries = this.owner.admitWindow(this, entries, this.context, updates, 'newer') }
     catch (error) { this.fail(error); return }
     const trimmedBefore = entries[0] !== previous.entries[0]
-    const hasAfter = previous.hasAfter
+    const hasAfter = previous.hasAfter || deferredTail
     const changed = entries.length !== previous.entries.length || entries.some((entry, index) => entry !== previous.entries[index])
     if (!changed && !headChanged) {
       // Source versions and cache provenance advance for repeated or unrelated
       // records, without rebuilding the exact unchanged reading candidate.
-      this.coveredVersions.set(previous, this.owner.sourceVersion)
+      this.coveredVersions.set(previous, this.sourceVersion)
       return
     }
     this.seqs = entries.map(entry => entry.event.seq)
@@ -659,9 +729,12 @@ class RemoteHistoryWindow implements HistoryFeedV1 {
     if (!current() || navigation !== this.navigation || epoch !== this.owner.sourceEpoch) return
     page = this.owner.reconcilePages(pages)
     this.owner.discardReconciledEntries(this.seqs, page)
-    this.error = undefined; this.stateEpoch = epoch; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
+    // Live revisions may have published while the retained range was loading.
+    // Its replacement must extend that current chain, not fork the old cursor.
+    const base = this.state.version
+    this.error = undefined; this.stateEpoch = epoch; this.sourceVersion = page.version; this.context = new Set(page.context); this.seqs = page.entries.map(entry => entry.event.seq)
     this.state = this.snapshot(page.entries, page.before, page.after, page.hasBefore, page.hasAfter); this.stage()
-    this.record({ base: prior.version, version: this.state.version, changes: [{ kind: 'replace', entries: this.state.entries }], headChanged: page.hasAfter, snapshot: this.state })
+    this.record({ base, version: this.state.version, changes: [{ kind: 'replace', entries: this.state.entries }], headChanged: page.hasAfter, snapshot: this.state })
   }
   fail(error: unknown): void { this.error = error; for (const listener of this.listeners) listener() }
   private record(delta: HistoryDeltaV1): void {

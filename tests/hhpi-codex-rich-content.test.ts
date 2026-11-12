@@ -51,3 +51,26 @@ test('native plans retain an explicit plan marker and ordinary file paths do not
     assert.deepEqual(nativeContentParts({ id: 'tool', type: 'commandExecution', aggregatedOutput: '/fixture/private.png' }), []);
   } finally { index.dispose(); }
 });
+
+test('preparing an MCP image preserves adjacent structured results, text order and the original native failure', async () => {
+  const directory = await mkdtemp('/mnt/cache/data-cache/hhpi-rich-mixed-');
+  const index = new SourceEventIndex(':memory:', session), lifetime = new AbortController(), ready = Promise.withResolvers<void>();
+  const attachments = new CodexAttachments(index, join(directory, 'images'), async () => { throw new Error('Embedded media must not read a source path'); }, lifetime.signal, ({ turnId, itemId }) => {
+    const state = history.itemState(turnId, itemId)!; history.acceptItem(session, turnId, state.item, state.completed); ready.resolve();
+  });
+  const history = new CodexHistory(index, { toolContent: (turnId, item) => attachments.content(turnId, item) });
+  try {
+    history.acceptItem(session, 'turn', { id: 'mixed', type: 'mcpToolCall', server: 'fixture', tool: 'plot', status: 'completed',
+      result: { isError: true, content: [{ type: 'text', text: 'Before the image' }, { type: 'image', data: PNG, mimeType: 'image/png' }, { type: 'text', text: 'After the image' }], structuredContent: { rows: 7 } }, error: { message: 'Partial native failure' } }, true);
+    const page = () => index.read({ sessionId: session.id, limit: 100 }).entries;
+    const before = page().map(value => value.event.seq);
+    attachments.schedule(page()); await ready.promise;
+    const result = page().find(value => value.event.type === 'tool/result');
+    assert.ok(result && result.event.type === 'tool/result');
+    assert.deepEqual(result.event.data.message.content.map(block => block.type), ['text', 'image', 'text', 'text', 'text']);
+    const text = result.event.data.message.content.flatMap(block => block.type === 'text' ? [block.text] : []);
+    assert.deepEqual(text, ['Before the image', 'After the image', '{\n  "rows": 7\n}', 'Partial native failure']);
+    assert.equal(result.event.data.message.isError, true);
+    assert.deepEqual(page().map(value => value.event.seq), before, 'prepared media enriches the same native identities');
+  } finally { lifetime.abort(); await attachments.dispose(); index.dispose(); await rm(directory, { recursive: true, force: true }); }
+});

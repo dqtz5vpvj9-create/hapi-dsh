@@ -1,30 +1,41 @@
+import type { SourceNavigationApi } from '../workspace/source-navigation-api.ts'
+import type { WorkspaceApplicationIdentity } from './application-identity.ts'
 import { NoticeGate } from './error-policy.ts'
 import { migrateCutoverDraft } from './draft-cutover.ts'
 import { sameSourceGeneration } from './surface/generation-handoff.ts'
 import { randomId } from './random-id.ts'
+import { workspaceFocusesSinglePane, type WorkspaceViewportPolicy } from '../shared/workspace-presentation.ts'
 /** Plugin-owned view references and durable geometry. No agent lifetime ownership. */
 import type { ISessions, SessionListState, SessionReference, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { UiWorkspace } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { IWorkspaces } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ReactNode } from 'react'
-import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type PaneResource, type SplitAxis, type WorkspaceState } from './model.ts'
+import { initialWorkspace, panes, parseWorkspaceState, WorkspaceStore, type PaneResource, type SplitAxis, type WorkspaceNode, type WorkspaceState } from './model.ts'
 import { rebaseWorkspace, WorkspaceRebaseConflictError } from '../workspace/rebase.ts'
 import { SidebarState } from '../workspace/sidebar-state.ts'
-import { bindSourceResources, importLegacyWorkspace, isSourceChild, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState, sourceIdentity, sourceRow } from '../workspace/legacy.ts'
+import { bindSourceAliases, legacyPaneReference, legacyReferenceKey, keepLocalView, sharedWorkspaceSignature, sharedWorkspaceState } from '../workspace/legacy.ts'
 import { bindingFailureState, invalidPaneAddressState, isSourceDisplaySessionId, paneOpenState, waitForCatalogSession, type PaneOpenContext, type PaneOpenFailure, type PaneOpenState } from './catalog-readiness.ts'
-import type { CatalogMachine, CatalogSession } from '../client-api.ts'
+import { remoteValue, type CatalogMachine } from '../client-api.ts'
 import { parseDshPaneTarget, type DshPaneTarget, type NavigationValue } from '../workspace/dsh-view.ts'
 import type { DockPosition } from '../workspace/drag.ts'
 import { buildSidebarSearchIndex, compareSidebarSearch, type SidebarSearchIndex } from '../workspace/sidebar-search.ts'
 import { CatalogDiscovery, type WorkspaceCatalogDiscovery } from '../workspace/catalog-discovery.ts'
 import { sourceResolutionFailure, type SourceResolutionFailure, type SourceResolutionStatus } from './source-session-state.ts'
 import { PaneReadingIntents, type PaneReadingIntent, type PaneReadingTarget } from './reading-intent.ts'
-import type { SourceDiscovery } from '../source-discovery-types.ts'
+import { isSourceSessionId, parseSourceSessionId, sourceSessionId } from '../remote/protocol.ts'
+import type { RemoteSessions } from './remote-sessions.ts'
+import type { SourceExportApi } from './source-export-state.ts'
+import type { AppSourceRoute } from '../workspace/app-service-types.ts'
+import type { LegacySourceReference, RecoveryReference } from '../workspace/source-aliases.ts'
+import { SourceAliasResolutionError } from './source-session-resolver.ts'
+import { accountComposerDraftKey, hasStoredComposerDraft, hasStoredComposerAttachments } from './composer-autosave.ts'
 
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
     interface SessionReferenceSourceMap { hapiWorkspace: unknown }
 }
+
+export class WorkspaceDirectoryRequired extends Error {}
 
 export interface WorkspacePersistence {
     /** Optional Hub-backed geometry store. Only validated layout documents cross this boundary. */
@@ -33,7 +44,15 @@ export interface WorkspacePersistence {
 }
 
 export interface WorkspaceOptions {
-    sessions: Pick<ISessions, 'list' | 'retain' | 'refresh' | 'using' | 'search' | 'create'> & { resolveSession?: (id: SessionId, signal: AbortSignal) => Promise<void> }
+    sourceActions?: WorkspaceSourceActions
+    sourceExporter?: SourceExportApi
+    readHead?: import('./source-reading-head.ts').SourceReadHead
+    sourceCreation?: Pick<RemoteSessions, 'api' | 'list' | 'createController'>
+    locateSourcePosition?: SourceNavigationApi['locatePosition']
+    resumeContext?: SourceNavigationApi['resumeContext']
+    application?: Pick<WorkspaceApplicationIdentity, 'getSnapshot' | 'subscribe'>
+    sessions: Pick<ISessions, 'list' | 'retain' | 'refresh' | 'using' | 'search' | 'create'> & Partial<Pick<RemoteSessions, 'capabilities' | 'captureWorkspaceAccess'>>
+        & { resolveSession?: (id: SessionId, signal: AbortSignal) => Promise<void> }
     navigation: Pick<UiWorkspace, 'openSession' | 'startSession' | 'archiveSession' | 'unarchiveSession' | 'pinSession' | 'unpinSession' | 'forkSession'>
         & Partial<Pick<UiWorkspace, 'listDirectory' | 'pickDirectory' | 'createDirectory'>>
     storage?: Pick<Storage, 'getItem' | 'setItem'>
@@ -43,8 +62,9 @@ export interface WorkspaceOptions {
     /** Reveal the official conversation panel when an empty window becomes active. */
     reveal?: () => void
     workspaceState?: WorkspaceHost['workspaceState']
-    workspaces?: Pick<IWorkspaces, 'create'>
-    legacy?: (signal: AbortSignal) => Promise<unknown>
+    workspaces?: Pick<IWorkspaces, 'create'> & Partial<Pick<IWorkspaces, 'initializeDefault'>>
+    /** The Host's official directory-picker composition, not just the always-present RPC methods. */
+    directoryBrowsing?: boolean
     sourceSessionQuery?: string
     /** Notification and shared links preserve the original Hub identity too. */
     sourceHubQuery?: string
@@ -53,23 +73,30 @@ export interface WorkspaceOptions {
     beforeRemove?: (resources: readonly PaneResource[]) => boolean
     /**
      * How long a restored pane waits for a calm catalog before an unresolved
-     * target is reported instead of retried. Attaching a large HAPI catalog
+     * target is reported instead of retried. Attaching a large source catalog
      * keeps emitting events; production default is 30s.
      */
     catalogSettleMs?: number
     /** Acquire restored session references only when their window first becomes
      * visible. References already acquired keep their draft/scroll lifetime. */
     deferHiddenSessions?: boolean
-    /** Undefined until source discovery completes; false when legacy HAPI is not configured. */
-    legacySourceAvailability?: { getSnapshot(): boolean | undefined; subscribe(listener: () => void): () => void }
+    /** Initial and later layout projection, available before restored leases. */
+    viewport?: WorkspaceViewportPolicy
 }
 
 export interface WorkspaceHost {
+    readonly sourceActions?: WorkspaceSourceActions
+    readonly sourceExporter?: SourceExportApi
+    readonly readHead?: import('./source-reading-head.ts').SourceReadHead
     readonly id: string
     readonly label: string
     readonly sessions: WorkspaceOptions['sessions']
     readonly navigation: WorkspaceOptions['navigation']
+    readonly sourceCreation?: WorkspaceOptions['sourceCreation']
+    readonly locateSourcePosition?: SourceNavigationApi['locatePosition']
+    readonly resumeContext?: SourceNavigationApi['resumeContext']
     readonly workspaces?: WorkspaceOptions['workspaces']
+    readonly directoryBrowsing?: boolean
     readonly workspaceState?: {
         getSnapshot(): { archivedSessionIds: readonly string[]; pinnedSessionIds: readonly string[] }
         subscribe(listener: () => void): () => void
@@ -80,6 +107,12 @@ export interface WorkspaceHost {
     readonly renderPane?: (reference: SessionReference, resource: Exclude<PaneResource, { kind: 'empty' }>, options: WorkspaceRenderOptions) => ReactNode
     /** Bounded read-only preparation for an explicit sidebar hover/focus. */
     readonly warmSession?: (sessionId: SessionId) => void
+}
+
+/** Native source operations confirm their own receipts; they do not invent DSH event seq. */
+export interface WorkspaceSourceActions {
+    rename(sessionId: SessionId, title: string): Promise<void>
+    archive(sessionId: SessionId, archived: boolean): Promise<void>
 }
 
 export interface WorkspaceRenderOptions {
@@ -109,40 +142,14 @@ export interface WorkspaceCatalogRow extends SessionSummary {
     /** The pane graph for this Host is registered and the Host is reachable. */
     readonly hostOnline: boolean
     readonly sourceSessionId: string
-    /** Original HAPI machine liveness, distinct from the serving DSH Host. */
-    readonly sourceMachineOnline?: boolean
-    /** Original HAPI Hub connectivity, distinct from `hostOnline`. */
-    readonly sourceHubOnline?: boolean
     readonly archived: boolean
     readonly pinned: boolean
-    /** Original HAPI pin policy; independent of DSH display bookmarks. */
-    readonly sourcePinMode?: 'none' | 'project' | 'global'
-    readonly sourceActive?: boolean
-    readonly sourceLifecycleState?: string | null
-    readonly sourceSummary?: CatalogSession['sourceSummary']
-    readonly sourceCreatedAt?: CatalogSession['sourceCreatedAt']
-    readonly sourceLastActiveAt?: CatalogSession['sourceLastActiveAt']
-    readonly sourceWorktree?: CatalogSession['sourceWorktree']
-    readonly sourceSubagentSearch?: readonly string[]
-    readonly sourceListFacts?: CatalogSession['sourceListFacts']
-    readonly sourceRowState?: CatalogSession['sourceRowState']
 }
 
 export interface WorkspaceCatalog extends Omit<SessionListState, 'byId'> { byId: Record<string, WorkspaceCatalogRow> }
 
-export function sessionResourceId(hostId: string, sessionId: string): string {
-    return hostId === 'local' ? sessionId : `hapi-remote:${encodeURIComponent(hostId)}:${encodeURIComponent(sessionId)}`
-}
-
-export function parseSessionResourceId(value: string): { hostId: string; sessionId: string } {
-    if (!value.startsWith('hapi-remote:')) return { hostId: 'local', sessionId: value }
-    const separator = value.indexOf(':', 'hapi-remote:'.length)
-    if (separator < 0) throw new Error('Invalid remote conversation address')
-    const hostId = decodeURIComponent(value.slice('hapi-remote:'.length, separator))
-    const sessionId = decodeURIComponent(value.slice(separator + 1))
-    if (!hostId || !sessionId || hostId === 'local') throw new Error('Invalid remote conversation address')
-    return { hostId, sessionId }
-}
+import { sessionResourceId, parseSessionResourceId } from '../shared/session-resource-id.ts'
+export { sessionResourceId, parseSessionResourceId }
 
 export interface PaneLease {
     readonly hostId: string
@@ -175,7 +182,6 @@ export interface WorkspaceSnapshot {
     readonly sourcePaneTitles: Readonly<Record<string, string>>
     /** Actual first source/Host discovery, independent of a temporarily empty catalog. */
     readonly catalogDiscovery: WorkspaceCatalogDiscovery
-    readonly sourceDiscovery?: SourceDiscovery
     readonly leases: ReadonlyMap<string, PaneLease>
     readonly notice: string | null
     readonly persistence: 'local' | 'saving' | 'saved' | 'failed'
@@ -185,7 +191,6 @@ export interface WorkspaceSnapshot {
     readonly creationContext: WorkspaceCreationContext | null
     readonly pickingSession: boolean
     readonly machines: readonly CatalogMachine[]
-    readonly nativePanel: { kind: 'library' } | { kind: 'session'; sessionId: string; initialAction?: 'fork' | 'archive' | 'reopen' | 'pin' | 'restart' | 'delete' } | null
 }
 
 /** An explicit source folder selection, never inferred from the serving Hub's cwd. */
@@ -199,13 +204,12 @@ export interface WorkspaceCreationContext {
 }
 
 export function sessionCreationContext(row: WorkspaceCatalogRow | undefined, directory = row?.cwd): WorkspaceCreationContext | null {
-    if (!row || !directory?.trim() || isSourceChild(row)) return null
-    const source = sourceIdentity(row), location = sessionLocation(row)
-    return { hostId: row.hostId, directory,
-        ...(source ? { sourceSessionId: source.sessionId,
-            ...(source.hubId ? { sourceHubId: source.hubId } : {}),
-            ...(location.machineId ? { machineId: location.machineId } : {}), engine: location.engine,
-        } : {}) }
+    if (!row || !directory?.trim()) return null
+    if (isSourceSessionId(row.sourceSessionId)) {
+        const source = parseSourceSessionId(row.sourceSessionId)
+        return { hostId: row.hostId, directory, machineId: source.machineId, engine: source.engine, sourceSessionId: row.sourceSessionId }
+    }
+    return { hostId: row.hostId, directory }
 }
 
 export interface SessionLocation {
@@ -218,8 +222,6 @@ export interface SessionLocation {
 
 /** Unknown upstream/custom projections must never be treated as trusted UI records. */
 export function sessionLocation(summary: Pick<SessionSummary, 'projectionValues'> | undefined): SessionLocation {
-    const projection: unknown = summary?.projectionValues && (Reflect.get(summary.projectionValues, 'hhpiSource')
-        ?? Reflect.get(summary.projectionValues, 'hapi') ?? Reflect.get(summary.projectionValues, 'hapiObserved'))
     const hostId: unknown = summary && Reflect.get(summary, 'hostId')
     const hostLabel: unknown = summary && Reflect.get(summary, 'hostLabel')
     const fallback: SessionLocation = {
@@ -227,18 +229,13 @@ export function sessionLocation(summary: Pick<SessionSummary, 'projectionValues'
         ...(typeof hostId === 'string' && hostId !== 'local' ? { machineId: hostId } : {}),
         ...(typeof hostLabel === 'string' && hostId !== 'local' ? { machineName: hostLabel } : {}),
     }
-    if (typeof projection !== 'object' || projection === null) return fallback
-    const field = (name: string): string | undefined => {
-        const value: unknown = Reflect.get(projection, name)
-        return typeof value === 'string' && value.length > 0 ? value : undefined
-    }
-    return {
-        ...fallback, engine: field('flavor') ?? field('engine') ?? 'dsh',
-        ...(field('machineId') ? { machineId: field('machineId')! } : {}),
-        ...(field('machineName') ? { machineName: field('machineName')! } : {}),
-        ...(field('hubId') ? { hubId: field('hubId')! } : {}),
-        ...(field('nativeId') ? { nativeId: field('nativeId')! } : {}),
-    }
+    const id: unknown = summary && (Reflect.get(summary, 'sourceSessionId') ?? Reflect.get(summary, 'id'))
+    if (typeof id !== 'string' || !isSourceSessionId(id)) return fallback
+    try {
+        const source = parseSourceSessionId(id)
+        return { ...fallback, engine: source.engine, machineId: source.machineId, nativeId: source.nativeId }
+    } catch { return fallback }
+
 }
 
 export function filterSessions<T extends SessionSummary>(rows: readonly T[], query: string, engine = '', machine = '', searchIndex?: SidebarSearchIndex): T[] {
@@ -257,7 +254,7 @@ export function errorMessage(error: unknown): string {
     return String(error)
 }
 
-type OriginalSource = { hubId: string; sourceSessionId: string }
+type OriginalSource = LegacySourceReference
 interface CatalogTargetResolution {
     hostId: string
     sessions: WorkspaceOptions['sessions']
@@ -268,22 +265,26 @@ interface CatalogTargetResolution {
 
 interface SourceResolution {
     source: OriginalSource
+    target?: AppSourceRoute
     abort: AbortController
     phase: 'opening' | 'ready' | 'failed'
     work: Promise<void>
     error?: string
     failure?: SourceResolutionFailure
+    recovery?: readonly RecoveryReference[]
 }
-const originalSourceKey = (source: OriginalSource): string => JSON.stringify([source.hubId, source.sourceSessionId])
+const originalSourceKey = legacyReferenceKey
+const sameNativeRoute = (before: string, after: string): boolean => {
+    try {
+        const original = parseSessionResourceId(before).sessionId
+        return isSourceSessionId(original) && original === parseSessionResourceId(after).sessionId
+    } catch { return false }
+}
+const sourceTitleKey = (hubId: string, sessionId: string): string => JSON.stringify([hubId, sessionId])
 
 /** One user-facing sentence per unresolved pane; the raw detail stays separate. */
 function paneFailureError(state: PaneOpenState): string {
     return `${state.message} ${state.nextStep}`
-}
-
-const sourceReference = (row: Pick<SessionSummary, 'projectionValues'> | undefined): { sourceSessionId: string; sourceHubId?: string } | null => {
-    const source = sourceIdentity(row)
-    return source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : null
 }
 
 /** The typed explanation that pairs with a structured original-source failure. */
@@ -307,6 +308,7 @@ function sourceResolutionTypedState(failure: SourceResolutionFailure): { reason:
  * same generation, Conversation state, and official composer draft.
  */
 export class WorkspaceController {
+    private readonly omittedAttachmentDrafts = new Map<string, { layout: WorkspaceState; protected: boolean }>()
     readonly store: WorkspaceStore
     readonly sidebar: SidebarState
     private readonly listeners = new Set<() => void>()
@@ -318,18 +320,14 @@ export class WorkspaceController {
     private readonly hostCatalogs = new Map<string, { label: string; catalog: SessionListState }>()
     private readonly hostUnsubscribers = new Map<string, Array<() => void>>()
     private readonly hostMainIds = new Map<string, string | undefined>()
-    private readonly sourceCatalog = new Map<string, CatalogSession>()
     private readonly sourcePaneTitles = new Map<string, { sourceKey: string; title: string }>()
     /** Last known source titles, so restored window tabs never show "Untitled". */
     private readonly titleCache = new Map<string, string>()
-    private titleSaveTimer: ReturnType<typeof setTimeout> | undefined
-    private sourceCatalogRevision = 0
     private readonly aggregatedHosts = new Map<string, { inputs: readonly unknown[]; ids: SessionId[]; rows: WorkspaceCatalog['byId'] }>()
     private aggregateParts: readonly object[] = []
     private aggregateValue?: WorkspaceCatalog
     private readonly discovery = new CatalogDiscovery()
-    private discoveryCatalog: WorkspaceCatalog | undefined
-    private sourceBindingsPending = 0
+    private readonly sourceRouteCheckpoints = new Map<string, { sessionId: string; transfer(target: { hostId: string; scope: string }): boolean }>()
     private readonly paneCloseGuards = new Map<string, Set<() => boolean>>()
     private readonly reading = new PaneReadingIntents()
     private readonly lifetime = new AbortController()
@@ -340,6 +338,7 @@ export class WorkspaceController {
     private navigationGuard = false
     private pendingNavigationResource: string | null = null
     private navigationRevision = 0
+    private nativeSourceLink: AbortController | undefined
     private saving = false
     private remoteLoaded = false
     private remoteLoading = false
@@ -351,8 +350,8 @@ export class WorkspaceController {
     private readonly restoredLocal: boolean
     private sharedSignature: string
     private pendingSourceSession: { sessionId: string; hubId?: string; target: PaneReadingTarget } | null
-    private primarySourceHubId: string | null = null
-    private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<void>) | undefined
+    private sourceResolver: ((source: OriginalSource, signal: AbortSignal) => Promise<AppSourceRoute>) | undefined
+    private catalogRefresh: (() => Promise<void>) | undefined
     private readonly catalogTargets = new Map<string, CatalogTargetResolution>()
     private readonly sourceResolutions = new Map<string, SourceResolution>()
     private readonly sourceRequests = new Map<string, number>()
@@ -361,8 +360,10 @@ export class WorkspaceController {
     private catalogMaxIds = 0
     private settleTimer: ReturnType<typeof setTimeout> | undefined
     private readonly catalogSettleMs: number
+    private compactViewport: boolean
 
     constructor(readonly options: WorkspaceOptions) {
+        this.compactViewport = options.viewport?.getSnapshot() ?? false
         this.catalogSettleMs = Math.max(0, options.catalogSettleMs ?? 30_000)
         // The restore itself starts the settle window; a slow constructor must
         // not be mistaken for a calm catalog.
@@ -401,20 +402,34 @@ export class WorkspaceController {
             ...(options.sourceHubQuery === undefined ? {} : { hubId: options.sourceHubQuery }) } : null
         this.sidebar = new SidebarState(options.storage, `${options.storageKey}:sidebar`)
         this.hosts.set('local', { id: 'local', label: 'DSH', sessions: options.sessions, navigation: options.navigation,
+            ...(options.directoryBrowsing === undefined ? {} : { directoryBrowsing: options.directoryBrowsing }),
+            ...(options.sourceActions ? { sourceActions: options.sourceActions } : {}),
+            ...(options.sourceExporter ? { sourceExporter: options.sourceExporter } : {}),
+            ...(options.readHead ? { readHead: options.readHead } : {}),
+            ...(options.sourceCreation ? { sourceCreation: options.sourceCreation } : {}),
+            ...(options.locateSourcePosition ? { locateSourcePosition: options.locateSourcePosition } : {}),
+            ...(options.resumeContext ? { resumeContext: options.resumeContext } : {}),
             ...(options.workspaces ? { workspaces: options.workspaces } : {}),
             ...(options.workspaceState ? { workspaceState: options.workspaceState } : {}) })
         this.snapshot = {
             layout: this.store.getSnapshot(), catalog: this.aggregateCatalog(),
             sourcePaneTitles: {},
-            catalogDiscovery: this.discovery.snapshot(options.sessions.list.getSnapshot().phase === 'ready'),
+            catalogDiscovery: this.catalogDiscovery(),
             leases: new Map(), notice, persistence: 'local', conflict: null, hasLayoutRecovery: Boolean(this.recoveryLayout),
-            creation: null, creationContext: null, pickingSession: false, machines: [], nativePanel: null,
+            creation: null, creationContext: null, pickingSession: false, machines: [],
         }
         this.restoreCachedTitles()
         this.hostMainIds.set('local', this.selectedMain('local'))
         this.unsubscribers.push(this.store.subscribe(this.onLayout), options.sessions.list.subscribe(() => this.onCatalog('local')))
-        if (options.legacySourceAvailability) this.unsubscribers.push(options.legacySourceAvailability.subscribe(() => this.reconcileLeases()))
+        if (options.sessions.capabilities) this.unsubscribers.push(options.sessions.capabilities.subscribe(() => this.publish()))
         if (options.workspaceState) this.unsubscribers.push(options.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
+        if (options.viewport) this.unsubscribers.push(options.viewport.subscribe(() => {
+            const compact = options.viewport!.getSnapshot()
+            if (this.disposed || compact === this.compactViewport) return
+            this.compactViewport = compact
+            this.reconcileLeases()
+            this.publish()
+        }))
         // The first classification must start from a fresh settle window even
         // when constructing the store took a while.
         this.catalogChangedAt = Date.now()
@@ -427,6 +442,25 @@ export class WorkspaceController {
         this.initialLayout = this.store.getSnapshot()
         if (options.persistence) void this.loadRemote()
         else { this.remoteLoaded = true; this.openPendingSource() }
+        if (options.application) this.unsubscribers.push(options.application.subscribe(() => this.onCatalog('local')))
+    }
+
+    /** Pending canonical navigation outranks passive restored resource views. */
+    get pendingStartupSourceId(): string | undefined { return this.pendingSourceSession?.sessionId }
+
+    cancelStartupFocus(): void {
+        if (!this.pendingSourceSession && !this.nativeSourceLink) return
+        this.pendingSourceSession = null
+        this.nativeSourceLink?.abort(); this.nativeSourceLink = undefined
+        this.navigationRevision++
+        this.publish()
+    }
+
+    /** Explicit pointer selection supersedes startup intent, even on the same Pane. */
+    focusPane(paneId: string): void {
+        if (!this.store.getSnapshot().windows.some(window => panes(window.root).some(pane => pane.id === paneId))) return
+        this.cancelStartupFocus()
+        this.store.focus(paneId)
     }
 
     getSnapshot = (): WorkspaceSnapshot => this.snapshot
@@ -463,6 +497,11 @@ export class WorkspaceController {
             guards.delete(guard)
             if (!guards.size && this.paneCloseGuards.get(paneId) === guards) this.paneCloseGuards.delete(paneId)
         }
+    }
+    registerSourceRouteCheckpoint(paneId: string, checkpoint: { sessionId: string; transfer(target: { hostId: string; scope: string }): boolean }): () => void {
+        this.sourceRouteCheckpoints.set(paneId, checkpoint)
+        queueMicrotask(() => { if (!this.disposed && this.sourceRouteCheckpoints.get(paneId) === checkpoint) this.onCatalog('local') })
+        return () => { if (this.sourceRouteCheckpoints.get(paneId) === checkpoint) this.sourceRouteCheckpoints.delete(paneId) }
     }
     subscribe = (listener: () => void): (() => void) => {
         this.listeners.add(listener)
@@ -509,46 +548,26 @@ export class WorkspaceController {
         this.notices.recovered()
         this.publish({ catalog: this.aggregateCatalog() })
     }
-    setSourceCatalog(sessions: readonly CatalogSession[], hubId?: string, discovery?: {
-        hosts: readonly { id: string; label: string; online: boolean }[]; connected: boolean; sourceDiscovery?: SourceDiscovery
-    }): void {
-        if (hubId) this.primarySourceHubId = hubId
-        // Only real catalog movement resets the settle window; the 3s poll is
-        // not itself progress.
-        const connected = discovery?.connected ?? true
-        const changed = sessions.length !== this.sourceCatalog.size
-            || (connected ? 'ready' : 'unavailable') !== this.discovery.sourcePhase
-            || sessions.some(session => {
-                const previous = this.sourceCatalog.get(session.id)
-                return previous === undefined || previous.displayRevision !== session.displayRevision
-                    || previous.lifecycleState !== session.lifecycleState || previous.active !== session.active
-            })
-        this.sourceCatalogRevision++
-        this.discoveryCatalog = undefined
-        this.sourceCatalog.clear()
-        for (const session of sessions) this.sourceCatalog.set(session.id, session)
-        this.discovery.observe(discovery?.hosts ?? [], connected)
-        if (discovery?.sourceDiscovery) this.snapshot = { ...this.snapshot, sourceDiscovery: discovery.sourceDiscovery }
-        if (changed) this.catalogChangedAt = Date.now()
-        this.publish({ catalog: this.aggregateCatalog() })
-        const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
-        if (rebound !== state) this.store.replace(rebound)
-        else this.reconcileLeases()
-        this.openPendingSource()
+    /** An actual paired-Host inventory updates reachability without replacing Session owners. */
+    setHostDiscovery(hosts: readonly { id: string; label: string; online: boolean }[]): void {
+        this.discovery.observe(hosts, true)
+        this.onCatalog('local')
     }
-    sourceCatalogFailed(error: unknown): void {
-        this.discovery.sourceFailed(errorMessage(error))
-        if (this.snapshot.sourceDiscovery) this.snapshot = { ...this.snapshot, sourceDiscovery: {
-            ...this.snapshot.sourceDiscovery, phase: this.snapshot.sourceDiscovery.observedAt === null ? 'unavailable' : 'stale', error: errorMessage(error),
-        } }
-        this.catalogChangedAt = Date.now()
+    /** Inventory transport failure does not revoke any loaded Host or Session. */
+    catalogDiscoveryFailed(message: string): void {
+        this.discovery.sourceFailed(message)
         this.publish()
-        if (this.hasWaitingLeases()) this.reconcileLeases()
+    }
+    /** Reuse the sidebar's refresh action for the same background inventory owner. */
+    installCatalogRefresh(refresh: () => Promise<void>): () => void {
+        if (this.catalogRefresh) throw new Error('Catalog refresh is already installed')
+        this.catalogRefresh = refresh
+        return () => { if (this.catalogRefresh === refresh) this.catalogRefresh = undefined }
     }
     catalogHostReady(id: string, label: string): void {
         this.discovery.hostReady(id, label)
         this.catalogChangedAt = Date.now()
-        this.publish()
+        this.onCatalog(id)
     }
     catalogHostFailed(id: string, label: string, error: unknown): void {
         this.discovery.hostFailed(id, label, errorMessage(error))
@@ -557,14 +576,8 @@ export class WorkspaceController {
         if (this.hasWaitingLeases()) this.reconcileLeases()
     }
     private hasWaitingLeases(): boolean { return [...this.leases.values()].some(lease => lease.waitingForCatalog) }
-    openNativeLibrary = (): void => { this.publish({ nativePanel: { kind: 'library' }, creation: null, creationContext: null, pickingSession: false }); this.options.reveal?.() }
-    openNativeTools = (sessionId: string, initialAction?: 'fork' | 'archive' | 'reopen' | 'pin' | 'restart' | 'delete'): void => {
-        this.publish({ nativePanel: { kind: 'session', sessionId, ...(initialAction ? { initialAction } : {}) }, pickingSession: false }); this.options.reveal?.()
-    }
-    closeNativePanel = (): void => { this.publish({ nativePanel: null }) }
-
-    /** One original-Hub loader; all saved panes share its exact source request. */
-    installSourceResolver(resolve: (source: OriginalSource, signal: AbortSignal) => Promise<void>): () => void {
+    /** Finite offline aliases share one cancellable request per exact saved reference. */
+    installSourceResolver(resolve: (source: OriginalSource, signal: AbortSignal) => Promise<AppSourceRoute>): () => void {
         if (this.sourceResolver) throw new Error('The original session resolver is already installed')
         this.sourceResolver = resolve
         this.reconcileLeases(); this.openPendingSource()
@@ -577,12 +590,7 @@ export class WorkspaceController {
     }
 
     private originalSource(resource: Exclude<PaneResource, { kind: 'empty' }>): OriginalSource | undefined {
-        const hubId = resource.sourceHubId ?? this.primarySourceHubId
-        return resource.sourceSessionId && hubId ? { hubId, sourceSessionId: resource.sourceSessionId } : undefined
-    }
-
-    private sourceBindingScope(): { primaryHubId?: string; requireHub: true } {
-        return { requireHub: true, ...(this.primarySourceHubId ? { primaryHubId: this.primarySourceHubId } : {}) }
+        return legacyPaneReference(resource)
     }
 
     private resolveSource(source: OriginalSource): SourceResolution | undefined {
@@ -596,17 +604,20 @@ export class WorkspaceController {
         entry.work = Promise.resolve().then(() => {
             entry.abort.signal.throwIfAborted()
             return resolver(entry.source, AbortSignal.any([this.lifetime.signal, entry.abort.signal]))
-        }).then(() => {
+        }).then(target => {
             if (!active()) return
+            entry.target = target
             entry.phase = 'ready'
-            const state = this.store.getSnapshot(), rebound = bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
+            const state = this.store.getSnapshot(), rebound = this.bindLayout(state)
             if (rebound !== state) this.store.replace(rebound)
             else this.reconcileLeases()
             this.openPendingSource()
         }, error => {
             if (!active()) return
             entry.phase = 'failed'; entry.error = errorMessage(error); entry.failure = sourceResolutionFailure(error)
+            if (error instanceof SourceAliasResolutionError) entry.recovery = error.recovery
             this.reconcileLeases()
+            this.openPendingSource()
             throw error
         })
         // Restored panes are background callers; explicit navigation still awaits work.
@@ -649,8 +660,8 @@ export class WorkspaceController {
             const source = this.originalSource(resource)
             if (source) needed.add(originalSourceKey(source))
         }
-        const pendingHub = this.pendingSourceSession?.hubId ?? this.primarySourceHubId
-        if (this.pendingSourceSession && pendingHub) needed.add(originalSourceKey({ hubId: pendingHub, sourceSessionId: this.pendingSourceSession.sessionId }))
+        const pendingHub = this.pendingSourceSession?.hubId
+        if (this.pendingSourceSession && pendingHub) needed.add(originalSourceKey({ kind: 'hapi-session', hubId: pendingHub, sessionId: this.pendingSourceSession.sessionId }))
         for (const [key, entry] of this.sourceResolutions) if (!needed.has(key)) {
             this.sourceResolutions.delete(key); entry.abort.abort()
         }
@@ -666,17 +677,20 @@ export class WorkspaceController {
         }
         this.snapshot = { ...this.snapshot, ...patch, layout: this.store.getSnapshot(), leases }
         this.rememberSourcePaneTitles()
-        if (this.discoveryCatalog !== this.snapshot.catalog) {
-            this.discoveryCatalog = this.snapshot.catalog
-            const listed = new Set(this.snapshot.catalog.ids)
-            this.sourceBindingsPending = [...this.sourceCatalog.values()].filter(source => {
-                const identity = sourceIdentity(this.snapshot.catalog.byId[source.id])
-                return !listed.has(source.id as SessionId) || !identity?.hubId || identity.sessionId !== source.hapiSessionId
-                    || this.primarySourceHubId !== null && identity.hubId !== this.primarySourceHubId
-            }).length
-        }
-        this.snapshot = { ...this.snapshot, catalogDiscovery: this.discovery.snapshot(this.options.sessions.list.getSnapshot().phase === 'ready', this.sourceBindingsPending) }
+        this.snapshot = { ...this.snapshot, catalogDiscovery: this.catalogDiscovery() }
         for (const listener of [...this.listeners]) listener()
+    }
+
+    private catalogDiscovery(): WorkspaceCatalogDiscovery {
+        const localReady = this.options.sessions.list.getSnapshot().phase === 'ready'
+        const snapshot = this.discovery.snapshot(localReady)
+        const hosts = snapshot.hosts.map(host => this.hosts.get(host.id)?.sessions.capabilities?.getSnapshot().catalogReady === false
+            && host.phase !== 'unavailable' ? { ...host, phase: 'pending' as const } : host)
+        const source = snapshot.source === 'unavailable' ? 'unavailable'
+            : localReady && this.options.sessions.capabilities?.getSnapshot().catalogReady !== false ? 'ready' : 'pending'
+        return { ...snapshot, hosts, source, sourceBindingsPending: 0,
+            phase: source === 'pending' || hosts.some(host => host.phase === 'pending') ? 'pending'
+                : source === 'unavailable' || hosts.some(host => host.phase === 'unavailable') ? 'partial' : 'ready' }
     }
 
     private titleCacheKey(): string { return `${this.options.storageKey}:pane-titles:v1` }
@@ -698,27 +712,12 @@ export class WorkspaceController {
             if (resource.kind === 'empty') continue
             const hubId = resource.sourceHubId, sourceSessionId = resource.sourceSessionId
             if (!hubId || !sourceSessionId) continue
-            const sourceKey = originalSourceKey({ hubId, sourceSessionId }), title = this.titleCache.get(sourceKey)
+            const sourceKey = sourceTitleKey(hubId, sourceSessionId), title = this.titleCache.get(sourceKey)
             if (!title) continue
             this.sourcePaneTitles.set(pane.id, { sourceKey, title })
             restored[pane.id] = title
         }
         if (Object.keys(restored).length) this.snapshot = { ...this.snapshot, sourcePaneTitles: { ...restored } }
-    }
-
-    /** Persist the title cache off the interaction path. */
-    private scheduleTitleCacheSave(): void {
-        if (this.titleSaveTimer !== undefined) return
-        this.titleSaveTimer = setTimeout(() => {
-            this.titleSaveTimer = undefined
-            try {
-                const titles: Record<string, string> = {}
-                let count = 0
-                for (const [sourceKey, title] of this.titleCache) { titles[sourceKey] = title; if (++count >= 400) break }
-                this.options.storage?.setItem(this.titleCacheKey(), JSON.stringify({ version: 1, titles }))
-            } catch { /* storage is best effort */ }
-        }, 1500)
-        this.titleSaveTimer.unref?.()
     }
 
     private rememberSourcePaneTitles(): void {
@@ -727,24 +726,14 @@ export class WorkspaceController {
             present.add(pane.id)
             const resource = pane.resource
             if (resource.kind === 'empty') { this.sourcePaneTitles.delete(pane.id); continue }
-            const row = this.snapshot.catalog.byId[resource.sessionId], identity = sourceIdentity(row)
-            const hubId = resource.sourceHubId ?? identity?.hubId, sourceSessionId = resource.sourceSessionId ?? identity?.sessionId
+            const hubId = resource.sourceHubId, sourceSessionId = resource.sourceSessionId
             if (!hubId || !sourceSessionId) { this.sourcePaneTitles.delete(pane.id); continue }
-            const sourceKey = originalSourceKey({ hubId, sourceSessionId }), previous = this.sourcePaneTitles.get(pane.id)
-            let source = hubId === this.primarySourceHubId ? this.sourceCatalog.get(resource.sessionId) : undefined
-            if (source?.hapiSessionId !== sourceSessionId) source = undefined
-            if (!source && hubId === this.primarySourceHubId) {
-                for (const candidate of this.sourceCatalog.values()) if (candidate.hapiSessionId === sourceSessionId) { source = candidate; break }
-            }
-            const sourceTitle = source?.title.trim()
-            const sameSource = identity ? identity.hubId === hubId && identity.sessionId === sourceSessionId
-                : previous?.sourceKey === sourceKey || source?.id === row?.sourceSessionId
-            const currentTitle = sameSource ? row?.title?.trim() : undefined
-            const title = currentTitle || (previous?.sourceKey === sourceKey ? previous.title : undefined)
-                || (sourceTitle && sourceTitle !== sourceSessionId && sourceTitle !== source!.id ? sourceTitle : undefined)
+            const sourceKey = sourceTitleKey(hubId, sourceSessionId), previous = this.sourcePaneTitles.get(pane.id)
+            // This cache belongs only to the saved reference. A live catalog
+            // row cannot rename it or imply that an offline reference resolved.
+            const title = (previous?.sourceKey === sourceKey ? previous.title : undefined) ?? this.titleCache.get(sourceKey)
             if (title) {
                 this.sourcePaneTitles.set(pane.id, { sourceKey, title }); titles[pane.id] = title
-                if (this.titleCache.get(sourceKey) !== title) { this.titleCache.set(sourceKey, title); this.scheduleTitleCacheSave() }
             } else this.sourcePaneTitles.delete(pane.id)
         }
         for (const paneId of this.sourcePaneTitles.keys()) if (!present.has(paneId)) this.sourcePaneTitles.delete(paneId)
@@ -773,7 +762,7 @@ export class WorkspaceController {
         this.publish({ catalog })
         if (this.navigationGuard || this.reconciling) return
         const current = this.store.getSnapshot()
-        const rebound = bindSourceResources(current, catalog.byId, this.sourceBindingScope())
+        const rebound = this.bindLayout(current)
         if (current !== rebound) this.store.replace(rebound)
         if (this.openPendingSource()) return
         this.reconcileLeases()
@@ -813,12 +802,31 @@ export class WorkspaceController {
 
     /** Opening from any catalog path persists the original identity when known. */
     private openCatalogSession(hostId: string, sessionId: string): void {
-        const resourceId = sessionResourceId(hostId, sessionId)
-        const reference = sourceReference(this.snapshot.catalog.byId[resourceId])
-        this.store.openResource({ kind: 'chat', sessionId: resourceId, ...(reference ?? {}) })
+        this.openSession(sessionResourceId(hostId, sessionId))
+    }
+
+    /** Only an authenticated original Host's own exact native row outranks a local shadow. */
+    private preferredSourceResource(resourceId: string): string {
+        try {
+            const address = parseSessionResourceId(resourceId)
+            if (address.hostId !== 'local' || !isSourceSessionId(address.sessionId)) return resourceId
+            const identity = parseSourceSessionId(address.sessionId), host = this.hosts.get(identity.machineId)
+            if (!host || host.id === 'local' || this.discovery.host(host.id)?.phase === 'unavailable') return resourceId
+            const catalog = host.sessions.list.getSnapshot(), row = catalog.byId[address.sessionId as SessionId]
+            const source = row?.projectionValues?.hhpiSource
+            if (row?.id !== address.sessionId || source?.id !== address.sessionId
+                || source.machineId !== identity.machineId || source.sourceId !== identity.sourceId
+                || source.engine !== identity.engine || source.nativeId !== identity.nativeId
+                || (source.connection ? source.connection.state !== 'online' : source.status === 'offline')) return resourceId
+            const access = host.sessions.captureWorkspaceAccess?.(address.sessionId)
+            if (!access || access.signal.aborted) return resourceId
+            access.assertCurrent()
+            return sessionResourceId(host.id, address.sessionId)
+        } catch { return resourceId }
     }
 
     private aggregateCatalog(): WorkspaceCatalog {
+        const opened = new Set(this.store.getSnapshot().windows.flatMap(window => panes(window.root)).flatMap(pane => pane.resource.kind === 'empty' ? [] : [pane.resource.sessionId]))
         for (const host of this.hosts.values()) this.hostCatalogs.set(host.id, { label: host.label, catalog: host.sessions.list.getSnapshot() })
         const parts: Array<{ ids: SessionId[]; rows: WorkspaceCatalog['byId'] }> = []
         let phase: SessionListState['phase'] = 'ready'
@@ -829,51 +837,37 @@ export class WorkspaceController {
             // a pane graph can outlive the machine's catalog connection briefly.
             const hostOnline = host !== undefined && (hostId === 'local' || this.discovery.host(hostId)?.phase !== 'unavailable')
             const workspace = host?.workspaceState?.getSnapshot()
-            const inputs = [cached.catalog, cached.label, hostOnline, workspace,
-                hostId === 'local' ? this.sourceCatalogRevision : 0,
-                hostId === 'local' ? this.snapshot?.machines : undefined,
-                hostId === 'local' ? this.discovery.sourcePhase : undefined]
+            // Omitted rows remain exact-addressable. An existing Pane or this
+            // account's draft keeps its entry without re-advertising the source.
+            const kept = Object.keys(cached.catalog.byId).filter(id => !cached.catalog.ids.includes(id as SessionId)
+                && isSourceSessionId(id) && this.keepOmittedSource(hostId, id, opened))
+            const inputs = [cached.catalog, cached.label, hostOnline, workspace, JSON.stringify(kept)]
             const previous = this.aggregatedHosts.get(hostId)
             if (previous && inputs.every((value, index) => value === previous.inputs[index])) {
                 parts.push(previous); continue
             }
             const hostRows: WorkspaceCatalog['byId'] = {}
+            const previousCatalog = previous?.inputs[0] as SessionListState | undefined
             const archived = new Set(workspace?.archivedSessionIds ?? [])
             const pinned = new Set(workspace?.pinnedSessionIds ?? [])
             for (const [sourceSessionId, row] of Object.entries(cached.catalog.byId)) {
                 const resourceId = sessionResourceId(hostId, sourceSessionId)
-                const source = hostId === 'local' ? this.sourceCatalog.get(sourceSessionId) : undefined
-                const sourceOwned = hostId === 'local' && (sourceIdentity(row) !== null || isSourceChild(row))
-                // Reconnection clears official projections before their new
-                // baseline arrives. Keep a source display's title through
-                // that gap: current durable title, source catalog, then its
-                // last known title. This changes labels only, never identity.
-                const sourceTitle = source?.title.trim()
-                const title = hostId === 'local' && (source !== undefined || isSourceDisplaySessionId(sourceSessionId))
-                    ? row.title?.trim() || (sourceTitle && sourceTitle !== source!.hapiSessionId && sourceTitle !== source!.id ? sourceTitle : undefined)
-                        || previous?.rows[resourceId]?.title
-                    : undefined
-                const sourceLocation = sourceOwned ? sessionLocation(row) : undefined
-                const sourceMachine = sourceLocation?.machineId ? (this.snapshot?.machines ?? []).find(machine => machine.id === sourceLocation.machineId) : undefined
-                hostRows[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
-                    ...(title ? { title, displayTitle: title } : {}),
-                    ...(sourceOwned ? { sourceHubOnline: this.discovery.sourcePhase !== 'unavailable',
-                        ...(sourceMachine ? { sourceMachineOnline: sourceMachine.online } : {}) } : {}),
-                    ...(sourceOwned && Number.isFinite(source?.updatedAt) ? { updatedAt: source!.updatedAt! } : {}),
-                    ...(sourceOwned && typeof source?.active === 'boolean' ? { sourceActive: source.active } : {}),
-                    ...(sourceOwned && source?.lifecycleState !== undefined ? { sourceLifecycleState: source.lifecycleState } : {}),
-                    ...(sourceOwned && source ? { sourceCreatedAt: source.sourceCreatedAt ?? null, sourceLastActiveAt: source.sourceLastActiveAt ?? null, sourceSummary: source.sourceSummary ?? null, sourceWorktree: source.sourceWorktree ?? null, sourceSubagentSearch: source.sourceSubagentSearch ?? [],
-                        ...(source.sourceListFacts ? { sourceListFacts: source.sourceListFacts } : {}),
-                        ...(source.sourceRowState ? { sourceRowState: source.sourceRowState } : {}) } : {}),
-                    sourceSessionId,
-                    // A source-owned row is archived by the original HAPI lifecycle,
-                    // not by a DSH display bookmark that never applies to it.
-                    archived: sourceOwned ? source?.lifecycleState === 'archived' : archived.has(sourceSessionId),
-                    pinned: sourceOwned ? source?.pinMode === 'project' || source?.pinMode === 'global' : pinned.has(sourceSessionId),
-                    ...(sourceOwned ? { sourcePinMode: source?.pinMode ?? 'none' } : {}),
+                const old = previous?.rows[resourceId]
+                const isArchived = isSourceSessionId(sourceSessionId) ? row.projectionValues?.hhpiArchived ?? archived.has(sourceSessionId) : archived.has(sourceSessionId)
+                const isPinned = pinned.has(sourceSessionId)
+                if (old && previousCatalog?.byId[sourceSessionId as SessionId] === row && old.hostLabel === cached.label
+                    && old.hostOnline === hostOnline && old.archived === isArchived && old.pinned === isPinned) {
+                    hostRows[resourceId] = old
+                    continue
                 }
+                hostRows[resourceId] = { ...row, id: resourceId as SessionId, hostId, hostLabel: cached.label, hostOnline,
+                    sourceSessionId, archived: isArchived, pinned: isPinned }
+
             }
-            const hostIds = cached.catalog.ids.map(id => sessionResourceId(hostId, id) as SessionId)
+            const hostIds = !kept.length && previous && previousCatalog?.ids.length === cached.catalog.ids.length
+                && cached.catalog.ids.every((id, index) => id === previousCatalog.ids[index])
+                && previous.inputs[4] === '[]'
+                ? previous.ids : [...cached.catalog.ids, ...kept].map(id => sessionResourceId(hostId, id) as SessionId)
             const part = { inputs, ids: hostIds, rows: hostRows }
             this.aggregatedHosts.set(hostId, part)
             parts.push(part)
@@ -888,12 +882,60 @@ export class WorkspaceController {
         const ids: SessionId[] = []
         const byId: WorkspaceCatalog['byId'] = {}
         for (const part of parts) { Object.assign(byId, part.rows); ids.push(...part.ids) }
+        // One native identity has one directory entry, even while its original
+        // Host is offline. All exact rows/permissions stay with their own Host.
+        const winners = new Map<string, SessionId>()
+        const rank = (id: SessionId): number => {
+            const row = byId[id]!, identity = parseSourceSessionId(row.sourceSessionId)
+            const source = row.projectionValues?.hhpiSource
+            if (source && (source.id !== row.sourceSessionId || sourceSessionId(source) !== row.sourceSessionId)) return -1
+            const original = row.hostId === identity.machineId
+            const online = row.hostOnline && source && (source.connection ? source.connection.state === 'online' : source.status !== 'offline')
+            if (online) {
+                try {
+                    const access = this.hosts.get(row.hostId)?.sessions.captureWorkspaceAccess?.(row.sourceSessionId)
+                    if (access && !access.signal.aborted) { access.assertCurrent(); return original ? 4 : 3 }
+                } catch { /* Keep the other exact route; never combine grants. */ }
+            }
+            return !source && row.hostOnline ? 2 : source && original ? 1 : 0
+        }
+        for (const id of ids) {
+            const nativeId = byId[id]!.sourceSessionId
+            if (!isSourceSessionId(nativeId)) continue
+            const prior = winners.get(nativeId)
+            if (!prior || rank(id) > rank(prior)) winners.set(nativeId, id)
+        }
+        const visibleIds = ids.filter(id => !isSourceSessionId(byId[id]!.sourceSessionId) || winners.get(byId[id]!.sourceSessionId) === id)
         const previous = this.snapshot?.catalog
-        if (previous && phase === previous.phase && ids.length === previous.ids.length
-            && ids.every((id, index) => id === previous.ids[index])
+        if (previous && phase === previous.phase && visibleIds.length === previous.ids.length
+            && visibleIds.every((id, index) => id === previous.ids[index])
             && Object.keys(byId).length === Object.keys(previous.byId).length
             && Object.entries(byId).every(([id, row]) => row === previous.byId[id])) return this.aggregateValue = previous
-        return this.aggregateValue = { ids, byId, phase, projectionsBySession: {} }
+        return this.aggregateValue = { ids: visibleIds, byId, phase, projectionsBySession: {} }
+    }
+
+    private keepOmittedSource(hostId: string, id: string, opened: ReadonlySet<string>): boolean {
+        if (opened.has(sessionResourceId(hostId, id))) return true
+        const account = this.options.application?.getSnapshot(), storage = this.options.storage
+        // Unknown account/storage cannot establish that an unsent draft is absent.
+        if (!account || account.signal.aborted || !storage) return true
+        try {
+            const access = this.hosts.get(hostId)?.sessions.captureWorkspaceAccess?.(id)
+            if (!access || access.signal.aborted) return true
+            access.assertCurrent()
+            const key = accountComposerDraftKey(JSON.stringify([account.scope, access.scope]), hostId, id)
+            if (hasStoredComposerDraft(storage, key)) return true
+            const layout = this.store.getSnapshot(), attachments = this.omittedAttachmentDrafts.get(key)
+            if (attachments?.layout === layout) return attachments.protected
+            const pending = { layout, protected: true }
+            this.omittedAttachmentDrafts.set(key, pending)
+            void hasStoredComposerAttachments(key).then(protectedDraft => {
+                if (this.disposed || this.omittedAttachmentDrafts.get(key) !== pending) return
+                pending.protected = protectedDraft
+                this.publish({ catalog: this.aggregateCatalog() })
+            })
+            return true
+        } catch { return true }
     }
 
     /** Add an independently booted Host; never pass its reference into another Host's provider. */
@@ -905,6 +947,7 @@ export class WorkspaceController {
         this.hostMainIds.set(host.id, this.selectedMain(host.id))
         this.catalogChangedAt = Date.now()
         const subscriptions = [host.sessions.list.subscribe(() => this.onCatalog(host.id))]
+        if (host.sessions.capabilities) subscriptions.push(host.sessions.capabilities.subscribe(() => this.publish()))
         if (host.workspaceState) subscriptions.push(host.workspaceState.subscribe(() => this.publish({ catalog: this.aggregateCatalog() })))
         this.hostUnsubscribers.set(host.id, subscriptions)
         for (const [paneId, lease] of this.leases) {
@@ -930,7 +973,7 @@ export class WorkspaceController {
                 // Unregister only on explicit removal or runtime disposal.
                 // A temporary disconnect keeps this Host and its references.
                 const failure = paneOpenState({ kind: 'display', label: host.label,
-                    hostId: host.id, sessionId: lease.sessionId, sourcePhase: this.discovery.sourcePhase, currentHubId: this.primarySourceHubId,
+                    hostId: host.id, sessionId: lease.sessionId, sourcePhase: this.options.sessions.list.getSnapshot().phase === 'ready' ? 'ready' : 'pending', currentHubId: null,
                     localPhase: 'ready', hostRegistered: false, hostOnline: false, settled: true })
                 this.leases.set(paneId, { hostId: host.id, sessionId: lease.sessionId, status: 'failed',
                     error: paneFailureError(failure), reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail,
@@ -978,7 +1021,8 @@ export class WorkspaceController {
             const before = previous.get(pane.id), after = pane.resource, intent = this.reading.read(pane.id)
             if (!before || before.kind === 'empty' || after.kind === 'empty' || !intent || intent.target.kind === 'latest'
                 || intent.sessionId !== before.sessionId || before.sessionId === after.sessionId) continue
-            if (before.sourceSessionId && before.sourceSessionId === after.sourceSessionId && before.sourceHubId === after.sourceHubId) {
+            if (before.sourceSessionId && before.sourceSessionId === after.sourceSessionId && before.sourceHubId === after.sourceHubId
+                || sameNativeRoute(before.sessionId, after.sessionId)) {
                 this.reading.request(pane.id, after.sessionId, intent.target)
             }
         }
@@ -1034,15 +1078,14 @@ export class WorkspaceController {
             hostId, sessionId,
             ...(resource.sourceSessionId ? { sourceSessionId: resource.sourceSessionId } : {}),
             ...(resource.sourceHubId ? { savedHubId: resource.sourceHubId } : {}),
-            currentHubId: this.primarySourceHubId,
-            sourcePhase: this.discovery.sourcePhase,
-            sourceError: this.discovery.sourceFailure,
+            currentHubId: null,
+            sourcePhase: this.options.sessions.list.getSnapshot().phase === 'ready' ? 'ready' : 'pending',
+            sourceError: null,
             localPhase,
             hostRegistered: host !== undefined,
             hostOnline: host !== undefined && (hostId === 'local' || this.discovery.host(hostId)?.phase !== 'unavailable'),
             settled: this.catalogSettled(),
             ...(archived ? { archived: true } : {}),
-            ...(catalogRow?.sourceLifecycleState !== undefined ? { sourceLifecycle: catalogRow.sourceLifecycleState } : {}),
             ...(machine ? { machineLabel: machine.label, machineOnline: machine.online } : {}),
         }
     }
@@ -1050,7 +1093,14 @@ export class WorkspaceController {
     private markPaneUnavailable(paneId: string, hostId: string, sessionId: string, resource: Exclude<PaneResource, { kind: 'empty' }>,
         resolution?: SourceResolution, ambiguous = false): void {
         const state = paneOpenState(this.paneOpenContext(hostId, sessionId, resource))
-        if (resource.sourceSessionId && (resolution !== undefined || ambiguous)) {
+        if (legacyPaneReference(resource) && resolution === undefined && !ambiguous) {
+            this.leases.set(paneId, { hostId, sessionId, status: 'failed', sourceResolution: 'not-ready', reason: 'source-not-found',
+                error: 'This saved reference has not resolved to its original source. Its identifiers are preserved.',
+                nextStep: 'Retry the original reference after its offline mapping is available, or export the saved reference for recovery.',
+                detail: state.detail, retryable: true, waitingForCatalog: true })
+            return
+        }
+        if (legacyPaneReference(resource) && (resolution !== undefined || ambiguous)) {
             // Structured original-source acquisition owns this pane's copy. The
             // typed message/next step stays on the lease for other surfaces; the
             // raw resolver error is the expandable technical detail.
@@ -1100,18 +1150,17 @@ export class WorkspaceController {
         if (this.disposed || this.reconciling) return
         this.reconciling = true
         try {
-            // Re-bind saved identities before classifying anything: a display
-            // generation (`-rN`) is a resolvable rename, an imported legacy
-            // identity may receive its confirmed Hub, and neither is a deleted
-            // session. An already-saved Hub is never replaced.
+            // Re-bind saved identities before classifying anything: only an exact offline
+            // alias can replace a legacy address. Display suffixes and catalog
+            // metadata cannot establish the original source identity.
             const current = this.store.getSnapshot()
-            const rebound = bindSourceResources(current, this.snapshot.catalog.byId, this.sourceBindingScope())
+            const rebound = this.bindLayout(current)
             if (rebound !== current) this.store.replace(rebound)
             const layout = this.store.getSnapshot()
             const expected = new Map(layout.windows.flatMap(window => panes(window.root))
                 .flatMap(pane => pane.resource.kind !== 'empty' ? [[pane.id, pane.resource] as const] : []))
             const active = layout.windows.find(window => window.id === layout.activeWindowId)
-            const visible = new Set((active ? panes(active.root) : []).filter(pane => !layout.zoomed[layout.activeWindowId]
+            const visible = new Set((active ? panes(active.root) : []).filter(pane => !workspaceFocusesSinglePane(this.compactViewport, layout.zoomed[layout.activeWindowId])
                 || pane.id === layout.focused[layout.activeWindowId]).map(pane => pane.id))
             this.pruneSourceResolutions(expected.values())
             this.pruneCatalogTargets(expected.values())
@@ -1152,24 +1201,19 @@ export class WorkspaceController {
                 }
                 const host = this.hosts.get(hostId)
                 try {
-                    const legacy = this.options.legacySourceAvailability
-                    if (resource.sourceSessionId && legacy && legacy.getSnapshot() !== true) {
-                        const unavailable = legacy.getSnapshot() === false
-                        const typed = sourceResolutionTypedState('not-connected')
-                        this.leases.set(paneId, { hostId, sessionId, status: unavailable ? 'failed' : 'opening', sourceResolution: unavailable ? 'not-connected' : 'loading',
-                            error: 'The saved original source is not connected to this HHPI Host. Its reference is preserved.',
-                            reason: unavailable ? typed.reason : 'catalog-loading', nextStep: typed.nextStep, retryable: true, waitingForCatalog: true })
+                    const source = this.originalSource(resource)
+                    if (source) {
+                        if (resource.kind !== 'chat') {
+                            this.leases.set(paneId, { hostId, sessionId, status: 'failed', reason: 'binding-failed',
+                                error: 'This saved resource still needs its exact resource migration. Its original reference is preserved.',
+                                nextStep: 'Recover or export the original resource; a conversation alias cannot replace a file or terminal identity.', retryable: false })
+                        } else this.markPaneUnavailable(paneId, hostId, sessionId, resource, this.resolveSource(source))
                         continue
                     }
-                    const source = this.originalSource(resource)
-                    if (resource.sourceSessionId && (!source || !sourceRow({ ...resource, sourceHubId: source.hubId }, this.snapshot.catalog.byId))) {
-                        const matches = source ? this.sourceMatches({ sessionId: source.sourceSessionId, hubId: source.hubId }) : []
-                        // A saved Hub that is not the configured Hub is a different identity:
-                        // never request it, and never adopt another Hub's same-id session.
-                        const foreignHub = source !== undefined && resource.sourceHubId !== undefined
-                            && this.primarySourceHubId !== null && resource.sourceHubId !== this.primarySourceHubId
-                        const resolution = source && !foreignHub && matches.length === 0 ? this.resolveSource(source) : undefined
-                        this.markPaneUnavailable(paneId, hostId, sessionId, resource, resolution, matches.length > 1)
+                    if (resource.sourceSessionId) {
+                        this.leases.set(paneId, { hostId, sessionId, status: 'failed', reason: 'source-hub-changed',
+                            error: 'This saved source reference is incomplete. Its original reference is preserved.',
+                            nextStep: 'Recover or export the saved reference and choose its exact source before restoring it.', retryable: false })
                         continue
                     }
                     if (!host) {
@@ -1253,9 +1297,21 @@ export class WorkspaceController {
     }
 
     openSession(sessionId: string, beside?: SplitAxis, target: PaneReadingTarget = { kind: 'latest' }): void {
+        sessionId = this.preferredSourceResource(sessionId)
+        // A sidebar/deep link must not bypass the existing same-native input's safety checkpoint.
+        const shadow = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.resource.kind === 'chat'
+            && pane.resource.sessionId !== sessionId && this.preferredSourceResource(pane.resource.sessionId) === sessionId)
+        if (shadow) {
+            this.store.focus(shadow.id)
+            this.store.replace(this.bindLayout(this.store.getSnapshot()))
+            const current = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(pane => pane.id === shadow.id)
+            if (current?.resource.kind !== 'chat' || current.resource.sessionId !== sessionId) return
+            beside = undefined
+        }
+        this.nativeSourceLink?.abort(); this.nativeSourceLink = undefined
         this.navigationRevision++
         this.pendingSourceSession = null
-        this.store.openResource({ kind: 'chat', sessionId, ...(sourceReference(this.snapshot.catalog.byId[sessionId]) ?? {}) }, beside)
+        this.store.openResource({ kind: 'chat', sessionId }, beside)
         const pane = this.store.focusedPane()
         // A dirty document may veto replacement. A denied navigation must not
         // move its scroll position or leave work scheduled for another view.
@@ -1278,21 +1334,6 @@ export class WorkspaceController {
         if (this.successorHandler) throw new Error('The successor draft handler is already installed')
         this.successorHandler = handler
         return () => { if (this.successorHandler === handler) this.successorHandler = undefined }
-    }
-
-    async openSuccessorSession(fromId: string, toId: string, paneId?: string): Promise<void> {
-        const previous = this.snapshot.catalog.byId[fromId], from = sourceIdentity(previous)
-        if (!previous || !from?.hubId || isSourceChild(previous)) throw new Error('The original source identity is unavailable. Its draft has not been moved.')
-        await this.refresh()
-        const next = this.snapshot.catalog.byId[toId], to = sourceIdentity(next)
-        if (this.disposed) throw new Error('The workspace is closed')
-        if (!next || !to?.hubId || isSourceChild(next) || from.hubId !== to.hubId || previous.hostId !== next.hostId) {
-            throw new Error('The confirmed successor is not yet listed on the original Hub and Host. The old draft remains available; inspect the source operation receipt before trying again.')
-        }
-        if (from.sessionId === to.sessionId) { this.openSession(toId); return }
-        if (!this.successorHandler) throw new Error('The source draft receiver is not ready. The old draft remains available.')
-        await this.successorHandler({ hubId: from.hubId, sessionId: from.sessionId, displayId: previous.sourceSessionId, hostId: previous.hostId },
-            { hubId: to.hubId, sessionId: to.sessionId, displayId: next.sourceSessionId, hostId: next.hostId }, paneId)
     }
 
     /** A source notification never treats its original id as a DSH display id
@@ -1326,43 +1367,33 @@ export class WorkspaceController {
         const revision = ++this.navigationRevision
         const target: PaneReadingTarget = source.messageId ? { kind: 'message', messageId: source.messageId, origin: 'notification' }
             : source.requestId ? { kind: 'approval', requestId: source.requestId } : { kind: 'latest' }
-        let matches = this.sourceMatches(source)
-        if (matches.length === 0 && this.sourceResolver) {
-            const original = { hubId: source.hubId, sourceSessionId: source.sessionId }, key = originalSourceKey(original)
-            const failed = this.sourceResolutions.get(key)
-            if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
-            this.sourceRequests.set(key, (this.sourceRequests.get(key) ?? 0) + 1)
-            const resolution = this.resolveSource(original)!
-            try { await this.awaitResolution(resolution) }
-            finally {
-                const count = (this.sourceRequests.get(key) ?? 1) - 1
-                if (count) this.sourceRequests.set(key, count)
-                else this.sourceRequests.delete(key)
-            }
-            matches = this.sourceMatches(source)
+        const original: OriginalSource = { kind: 'hapi-session', hubId: source.hubId, sessionId: source.sessionId }
+        const key = originalSourceKey(original), failed = this.sourceResolutions.get(key)
+        if (failed?.phase === 'failed') { this.sourceResolutions.delete(key); failed.abort.abort() }
+        if (!this.sourceResolver) throw new Error('Saved reference recovery is not connected. Its original reference is preserved.')
+        this.sourceRequests.set(key, (this.sourceRequests.get(key) ?? 0) + 1)
+        const resolution = this.resolveSource(original)!
+        try {
+            await this.awaitResolution(resolution)
+            if (this.disposed) throw new Error('The workspace is closed')
+            const route = resolution.target!
+            const id = sessionResourceId(route.hostId, route.sessionId)
+            if (!this.snapshot.catalog.byId[id]) await this.refresh()
+            if (this.disposed) throw new Error('The workspace is closed')
+            if (!this.snapshot.catalog.byId[id]) throw new Error('The mapped conversation is not listed by its exact Host. Reconnect that Host and retry; the original reference is preserved.')
+            if (revision === this.navigationRevision) this.openSession(id, undefined, target)
+        } finally {
+            const count = (this.sourceRequests.get(key) ?? 1) - 1
+            if (count) this.sourceRequests.set(key, count)
+            else this.sourceRequests.delete(key)
         }
-        if (this.disposed) throw new Error('The workspace is closed')
-        if (matches.length !== 1) { await this.refresh(); matches = this.sourceMatches(source) }
-        if (this.disposed) throw new Error('The workspace is closed')
-        if (matches.length !== 1) throw new Error(matches.length > 1
-            ? 'This source conversation has multiple display bindings. Choose its Host in the unified sidebar.'
-            : 'This conversation is not available from the requested source Hub. Reconnect that Hub and try again.')
-        if (revision === this.navigationRevision) this.openSession(matches[0]!.id, undefined, target)
-    }
-
-    private sourceMatches(source: { sessionId: string; hubId?: string }): WorkspaceCatalogRow[] {
-        return Object.values(this.snapshot.catalog.byId).filter(row => {
-            const identity = sourceIdentity(row)
-            return identity?.sessionId === source.sessionId && (source.hubId === undefined || identity.hubId === source.hubId)
-        })
     }
 
     /** Native sidebar drag uses the same catalog identity as normal opening. */
     dockSession(sessionId: string, targetPaneId: string, position: DockPosition): void {
         const row = this.snapshot.catalog.byId[sessionId]
         if (!row) return
-        const source = sourceIdentity(row)
-        this.store.dockResource({ kind: 'chat', sessionId, ...(source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : {}) }, targetPaneId, position)
+        this.store.dockResource({ kind: 'chat', sessionId }, targetPaneId, position)
         this.closeSessionPicker(); this.options.reveal?.()
     }
 
@@ -1382,7 +1413,7 @@ export class WorkspaceController {
         const focused = this.store.focusedPane().resource
         const sessionId = options.sessionId ?? (focused.kind === 'empty' ? undefined : focused.sessionId)
         if (!sessionId) throw new Error('Choose a conversation to provide the plugin view’s Host, machine and working directory')
-        const source = sourceIdentity(this.snapshot.catalog.byId[sessionId])
+        this.cancelStartupFocus()
         // Resource opens reveal an existing address. Independent page instances
         // keep their official multiple semantics when no address exists yet.
         const candidates = this.store.getSnapshot().windows.flatMap(window => panes(window.root))
@@ -1399,7 +1430,6 @@ export class WorkspaceController {
         if (existing) { this.store.updateView(existing.id, target, options.title); this.store.focus(existing.id) }
         else this.store.openResource({ kind: 'view', sessionId, viewId: this.options.nextId?.() ?? randomId(), target,
             ...(options.title === undefined ? {} : { title: options.title }),
-            ...(source ? { sourceSessionId: source.sessionId, ...(source.hubId ? { sourceHubId: source.hubId } : {}) } : {}),
         }, options.beside)
         this.options.reveal?.()
     }
@@ -1412,26 +1442,71 @@ export class WorkspaceController {
     /** Source deep links wait for their real native binding; no guessed display ID. */
     private openPendingSource(): boolean {
         if (this.disposed || !this.pendingSourceSession) return false
-        const hubId = this.pendingSourceSession.hubId ?? this.primarySourceHubId
-        // Legacy /sessions links belong to the configured original Hub. Wait
-        // for its real catalog identity instead of guessing from an early row
-        // while other Host catalogs are still arriving.
-        if (!hubId) return false
-        const matches = this.sourceMatches({ ...this.pendingSourceSession, hubId })
-        // Notification links always include their Hub and never take a first hit.
-        if (matches.length !== 1) {
-            if (matches.length === 0) this.resolveSource({ hubId, sourceSessionId: this.pendingSourceSession.sessionId })
-            return false
+        const hubId = this.pendingSourceSession.hubId
+        if (!hubId && isSourceSessionId(this.pendingSourceSession.sessionId)) {
+            // Current HHPI links already carry their exact native identity. The
+            // local Host resolves it through its ordinary acquisition path even
+            // when the sidebar has not discovered this conversation yet.
+            if (!this.remoteLoaded) return false
+            const { sessionId, target } = this.pendingSourceSession
+            try { parseSourceSessionId(sessionId) }
+            catch (error) { this.pendingSourceSession = null; this.report(error); return false }
+            return this.openPendingSourceTarget('local', sessionId, target)
         }
-        // Identity resolution can overlap the independent layout read. Opening
-        // still waits for its merge so the deep link cannot overwrite a layout
-        // that has not arrived yet or create an early persistence write.
-        if (!this.remoteLoaded) return false
-        const row = matches[0]!
+        if (!hubId) return false
+        const reference: OriginalSource = { kind: 'hapi-session', hubId, sessionId: this.pendingSourceSession.sessionId }
+        const resolution = this.resolveSource(reference)
+        if (resolution?.phase === 'failed' && this.remoteLoaded) {
+            // A shared reference needs the same recovery surface as a restored
+            // pane. Keep its exact identity; never leave unrelated content on
+            // screen while silently abandoning the requested conversation.
+            this.pendingSourceSession = null
+            this.navigationRevision++
+            this.store.openResource({ kind: 'chat', sessionId: reference.sessionId,
+                sourceSessionId: reference.sessionId, sourceHubId: reference.hubId })
+            this.closeSessionPicker()
+            this.options.reveal?.()
+            return true
+        }
+        if (resolution?.phase !== 'ready' || !resolution.target || !this.remoteLoaded) return false
+        const route = resolution.target, id = sessionResourceId(route.hostId, route.sessionId)
+        const row = this.snapshot.catalog.byId[id]
+        if (!row) return false
         const target = this.pendingSourceSession.target
-        this.pendingSourceSession = null
-        this.openSession(row.id, undefined, target)
-        return true
+        return this.openPendingSourceTarget(route.hostId, route.sessionId, target)
+    }
+
+    /** Resolve an original native content id through this exact authenticated Host. */
+    private openPendingSourceTarget(hostId: string, sessionId: string, target: PaneReadingTarget): boolean {
+        if (target.kind !== 'message' || !target.messageId.startsWith('codex:')) {
+            this.openSession(sessionResourceId(hostId, sessionId), undefined, target)
+            return true
+        }
+        const identity = this.options.application?.getSnapshot()
+        if (this.options.application && !identity) return false
+        const host = this.hosts.get(hostId)
+        try {
+            const source = parseSourceSessionId(sessionId), parts = target.messageId.split(':')
+            if (parts.length !== 4 || source.engine !== 'codex') throw new Error('The original native message reference is invalid.')
+            const [nativeId, turnId, itemId] = parts.slice(1).map(decodeURIComponent)
+            if (nativeId !== source.nativeId || !turnId || !itemId) throw new Error('The native message reference belongs to another source conversation.')
+            if (!host?.locateSourcePosition) throw new Error('The original source cannot resolve this message position.')
+            this.pendingSourceSession = null
+            this.nativeSourceLink?.abort()
+            const abort = new AbortController(), revision = ++this.navigationRevision
+            this.nativeSourceLink = abort
+            const signal = AbortSignal.any([abort.signal, this.lifetime.signal, ...(identity ? [identity.signal] : [])])
+            void host.locateSourcePosition({ sessionId, position: { turnId, itemId } }, signal).then(result => {
+                signal.throwIfAborted()
+                if (this.disposed || this.navigationRevision !== revision || this.hosts.get(hostId) !== host
+                    || this.options.application?.getSnapshot() !== identity) return
+                const position = remoteValue(result)
+                this.nativeSourceLink = undefined
+                this.openSession(sessionResourceId(hostId, sessionId), undefined, { ...target, messageId: String(position.seq), epoch: position.epoch })
+            }).catch(error => { if (!signal.aborted && !this.disposed && this.navigationRevision === revision) this.report(error) })
+                .finally(() => { if (this.nativeSourceLink === abort) this.nativeSourceLink = undefined })
+            return true
+        } catch (error) { this.pendingSourceSession = null; this.report(error); return false }
     }
 
     replaceSession(previousId: string, nextId: string, hostId = 'local'): void {
@@ -1455,12 +1530,15 @@ export class WorkspaceController {
         let sourceId = catalog.byId[requestedId as SessionId]?.id
         if (!sourceId) {
             if (!host.workspaces) throw new Error('The selected Host does not expose the official Workspace service')
-            const path = directory.trim() || (await host.navigation.listDirectory?.())?.path
-            if (!path) throw new Error('Choose a working directory on the selected Host')
-            // Official blank Conversation requires Workspace membership. A raw
-            // cwd-only Session is valid on the Host but leaves its hero composer
-            // inert. Workspace adoption is idempotent by the canonical path.
-            const workspace = await host.workspaces.create({ path })
+            let workspace
+            if (!directory.trim()) workspace = await host.workspaces.initializeDefault?.()
+            if (!workspace) {
+                const path = directory.trim() || (host.directoryBrowsing !== false ? (await host.navigation.listDirectory?.())?.path : undefined)
+                if (!path) throw new WorkspaceDirectoryRequired('Choose a working directory on the selected Host')
+                // Official blank Conversation requires Workspace membership.
+                // Adopt only the explicit path or the browse backend's home.
+                workspace = await host.workspaces.create({ path })
+            }
             sourceId = await host.sessions.create({ sessionId: requestedId as SessionId, workspaceId: workspace.workspaceId })
         }
         const id = sessionResourceId(hostId, sourceId)
@@ -1499,7 +1577,7 @@ export class WorkspaceController {
     recovered = (): void => { this.notices.recovered() }
 
     async refresh(): Promise<void> {
-        const results = await Promise.allSettled([...this.hosts.values()].map(host => host.sessions.refresh()))
+        const results = await Promise.allSettled([this.catalogRefresh?.(), ...[...this.hosts.values()].map(host => host.sessions.refresh())])
         for (const result of results) if (result.status === 'rejected') this.report(result.reason)
     }
 
@@ -1507,6 +1585,13 @@ export class WorkspaceController {
         const normalized = title.trim()
         if (!normalized) throw new Error('A session title cannot be empty')
         const source = this.source(sessionId)
+        if (isSourceSessionId(source.sessionId)) {
+            if (!source.host.sourceActions) throw new Error('Native source rename is not connected on this Host. The original title is unchanged.')
+            await source.host.sourceActions.rename(source.sessionId as SessionId, normalized)
+            if (this.disposed || this.hosts.get(source.host.id) !== source.host) throw new Error('The source Host disconnected before its rename confirmation could be applied.')
+            await source.host.sessions.refresh()
+            return
+        }
         const result = await source.host.sessions.using(source.sessionId as SessionId, { source: 'hapiWorkspace' }, reference => reference.binding.session.rename(normalized))
         if (!result.ok) throw new Error(result.error.message)
     }
@@ -1517,8 +1602,18 @@ export class WorkspaceController {
         if (action === 'fork') { this.openSession(sessionResourceId(host.id, await host.navigation.forkSession(id))); return }
         if (action === 'pin') return host.navigation.pinSession(id)
         if (action === 'unpin') return host.navigation.unpinSession(id)
-        if (action === 'unarchive') return host.navigation.unarchiveSession(id)
-        await host.navigation.archiveSession(id)
+        if (isSourceSessionId(sourceSessionId)) {
+            if (!host.sourceActions) throw new Error('Native source archive is not connected on this Host. The conversation remains open.')
+            await host.sourceActions.archive(id, action === 'archive')
+            if (this.disposed || this.hosts.get(host.id) !== host) throw new Error('The source Host disconnected before its archive confirmation could be applied. The saved pane is preserved.')
+        }
+        if (action === 'unarchive') {
+            if (isSourceSessionId(sourceSessionId)) return
+            return host.navigation.unarchiveSession(id)
+        }
+        // Native source receipts own HHPI archive state. The ordinary Host
+        // workspace registry cannot archive a thread it does not execute.
+        if (!isSourceSessionId(sourceSessionId)) await host.navigation.archiveSession(id)
         // Archive is an explicit action. Retire its views after the Host confirms.
         for (const window of this.store.getSnapshot().windows) {
             for (const pane of panes(window.root)) {
@@ -1527,18 +1622,67 @@ export class WorkspaceController {
         }
     }
 
+    /** Export the selected original resource and finite recovery coordinates without resolving or dispatching it. */
+    exportSavedPaneReference(paneId: string): string {
+        const pane = this.store.getSnapshot().windows.flatMap(window => panes(window.root)).find(value => value.id === paneId)
+        if (!pane || pane.resource.kind === 'empty') throw new Error('The saved pane is no longer available to export')
+        const reference = legacyPaneReference(pane.resource)
+        const resolution = reference ? this.sourceResolutions.get(originalSourceKey(reference)) : undefined
+        return JSON.stringify({ version: 1, resource: pane.resource, reference: reference ?? null, recovery: resolution?.recovery ?? [] }, null, 2)
+    }
+
+    /** Save the complete local recovery envelope before an application update. */
+    checkpoint(signal: AbortSignal): void {
+        signal.throwIfAborted()
+        if (this.disposed) throw new Error('The workspace is closed')
+        if (!this.options.storage) throw new Error('Workspace storage is unavailable; keep this workspace open and retry before updating')
+        this.saveLocal(true)
+        signal.throwIfAborted()
+    }
+
     /** Layout and its last confirmed baseline are one atomic browser write. */
-    private saveLocal(): void {
+    private saveLocal(strict = false): void {
         try {
             this.options.storage?.setItem(this.options.storageKey, JSON.stringify({ ...this.store.getSnapshot(),
                 ...(this.confirmedLayout ? { syncBase: this.confirmedLayout } : {}),
                 ...(this.recoveryLayout ? { layoutRecovery: this.recoveryLayout } : {}),
             }))
-        } catch (error) { this.publish({ notice: `Workspace save failed: ${errorMessage(error)}`, persistence: 'failed' }) }
+        } catch (error) {
+            this.publish({ notice: `Workspace save failed: ${errorMessage(error)}`, persistence: 'failed' })
+            if (strict) throw error
+        }
     }
 
     private bindLayout(state: WorkspaceState): WorkspaceState {
-        return bindSourceResources(state, this.snapshot.catalog.byId, this.sourceBindingScope())
+        const aliased = bindSourceAliases(state, reference => {
+            const resolution = this.sourceResolutions.get(originalSourceKey(reference))
+            return resolution?.phase === 'ready' ? resolution.target : undefined
+        })
+        let changed = false
+        const node = (value: WorkspaceNode): WorkspaceNode => {
+            if (value.type === 'split') {
+                const children = value.children.map(node)
+                return children.every((child, index) => child === value.children[index]) ? value : { ...value, children }
+            }
+            if (value.resource.kind !== 'chat') return value
+            const sessionId = this.preferredSourceResource(value.resource.sessionId)
+            if (sessionId === value.resource.sessionId) return value
+            const checkpoint = this.sourceRouteCheckpoints.get(value.id), account = this.options.application?.getSnapshot()
+            if (!checkpoint || !account || account.signal.aborted) return value
+            try {
+                const address = parseSessionResourceId(sessionId), access = this.hosts.get(address.hostId)?.sessions.captureWorkspaceAccess?.(address.sessionId)
+                if (!access || access.signal.aborted || checkpoint.sessionId !== address.sessionId) return value
+                access.assertCurrent()
+                for (const guard of this.paneCloseGuards.get(value.id) ?? []) if (!guard()) return value
+                if (!checkpoint.transfer({ hostId: address.hostId, scope: JSON.stringify([account.scope, access.scope]) })) return value
+                changed = true
+                return { ...value, resource: { ...value.resource, sessionId } }
+            } catch { return value }
+        }
+        const windows = aliased.windows.map(window => {
+            const root = node(window.root); return root === window.root ? window : { ...window, root }
+        })
+        return changed ? { ...aliased, windows, revision: aliased.revision + 1 } : aliased
     }
 
     /** Receiving shared state must not create another shared write. */
@@ -1581,7 +1725,6 @@ export class WorkspaceController {
         if (this.remoteLoading || this.disposed) return
         try { performance.clearMarks('hapi-dsh:workspace:load-remote-start'); performance.mark('hapi-dsh:workspace:load-remote-start') } catch {}
         this.remoteLoading = true
-        const initialRevision = this.store.getSnapshot().revision
         try {
             const loaded = await this.options.persistence!.load(this.lifetime.signal)
             if (this.disposed) return
@@ -1597,14 +1740,6 @@ export class WorkspaceController {
                 this.receiveLayout(remote, this.confirmedLayout ?? this.initialLayout)
             } else {
                 this.confirmedLayout ??= this.initialLayout
-                if (!this.restoredLocal && this.options.legacy && this.store.getSnapshot().revision === initialRevision) {
-                    const legacy = await this.options.legacy(this.lifetime.signal)
-                    if (this.disposed) return
-                    if (this.store.getSnapshot().revision === initialRevision) {
-                        const migrated = importLegacyWorkspace(legacy, this.snapshot.catalog.byId, this.sourceBindingScope())
-                        if (migrated) this.store.replace(migrated)
-                    }
-                }
                 this.queuedSave = sharedWorkspaceState(this.store.getSnapshot())
                 this.saveLocal()
             }
@@ -1691,6 +1826,7 @@ export class WorkspaceController {
         this.lifetime.abort()
         for (const entry of this.sourceResolutions.values()) entry.abort.abort()
         this.sourceResolutions.clear(); this.sourceRequests.clear(); this.sourceResolver = undefined
+        this.catalogRefresh = undefined
         for (const entry of this.catalogTargets.values()) entry.abort.abort()
         this.catalogTargets.clear()
         if (this.settleTimer !== undefined) { clearTimeout(this.settleTimer); this.settleTimer = undefined }

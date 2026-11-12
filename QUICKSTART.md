@@ -1,59 +1,65 @@
-# 安装 HAPI DSH 0.1.2
+# 安装 HHPI 工作区
 
-Windows、macOS 和 Linux 使用同一个 `.tgz` 包。先安装 Node.js 24 或更新版本（自带 npm），在终端执行 `node --version` 确认版本。安装依赖需要联网，不需要 Git、Bun、源码编译或单独安装 DSH。
+HHPI 让普通 DSH 与原生 Codex 会话进入同一个 DSH Web 工作区。只访问别人部署的工作区时，直接打开浏览器入口，无需本机安装。
 
-需要已有的兼容 HAPI Hub 地址和访问令牌；向维护者取得这两项。若只想访问别人已经部署好的工作区，直接用浏览器打开入口即可，无需本地安装。HAPI Hub 与 Runner 的准备说明见仓库的 [docs/install.md](https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/install.md)。
+请使用维护者发布的完整 bundle，并让 Host 和每个 Runner 安装同一份扩展集合。已发布变更及验证范围见[发行说明](docs/hhpi-retirement-release-notes.md)。
 
-## 下载与安装
+## 安装完整 bundle
 
-取得 `hapi-dsh-0.1.2.tgz`，终端进入下载目录，执行：
-
-```text
-npm install --global pnpm@11.28.5 ./hapi-dsh-0.1.2.tgz
-hapi-dsh --version
-```
-
-应输出 `0.1.2`。pnpm 用于官方 DSH 插件管理，首次创建 profile 时也会联网下载依赖，请等待命令结束。
-
-Windows 可在命令提示符或 PowerShell 中运行；如果 PowerShell 拦截 `.ps1` 命令，使用 `npm.cmd` 和 `hapi-dsh.cmd`，无需修改系统执行策略。macOS/Linux 若全局 npm 目录无写权限，可使用自己的 Node 版本管理器，或采用下方的本地安装方式。
-
-## 连接自己的 HAPI
-
-将示例地址换成实际 Hub 地址，四条命令在三个系统上相同：
+安装 Node.js 24.x、`pnpm@11.28.5` 和固定的官方 DSH `0.2.2-rc.1`。安装需要联网，不需要 Git 或 Bun。Windows PowerShell 若拦截 `.ps1`，使用 `npm.cmd` / `dsh.cmd`，无需放宽执行策略。
 
 ```text
-hapi-dsh init --hapi-url http://127.0.0.1:3006
-hapi-dsh login
-hapi-dsh doctor
-hapi-dsh start
+npm install --global pnpm@11.28.5 @deepseek-ai/dsh@0.2.2-rc.1
 ```
 
-`login` 提示输入令牌，输入内容不回显，保存在当前用户的私有配置中。以后启动直接运行 `hapi-dsh start`，不需要每次设置环境变量。已有的 `HAPI_DSH_TOKEN` 环境变量仍优先于保存的令牌。
-
-默认浏览器地址为 `127.0.0.1:3080`，通过启动时打开或打印的登录链接进入。保持终端运行；`Ctrl+C` 关闭本地 Web Host，不结束原生 HAPI 会话。登录链接和配置文件含凭据，请勿作为安装包转发。
-
-## 无管理员权限：安装到当前目录
-
-在一个准备长期保留的目录里执行（不要放在会自动清理的临时目录）：
+取得维护者提供的 `hapi-dsh-bundle-VERSION.tgz`，将 `VERSION` 换成实际文件名。解压到长期保留的目录：
 
 ```text
-npm install pnpm@11.28.5 ./hapi-dsh-0.1.2.tgz
-npm exec -- hapi-dsh init --hapi-url http://127.0.0.1:3006
-npm exec -- hapi-dsh login
-npm exec -- hapi-dsh doctor
-npm exec -- hapi-dsh start
+tar -xzf hapi-dsh-bundle-VERSION.tgz
+node package/dist/install.mjs install --profile hapi --role host
 ```
 
-以后从该目录运行 `npm exec -- hapi-dsh start`。`npm exec` 会将本地 pnpm 加入 PATH。不要用临时 `npx --package URL` 启动，因为 DSH profile 会引用安装目录。
+完整 bundle 包含 HHPI 与匹配的 DSH 源码扩展。安装器打印受管 release 目录；下文 `RELEASE` 指该目录，需替换为本机实际路径。保留此目录，profile 会引用其中的运行时。
 
-## 升级与排障
+```text
+node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" init --config-only
+node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" doctor
+node "RELEASE/runtime/node_modules/hapi-dsh/dist/cli.js" start
+```
 
-退出本地 Web Host，安装新的 `.tgz`，运行 `hapi-dsh install` 更新原 profile，然后重新启动。已有配置、会话和第三方插件会保留。不要再次 `init` 覆盖配置。
+默认 profile 是 `hapi`，默认入口是 `127.0.0.1:3080`。通过官方 DSH 打开或打印的登录链接进入，保持终端运行；`Ctrl+C` 退出 Web Host，不取消原生 Codex 任务。自定义 DSH home/profile 时，初始化参数必须与 bundle 安装一致。已有私有配置跳过 `init`，给后续 CLI 命令使用同一 `--config`。
 
-- 初始化中断：运行 `hapi-dsh install` 重试。
-- 只检查本机安装：运行 `hapi-dsh doctor --offline`。
-- Hub 认证失败：确认地址和命名空间，重新运行 `hapi-dsh login`；检查是否有旧的 `HAPI_DSH_TOKEN` 环境变量覆盖配置。
-- 使用自定义配置：给后续命令都加上同一个 `--config "配置文件路径"`。
-- 加入他人的 DSH 机器目录：让维护者提供私有配对文件，再使用 `hapi-dsh runner init --pairing-file "文件路径"` 和 `hapi-dsh runner start`，无需配置 HAPI 令牌。
+技术命令名仍是 `hapi-dsh`，可使用已安装的命令 shim 代替上面的 `node .../cli.js`。单独的 `hapi-dsh-VERSION.tgz` 是插件包，普通 npm 安装不能证明完整 HHPI 扩展集合已经接通；同名 DSH rc 也不够。不要用临时 `npx --package URL` 代替长期安装位置。
 
-这份包仅包含软件与公开源码，不包含维护者的账户、Hub 地址、访问令牌或会话数据。
+## 接入原有会话
+
+本机普通 DSH 会话由原 provider 提供。接入另一台 DSH 机器时，在主 Host 生成私有邀请：
+
+```text
+hapi-dsh pair --name workstation --hub-url https://work.example.test --output PRIVATE_INVITATION.json
+```
+
+在目标机器安装同一 bundle，使用其 CLI 初始化 Runner 配置，再启动：
+
+```text
+hapi-dsh runner init --pairing-file PRIVATE_INVITATION.json
+hapi-dsh runner start
+```
+
+使用受管 bundle 的 Runner profile 时先安装 `--role runner --profile hapi-runner`，再对 `runner init` 加 `--config-only`，避免重复安装另一份依赖。现有 DSH Web 应在原 profile 挂载 Runner 插件，不再启动第二个执行 Host。[安装指南](https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/install.md)包含这条路径。
+
+邀请与配置含机器配对凭据，只通过可信渠道传递。这里的 `--hub-url` 是 HHPI 主 Host 的地址，与已经退休的 HAPI Hub 接口无关。
+
+Codex 则在原机器连接既有 app-server，并配置原生身份和历史元数据读取。需要文件、上传或终端时，在真实源 OS 的 Host/Runner 上显式注册资源 owner，详见[原生源接入](https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/hhpi-native-attachment.md)。连接历史不会启动另一个模型 owner。
+
+## 升级、恢复与排障
+
+- 升级完整 bundle，保留原配置、机器身份、profile 和至少两个先前 release；安装器的 idle/health/rollback 流程见[分发文档](https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/distribution.md)。不要重新 `init` 覆盖配置。
+- `hapi-dsh doctor --offline` 检查本机版本与安装；它不证明源连接、浏览器或模型可用。
+- Runner 断线时检查私有邀请所指入口、证书信任、配对撤销、固定版本和同一机器是否启动了重复实例。
+- 原有配置含 `hapi` 或旧 `engine: dsh` 来源时，产品会明确拒绝启动。保留原文件，先做离线迁移与精确身份核对，再准备新配置；删除字段不等于数据已迁移。
+- 旧浏览器草稿、附件和布局保留在原存储中。通过明确的本机恢复/导出入口处理，不会按新登录账号自动认领，也不会自动发送。
+
+维护者另提供 `hapi-dsh-offline-recovery-VERSION.tgz`。将工作区“本机恢复”的完整导出保存在私有文件中，解压独立工具后运行 `node package/cli.mjs recover-browser --input PRIVATE_BROWSER_EXPORT.json --output NEW_PRIVATE_DIRECTORY`，可离线保留草稿和附件原始字节。该工具不安装为 DSH 插件，也不会自动恢复到当前账号；具体用法见[独立恢复说明](https://github.com/dqtz5vpvj9-create/hapi-dsh/blob/main/docs/offline-recovery.md)。
+
+配置路径默认位于用户的 `.config/hapi-dsh`；可通过 `--config` 指定私有文件。登录链接、邀请、账号与会话数据不随软件包分发。

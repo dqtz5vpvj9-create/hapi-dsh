@@ -10,10 +10,12 @@ export type SidebarPreferences = {
 export type SidebarSnapshot = {
     preferences: SidebarPreferences; baseline: number;
     seen: Readonly<Record<string, number>>; unread: Readonly<Record<string, number>>;
+    readStatus: Readonly<Record<string, 'pending' | 'ready' | 'error' | 'unavailable'>>;
 }
+export interface SidebarReadActions { canMarkSeen(id: string): boolean; markSeen(id: string): void }
 export type ReadIntent = { id: string; kind: 'seen' | 'unread'; at: number }
 const defaults = (): SidebarSnapshot => ({ preferences: { mode: 'recent', filter: 'all', engine: '', machine: '', collapsed: [], expanded: [], folderOrder: [],
-    pinInProgressSessions: false, showActiveSessionsOnly: false, sessionPreviewLimit: DEFAULT_SESSION_PREVIEW_LIMIT, statusMode: 'standard' }, baseline: Date.now(), seen: {}, unread: {} })
+    pinInProgressSessions: false, showActiveSessionsOnly: false, sessionPreviewLimit: DEFAULT_SESSION_PREVIEW_LIMIT, statusMode: 'standard' }, baseline: Date.now(), seen: {}, unread: {}, readStatus: {} })
 const timestamps = (value: unknown): Record<string, number> => {
     if (!value || typeof value !== 'object') return {}
     return Object.fromEntries(Object.entries(value).filter(([id, at]) => id.length <= 256 && typeof at === 'number' && Number.isFinite(at) && at >= 0))
@@ -22,6 +24,8 @@ export class SidebarState {
     private snapshot: SidebarSnapshot = defaults()
     private readonly listeners = new Set<() => void>()
     private readonly intents = new Set<(intent: ReadIntent) => void>()
+    private readActions: SidebarReadActions | undefined
+    private sourceUnread = new Map<string, { updatedAt: number; unread: boolean }>()
     constructor(private readonly storage?: Pick<Storage, 'getItem' | 'setItem'>, private readonly key = 'hapi-dsh:sidebar') {
         try {
             const limit = storage?.getItem('hapi-session-preview-limit')
@@ -35,7 +39,7 @@ export class SidebarState {
                 const value = raw as Partial<SidebarSnapshot>
                 const preferences = value.preferences
                 const list = (items: unknown): string[] => Array.isArray(items) ? items.filter((item): item is string => typeof item === 'string' && item.length < 10000).slice(0, 10000) : []
-                this.snapshot = { baseline: typeof value.baseline === 'number' && Number.isFinite(value.baseline) ? value.baseline : Date.now(), seen: timestamps(value.seen), unread: timestamps(value.unread), preferences: {
+                this.snapshot = { baseline: typeof value.baseline === 'number' && Number.isFinite(value.baseline) ? value.baseline : Date.now(), seen: timestamps(value.seen), unread: timestamps(value.unread), readStatus: {}, preferences: {
                     mode: preferences?.mode === 'folders' ? 'folders' : 'recent',
                     filter: preferences && ['all', 'running', 'attention', 'unread'].includes(preferences.filter) ? preferences.filter : 'all',
                     engine: typeof preferences?.engine === 'string' ? preferences.engine : '', machine: typeof preferences?.machine === 'string' ? preferences.machine : '',
@@ -52,6 +56,26 @@ export class SidebarState {
     getSnapshot = (): SidebarSnapshot => this.snapshot
     subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
     onReadIntent(listener: (intent: ReadIntent) => void): () => void { this.intents.add(listener); return () => { this.intents.delete(listener) } }
+    installReadActions(actions: SidebarReadActions): () => void {
+        this.readActions = actions
+        return () => { if (this.readActions === actions) { this.readActions = undefined; this.setSourceUnread([]) } }
+    }
+    canMarkSeen(id: string): boolean { return this.readActions?.canMarkSeen(id) === true }
+    requestMarkSeen(id: string): void { if (this.canMarkSeen(id)) this.readActions!.markSeen(id) }
+    requestAllSeen(rows: readonly { id: string }[]): void { for (const row of rows) this.requestMarkSeen(row.id) }
+    setReadStatus(id: string, value: SidebarSnapshot['readStatus'][string]): void {
+        this.setReadStatuses([{ id, value }])
+    }
+    /** Publish a source-state batch once; unchanged final states do no storage or subscriber work. */
+    setReadStatuses(records: readonly { id: string; value: SidebarSnapshot['readStatus'][string] }[]): void {
+        const updates = new Map(records.map(record => [record.id, record.value]))
+        let readStatus: Record<string, SidebarSnapshot['readStatus'][string]> | undefined
+        for (const [id, value] of updates) if (this.snapshot.readStatus[id] !== value) {
+            readStatus ??= { ...this.snapshot.readStatus }
+            readStatus[id] = value
+        }
+        if (readStatus) this.commit({ ...this.snapshot, readStatus })
+    }
     private commit(snapshot: SidebarSnapshot): void {
         this.snapshot = snapshot
         try { this.storage?.setItem(this.key, JSON.stringify(snapshot)) } catch { /* Session access stays available in storage-restricted browsers. */ }
@@ -77,7 +101,20 @@ export class SidebarState {
         this.commit({ ...this.snapshot, preferences: { ...this.snapshot.preferences, ...patch } })
     }
     isUnread(id: string, updatedAt: number): boolean {
-        return this.snapshot.unread[id] !== undefined || updatedAt > (this.snapshot.seen[id] ?? this.snapshot.baseline)
+        if (this.snapshot.unread[id] !== undefined) return true
+        const source = this.sourceUnread.get(id)
+        return source?.updatedAt === updatedAt ? source.unread : updatedAt > (this.snapshot.seen[id] ?? this.snapshot.baseline)
+    }
+    /** Derived from authorized source positions, never persisted as a synthetic seen timestamp. */
+    setSourceUnread(records: readonly { id: string; updatedAt: number; unread: boolean }[]): void {
+        const next = new Map(records.map(({ id, ...value }) => [id, value]))
+        if (next.size === this.sourceUnread.size && [...next].every(([id, value]) => {
+            const old = this.sourceUnread.get(id)
+            return old?.updatedAt === value.updatedAt && old.unread === value.unread
+        })) return
+        this.sourceUnread = next
+        this.snapshot = { ...this.snapshot }
+        for (const listener of this.listeners) listener()
     }
     markSeen(id: string, updatedAt: number): void {
         if (!Number.isFinite(updatedAt) || updatedAt < 0) return

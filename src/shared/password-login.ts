@@ -7,7 +7,7 @@ import type { HostConnectionHandle, ConnectionIndexResponse } from '@deepseek-ai
 import type { WebServer } from '@deepseek-ai/dsh-host-webserver';
 
 type Services = { connection: Pick<HostConnectionHandle, 'requestRejection' | 'authorizeIndex' | 'authenticatedUrl' | 'browserPeer'>;
-    webServer: Pick<WebServer, 'register' | 'renderIndex'> };
+    webServer: Pick<WebServer, 'register' | 'renderIndex'>; onLogout?(request: IncomingMessage): void | Promise<void> };
 
 /** Password admission exchanges through Connection; it never creates a second credential. */
 export async function mountPasswordLogin(services: Services, passwordFile: string,
@@ -69,9 +69,10 @@ export async function mountPasswordLogin(services: Services, passwordFile: strin
             failures = 0;
             exchange(req, res);
         });
-        register('/login/logout', (req, res) => {
+        register('/login/logout', async (req, res) => {
             if (req.method !== 'POST') { reply(res, 405, '', { allow: 'POST' }); return; }
             if (!sameOrigin(req) || connection.requestRejection(req) !== undefined) { reply(res, 403); return; }
+            await services.onLogout?.(req);
             // Obtain the official cookie's name and attributes without copying its private format.
             let cookie: string | undefined;
             exchange(req, { writeHead(_status, headers) { cookie = headers?.['set-cookie']; }, end() {} });

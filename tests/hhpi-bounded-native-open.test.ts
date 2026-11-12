@@ -49,6 +49,18 @@ async function fixture(items: number, turns = 1, beforeBody?: (signal: AbortSign
         dispose: async () => { db.close(); await rm(home, { recursive: true, force: true }); } };
 }
 
+test('native source descriptors preserve the actual subagent task label without replacing its identity', async () => {
+    const f = await fixture(0), source = f.make();
+    Object.assign(f.native, { parentThreadId: 'native-parent', agentNickname: 'Random nickname',
+        source: { subAgent: { thread_spawn: { parent_thread_id: 'native-parent', agent_path: '/root/check_api', depth: 1 } } } });
+    try {
+        const session = await source.resolve(f.sessionId);
+        assert.equal(session.title, 'check_api'); assert.equal(session.nativeId, 'thread');
+        assert.equal(session.codex?.parentThreadId, 'native-parent'); assert.equal(session.codex?.agentNickname, 'Random nickname');
+        assert.deepEqual(f.calls.map(call => call.method), ['thread/read']);
+    } finally { await source.dispose(); await f.dispose(); }
+});
+
 test('cold open of a giant native turn reads only its selected tail, then six earlier pages preserve identities', async () => {
     const f = await fixture(10_000), source = f.make();
     try {

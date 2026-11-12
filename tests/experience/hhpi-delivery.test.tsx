@@ -1,5 +1,5 @@
 /** Real delivery dock and durable outbox; the source operation boundary is controlled. */
-import { afterEach, expect, test } from 'vitest'
+import { afterEach, expect, test, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { SessionSeq } from '@deepseek-ai/dsh-session'
@@ -10,22 +10,29 @@ import { memoryOperations } from '../fixtures/operation-transactions.ts'
 import { RemoteOutbox } from '../../src/client/remote-outbox.ts'
 import type { SourceReceipt, SourceSession } from '../../src/remote/protocol.ts'
 
+// Button presentation is the existing bounded UI fixture; delivery/state owners are real.
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
+
 afterEach(cleanup)
 const metadata: SourceSession = { id: 'hhpi:machine:source:codex:thread', machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'thread', title: 'Synthetic source',
   cwd: '/synthetic', updatedAt: 1, status: 'idle', activeTurnId: null, pendingRequests: [], capabilities: { send: true, steer: false, cancel: false, approve: false, files: false } }
 
-test('delivery feedback stays through an accepted ACK and leaves only when the source user message appears', async () => {
+test('message transitions retain the durable input without adding parallel delivery paragraphs', async () => {
   const receipt = Promise.withResolvers<SourceReceipt>(), operation = { sessionId: metadata.id, operationId: 'receipt-wait', kind: 'send' as const, text: 'Synthetic saved text' }
   const outbox = new RemoteOutbox(() => receipt.promise, undefined, undefined, memoryOperations)
   outbox.setStorage({ storage: localStorage, scope: 'dock-ack' })
   try {
     render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
     outbox.enqueue(operation); outbox.start(operation.operationId)
-    expect(await screen.findByText('已保存在本机，等待连接后发送')).toBeVisible()
+    expect(outbox.get(operation.operationId)?.state).toBe('queued')
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     outbox.acceptCatalog([metadata])
-    expect(await screen.findByText('正在发送已保存的消息')).toBeVisible()
+    await waitFor(() => expect(outbox.get(operation.operationId)?.state).toBe('sending'))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
     receipt.resolve({ ...operation, status: 'accepted', message: 'Synthetic native acceptance' })
-    expect(await screen.findByText('源端已接收，等待正文同步')).toBeVisible()
+    await waitFor(() => expect(outbox.view(metadata.id).getSnapshot()[0]?.state).toBe('accepted'))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(outbox.get(operation.operationId)).toBeDefined()
     outbox.observe(metadata.id, [{ type: 'event', event: { type: 'user/message', seq: SessionSeq(1), time: 1, surfaceOp: 'append',
       data: { id: MessageId('synthetic-message'), role: 'user', content: [{ type: 'text', text: operation.text }], source: { kind: 'user', rpcId: operation.operationId as SessionRequestId } } } }])
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
@@ -40,24 +47,26 @@ test('a refused saved message explains its outcome and can be explicitly dismiss
   try {
     render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
     outbox.enqueue(operation); outbox.start(operation.operationId); outbox.acceptCatalog([metadata])
-    expect(await screen.findByRole('alert')).toHaveTextContent('Synthetic permission refused')
+    expect(await screen.findByRole('alert')).toHaveTextContent('发送失败，原消息仍保留。')
+    expect(screen.queryByText(operation.text)).not.toBeInTheDocument()
+    expect(screen.queryByText('Synthetic permission refused')).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '移除' }))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(calls).toBe(1)
   } finally { outbox.dispose() }
 })
 
-test('owner handoff keeps the original text viewable and does not claim native execution completed', async () => {
+test('owner handoff keeps its durable receipt in the background without a duplicate message or details block', async () => {
   const operation = { sessionId: metadata.id, operationId: 'owner-receipt', kind: 'send' as const, text: '原执行端保存的完整消息' }
   const outbox = new RemoteOutbox(async request => ({ sessionId: request.sessionId, operationId: request.operationId, status: 'accepted',
     message: 'Saved by original owner', ownerAdmission: { localId: request.operationId, state: 'consumed' } }), undefined, undefined, memoryOperations)
   outbox.setStorage({ storage: localStorage, scope: 'dock-owner' })
   try {
-    render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
+    const ui = render(<SourceDeliveryStatus session={{ deliveries: outbox.view(metadata.id), discardSubmission: id => outbox.discard(id) }} zh/>)
     outbox.enqueue(operation); outbox.start(operation.operationId); outbox.acceptCatalog([metadata])
-    const summary = await screen.findByText('原执行端已保存 · 查看原文')
-    await userEvent.click(summary)
-    expect(screen.getByText(operation.text)).toBeVisible()
-    expect(screen.getByRole('status')).toHaveTextContent('执行结果见会话正文')
-    expect(screen.queryByText('源端已接收，等待正文同步')).not.toBeInTheDocument()
+    await waitFor(() => expect(outbox.get(operation.operationId)?.state).toBe('owner-accepted'))
+    expect(ui.container).toBeEmptyDOMElement()
+    expect(ui.container.querySelector('details')).toBeNull()
+    expect(outbox.get(operation.operationId)?.operation.text).toBe(operation.text)
+    expect(outbox.get(operation.operationId)?.attempts).toBe(1)
   } finally { outbox.dispose() }
 })

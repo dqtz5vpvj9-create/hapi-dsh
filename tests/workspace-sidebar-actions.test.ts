@@ -8,29 +8,15 @@ import { SidebarPress, sidebarActionFacts, sidebarMenuPosition, type MenuPoint, 
 const row = (patch: Partial<WorkspaceCatalogRow> = {}): WorkspaceCatalogRow => ({ id: 'local-display' as WorkspaceCatalogRow['id'], sourceSessionId: 'serving-dsh-id',
     displayTitle: 'A source title', updatedAt: 1, running: false, retainedBy: {}, blank: false, hostId: 'local', hostLabel: 'Hub', hostOnline: true,
     archived: false, pinned: false, ...patch })
-const native = { hapi: { engine: 'codex', hubId: 'original-hub', hapiSessionId: 'original-hapi-id', nativeId: 'original-cli-thread',
-    nativeHome: '/home/source/.codex', nativeConnection: 'attached' } } as never
-
-test('source actions distinguish all three identities and never mutate another Hub or a child as its parent', () => {
-    assert.deepEqual(sidebarActionFacts(row({ projectionValues: native })), { child: false,
-        source: { sessionId: 'original-hapi-id', hubId: 'original-hub' }, localSource: true, sourceActive: true,
-        sourceId: 'original-hapi-id', nativeId: 'original-cli-thread', displayId: 'serving-dsh-id', canMigrate: true })
-    const foreign = sidebarActionFacts(row({ id: 'host%remote%serving-dsh-id' as never, hostId: 'remote', projectionValues: native }))
-    assert.equal(foreign.localSource, false); assert.equal(foreign.canMigrate, false)
-    assert.equal(foreign.displayId, 'serving-dsh-id')
-    const child = sidebarActionFacts(row({ projectionValues: { hapiObserved: { hapiSessionId: 'original-hapi-id', hubId: 'original-hub', nativeId: 'original-cli-thread',
-        sidechain: { scopeId: 'original-child', parentSessionId: 'parent-display' } } } as never }))
-    assert.equal(child.child, true); assert.equal(child.source, null); assert.equal(child.localSource, false)
-    assert.equal(child.nativeId, null); assert.equal(child.sourceId, null); assert.equal(child.canMigrate, false)
-})
-
-test('source lifecycle uses its source active fact and never guesses from model execution or serving Host availability', () => {
-    assert.equal(sidebarActionFacts(row({ projectionValues: native, sourceActive: false, running: true })).sourceActive, false)
-    assert.equal(sidebarActionFacts(row({ projectionValues: { hapi: { engine: 'codex', hapiSessionId: 'source', nativeConnection: 'disconnected' } } as never,
-        hostOnline: true, running: true })).sourceActive, null)
-    assert.equal(sidebarActionFacts(row({ sourceActive: true })).sourceActive, null)
-    const noOriginal = sidebarActionFacts(row({ projectionValues: { hapiObserved: { ownership: 'hapi-runner', hapiSessionId: 'source', nativeId: null, active: false } } as never }))
-    assert.equal(noOriginal.nativeId, null); assert.equal(noOriginal.sourceActive, false)
+test('source actions use the exact canonical source identity rather than old Hub projections', () => {
+    const id = 'hhpi:original-machine:original-source:codex:original-thread'
+    const facts = sidebarActionFacts(row({ sourceSessionId: id }))
+    assert.deepEqual(facts, { source: { machineId: 'original-machine', sourceId: 'original-source', engine: 'codex', nativeId: 'original-thread' },
+        sourceId: 'original-source', nativeId: 'original-thread', displayId: id })
+    const foreign = sidebarActionFacts(row({ id: `host%remote%${id}` as never, hostId: 'remote', sourceSessionId: id }))
+    assert.deepEqual(foreign, facts, 'a federated display does not change the native address')
+    assert.equal(sidebarActionFacts(row({ projectionValues: { hapi: { hapiSessionId: 'old-hub-session' } } as never })).source, null,
+        'a retired projection cannot claim an ordinary DSH session')
 })
 
 function fakeClock() {

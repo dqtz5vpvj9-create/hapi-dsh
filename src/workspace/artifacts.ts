@@ -1,6 +1,7 @@
 /** Source identities stay addresses; opaque artifact ids never become filesystem paths. */
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { nativeDocumentRefSchema, workbenchSourceSchema, type NativeDocumentRef, type WorkbenchSource } from '../workbench-types.ts'
+import { nativeDocumentRefSchema, workbenchSourceSchema, workspaceResourceSchema, type NativeDocumentRef, type WorkbenchSource, type WorkspaceResource, type WorkspaceTarget } from '../workbench-types.ts'
+import { parseSourceSessionId } from '../remote/protocol.ts'
 import type { DshPaneTarget } from './dsh-view.ts'
 
 export const ARTIFACT_PROTOCOL = 'hapi-artifact'
@@ -12,6 +13,35 @@ export interface ArtifactReference { source: WorkbenchSource; document: Artifact
 export type GeneratedMediaDocumentRef = Extract<NativeDocumentRef, { kind: 'generated-media' }>
 export interface GeneratedMediaReference { source: WorkbenchSource; document: GeneratedMediaDocumentRef }
 export type SourceDocumentReference = ArtifactReference | GeneratedMediaReference
+
+export const WORKSPACE_DOCUMENT_PROTOCOL = 'hhpi-document'
+/** The durable address carries identity only. Names, MIME types and versions come from the authenticated source. */
+export function workspaceDocumentAddress(resource: WorkspaceResource): string {
+    const value = workspaceResourceSchema.parse(resource)
+    parseSourceSessionId(value.target.sessionId)
+    const document = value.document
+    const address = `dsh-resource://${WORKSPACE_DOCUMENT_PROTOCOL}/${[value.target.hostId, value.target.sessionId, document.kind,
+        document.kind === 'file' ? document.path : document.id].map(encodeURIComponent).join('/')}`
+    if (address.length > 16_384) throw new Error('The source document address exceeds the workspace resource limit')
+    return address
+}
+export function parseWorkspaceDocumentAddress(value: string): WorkspaceResource | null {
+    try {
+        if (value.length > 16_384) return null
+        const address = new URL(value), parts = address.pathname.split('/')
+        if (address.protocol !== 'dsh-resource:' || address.hostname !== WORKSPACE_DOCUMENT_PROTOCOL || address.username || address.password
+            || address.port || address.hash || address.search || parts.length !== 5) return null
+        const [hostId, sessionId, kind, id] = parts.slice(1).map(decodeURIComponent)
+        const resource = workspaceResourceSchema.parse({ target: { hostId, sessionId },
+            document: kind === 'file' ? { kind, path: id } : { kind, id } })
+        parseSourceSessionId(resource.target.sessionId)
+        return resource
+    } catch { return null }
+}
+/** A file card's opaque identity and original name select an existing session-scoped receipt. */
+export function workspaceAttachmentResource(target: WorkspaceTarget, file: { attachmentId: string; name: string }): WorkspaceResource {
+    return workspaceResourceSchema.parse({ target, document: { kind: 'artifact', id: `attachment:${encodeURIComponent(file.attachmentId)}/${encodeURIComponent(file.name)}` } })
+}
 
 /** Decode only the original HAPI file-artifact grammar, including strict UTF-8. */
 export function sessionFileArtifactPath(id: string): string | null {

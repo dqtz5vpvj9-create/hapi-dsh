@@ -1,10 +1,14 @@
-/** Phone projection follows HAPI's 640px boundary without changing saved geometry. */
+/** Compact projection never changes the workspace's saved Pane geometry. */
 import { useEffect, useState, type RefObject } from 'react'
+import { COMPACT_WORKSPACE_QUERY } from '../shared/workspace-presentation.ts'
+export { COMPACT_WORKSPACE_QUERY } from '../shared/workspace-presentation.ts'
 
+// A short touch viewport needs the same focused Pane when turned sideways.
+// Use layout media features, not the keyboard-adjusted visualViewport height.
 export function useNarrowViewport(): boolean {
-    const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches)
+    const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia(COMPACT_WORKSPACE_QUERY).matches)
     useEffect(() => {
-        const media = window.matchMedia('(max-width: 640px)')
+        const media = window.matchMedia(COMPACT_WORKSPACE_QUERY)
         const changed = (): void => { setNarrow(media.matches) }
         changed(); media.addEventListener('change', changed)
         return () => { media.removeEventListener('change', changed) }

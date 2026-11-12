@@ -41,7 +41,7 @@ export function waitForCatalogSession(
         }
         const abort = (): void => { settle(signal.reason ?? new Error('Conversation opening was cancelled')) }
         const timeout = setTimeout(() => {
-            const error = new Error('This conversation is not listed by its Host yet. The original HAPI catalog may still be attaching existing sessions; retry the pane once the catalog has loaded.')
+            const error = new Error('This conversation is not listed by its Host yet. Retry after the source finishes connecting and its catalog has loaded.')
             error.name = 'SessionCatalogTimeout'
             Object.assign(error, { sessionId, cause: lastFailure })
             settle(error)

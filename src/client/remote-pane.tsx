@@ -8,7 +8,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { SettingsLauncherOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { NativeActionsApi } from './native-actions.tsx'
 import { en, zh } from './locales.ts'
 import { installPaneBridge, targetForTab, type PaneBridgeSource, type PaneBridgeState } from './pane-bridge.tsx'
 import type { DshPaneTarget } from '../workspace/dsh-view.ts'
@@ -27,7 +26,7 @@ const PanelsIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="n
  * rendering one Host's shell several times. Only navigation chrome is hidden.
  */
 export function installRemotePane(ctx: Context, options: {
-    native?: NativeActionsApi; hostLabel?: string
+    hostLabel?: string
     /** Workspace-owned tools outlet accepted from the Host plumbing. The always
      * visible header cluster replaces the old menu outlet for pane tools. */
     toolsTarget?: ObservableSnapshot<HTMLElement | null>
@@ -117,8 +116,7 @@ export function installRemotePane(ctx: Context, options: {
     }
     const Shell = ({ reference }: { reference: SessionReference }) => {
         const pane = useSyncExternalStore(bridge.subscribe, bridge.getSnapshot)
-        // Navigation/tool failures stay visible instead of being swallowed by the
-        // compact cluster (upstream hotfix behaviour).
+        // A failed user navigation keeps its explanation beside the affected view.
         const visibleError = useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener) } }, () => error)
         return <Reference.Provider value={reference}>
             <div className={`hapi-remote-shell${pane.target && pane.target.type !== 'panel' && pane.target.type !== 'conversation' ? ' hapi-plugin-view-shell' : ''}`} data-hapi-view-visible={pane.visible}

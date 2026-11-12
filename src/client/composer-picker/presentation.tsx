@@ -23,15 +23,25 @@ export function effortLabel(choice: PickerChoice<string | null>, tr: Translate):
 
 export function permissionLabel(value: string | null, tr: Translate): string {
     if (value === 'default') return tr('Request approval', '请求批准')
-    if (value === 'read-only') return tr('Read only', '只读')
-    if (value === 'yolo' || value === 'bypassPermissions') return tr('Full access', '完全访问')
+    if (value === 'read-only' || value === ':read-only') return tr('Read only', '只读')
+    if (value === ':workspace') return tr('Workspace access', '工作区访问')
+    if (value === 'yolo' || value === 'bypassPermissions' || value === ':danger-full-access') return tr('Full access', '完全访问')
     return value ?? tr('Permissions not reported', '权限未报告')
+}
+
+export function approvalPolicyLabel(value: string, tr: Translate): string {
+    if (value === 'untrusted') return tr('Ask for untrusted commands', '不受信任的命令需审批')
+    if (value === 'on-request') return tr('Ask when needed', '需要时请求审批')
+    if (value === 'never') return tr('Never ask', '不请求审批')
+    if (value === 'custom') return tr('Custom approval policy', '自定义审批策略')
+    return value
 }
 
 export function compactPermissionLabel(value: string | null, tr: Translate): string {
     if (value === null) return tr('Permissions', '权限')
     if (value === 'default') return tr('Ask', '审批')
-    if (value === 'yolo' || value === 'bypassPermissions') return tr('Full', '完全')
+    if (value === ':workspace') return tr('Workspace', '工作区')
+    if (value === 'yolo' || value === 'bypassPermissions' || value === ':danger-full-access') return tr('Full', '完全')
     return permissionLabel(value, tr)
 }
 
@@ -74,6 +84,7 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
         </span>}
         {summary.permissionAvailable ? <span className="hapi-picker-anchor" data-hapi-composer-picker="permission">
             <button ref={refs.permission} type="button" className="hapi-picker-capsule hapi-permission-trigger" {...shared('permission')}
+                aria-label={`${tr('Session permissions', '会话权限')} · ${permissionLabel(summary.permission, tr)}`}
                 title={`${tr('Session permissions', '会话权限')} · ${permissionLabel(summary.permission, tr)}`} onClick={() => onToggle('permission')}>
                 <Glyph kind="permission"/><span data-picker-label>{compactPermissionLabel(summary.permission, tr)}</span><Glyph kind="down"/>
             </button>
@@ -122,10 +133,9 @@ export function pendingTarget(pending: PickerPending, data: PickerData | null, t
     if (change.kind === 'model') return `${tr('Model', '模型')}: ${modelLabel(change.value, data?.models ?? []) ?? tr('Default', '默认')}`
     if (change.kind === 'effort') return `${tr('Reasoning effort', '推理强度')}: ${effortLabel({ value: change.value, label: change.value ?? 'Default' }, tr)}`
     if (change.kind === 'permission') return `${tr('Permissions', '权限')}: ${permissionLabel(change.value, tr)}`
+    if (change.kind === 'approvalPolicy') return `${tr('Approval requests', '审批请求')}: ${approvalPolicyLabel(change.value, tr)}`
     if (change.kind === 'serviceTier') return `${tr('Service tier', '服务档位')}: ${change.value === 'fast' ? 'Fast' : 'Standard'}`
-    if (change.kind === 'control') return tr('Control: remote', '控制权：远程')
-    if (change.kind === 'collaboration') return `${tr('Collaboration', '协作模式')}: ${change.value}`
-    return `Copilot: ${change.value}`
+    return `${tr('Collaboration', '协作模式')}: ${change.value}`
 }
 
 export function PendingNote({ pending, data, tr }: { pending: PickerPending; data: PickerData | null; tr: Translate }) {

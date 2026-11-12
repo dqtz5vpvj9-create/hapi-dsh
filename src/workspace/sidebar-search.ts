@@ -4,39 +4,24 @@
  * Search consumes published source fields; it never reads a different Host.
  */
 import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { CatalogSession } from '../client-api.ts'
 
 export type SidebarSearchRow = Pick<SessionSummary, 'id' | 'displayTitle' | 'updatedAt' | 'title' | 'cwd' | 'projectionValues'> & {
     readonly hostLabel?: string
     readonly sourceSessionId?: string
-    readonly sourceSummary?: CatalogSession['sourceSummary']
-    readonly sourceWorktree?: CatalogSession['sourceWorktree']
-    readonly sourceSubagentSearch?: readonly string[]
 }
 export type SidebarSearchLocation = { engine: string; machineName?: string; machineId?: string; nativeId?: string }
-export const SIDEBAR_SEARCH_WEIGHTS = { title: 10, worktreeLabel: 5, summary: 3, flavor: 2, subagent: 3, machine: 2, path: 1, id: .5 } as const
+export const SIDEBAR_SEARCH_WEIGHTS = { title: 10, flavor: 2, machine: 2, path: 1, id: .5 } as const
 export type SidebarSearchFields = Record<keyof typeof SIDEBAR_SEARCH_WEIGHTS, string[]>
 export type SidebarSearchIndex = { scores: Map<string, number>; matchedIds: Set<string> }
 const strings = (values: readonly (string | null | undefined)[]): string[] => values.filter((value): value is string => typeof value === 'string' && value.length > 0)
 
-export function sourceWorktreeLabel(row: Pick<SidebarSearchRow, 'sourceWorktree' | 'cwd'>): string | null {
-    const tree = row.sourceWorktree
-    if (!tree) return null
-    if (tree.name.trim()) return tree.name.trim()
-    return (tree.worktreePath ?? row.cwd ?? '').replace(/[\\/]+$/, '').split(/[\\/]+/).filter(Boolean).at(-1) ?? null
-}
 export function collectSidebarSearchFields(row: SidebarSearchRow, location: SidebarSearchLocation): SidebarSearchFields {
-    const projection: unknown = row.projectionValues && (Reflect.get(row.projectionValues, 'hapi') ?? Reflect.get(row.projectionValues, 'hapiObserved'))
-    const sourceId: unknown = projection && typeof projection === 'object' ? Reflect.get(projection, 'hapiSessionId') : undefined
     return {
         title: strings([row.displayTitle, row.title]),
-        worktreeLabel: strings([sourceWorktreeLabel(row)]),
-        summary: strings([row.sourceSummary]),
         flavor: strings([location.engine]),
-        subagent: strings(row.sourceSubagentSearch ?? []),
         machine: strings([location.machineName ?? row.hostLabel, location.machineId]),
-        path: strings([row.cwd, row.sourceWorktree?.basePath, row.sourceWorktree?.worktreePath]),
-        id: strings([row.id, row.sourceSessionId, location.nativeId, typeof sourceId === 'string' ? sourceId : undefined]),
+        path: strings([row.cwd]),
+        id: strings([row.id, row.sourceSessionId, location.nativeId]),
     }
 }
 export const isSidebarWildcard = (query: string): boolean => query.includes('*') || query.includes('?')

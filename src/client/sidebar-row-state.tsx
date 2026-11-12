@@ -1,6 +1,6 @@
-/** Source row facts layered on the HAPI sidebar; no independent session polling. */
+/** Current source row facts; no independent session polling. */
 import { useSyncExternalStore } from 'react'
-import type { CatalogSession } from '../client-api.ts'
+import type { SourceSession } from '../remote/protocol.ts'
 import type { WorkspaceTranslate } from './locales.ts'
 import { sessionRelativeTime, sourceTimeMilliseconds } from '../workspace/sidebar-row.ts'
 
@@ -29,17 +29,17 @@ export function SessionTime({ at, t }: { at: number; t: WorkspaceTranslate }) {
     return <time className="hapi-session-time" dateTime={new Date(milliseconds).toISOString()} title={new Date(milliseconds).toLocaleString()}>{label}</time>
 }
 
-export function SessionRowState({ state, detailed, t }: { state: CatalogSession['sourceRowState']; detailed: boolean; t: WorkspaceTranslate }) {
-    if (!state) return null
-    const progress = state.todoProgress && state.todoProgress.completed < state.todoProgress.total ? state.todoProgress : null
-    const pending = state.pendingRequestsCount, scheduled = state.futureScheduledMessageCount, background = state.backgroundTaskCount
-    const scheduledTime = state.nextScheduledAt === null ? null : sourceTimeMilliseconds(state.nextScheduledAt)
-    return <>
-        {state.serviceTier === 'fast' && <span className="hapi-session-tier" aria-label={t('fastServiceTier')} title={t('fastServiceTier')}>ϟ</span>}
-        {progress && <span className="hapi-session-todos" aria-label={t('todoProgress', progress)} title={t('todoProgress', progress)}><span aria-hidden="true">◈</span> {progress.completed}/{progress.total}</span>}
-        {pending !== null && pending > 0 && <span className="hapi-session-request-count" title={t('pendingRequestCount', { n: pending })} aria-label={t('pendingRequestCount', { n: pending })}>! {pending}</span>}
-        {detailed && background !== null && background > 0 && <span className="hapi-session-background-count" title={t('backgroundTaskCount', { n: background })} aria-label={t('backgroundTaskCount', { n: background })}>◌ {background}</span>}
-        {detailed && scheduled !== null && scheduled > 0 && <span className="hapi-session-scheduled" aria-label={t('scheduledMessageCount', { n: scheduled })}
-            title={[t('scheduledMessageCount', { n: scheduled }), scheduledTime === null ? null : new Date(scheduledTime).toLocaleString()].filter(Boolean).join('\n')}>◷ {scheduled}</span>}
-    </>
+export function SessionRowState({ source, t }: { source: SourceSession | undefined; t: WorkspaceTranslate }) {
+    const pending = source?.pendingRequests.length ?? 0
+    return pending > 0 ? <span className="hapi-session-request-count" title={t('pendingRequestCount', { n: pending })}
+        aria-label={t('pendingRequestCount', { n: pending })}>! {pending}</span> : null
+}
+
+/** Synchronization acknowledgement remains distinct from the unread activity dot. */
+export function ReadStateIndicator({ status, chinese }: { status: 'pending' | 'ready' | 'error' | 'unavailable' | undefined; chinese: boolean }) {
+    if (!status || status === 'ready') return null
+    const label = status === 'pending' ? chinese ? '阅读状态同步中' : 'Synchronizing reading state'
+        : status === 'unavailable' ? chinese ? '原始阅读位置不可用' : 'Original reading position unavailable'
+        : chinese ? '阅读状态尚未同步' : 'Reading state is not synchronized'
+    return <span className="hapi-session-read-state" role="status" aria-label={label} title={label}>{status === 'pending' ? '↻' : '?'}</span>
 }

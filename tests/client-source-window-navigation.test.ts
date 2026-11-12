@@ -49,7 +49,9 @@ test('the public input dock exposes only a source gap and preserves the existing
         assert.match(render(), /aria-label="Back to bottom"/)
         assert.doesNotMatch(render(), /disabled/)
         assert.deepEqual(intents, [], 'source publication does not navigate automatically')
-        const button = (rendered as ReactElement<{ children: ReactElement<{ onClick(): void }> }> | null)?.props.children
+        const children = (rendered as ReactElement<{ children: unknown }> | null)?.props.children
+        const button = (Array.isArray(children) ? children : [children]).find((child): child is ReactElement<{ onClick(): void; 'aria-label'?: string }> =>
+            Boolean(child && typeof child === 'object' && 'type' in child && child.type === 'button' && child.props?.['aria-label'] === 'Back to bottom'))
         assert.ok(button)
         button.props.onClick()
         assert.deepEqual(intents, [{ kind: 'latest' }], 'the real slot button uses this occurrence’s existing reading destination')

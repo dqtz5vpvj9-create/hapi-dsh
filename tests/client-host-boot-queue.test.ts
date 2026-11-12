@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { HostBootQueue } from '../src/client/surface/host-boot-queue.ts'
+import { HostBootQueue, preferredSourceBootHost } from '../src/client/surface/host-boot-queue.ts'
 const tick = () => new Promise(resolve => setTimeout(resolve, 10))
 
 test('foreground plugin graph initializes before background hosts without overlap', async () => {
@@ -49,3 +49,19 @@ test('a newly focused Host bypasses an already loading background Host', async (
     await tick(); assert.deepEqual(order, ['slow', 'selected'])
     release(); queue.dispose()
 })
+
+test('a saved local canonical prioritizes its paired online original before the shadow finishes opening', async () => {
+    const address = { hostId: 'local', sessionId: 'hhpi:original:codex:codex:thread' };
+    const paired = [{ id: 'other', online: true }, { id: 'original', online: true }];
+    const order: string[] = [];
+    const queue = new HostBootQueue(() => preferredSourceBootHost(address, paired), () => true);
+    queue.add('other', async () => { order.push('other') });
+    queue.add('original', async () => { order.push('original') });
+    await tick();
+    assert.deepEqual(order, ['original'], 'foreground pending cannot defer the actual origin as a background catalog');
+    queue.dispose();
+    assert.equal(preferredSourceBootHost(address, [{ id: 'original', online: false }]), 'local');
+    assert.equal(preferredSourceBootHost(address, []), 'local');
+    assert.equal(preferredSourceBootHost({ hostId: 'explicit', sessionId: address.sessionId }, paired), 'explicit');
+    assert.equal(preferredSourceBootHost({ hostId: 'local', sessionId: 'hhpi:malformed' }, paired), 'local');
+});

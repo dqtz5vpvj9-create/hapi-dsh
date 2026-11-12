@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "scheduling": "critical-path",
+  "maxParallel": 4,
+  "instructions": [
+    "Deliver the assigned user behavior through its actual entry point, source operation and visible result. Record any remaining integration separately.",
+    "Use the assigned write scope. Consume completed dependencies promptly, and keep independent ready work moving.",
+    "Select verification for the changed behavior. Reuse results only while their code and environment remain applicable; retain the established release checks.",
+    "Inspect affected secondary pages and states as well as the primary screen. Record unvisited states as unknown, and separate component, browser and physical-device evidence.",
+    "Use profile evidence to propose one attributable improvement at a time. Preserve the user's scope, authorization and acceptance criteria."
+  ]
+}

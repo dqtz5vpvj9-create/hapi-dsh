@@ -10,10 +10,12 @@
 | 端到端反馈成本 | Google Testing Blog, Mike Wacker (2015), [Just Say No to More End-to-End Tests](https://testing.googleblog.com/2015/04/just-say-no-to-more-end-to-end-tests.html)。官方工程经验文章。 | 支持以速度、可靠性、定位能力衡量反馈循环，减少主要依赖大范围端到端测试的策略。文章用综合经验场景说明问题，不是定量对照实验，也没有证明所有 e2e 都应删除。 |
 | 用户行为组件测试 | Testing Library [Guiding Principles](https://testing-library.com/docs/guiding-principles/) 与 [user-event Introduction](https://testing-library.com/docs/user-event/intro/)。当前官方文档。 | 测试应操作 DOM 与用户交互，而不是组件实例内部状态；user-event 模拟一次交互涉及的事件序列与部分可交互检查。适合输入、按钮、草稿切换、忙碌/失败提示等可观察行为。某些交互仍不完整，不能视为真实浏览器等价物。 |
 | 布局能力边界 | [jsdom 官方 README](https://github.com/jsdom/jsdom#unimplemented-parts-of-the-web-platform)。 | jsdom 不做布局或渲染，部分布局属性返回零。可测试滚动相关状态和算法；不能仅靠它声称验证了真实像素、CSS 遮挡、移动端布局或实际滚动位置。 |
-| 测试选择 / TIA | Muzammil Shahbaz (2022), [An approach for Test Impact Analysis on the Integration Level in Java programs](https://arxiv.org/abs/2211.07782)；[全文 HTML](https://arxiv.org/html/2211.07782v1)。arXiv API 与页面的标题、作者一致；这里引用预印本记录，不额外推断正式出版详情。 | 结合 Java 代码变化分析与运行时“测试→调用方法”映射。论文报告平均约 50% 测试数量减少，所测变异的检出结果与全量相同。其实现要求顺序执行以建立归属，未覆盖配置、外部依赖、环境变量等变化；这不是静态 TS import graph 完备性的证明，更不是 hapi-dsh 的提速预测。 |
+| 测试选择 / TIA | Muzammil Shahbaz (2022), [An approach for Test Impact Analysis on the Integration Level in Java programs](https://arxiv.org/abs/2211.07782)；[全文 HTML](https://arxiv.org/html/2211.07782v1)。arXiv API 与页面的标题、作者一致；这里引用预印本记录，不额外推断正式出版详情。 | 结合 Java 代码变化分析与运行时“测试→调用方法”映射。论文报告平均约 50% 测试数量减少；Apache Commons Collections 中曾漏检 3% 静态初始化相关变异，手动补充测试后才与全量检出一致。其实现要求顺序执行以建立归属，未覆盖配置、外部依赖、环境变量等变化；这不是静态 TS import graph 完备性的证明，更不是 hapi-dsh 的提速预测。 |
 | 故障注入与测试能力 | Just et al. (FSE 2014), [Are mutants a valid substitute for real faults in software testing?](https://homes.cs.washington.edu/~mernst/pubs/mutation-effectiveness-fse2014-abstract.html)；DOI [10.1145/2635868.2635929](https://doi.org/10.1145/2635868.2635929)。Crossref 与作者页面匹配，作者提供全文。另见 [Stryker 官方 mutant 状态定义](https://stryker-mutator.io/docs/mutation-testing-elements/mutant-states-and-metrics/)。 | 研究用 5 个应用的 357 个真实缺陷分析变异检测与真实缺陷检测的关联，支持把 mutation 作为测试能力的补充证据。不能以少数被杀死的变异证明不存在其他 bug。Stryker 区分 killed、survived、compile error 和 runtime error；故障演练应确认触发预期行为断言，不能把编译失败或启动错误算成体验问题已被抓住。 |
 
 对实现的直接建议属于基于上述资料的工程推论：用可显式释放的异步请求制造“旧会话响应晚到”“发送失败后重试”等时序，断言最终可见内容与请求次数；把重复投递、错误关联、错误清空草稿等具体历史回归作为少量故障演练，记录正常版本通过、注入版本由对应行为断言失败。测试名、数量和覆盖率本身都不能代替这种检测证据。
+
+2026-11-07 补充核查：上表 TIA 结论已补回原论文第 3.4 节的静态初始化漏检例外，原先“与全量相同”的表述省略了手动补测条件。关于重复验证、Codex 原生并发和任务划分的新增来源及执行安排见[HHPI 交付方法第 8–10 节](hhpi-delivery-method.md)。该补充不改变本备忘所述测试规则，也不把新论文的基准收益当成本项目实测。
 
 静态依赖选择适合作为内循环加速器，但要把依赖锁文件、测试配置、共享 fixture 和无法解析的依赖变化明确纳入全量或已定义范围。作为工具边界的一手对照，[Vitest CLI](https://vitest.dev/guide/cli.html#vitest-related) 明确说明 related 支持静态可分析的 import，却不支持 `import(filepath)` 这种动态路径。不要宣称任意 import-graph 脚本“保证不漏测”。
 

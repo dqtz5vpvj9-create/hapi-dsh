@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "scheduling": "critical-path",
+  "maxParallel": 4,
+  "instructions": ["Normalize each supplied item instead of returning an empty list. Synthetic fixture only."],
+  "harnessFiles": {
+    "worker.mjs": "import {readFileSync,writeFileSync} from 'node:fs'; const task=JSON.parse(readFileSync(process.env.HHPI_RSI_CASE,'utf8')); writeFileSync(process.env.HHPI_RSI_WORKSPACE+'/answer.json',JSON.stringify(task.input.items.map(item=>item.trim())))\n"
+  }
+}

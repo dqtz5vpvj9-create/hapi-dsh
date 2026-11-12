@@ -1,5 +1,5 @@
-/** HAPI source operations contributed to the original DSH Files and Document slots. */
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+/** Exact source operations contributed to the official Files and Document slots. */
+import { useEffect, useLayoutEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { CodeBlock } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -7,19 +7,25 @@ import { fileAddressFor, pathPartsOf, resolveWorkspacePath } from '@deepseek-ai/
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-files/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
 import type {} from './pane-navigation.ts'
-import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
-import { MAX_DOCUMENT_BYTES, type NativeWorkbenchApi, type WorkbenchResponse, type WorkbenchSource } from '../workbench-types.ts'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
+import { MAX_DOCUMENT_BYTES } from '../workbench-types.ts'
+import { isSourceSessionId } from '../remote/protocol.ts'
+import type { WorkspaceEntry } from '../workspace/service-types.ts'
 import { SourceFileEdit } from './source-file-edit.ts'
+import type { NativeDocumentJournal } from './native-document-journal.ts'
 import { SourceFileMutation, sourceFileContains, validSourceFileName } from './source-file-management.ts'
-import type { SourceFileMutationJournal } from './source-file-mutation-journal.ts'
+import { sourceFileMutationKey, type SourceFileMutationJournal, type SourceFileOwner } from './source-file-mutation-journal.ts'
 import type {} from './workspace-ui.ts'
-import { sourcePathAddress } from './source-path-actions.tsx'
-import { bytesToBase64, childPath, parentPath, parseWorkbenchChanges, type WorkbenchChange } from './workbench-model.ts'
+import { childPath, parentPath, parseWorkbenchChanges, type WorkbenchChange } from './workbench-model.ts'
 import { errorMessage } from './controller.ts'
+import { sourceFileAccess, type SourceFileClient, type SourceFileContext } from './source-workspace-provider.ts'
+export type { SourceFileClient, SourceFileContext } from './source-workspace-provider.ts'
 
 const en = {
   tools: 'Source file tools', edit: 'Edit source file', search: 'Find files', git: 'Git changes', manage: 'Manage files', close: 'Close',
-  loading: 'Reading source…', working: 'Working on source…', query: 'Search file names', searchHelp: 'Search the session workspace on its owning Runner.',
+  loading: 'Reading source…', working: 'Working on source…', query: 'Search file names', searchHelp: 'Search the session workspace on its source machine.',
   none: 'No matching files.', open: 'Open in official preview', openDirectory: 'Manage directory', staged: 'Staged', unstaged: 'Working tree',
   refresh: 'Refresh from source', noChanges: 'No changes reported by Git.', noDiff: 'No textual diff was returned. Open the file to inspect its current contents.',
   save: 'Save source file', saved: 'Source confirmed the saved revision.', draft: 'Unsaved draft', discard: 'Discard draft', content: 'File contents',
@@ -27,7 +33,8 @@ const en = {
   uncertain: 'The source result is unconfirmed or changed. No operation will be repeated automatically. Read the current source before taking another action.',
   inspect: 'Inspect current source', current: 'Current source contents', keepDraft: 'Keep draft using this source revision', useCurrent: 'Use current source contents',
   discardAsk: 'Discard the unsaved source file drafts in this view?', mutationDraftAsk: 'This operation affects an unsaved source file draft. Discard that draft and continue?',
-  pending: 'A source operation is still in progress. Keep this view until it settles.', review: 'I reviewed the source; start a new action',
+  pending: 'A source operation is still in progress. Keep this view until it settles.',
+  draftNotRetained: 'The browser has not retained this draft or operation. Keep the view open and restore storage, or download the draft.', review: 'I reviewed the source; start a new action',
   operation: 'Operation', path: 'Source path', destination: 'Destination path', name: 'Name', target: 'Inspect target',
   newFile: 'New file', newDirectory: 'New directory', rename: 'Rename', move: 'Move', copy: 'Copy', delete: 'Delete', upload: 'Upload files',
   execute: 'Apply source operation', completed: 'Source confirmed this operation.', entries: 'Entries affected', inspected: 'Inspected source revision', uploadDirectory: 'Upload directory',
@@ -43,10 +50,13 @@ const en = {
   recover: 'Recover source file operation', receipt: 'Saved operation intent', receiptId: 'Operation ID', readReceipt: 'Read saved operation',
   reviewed: 'You acknowledged the current source state locally. The earlier operation still has no confirmed source receipt; reading paths cannot prove it completed.',
   omittedPaths: 'Additional affected paths omitted from the bounded browser receipt',
+  resumeUpload: 'Resume original upload', reselectUpload: 'Reselect original file', cancelUpload: 'Cancel staged upload',
+  reselectAsk: 'Confirm this is the original file for the saved destination, size and type. Only unconfirmed bytes will be uploaded.',
+  needUploadFile: 'Reselect the original file to resume this upload. File contents were not retained in browser storage.',
 } as const
 const zh: Record<keyof typeof en, string> = {
   tools: '源文件工具', edit: '编辑源文件', search: '查找文件', git: 'Git 改动', manage: '管理文件', close: '关闭',
-  loading: '正在读取源端…', working: '正在操作源端…', query: '搜索文件名', searchHelp: '在此会话所属 Runner 的工作目录中搜索。',
+  loading: '正在读取源端…', working: '正在操作源端…', query: '搜索文件名', searchHelp: '在此会话所属源机器的工作目录中搜索。',
   none: '没有匹配文件。', open: '在官方预览中打开', openDirectory: '管理目录', staged: '已暂存', unstaged: '工作目录',
   refresh: '从源端刷新', noChanges: 'Git 未报告改动。', noDiff: '未返回文本差异。可以打开文件查看当前内容。',
   save: '保存源文件', saved: '源端已确认保存后的版本。', draft: '未保存的草稿', discard: '丢弃草稿', content: '文件内容',
@@ -54,7 +64,8 @@ const zh: Record<keyof typeof en, string> = {
   uncertain: '源端结果尚未确认或已发生变化。操作不会自动重发。请先读取当前源状态，再选择下一步。',
   inspect: '核对当前源状态', current: '源端当前内容', keepDraft: '保留草稿并使用此源版本', useCurrent: '使用源端当前内容',
   discardAsk: '丢弃此视图中尚未保存的源文件草稿吗？', mutationDraftAsk: '此操作会影响未保存的源文件草稿。丢弃该草稿后继续吗？',
-  pending: '源操作仍在进行，请等待结果后再关闭此视图。', review: '已核对源状态，开始新的操作',
+  pending: '源操作仍在进行，请等待结果后再关闭此视图。',
+  draftNotRetained: '浏览器尚未保存这份草稿或操作记录。请保留视图并恢复存储，或先下载草稿。', review: '已核对源状态，开始新的操作',
   operation: '操作', path: '源路径', destination: '目标路径', name: '名称', target: '检查目标',
   newFile: '新建文件', newDirectory: '新建目录', rename: '重命名', move: '移动', copy: '复制', delete: '删除', upload: '上传文件',
   execute: '执行源文件操作', completed: '源端已确认此操作。', entries: '影响的条目数', inspected: '已检查的源版本', uploadDirectory: '上传目录',
@@ -70,6 +81,9 @@ const zh: Record<keyof typeof en, string> = {
   recover: '恢复源文件操作', receipt: '已保存的操作意图', receiptId: '操作 ID', readReceipt: '读取已保存的操作',
   reviewed: '已在本地确认你核对了当前源状态。此前操作仍没有源端确认回执；读取路径不能证明该操作已经完成。',
   omittedPaths: '浏览器有界回执中省略的其他受影响路径数量',
+  resumeUpload: '继续原上传', reselectUpload: '重选原文件', cancelUpload: '取消暂存上传',
+  reselectAsk: '请确认这是原文件，目标路径、文件大小和类型均与已保存意图一致。仅上传源端尚未确认的字节。',
+  needUploadFile: '请重选原文件以继续上传。浏览器存储没有保存文件内容。',
 }
 type Key = keyof typeof en
 type Translate = (key: Key) => string
@@ -79,60 +93,71 @@ const css = `
 .hapi-source-actions{display:inline-flex;align-items:center;gap:4px}.hapi-source-actions>button{font:inherit;color:inherit;border:1px solid var(--hapi-border,var(--dsw-alias-border-main,#d8dedf));background:transparent;border-radius:5px;min-height:28px;padding:3px 7px;cursor:pointer;white-space:nowrap}
 .hapi-source-dialog{box-sizing:border-box;width:min(860px,calc(100vw - 24px));max-height:calc(100dvh - 32px);padding:0;border:1px solid var(--hapi-border,var(--dsw-alias-border-main,#d8dedf));border-radius:10px;background:var(--hapi-bg,var(--dsw-alias-bg-layer-1,#fff));color:var(--hapi-fg,var(--dsw-alias-label-primary,#22272c));box-shadow:0 16px 64px #0004;font:13px/1.5 system-ui,sans-serif;overflow:auto}.hapi-source-dialog::backdrop{background:#0005}.hapi-source-dialog *{box-sizing:border-box}.hapi-source-dialog header{position:sticky;top:0;z-index:2;display:flex;gap:10px;align-items:center;padding:12px 16px;background:inherit;border-bottom:1px solid var(--hapi-border,#d8dedf)}.hapi-source-dialog h2{font-size:15px;margin:0;flex:1;min-width:0}.hapi-source-dialog button,.hapi-source-dialog input,.hapi-source-dialog select{font:inherit;color:inherit;border:1px solid var(--hapi-border,#d8dedf);background:var(--hapi-muted,var(--dsw-alias-bg-layer-2,#f6f7f8));border-radius:5px;min-height:32px;padding:5px 8px}.hapi-source-dialog button{cursor:pointer}.hapi-source-dialog button:disabled{opacity:.5;cursor:default}.hapi-source-dialog button:hover:not(:disabled){background:var(--hapi-hover,var(--dsw-alias-bg-layer-3,#eef2f1))}.hapi-source-dialog button[aria-pressed=true]{border-color:var(--hapi-accent,#359b6c)}.hapi-source-dialog nav,.hapi-source-bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap;padding:10px 16px}.hapi-source-dialog nav{border-bottom:1px solid var(--hapi-border,#d8dedf)}.hapi-source-body{padding:12px 16px;min-height:160px}.hapi-source-path{font:12px/1.5 ui-monospace,monospace;overflow-wrap:anywhere;opacity:.75;margin:0 0 10px}.hapi-source-help{opacity:.75;margin:8px 0}.hapi-source-error{padding:9px;background:color-mix(in srgb,var(--hapi-danger,#b53232) 10%,transparent);color:var(--hapi-danger,#b53232);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:5px}.hapi-source-warning{padding:9px;border:1px solid var(--dsw-static-orange-500,#c88a32);border-radius:5px}.hapi-source-form{display:grid;gap:10px}.hapi-source-form label{display:grid;gap:5px}.hapi-source-form input{width:100%;min-width:0}.hapi-source-editor{width:100%;min-height:280px;max-height:55dvh;resize:vertical;font:13px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:4;border:1px solid var(--hapi-border,#d8dedf);border-radius:5px;background:var(--hapi-bg,var(--dsw-alias-bg-layer-1,#fff));color:inherit;padding:12px;white-space:pre;overflow:auto}.hapi-source-list{list-style:none;padding:0;margin:10px 0;max-height:48dvh;overflow:auto}.hapi-source-list li{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--hapi-border,#d8dedf);padding:6px 0;overflow-wrap:anywhere}.hapi-source-list li>button{min-width:0;text-align:left;flex:1}.hapi-source-list small{white-space:nowrap;opacity:.7}.hapi-source-diff{max-height:55dvh;overflow:auto}.hapi-source-revision{font:11px/1.4 ui-monospace,monospace;overflow-wrap:anywhere;opacity:.75}.hapi-source-danger{color:var(--hapi-danger,#b53232)!important}.hapi-source-status{display:block;margin:8px 0}.hapi-source-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.hapi-source-row input{min-width:100px;flex:1}.hapi-source-dialog [data-code-block-banner]{position:static}.hapi-source-dialog footer{padding:8px 16px 14px;display:flex;justify-content:flex-end;gap:8px}@media(max-width:600px){.hapi-source-dialog{width:calc(100vw - 12px);max-height:calc(100dvh - 12px)}.hapi-source-dialog nav{gap:4px;padding:8px}.hapi-source-body{padding:10px}.hapi-source-editor{font-size:16px;min-height:220px}.hapi-source-form input{font-size:16px}}
 `
-const sourceKey = (source: WorkbenchSource): string => JSON.stringify([source.sourceHubId, source.sourceSessionId, source.machineId])
+const sourceKey = sourceFileMutationKey
 type Mode = 'edit' | 'search' | 'git' | 'manage'
 
-class SourceActions {
+export class SourceActions {
   readonly edits = new Map<string, SourceFileEdit>()
   readonly mutations = new Map<string, SourceFileMutation>()
   private readonly listeners = new Set<() => void>()
   private version = 0
+  private checkpointVersion = 0
   private work = 0
   private preparedVersion = -1
   private readonly subscriptions: Array<() => void> = []
-  constructor(readonly api: NativeWorkbenchApi, private readonly t: Translate, private readonly journal: SourceFileMutationJournal) {}
+  constructor(readonly client: SourceFileClient, private readonly t: Translate, private readonly journal: SourceFileMutationJournal, private readonly documentJournal?: NativeDocumentJournal) {}
   getSnapshot = (): number => this.version
+  getCheckpointRevision = (): number => this.checkpointVersion
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private changed = (): void => { this.version++; for (const listener of this.listeners) listener() }
-  beginWork(): () => void { this.work++; this.changed(); return () => { this.work--; this.changed() } }
-  editor(source: WorkbenchSource, path: string): SourceFileEdit {
-    const key = `${sourceKey(source)}\0${path}`
+  beginWork(): () => void { this.work++; this.checkpointVersion++; this.changed(); return () => { this.work--; this.checkpointVersion++; this.changed() } }
+  editor(context: SourceFileContext, path: string): SourceFileEdit {
+    const key = `${sourceKey(context.owner)}\0${path}`
     let editor = this.edits.get(key)
-    if (!editor) { editor = new SourceFileEdit(this.api, source, path); this.subscriptions.push(editor.subscribe(this.changed)); this.edits.set(key, editor) }
+    if (!editor) {
+      editor = new SourceFileEdit(context, path, this.documentJournal)
+      const current = editor
+      let snapshot = current.getSnapshot()
+      this.subscriptions.push(current.subscribe(() => {
+        // A storage transaction finishing changes retention, not the draft.
+        const next = current.getSnapshot()
+        if (next !== snapshot) { snapshot = next; this.checkpointVersion++ }
+        this.changed()
+      }))
+      this.edits.set(key, editor); this.checkpointVersion++
+    }
     return editor
   }
-  mutation(source: WorkbenchSource): SourceFileMutation {
-    const key = sourceKey(source)
+  mutation(context: SourceFileContext): SourceFileMutation {
+    const key = sourceKey(context.owner)
     let mutation = this.mutations.get(key)
-    if (!mutation) { mutation = new SourceFileMutation(this.api, source, this.journal); this.subscriptions.push(mutation.subscribe(this.changed)); this.mutations.set(key, mutation) }
+    if (!mutation) { mutation = new SourceFileMutation(context, this.journal); this.subscriptions.push(mutation.subscribe(() => { this.checkpointVersion++; this.changed() })); this.mutations.set(key, mutation); this.checkpointVersion++ }
     return mutation
   }
   get pending(): boolean { return this.work > 0 || [...this.edits.values()].some(edit => edit.getSnapshot().busy === 'save') || [...this.mutations.values()].some(mutation => mutation.getSnapshot().busy) }
   get unresolved(): boolean { return [...this.mutations.values()].some(mutation => mutation.getSnapshot().uncertain) }
   get dirty(): boolean { return [...this.edits.values()].some(edit => edit.dirty) }
-  get preparedForReload(): boolean { return this.preparedVersion === this.version && !this.pending && !this.unresolved }
+  get preparedForReload(): boolean { return this.preparedVersion === this.version && !this.pending }
   async prepareReload(): Promise<void> {
     if (this.pending) throw new Error(this.t('pending'))
-    if (this.unresolved) throw new Error(this.t('uncertain'))
+    if ([...this.mutations.values()].some(mutation => mutation.getSnapshot().storageError)) throw new Error(this.t('uncertain'))
     await Promise.all([...this.edits.values()].map(edit => edit.checkpoint()))
     this.preparedVersion = this.version
   }
   beforeClose = (): boolean => {
     if (this.pending) { window.alert(this.t('pending')); return false }
-    if (this.unresolved) { window.alert(this.t('uncertain')); return false }
-    if (!this.dirty) return true
-    if (!window.confirm(this.t('discardAsk'))) return false
-    for (const edit of this.edits.values()) edit.discard()
+    if ([...this.mutations.values()].some(mutation => mutation.getSnapshot().storageError)
+      || [...this.edits.values()].some(edit => edit.dirty && !edit.retained)) { window.alert(this.t('draftNotRetained')); return false }
     return true
   }
-  beforeMutation(source: WorkbenchSource, path: string): boolean {
-    const affected = [...this.edits.values()].filter(edit => sourceKey(edit.source) === sourceKey(source) && sourceFileContains(path, edit.path))
+  beforeMutation(source: SourceFileOwner, path: string): boolean {
+    const affected = [...this.edits.values()].filter(edit => sourceKey(edit.context.owner) === sourceKey(source) && sourceFileContains(path, edit.path))
     if (affected.some(edit => edit.getSnapshot().busy === 'save')) throw new Error(this.t('pending'))
     if (affected.some(edit => edit.dirty) && !window.confirm(this.t('mutationDraftAsk'))) return false
     for (const edit of affected) edit.discard()
     return true
   }
-  dispose(): void { for (const unsubscribe of this.subscriptions) unsubscribe(); for (const mutation of this.mutations.values()) mutation.dispose(); this.listeners.clear() }
+  dispose(): void { for (const unsubscribe of this.subscriptions) unsubscribe(); for (const edit of this.edits.values()) edit.dispose(); for (const mutation of this.mutations.values()) mutation.dispose(); this.listeners.clear() }
 }
 
 function SourceCode({ code, diff = false, t }: { code: string; diff?: boolean; t: Translate }) {
@@ -148,7 +173,11 @@ function SourceDialog({ title, busy, close, t, children }: { title: string; busy
   </dialog>
 }
 function SourceEdit({ editor, writable, t }: { editor: SourceFileEdit; writable: boolean; t: Translate }) {
-  const state = useSyncExternalStore(editor.subscribe, editor.getSnapshot)
+  const state = useSyncExternalStore(editor.subscribe, editor.getSnapshot), input = useRef<HTMLTextAreaElement>(null)
+  useLayoutEffect(() => {
+    if (input.current) input.current.setSelectionRange(state.selection.start, state.selection.end, state.selection.direction)
+  }, [editor, state.selection, state.text])
+  const selection = (element: HTMLTextAreaElement) => ({ start: element.selectionStart, end: element.selectionEnd, direction: element.selectionDirection })
   useEffect(() => { void editor.load() }, [editor])
   return <div className="hapi-source-body">
     <p className="hapi-source-path">{editor.path}</p>
@@ -157,8 +186,8 @@ function SourceEdit({ editor, writable, t }: { editor: SourceFileEdit; writable:
     {state.error && <button type="button" disabled={!!state.busy} onClick={() => { void editor.inspectBrowserDraft() }}>{t('inspectBrowser')}</button>}
     {state.base && !editor.writable && <p>{t('cannotEdit')}</p>}
     {typeof state.base?.text === 'string' && <>
-      <textarea className="hapi-source-editor" aria-label={t('content')} value={state.text} spellCheck={false} autoCapitalize="none" autoCorrect="off"
-        readOnly={!writable || !editor.writable} onChange={event => editor.edit(event.target.value)}
+      <textarea ref={input} className="hapi-source-editor" aria-label={t('content')} value={state.text} spellCheck={false} autoCapitalize="none" autoCorrect="off"
+        readOnly={!writable || !editor.writable} onChange={event => editor.edit(event.target.value, selection(event.target))} onSelect={event => editor.select(selection(event.currentTarget))}
         onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (writable) void editor.save() } }}/>
       <div className="hapi-source-row"><button type="button" disabled={!writable || !editor.writable || !editor.dirty || !!state.busy || state.uncertain} onClick={() => { void editor.save() }}>{t('save')}</button>
         <button type="button" disabled={!editor.dirty || !!state.busy} onClick={() => { if (window.confirm(t('discardAsk'))) editor.discard() }}>{t('discard')}</button>
@@ -173,54 +202,53 @@ function SourceEdit({ editor, writable, t }: { editor: SourceFileEdit; writable:
       <div className="hapi-source-row"><button type="button" disabled={!!state.busy} onClick={() => { void editor.resolveBrowserDraft(false) }}>{t('keepBrowser')}</button>
         <button type="button" disabled={!!state.busy || !state.browserDraft} onClick={() => { if (window.confirm(t('useBrowserAsk'))) void editor.resolveBrowserDraft(true) }}>{t('useBrowser')}</button></div></section>}
     {state.uncertain && <div className="hapi-source-warning"><p>{t('uncertain')}</p><button type="button" disabled={!!state.busy} onClick={() => { void editor.inspect() }}>{t('inspect')}</button></div>}
-    {state.current && <section><h3>{t('current')}</h3><p className="hapi-source-revision">{state.current.hash ?? ''}</p>
+    {state.current && <section><h3>{t('current')}</h3><p className="hapi-source-revision">{state.current.version}</p>
       {state.current.text === null ? <p>{t('cannotEdit')}</p> : <div className="hapi-source-diff"><SourceCode code={state.current.text} t={t}/></div>}
       <div className="hapi-source-row"><button type="button" disabled={!!state.busy || !state.current.writable || !writable} onClick={() => editor.acceptCurrent(true)}>{t('keepDraft')}</button>
         <button type="button" disabled={!!state.busy} onClick={() => editor.acceptCurrent(false)}>{t('useCurrent')}</button></div></section>}
   </div>
 }
 
-function SourceSearch({ api, source, open, t }: { api: NativeWorkbenchApi; source: WorkbenchSource; open: (path: string, directory?: boolean) => void; t: Translate }) {
-  const [query, setQuery] = useState(''), [files, setFiles] = useState<WorkbenchResponse<'nativeFileSearch'>['files']>([])
+function SourceSearch({ context, open, t }: { context: SourceFileContext; open: (path: string, directory?: boolean) => void; t: Translate }) {
+  const [query, setQuery] = useState(''), [files, setFiles] = useState<readonly WorkspaceEntry[]>([])
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null)
   useEffect(() => {
-    let alive = true
+    const controller = new AbortController()
     const timer = setTimeout(() => {
       setBusy(true); setError(null)
-      void api.nativeFileSearch({ source, query, limit: 500 }).then(remoteValue).then(result => {
-        if (!result.success) throw new Error(result.error || 'The source could not search its files')
-        if (alive) setFiles(result.files)
-      }).catch(error => { if (alive) setError(errorMessage(error)) }).finally(() => { if (alive) setBusy(false) })
+      void context.services.documents.search(query, 500, sourceFileAccess(context.owner, controller.signal)).then(result => {
+        if (!controller.signal.aborted) setFiles(result)
+      }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) }).finally(() => { if (!controller.signal.aborted) setBusy(false) })
     }, 250)
-    return () => { alive = false; clearTimeout(timer) }
-  }, [api, source, query])
+    return () => { controller.abort(); clearTimeout(timer) }
+  }, [context, query])
   return <div className="hapi-source-body"><div className="hapi-source-form"><label>{t('query')}<input autoFocus value={query} onChange={event => setQuery(event.target.value)} spellCheck={false}/></label></div>
     <p className="hapi-source-help">{t('searchHelp')}</p>{busy && <p role="status">{t('loading')}</p>}{error && <p role="alert" className="hapi-source-error">{error}</p>}
-    <ul className="hapi-source-list">{files.map(file => <li key={file.fullPath}><button type="button" title={file.fullPath} onClick={() => open(file.fullPath, file.fileType === 'folder')}>{file.filePath || file.fullPath}</button><small>{file.fileType === 'folder' ? '▸' : ''}</small></li>)}</ul>
+    <ul className="hapi-source-list">{files.map(file => <li key={file.absolutePath}><button type="button" title={file.absolutePath} onClick={() => open(file.absolutePath, file.type === 'directory')}>{file.name}</button><small>{file.type === 'directory' ? '▸' : ''}</small></li>)}</ul>
     {!busy && !files.length && <p>{t('none')}</p>}
   </div>
 }
 
-function SourceGit({ api, source, cwd, path, open, t }: { api: NativeWorkbenchApi; source: WorkbenchSource; cwd: string; path: string; open: (path: string) => void; t: Translate }) {
+function SourceGit({ context, cwd, path, open, t }: { context: SourceFileContext; cwd: string; path: string; open: (path: string) => void; t: Translate }) {
   const [changes, setChanges] = useState<ReturnType<typeof parseWorkbenchChanges> | null>(null), [selected, setSelected] = useState<WorkbenchChange | null>(null)
   const [diff, setDiff] = useState<string | null>(null), [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false), [revision, setRevision] = useState(0)
   useEffect(() => {
-    let alive = true; setBusy(true); setError(null)
-    void Promise.all([api.nativeGit({ source, kind: 'status' }), api.nativeGit({ source, kind: 'numstat', staged: true }), api.nativeGit({ source, kind: 'numstat', staged: false })])
-      .then(values => values.map(remoteValue)).then(([status, staged, unstaged]) => {
-        if (!status?.success || !staged?.success || !unstaged?.success) throw new Error([status, staged, unstaged].find(value => !value?.success)?.error ?? status?.stderr ?? 'Git could not read the source workspace')
-        if (alive) { const result = parseWorkbenchChanges(status.stdout ?? '', staged.stdout ?? '', unstaged.stdout ?? ''); setChanges(result); setSelected(result.changes.find(change => resolveWorkspacePath(cwd, change.path) === path) ?? null) }
-      }).catch(error => { if (alive) setError(errorMessage(error)) }).finally(() => { if (alive) setBusy(false) })
-    return () => { alive = false }
-  }, [api, source, cwd, path, revision])
+    const controller = new AbortController(), access = sourceFileAccess(context.owner, controller.signal); setBusy(true); setError(null)
+    void Promise.all([context.services.documents.git({ kind: 'status' }, access), context.services.documents.git({ kind: 'numstat', staged: true }, access), context.services.documents.git({ kind: 'numstat', staged: false }, access)])
+      .then(([status, staged, unstaged]) => {
+        if (status.exitCode || staged.exitCode || unstaged.exitCode) throw new Error(status.stderr || staged.stderr || unstaged.stderr || 'Git could not read the source workspace')
+        if (!controller.signal.aborted) { const result = parseWorkbenchChanges(status.stdout, staged.stdout, unstaged.stdout); setChanges(result); setSelected(result.changes.find(change => resolveWorkspacePath(cwd, change.path) === path) ?? null) }
+      }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) }).finally(() => { if (!controller.signal.aborted) setBusy(false) })
+    return () => { controller.abort() }
+  }, [context, cwd, path, revision])
   useEffect(() => {
-    let alive = true; setDiff(null)
-    if (selected) void api.nativeGit({ source, kind: 'diff', path: selected.path, staged: selected.staged }).then(remoteValue).then(result => {
-      if (!result.success) throw new Error(result.error ?? result.stderr ?? 'The source diff could not be read')
-      if (alive) setDiff(result.stdout ?? '')
-    }).catch(error => { if (alive) setError(errorMessage(error)) })
-    return () => { alive = false }
-  }, [api, source, selected])
+    const controller = new AbortController(); setDiff(null)
+    if (selected) void context.services.documents.git({ kind: 'diff', path: selected.path, staged: selected.staged }, sourceFileAccess(context.owner, controller.signal)).then(result => {
+      if (result.exitCode) throw new Error(result.stderr || 'The source diff could not be read')
+      if (!controller.signal.aborted) setDiff(result.stdout)
+    }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) })
+    return () => { controller.abort() }
+  }, [context, selected])
   return <div className="hapi-source-body"><div className="hapi-source-row"><button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>{t('refresh')}</button><span>{changes?.branch}</span></div>
     {busy && <p role="status">{t('loading')}</p>}{error && <p className="hapi-source-error" role="alert">{error}</p>}
     <ul className="hapi-source-list">{changes?.changes.map(change => <li key={`${change.staged}:${change.path}`}><button type="button" aria-pressed={selected === change} onClick={() => setSelected(change)}>{change.path}</button>
@@ -233,27 +261,29 @@ function SourceGit({ api, source, cwd, path, open, t }: { api: NativeWorkbenchAp
 
 type ManageAction = 'create-file' | 'create-directory' | 'rename' | 'move' | 'copy' | 'delete'
 const actionKey: Record<ManageAction, Key> = { 'create-file': 'newFile', 'create-directory': 'newDirectory', rename: 'rename', move: 'move', copy: 'copy', delete: 'delete' }
-function SourceManage({ actions, source, cwd, path, directory, writable, open, t }: {
-  actions: SourceActions; source: WorkbenchSource; cwd: string; path: string; directory: boolean; writable: boolean; open: (path: string, directory?: boolean) => void; t: Translate;
+function SourceManage({ actions, context, cwd, path, directory, writable, open, t }: {
+  actions: SourceActions; context: SourceFileContext; cwd: string; path: string; directory: boolean; writable: boolean; open: (path: string, directory?: boolean) => void; t: Translate;
 }) {
-  const mutation = useMemo(() => actions.mutation(source), [actions, source]), state = useSyncExternalStore(mutation.subscribe, mutation.getSnapshot)
+  const mutation = useMemo(() => actions.mutation(context), [actions, context]), state = useSyncExternalStore(mutation.subscribe, mutation.getSnapshot)
   const [action, setAction] = useState<ManageAction>(directory ? 'create-file' : 'rename'), [target, setTarget] = useState(path), [value, setValue] = useState('')
-  const [entry, setEntry] = useState<WorkbenchResponse<'nativeFileInspect'>['entry']>(), [inspectedPath, setInspectedPath] = useState('')
+  const [entry, setEntry] = useState<WorkspaceEntry | null>(), [inspectedPath, setInspectedPath] = useState('')
   const [reading, setReading] = useState(false), [uploading, setUploading] = useState(false), [error, setError] = useState<string | null>(null)
   const [uploadTarget, setUploadTarget] = useState(directory ? path : parentPath(path))
-  const uploadInput = useRef<HTMLInputElement>(null), creating = action === 'create-file' || action === 'create-directory'
+  const uploadInput = useRef<HTMLInputElement>(null), resumeInput = useRef<HTMLInputElement>(null), inspection = useRef<AbortController | null>(null), creating = action === 'create-file' || action === 'create-directory'
   const mounted = useRef(true)
-  useEffect(() => { mounted.current = true; void mutation.load(); return () => { mounted.current = false } }, [mutation])
+  useEffect(() => { mounted.current = true; void mutation.load(); return () => { mounted.current = false; inspection.current?.abort() } }, [mutation])
   const selectedPath = resolveWorkspacePath(cwd, target), parent = directory ? path : parentPath(path)
   const inspect = async (): Promise<void> => {
     if (reading || state.busy) return
+    inspection.current?.abort(); const controller = new AbortController(); inspection.current = controller
     const inspected = selectedPath; setReading(true); setError(null); setEntry(undefined); setInspectedPath('')
     try {
-      const result = remoteValue(await actions.api.nativeFileInspect({ source, path: inspected }))
-      if (!result.success || !result.entry) throw new Error(result.error ?? result.code ?? t('unknown'))
-      setEntry(result.entry); setInspectedPath(inspected)
-    } catch (error) { setError(errorMessage(error)) }
-    finally { setReading(false) }
+      const result = await context.services.documents.inspect(inspected, sourceFileAccess(context.owner, controller.signal))
+      if (!mounted.current || controller.signal.aborted) return
+      if (!result) throw new Error(t('notFound'))
+      setEntry(result); setInspectedPath(inspected)
+    } catch (error) { if (!controller.signal.aborted && mounted.current) setError(errorMessage(error)) }
+    finally { if (!controller.signal.aborted && mounted.current) setReading(false) }
   }
   const submit = async (): Promise<void> => {
     if (!writable || mutation.blocked || uploading || reading) return
@@ -267,16 +297,17 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
       }
       if (!entry || inspectedPath !== selectedPath) throw new Error(t('inspectFirst'))
       if (action === 'delete') {
-        if (!window.confirm(`${t('deleteConfirm')}\n${entry.path}\n${t('entries')}: ${entry.entryCount}`) || !actions.beforeMutation(source, selectedPath)) return
-        if (await mutation.manage({ action, path: selectedPath, expectedRevision: entry.revision, recursive: entry.type === 'directory' }) && mounted.current) { setEntry(undefined); setInspectedPath('') }
+        if (!window.confirm(`${t('deleteConfirm')}\n${entry.absolutePath}\n${t('entries')}: ${entry.entryCount}`) || !actions.beforeMutation(context.owner, selectedPath)) return
+        if (await mutation.manage({ action, path: selectedPath, expectedVersion: entry.version, recursive: entry.type === 'directory' }) && mounted.current) { setEntry(undefined); setInspectedPath('') }
         return
       }
       if (action === 'rename' && !validSourceFileName(value)) throw new Error(t('invalidName'))
       const destination = action === 'rename' ? childPath(parentPath(selectedPath), value) : resolveWorkspacePath(cwd, value)
       if (!value.trim() || sourceFileContains(selectedPath, destination)) throw new Error(t('invalidDestination'))
-      if (action !== 'copy' && !actions.beforeMutation(source, selectedPath)) return
-      if (await mutation.manage({ action, path: selectedPath, destination, expectedRevision: entry.revision }) && mounted.current) { setEntry(undefined); setInspectedPath(''); open(destination, entry.type === 'directory') }
+      if (action !== 'copy' && !actions.beforeMutation(context.owner, selectedPath)) return
+      if (await mutation.manage({ action, path: selectedPath, destination, expectedVersion: entry.version }) && mounted.current) { setEntry(undefined); setInspectedPath(''); open(destination, entry.type === 'directory') }
     } catch (error) { setError(errorMessage(error)) }
+    finally { if (mounted.current) { setEntry(undefined); setInspectedPath('') } }
   }
   const upload = async (files: FileList | null): Promise<void> => {
     if (!files?.length || mutation.blocked || !writable || uploading) return
@@ -287,9 +318,8 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
         if (!mounted.current) break
         if (!validSourceFileName(file.name)) throw new Error(t('invalidName'))
         if (file.size > MAX_DOCUMENT_BYTES) throw new Error(t('tooLarge'))
-        const content = bytesToBase64(new Uint8Array(await file.arrayBuffer()))
         if (!mounted.current) break
-        if (!await mutation.upload(childPath(resolveWorkspacePath(cwd, uploadTarget), file.name), content)) break
+        if (!await mutation.upload(childPath(resolveWorkspacePath(cwd, uploadTarget), file.name), file)) break
       }
     } catch (error) { setError(errorMessage(error)) }
     finally { finish(); setUploading(false); if (uploadInput.current) uploadInput.current.value = '' }
@@ -302,8 +332,9 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
       data-source-file-action={state.request.action} data-source-file-path={state.request.path}>
       <strong>{t('receipt')}: {state.request.action}</strong><p className="hapi-source-revision">{t('receiptId')}: {state.operationId}</p>
       <p className="hapi-source-path">{state.request.path}{'destination' in state.request ? ` → ${state.request.destination}` : ''}</p>
-      {!state.busy && !uploading && state.phase === 'confirmed' && state.result?.success && <p role="status" className="hapi-source-status">{t('completed')}</p>}
-      {state.phase === 'reviewed' && !state.result?.success && <p className="hapi-source-help">{t('reviewed')}</p>}
+      {state.request.action === 'upload' && <p>{state.uploadedBytes ?? 0} / {state.request.bytes} B · {state.request.mimeType}</p>}
+      {!state.busy && !uploading && state.phase === 'confirmed' && state.result?.status === 'applied' && <p role="status" className="hapi-source-status">{t('completed')}</p>}
+      {state.phase === 'reviewed' && state.result?.status !== 'applied' && <p className="hapi-source-help">{t('reviewed')}</p>}
     </section>}
     <form className="hapi-source-form" onSubmit={event => { event.preventDefault(); void submit() }}>
       <label>{t('operation')}<select value={action} disabled={disabled} onChange={event => {
@@ -312,72 +343,88 @@ function SourceManage({ actions, source, cwd, path, directory, writable, open, t
       }}>{(Object.keys(actionKey) as ManageAction[]).map(key => <option key={key} value={key}>{t(actionKey[key])}</option>)}</select></label>
       <label>{t('path')}<input value={target} disabled={disabled} onChange={event => { setTarget(event.target.value); setEntry(undefined); setInspectedPath('') }} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>
       {!creating && <div className="hapi-source-row"><button type="button" disabled={state.busy || uploading || reading} onClick={() => { void inspect() }}>{t('target')}</button>{reading && <span role="status">{t('loading')}</span>}</div>}
-      {entry && <div><p className="hapi-source-path">{entry.path} · {entry.type} · {entry.size} B · {t('entries')}: {entry.entryCount}</p><p className="hapi-source-revision">{t('inspected')}: {entry.revision}</p></div>}
+      {entry && <div><p className="hapi-source-path">{entry.absolutePath} · {entry.type} · {entry.bytes} B · {t('entries')}: {entry.entryCount}</p><p className="hapi-source-revision">{t('inspected')}: {entry.version}</p></div>}
       {action !== 'delete' && <label>{creating || action === 'rename' ? t('name') : t('destination')}<input value={value} disabled={disabled} onChange={event => setValue(event.target.value)} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>}
       <label>{t('uploadDirectory')}<input value={uploadTarget} disabled={disabled} onChange={event => setUploadTarget(event.target.value)} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>
       <div className="hapi-source-row"><button type="submit" className={action === 'delete' ? 'hapi-source-danger' : undefined} disabled={disabled || !creating && (!entry || inspectedPath !== selectedPath) || action !== 'delete' && !value.trim()}>{t('execute')}</button>
-        <button type="button" disabled={disabled} onClick={() => uploadInput.current?.click()}>{t('upload')}</button><input ref={uploadInput} type="file" multiple hidden aria-label={t('upload')} onChange={event => { void upload(event.target.files) }}/></div>
+        <button type="button" disabled={disabled || !context.services.uploads} onClick={() => uploadInput.current?.click()}>{t('upload')}</button><input ref={uploadInput} type="file" multiple hidden aria-label={t('upload')} onChange={event => { void upload(event.target.files) }}/></div>
     </form>
     {(state.busy || uploading) && <p role="status">{t('working')}</p>}
     {(error || state.error) && <p className="hapi-source-error" role="alert">{error || state.error}</p>}
     {state.storageError && <button type="button" disabled={state.busy} onClick={() => { void mutation.load() }}>{t('readReceipt')}</button>}
-    {(state.result?.commit || state.result?.deletedPaths?.length) && !state.result.success && <div className="hapi-source-warning"><p>{t('partial')}</p><pre>{JSON.stringify(state.result.commit ?? state.result.deletedPaths, null, 2)}</pre></div>}
+    {state.result?.status === 'indeterminate' && <div className="hapi-source-warning"><p>{t('partial')}</p></div>}
     {state.omittedPaths > 0 && <p>{t('omittedPaths')}: {state.omittedPaths}</p>}
+    {state.uncertain && state.request?.action === 'upload' && <div className="hapi-source-warning">
+      {!state.hasUploadFile && <p>{t('needUploadFile')}</p>}
+      <button type="button" disabled={!writable || state.busy || state.storageError !== null} onClick={() => { if (state.hasUploadFile) void mutation.resumeUpload(); else resumeInput.current?.click() }}>{state.hasUploadFile ? t('resumeUpload') : t('reselectUpload')}</button>
+      <input ref={resumeInput} type="file" hidden aria-label={t('reselectUpload')} onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file && window.confirm(`${t('reselectAsk')}\n${state.request?.path}`)) void mutation.resumeUpload(file, true) }}/>
+      <button type="button" disabled={!writable || state.busy || !state.request.uploadId} onClick={() => { void mutation.cancelUpload() }}>{t('cancelUpload')}</button>
+    </div>}
     {state.uncertain && <div className="hapi-source-warning"><p>{t('uncertain')}</p><button type="button" disabled={state.busy} onClick={() => { void mutation.inspect() }}>{t('inspect')}</button>
-      {state.observed && <><ul>{state.observed.map(row => <li key={row.path}><span className="hapi-source-path">{row.path}</span>: {row.result.entry ? `${row.result.entry.type} · ${row.result.entry.size} B · ${row.result.entry.revision}` : row.result.code === 'not-found' ? t('notFound') : row.result.error || row.result.code || t('unknown')}</li>)}</ul>
+      {state.observed && <><ul>{state.observed.map(row => <li key={row.path}><span className="hapi-source-path">{row.path}</span>: {row.entry ? `${row.entry.type} · ${row.entry.bytes} B · ${row.entry.version}` : t('notFound')}</li>)}</ul>
         <button type="button" disabled={!state.canReview || state.storageError !== null} onClick={() => { void mutation.review().then(reviewed => { if (reviewed && mounted.current) { setEntry(undefined); setInspectedPath('') } }) }}>{t('review')}</button></>}
     </div>}
   </div>
 }
 
 type ActionProps = PropsRuntime<'sidebar.right.tab.files.actions'>
-function SourceTools({ ctx, actions, props, directory, t }: { ctx: Context; actions: SourceActions; props: ActionProps; directory: boolean; t: Translate }) {
-  const native = props.useProjection('hapi'), observed = props.useProjection('hapiObserved'), projection = native ?? observed
-  const identity = sourcePathAddress(projection)
-  const source = useMemo(() => identity, [identity?.sourceSessionId, identity?.sourceHubId, identity?.machineId])
+type SourceToolsProps = { ctx: Context; actions: SourceActions; props: ActionProps; directory: boolean; t: Translate }
+export function SourceTools(options: SourceToolsProps) {
+  return isSourceSessionId(options.props.sessionId) ? <BoundSourceTools {...options}/> : null
+}
+function BoundSourceTools({ ctx, actions, props, directory, t }: SourceToolsProps) {
   useSyncExternalStore(listener => ctx.locale.subscribe(listener), () => ctx.locale.getSnapshot())
   useSyncExternalStore(actions.subscribe, actions.getSnapshot)
+  const canSave = props.useAccess('sourceWorkspace/save'), canManage = props.useAccess('sourceWorkspace/manage')
+  const [context, setContext] = useState<SourceFileContext>(), [revision, retry] = useState(0)
   const [mode, setMode] = useState<Mode | null>(null), [error, setError] = useState<string | null>(null)
   const [manageTarget, setManageTarget] = useState<{ path: string; directory: boolean } | null>(null)
-  const mutation = useMemo(() => source && !observed?.sidechain ? actions.mutation(source) : null, [actions, source, observed?.sidechain])
+  useEffect(() => {
+    const controller = new AbortController(); setContext(undefined); setError(null); setMode(null); setManageTarget(null)
+    void actions.client.resolve(props.sessionId, controller.signal).then(value => {
+      controller.signal.throwIfAborted()
+      const target = value.owner.binding.target, hostId = ctx.get('hapiWorkspacePane')?.hostId
+      if (target.sessionId !== props.sessionId || hostId && target.hostId !== hostId
+        || sourceKey(value.owner) !== sourceKey({ ...value.owner, binding: value.services.binding })) throw new Error(t('sourceChanged'))
+      setContext(value)
+    }).catch(error => { if (!controller.signal.aborted) setError(errorMessage(error)) })
+    return () => { controller.abort() }
+  }, [actions, ctx, props.sessionId, revision, t])
+  const mutation = useMemo(() => context ? actions.mutation(context) : null, [actions, context])
   useEffect(() => { if (mutation) void mutation.load() }, [mutation])
-  useEffect(() => { setMode(null); setError(null); setManageTarget(null) }, [source, props.absolutePath, props.sessionId])
-  if (!source || !projection || observed?.sidechain) return null
-  const writable = projection.readOnly === false, cwd = ctx.sessions.list.getSnapshot().byId[props.sessionId]?.cwd ?? ''
+  useEffect(() => { setMode(null); setManageTarget(null) }, [props.absolutePath])
+  if (!context) return <span className="hapi-source-actions"><button type="button" disabled={!error} onClick={() => retry(value => value + 1)}>{error ? t('refresh') : t('loading')}</button>{error && <span role="alert">{error}</span>}</span>
+  const cwd = context.owner.binding.root, writable = !!context.services.mutations && canManage
+  const editable = !!context.services.mutations && canSave
   const open = (path: string, directory = false): void => {
     if (ctx.sidebarRight.mounted.getSnapshot() !== props.sessionId) { setError(t('sourceChanged')); return }
-    // The official Files page deliberately has no resource address: its tree
-    // belongs to the Session cwd. Keep directory management at its explicit
-    // source path instead of claiming openResource can navigate that tree.
     if (directory) { setManageTarget({ path, directory: true }); setMode('manage'); return }
-    const address = fileAddressFor(props.sessionId, cwd, path)
-    ctx.sidebarRight.openResource(address)
-    setMode(null)
+    ctx.sidebarRight.openResource(fileAddressFor(props.sessionId, cwd, path)); setMode(null)
   }
   const close = (): void => { if (!actions.pending) setMode(null) }
   return <span className="hapi-source-actions">
-    {!directory && <button type="button" title={t('edit')} aria-label={t('edit')} disabled={!writable} onClick={() => setMode('edit')}>✎</button>}
+    {!directory && <button type="button" title={t('edit')} aria-label={t('edit')} disabled={!editable} onClick={() => setMode('edit')}>✎</button>}
     <button type="button" aria-label={t('tools')} title={t('tools')} onClick={() => setMode(directory ? 'search' : 'manage')}>⋯</button>
     {mutation && (mutation.getSnapshot().uncertain || mutation.getSnapshot().storageError || mutation.getSnapshot().busy) && <button type="button" onClick={() => setMode('manage')}>{t('recover')}</button>}
     {mode && <SourceDialog title={t('tools')} busy={actions.pending} close={close} t={t}>
-      <nav aria-label={t('tools')}>{(['search', 'git', 'manage', ...(!directory ? ['edit' as const] : [])] as Mode[]).map(item => <button type="button" key={item} aria-pressed={mode === item} disabled={actions.pending || item === 'edit' && !writable} onClick={() => setMode(item)}>{t(item)}</button>)}</nav>
+      <nav aria-label={t('tools')}>{(['search', 'git', 'manage', ...(!directory ? ['edit' as const] : [])] as Mode[]).map(item => <button type="button" key={item} aria-pressed={mode === item} disabled={actions.pending || item === 'edit' && !editable} onClick={() => setMode(item)}>{t(item)}</button>)}</nav>
       {error && <p role="alert" className="hapi-source-error">{error}</p>}
-      {mode === 'edit' && <SourceEdit editor={actions.editor(source, props.absolutePath)} writable={writable} t={t}/>}
-      {mode === 'search' && <SourceSearch api={actions.api} source={source} open={open} t={t}/>}
-      {mode === 'git' && <SourceGit api={actions.api} source={source} cwd={cwd} path={props.absolutePath} open={open} t={t}/>}
-      {mode === 'manage' && <SourceManage key={manageTarget?.path ?? props.absolutePath} actions={actions} source={source} cwd={cwd} path={manageTarget?.path ?? props.absolutePath} directory={manageTarget?.directory ?? directory} writable={writable} open={open} t={t}/>}
+      {mode === 'edit' && <SourceEdit editor={actions.editor(context, props.absolutePath)} writable={editable} t={t}/>}
+      {mode === 'search' && <SourceSearch context={context} open={open} t={t}/>}
+      {mode === 'git' && <SourceGit context={context} cwd={cwd} path={props.absolutePath} open={open} t={t}/>}
+      {mode === 'manage' && <SourceManage key={manageTarget?.path ?? props.absolutePath} actions={actions} context={context} cwd={cwd} path={manageTarget?.path ?? props.absolutePath} directory={manageTarget?.directory ?? directory} writable={writable} open={open} t={t}/>}
       <footer><button type="button" disabled={actions.pending} onClick={close}>{t('close')}</button></footer>
     </SourceDialog>}
   </span>
 }
 
 /** Only public list seats and the optional pane-close capability; no view replacement. */
-export function installSourceFileActions(ctx: Context, api: HapiRemoteApi): () => void {
+export function installSourceFileActions(ctx: Context, client: SourceFileClient): () => void {
   const unlocale = ctx.locale.register('hapiSourceFiles', { en, zh }), t = ctx.locale.bind('hapiSourceFiles')
   const style = document.createElement('style'); style.dataset.hapiSourceFileActions = ''; style.textContent = css; document.head.append(style)
   const disposers: Array<() => void> = [unlocale, () => style.remove()]
   const owner = ctx.inject(['hapiWorkspaceUi'], current => {
-  const actions = new SourceActions(api, t, current.hapiWorkspaceUi.sourceFileMutations)
+  const actions = new SourceActions(client, t, current.hapiWorkspaceUi.sourceFileMutations)
   const scoped: Array<() => void> = [() => actions.dispose()]
   const Files = (props: ActionProps) => <SourceTools ctx={ctx} actions={actions} props={props} directory t={t}/>
   const Document = (props: PropsRuntime<'sidebar.right.tab.document.actions'>) => <SourceTools ctx={ctx} actions={actions} props={props} directory={false} t={t}/>
@@ -385,8 +432,10 @@ export function installSourceFileActions(ctx: Context, api: HapiRemoteApi): () =
   scoped.push(ctx.slots.inject('sidebar.right.tab.document.actions', () => ctx.slots.register({ name: 'sidebar.right.tab.document.actions', id: 'hapi.source-file-tools', order: 50 }, Document)))
   const guard = ctx.inject(['hapiWorkspacePane'], current => { current.effect(() => current.hapiWorkspacePane.registerCloseGuard(actions.beforeClose)) })
   scoped.push(() => { void guard.dispose() })
-  scoped.push(current.hapiWorkspaceUi.updates.register('Source file editors', () => actions.prepareReload()))
-  scoped.push(current.hapiWorkspaceUi.updates.register('Source file editors', () => { if (!actions.preparedForReload) throw new Error('A source file editor changed while saving. Try the update again.') }, 'verify'))
+  let active = true
+  scoped.push(() => { active = false })
+  scoped.push(current.hapiWorkspaceUi.updates.registerCheckpoint({ kind: 'document', label: 'Source file editors',
+    revision: actions.getCheckpointRevision, current: () => active, save: async signal => { await actions.prepareReload(); signal.throwIfAborted() } }))
   const leave = (event: BeforeUnloadEvent): void => { if (!actions.preparedForReload && (actions.dirty || actions.pending || actions.unresolved)) { event.preventDefault(); event.returnValue = '' } }
   window.addEventListener('beforeunload', leave); scoped.push(() => window.removeEventListener('beforeunload', leave))
   return () => { for (const dispose of scoped.reverse()) dispose() }

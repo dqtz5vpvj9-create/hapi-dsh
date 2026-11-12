@@ -6,7 +6,7 @@ import { buildClientBundle, buildSourceProvider } from './client-bundle.mjs';
 
 await mkdir('dist', { recursive: true });
 const buildIdentity = await computeBuildIdentity();
-const entryPoints = { index: 'src/index.ts', cli: 'src/cli/index.ts', 'session-controller': 'src/codex/session-controller.ts', 'workspace-files': 'src/hapi/workspace-files.ts', 'file-references': 'src/hapi/file-references.ts', 'terminal-controller': 'src/hapi/terminal-controller.ts', 'subagent-controller': 'src/hapi-agent/subagent-controller.ts', 'runner/index': 'src/runner/index.ts', 'session-provider/index': 'src/session-provider/index.ts' };
+const entryPoints = { index: 'src/index.ts', cli: 'src/cli/index.ts', 'session-controller': 'src/workspace/ordinary-session-controller.ts', 'workspace-files': 'src/workspace/ordinary-workspace-files.ts', 'file-references': 'src/workspace/ordinary-file-references.ts', 'terminal-controller': 'src/workspace/ordinary-terminal-controller.ts', 'subagent-controller': 'src/workspace/ordinary-subagent-controller.ts', 'runner/index': 'src/runner/index.ts', 'session-provider/index': 'src/session-provider/index.ts' };
 await build({
     entryPoints, outdir: 'dist', bundle: true, format: 'esm', platform: 'node',
     target: 'node24', packages: 'external', sourcemap: true,
@@ -22,7 +22,7 @@ await buildClientBundle(buildIdentity);
 await buildSourceProvider(buildIdentity);
 // Host and Client have different Cordis service declarations; emit them in separate TS programs.
 for (const [name, include] of [
-    ['host', ['src/index.ts', 'src/client-api.ts', 'src/hapi/**/*.ts', 'src/hapi-agent/**/*.ts', 'src/codex/**/*.ts', 'src/shared/**/*.ts', 'src/hub/**/*.ts', 'src/runner/**/*.ts', 'src/cli/**/*.ts', 'src/session-provider/**/*.ts']],
+    ['host', ['src/index.ts', 'src/client-api.ts', 'src/remote/**/*.ts', 'src/workspace/ordinary-*.ts', 'src/hhpi-api.ts', 'src/shared/**/*.ts', 'src/hub/**/*.ts', 'src/runner/**/*.ts', 'src/cli/**/*.ts', 'src/session-provider/**/*.ts']],
     ['client', ['src/client/**/*.ts', 'src/client/**/*.tsx', 'src/client-api.ts']],
 ]) {
     const path = `tsconfig.build-${name}.json`;

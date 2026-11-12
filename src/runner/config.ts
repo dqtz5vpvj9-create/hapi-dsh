@@ -11,12 +11,13 @@ export interface RunnerConfig {
     dsh: RuntimeConfig['dsh'];
     server: { host: '127.0.0.1'; port: number };
     sources?: RuntimeConfig['sources'];
+    sourceWorkspaces?: RuntimeConfig['sourceWorkspaces'];
 }
 
 export function parseRunnerConfig(value: unknown): RunnerConfig {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('Runner configuration must be an object');
     const input = value as Record<string, unknown>;
-    if (Object.keys(input).some((key) => !['version', 'machine', 'hub', 'dsh', 'server', 'sources'].includes(key))) throw new Error('Unknown Runner configuration field');
+    if (Object.keys(input).some((key) => !['version', 'machine', 'hub', 'dsh', 'server', 'sources', 'sourceWorkspaces'].includes(key))) throw new Error('Unknown Runner configuration field');
     if (input.version !== 1 || typeof input.machine !== 'object' || input.machine === null || typeof input.hub !== 'object' || input.hub === null) throw new Error('Invalid Runner configuration');
     const machine = input.machine as Record<string, unknown>;
     const hub = input.hub as Record<string, unknown>;
@@ -24,15 +25,16 @@ export function parseRunnerConfig(value: unknown): RunnerConfig {
     if (!validMachineId(machine.id) || typeof machine.name !== 'string' || machine.name.length === 0 || machine.name.length > 128) throw new Error('Runner requires a stable machine ID and display name');
     if (typeof input.server !== 'object' || input.server === null || Array.isArray(input.server)
         || Object.keys(input.server).some((key) => !['host', 'port'].includes(key))) throw new Error('Runner server configuration accepts only its loopback host and port');
-    // The same official launch/profile validation applies to both Host compositions.
-    const common = parseConfig({ version: 1, dsh: input.dsh, server: input.server, ...(input.sources === undefined ? {} : { sources: input.sources }) });
+    // Joining an existing official Web profile preserves its Session/Agent owner.
+    // Only this Runner composition accepts the official `web` profile name.
+    const common = parseConfig({ version: 1, dsh: input.dsh, server: input.server, ...(input.sources === undefined ? {} : { sources: input.sources }), ...(input.sourceWorkspaces === undefined ? {} : { sourceWorkspaces: input.sourceWorkspaces }) }, { composition: 'runner' });
     if (common.sources?.some(source => source.machineId !== machine.id)) throw new Error('Runner sources must use its paired machine ID');
     if (typeof hub.tokenEnv !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(hub.tokenEnv)) throw new Error('hub.tokenEnv must be an environment variable name');
     if (hub.token !== undefined && (typeof hub.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(hub.token))) throw new Error('Invalid Runner pairing token');
     if (common.server.host !== '127.0.0.1') throw new Error('The Runner-owned DSH listener must bind 127.0.0.1; the reverse connection provides remote access');
     return { version: 1, machine: { id: machine.id, name: machine.name },
         hub: { url: normalizeHttpUrl(hub.url, 'hub.url'), tokenEnv: hub.tokenEnv, ...(hub.token === undefined ? {} : { token: hub.token as string }) },
-        dsh: common.dsh, server: { host: '127.0.0.1', port: common.server.port }, ...(common.sources === undefined ? {} : { sources: common.sources }) };
+        dsh: common.dsh, server: { host: '127.0.0.1', port: common.server.port }, ...(common.sources === undefined ? {} : { sources: common.sources }), ...(common.sourceWorkspaces === undefined ? {} : { sourceWorkspaces: common.sourceWorkspaces }) };
 }
 
 export function createRunnerConfig(hubUrl: string, options: { id?: string; name?: string; token?: string; dshHome?: string } = {}): RunnerConfig {

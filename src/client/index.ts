@@ -1,16 +1,24 @@
-import { installRemoteInputTriggers } from './remote-input-triggers.ts'
-import { installRemoteFeedbackPolicy } from './remote-feedback.tsx'
-import { installRemoteFileUpload } from './remote-file-upload.ts'
-import type { SourceViewportSession } from './source-sessions.ts'
+import { installSourceConversation } from './source-conversation.ts'
+import { createSourceReadHead } from './source-reading-head.ts'
+import { installWorkspaceReadSync } from './source-reading-sync.ts'
+import { installWorkspaceSharing } from './source-share-navigation.tsx'
+import { createSessionSourceExporter } from './source-export-state.ts'
+import { createAppTargetNavigation } from './app-target-navigation.ts'
+import { installBrowserRecovery } from './source-browser-recovery.tsx'
+import { armOrdinaryReadingForReload } from './ordinary-reading-checkpoint.ts'
+import { createWorkspaceUiBridge } from './workspace-ui.ts'
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SourceViewportSession } from './source-session-types.ts'
 import { remoteReadingOwner } from './remote-reading-owner.ts'
 import { isSourceSessionId } from '../remote/protocol.ts'
-/** HAPI's workspace composition, loaded by DSH's unchanged official plugin runtime. */
+/** Workspace composition loaded by the official DSH plugin runtime. */
 import { taggedRemote } from '../client-api.ts'
 import type { Context } from '@deepseek-ai/cordis'
-import { createElement, useSyncExternalStore } from 'react'
+import { createElement } from 'react'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
@@ -20,10 +28,6 @@ import { remoteValue, type HapiRemoteApi } from '../client-api.ts'
 import { WorkspaceController } from './controller.ts'
 import { installFederation } from './federation.tsx'
 import { en, zh } from './locales.ts'
-import { NativeActionLedger } from './native-state.ts'
-import { NativeControlLedger } from './native-control-state.ts'
-import { NativeForkAction, type NativeForkActionProps } from './native-fork-action.tsx'
-import { createNativeActions } from './native-action-api.ts'
 import { createWorkspacePersistence } from './persistence.ts'
 import { SessionSidebar, WorkspaceRoot } from './ui.tsx'
 import type { SessionSidebarProps, WorkspaceRootProps } from './slots.ts'
@@ -34,44 +38,20 @@ import { installSidebarNavigation } from './sidebar-navigation.ts'
 import { installWorkspaceMenus } from './menus.ts'
 import { installNewSessionShortcut } from './shortcuts.ts'
 import { hasDirtyNativeDocument } from './workbench-drafts.ts'
-import { installSourceReadSync } from '../workspace/read-sync.ts'
-import { installNativeRewindAction } from './native-rewind-action.tsx'
 import { installNativeComposerAdmission } from './native-composer.ts'
-import { installPaneNative } from './pane-native.ts'
 import type {} from './pane-navigation.ts'
 import { installSourceComposerBridge } from './source-composer.tsx'
-import { installHapiTabs } from './hapi-tabs.tsx'
-import { installSourceAdmin } from './source-admin.tsx'
-import { installSourceCompanion } from './source-companion.tsx'
-import { ObservedControlLedger } from './observed-controls.tsx'
-import { installSourcePathActions } from './source-path-actions.tsx'
-import { installSourceFileActions } from './source-file-actions.tsx'
 import { installSourceTerminalActions } from './source-terminal-actions.tsx'
-import { installLegacyTerminalView } from './legacy-terminal-view.tsx'
-import { installArtifactPreview } from './artifact-preview.tsx'
-import { installSourceMarkdown } from './source-markdown.tsx'
-import { installNotifySummaryDisplay } from './notify-summary-display.tsx'
 import { installSourceVoice } from './source-voice/index.tsx'
-import { installGeneratedMediaDisplay } from './generated-media-display.tsx'
-import { installToolProgressDisplay } from './tool-progress-display.tsx'
-import { installSourceTranscript } from './source-transcript.tsx'
-import { installNativeToolDetails } from './native-tool-details.tsx'
-import { installCodexReviewDisplay } from './codex-review-display.tsx'
-import { installNativeActionDock } from './native-action-dock.tsx'
-import { installSourceUsage } from './source-usage.tsx'
-import { installComposerPicker } from './composer-picker/index.tsx'
-import { installTurnSharing } from './turn-share.tsx'
 import { installSourceNotifications } from './source-notifications/index.tsx'
-import { installWithLegacyHapiCapability } from './source-notifications/capability.ts'
 import type {} from './remote-sessions.ts'
-import { installSourceDshChildControls } from './source-dsh-child.tsx'
 import { createWorkspaceNotifications } from '../workspace/notifications.ts'
 import { installShareInbox } from './share-inbox.tsx'
 import { installDraftHandoff } from './draft-handoff-dialog.tsx'
 import { installSourceAppearance } from './appearance/index.tsx'
 import { installWorkspaceLinkSettings } from './workspace-links.tsx'
-import { installDeferredPlugins } from './deferred-plugins.ts'
-import { installRemoteSourceControls } from './remote-controls.tsx'
+import { installDeferredPlugins, workspaceDeferredDemand } from './deferred-plugins.ts'
+import { COMPACT_WORKSPACE_QUERY, workspaceViewportPolicy } from '../shared/workspace-presentation.ts'
 
 export { WorkspaceController, sessionResourceId, parseSessionResourceId } from './controller.ts'
 export type { WorkspaceHost, WorkspaceOptions, WorkspaceSnapshot, WorkspacePersistence } from './controller.ts'
@@ -81,16 +61,13 @@ export { installRemotePane } from './remote-pane.tsx'
 export type { WorkspacePaneNavigation } from './pane-navigation.ts'
 export type { WorkspaceUpdatePreparations } from './update-preparation.ts'
 export type { DshPaneTarget, NavigationValue } from '../workspace/dsh-view.ts'
-export { LEGACY_TERMINAL_TAB_KIND, LEGACY_TERMINAL_SEAT_ID, legacyTerminalPaneTarget, legacyTerminalNavigationParams, canOpenLegacyTerminalAddress } from './legacy-session-terminal.tsx'
-export type { LegacyTerminalParams } from './legacy-session-terminal.tsx'
-export type { LegacyTerminalInjected, LegacyTerminalBodyProps, LegacyTerminalTitleProps, LegacyTerminalOccurrence, LegacyTerminalViewState } from './legacy-terminal-view.tsx'
 
 declare module '@deepseek-ai/cordis' {
     interface Context { hapiWorkspace: WorkspaceController }
 }
 
 export const name = 'hapi-dsh-client'
-export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload', 'fileDrag']
+export const inject = ['slots', 'sessions', 'hapiSourceSessions', 'hhpiSessions', 'sourceFiles', 'workspaces', 'uiWorkspace', 'layout', 'locale', 'remote', 'connection', 'uiConversation', 'conversation', 'modules', 'loader', 'shortcuts', 'sidebarRight', 'sidebarRightTabs', 'fileUpload', 'fileDrag']
 
 /** Consume the namespace installed by the source-session provider. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
@@ -101,27 +78,21 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
         && Reflect.get(globalThis, '__hapiDshFollowEdgeDisabled') !== true) {
         try { document.documentElement.dataset.dshFollowEdge = '1' } catch { /* non-DOM composition */ }
     }
-    // Pane graphs exclude this bundle; this branch only remains for the primary
-    // graph and for profiles that still scan the row.
-    if (Reflect.get(globalThis, '__HAPI_DSH_PANE__') === true) {
-        let child: ReturnType<Context['inject']> | undefined
-        try {
-            child = ctx.inject(['remote.hapi', 'remote.hhpi', 'sessions', 'hhpiSessions'], installPaneNative)
-            await child
-            return async () => { await child?.dispose() }
-        } catch (error) {
-            await child?.dispose()
-            throw error
-        }
-    }
+    // Pane graphs exclude this bundle and receive their context-bound
+    // contributions from Federation, including exact source navigation.
+    let preferenceStorage: Storage | undefined, windowStorage: Storage | undefined
+    try { preferenceStorage = localStorage } catch { /* Preferences can remain in memory. */ }
+    try { windowStorage = sessionStorage } catch { /* A window still has its own share owner. */ }
+    const workspaceUi = createWorkspaceUiBridge(preferenceStorage, window, windowStorage)
+    const unprovideUi = ctx.reflect.provide('hapiWorkspaceUi', workspaceUi.root)
     let child: ReturnType<Context['inject']> | undefined
     try {
-        child = ctx.inject(['remote.hapi', 'remote.hhpi', 'sessions', 'hhpiSessions'], installWorkspace)
+        child = ctx.inject(['remote.hapi', 'remote.hhpi', 'remote.session', 'remote.appServices', 'remote.sourceNavigation', 'remote.sourceAliases', 'sessions', 'hhpiSessions', 'sourceFiles', 'hapiWorkspaceUi'], owner => installWorkspace(owner, workspaceUi))
         await child
-        return async () => { await child?.dispose() }
+        return async () => { try { await child?.dispose() } finally { unprovideUi(); await workspaceUi.dispose() } }
     } catch (error) {
         console.error('[hapi-dsh] Client activation failed: await the source provider and install workspace', error)
-        await child?.dispose()
+        try { await child?.dispose() } finally { unprovideUi(); await workspaceUi.dispose() }
         throw error
     }
 }
@@ -130,50 +101,29 @@ function diagnosticMark(name: string): void {
     try { performance.clearMarks(name); performance.mark(name) } catch { /* diagnostics are optional */ }
 }
 
-function attachSourceSessions(ctx: Context, api: HapiRemoteApi): void {
-    ctx.hapiSourceSessions.attach({
-        sourceWindowFollow: (request, signal) => api.sourceWindowFollow(request, signal),
-        sourceHistoryOutline: request => api.sourceHistoryOutline(request),
-        sourceHistoryOutlinePage: request => api.sourceHistoryOutlinePage(request),
-        sourceHistoryWindowPage: request => api.sourceHistoryWindowPage(request),
-        sourceHistoryWindowPageStream: (request, signal) => api.sourceHistoryWindowPageStream(request, signal),
-        sourceHistoryHead: request => api.sourceHistoryHead(request),
-        sourceHistoryAttachment: request => api.sourceHistoryAttachment(request),
-        sourceReadingAnchor: request => api.sourceReadingAnchor(request),
-    })
-}
-
-async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
+async function installWorkspace(ctx: Context, workspaceUi: ReturnType<typeof createWorkspaceUiBridge>): Promise<() => Promise<void>> {
     const disposers: Array<() => void | Promise<void>> = []
+    let disposed = false
     let stage = 'consume native API'
     try {
     const api = taggedRemote(ctx.remote.hapi)
-    const sourceCapability = ctx.hhpiSessions.capabilities
-    let administration: ReturnType<typeof installSourceAdmin> | undefined
-    attachSourceSessions(ctx, api)
-    const ledger = new NativeActionLedger()
-    const controls = new NativeControlLedger(api)
-    const observedControls = new ObservedControlLedger(api)
-    disposers.push(() => { ledger.clear(); controls.clear(); observedControls.clear() })
-    const native = createNativeActions(ctx, api, ledger, controls, observedControls)
     let storage: Storage | undefined
     try { storage = globalThis.localStorage } catch { /* The controller still works when browser persistence is unavailable. */ }
     stage = 'create workspace controller'
     const sourceQuery = new URL(location.href).searchParams
     const controller = new WorkspaceController({
-        sessions: ctx.sessions, navigation: ctx.uiWorkspace, workspaceState: ctx.workspaces.list, workspaces: ctx.workspaces,
+        viewport: workspaceViewportPolicy(window.matchMedia(COMPACT_WORKSPACE_QUERY)),
+        sourceExporter: createSessionSourceExporter(ctx.sessions, 'local', () => !disposed, ctx.remote.session, ctx.remote.hhpi),
+        readHead: createSourceReadHead('local', ctx.remote.session, ctx.remote.hhpi),
+        locateSourcePosition: (request, signal) => ctx.remote.sourceNavigation.locatePosition(request, signal),
+        resumeContext: (request, signal) => ctx.remote.sourceNavigation.resumeContext(request, signal),
+        application: workspaceUi.root.application,
+        sessions: ctx.sessions, sourceCreation: ctx.hhpiSessions, sourceActions: ctx.hhpiSessions.sourceActions, navigation: ctx.uiWorkspace, workspaceState: ctx.workspaces.list, workspaces: ctx.workspaces,
+        directoryBrowsing: [...ctx.loader.entries()].some(entry => entry.options.name === '@deepseek-ai/dsh-client-ui-directory-picker-browse'),
         deferHiddenSessions: true,
-        legacySourceAvailability: {
-            getSnapshot: () => {
-                const capability = sourceCapability.getSnapshot()
-                return capability.catalogReady ? capability.legacyHapi : undefined
-            },
-            subscribe: sourceCapability.subscribe,
-        },
         storageKey: `hapi-dsh:workspace:v1:${location.origin}${location.pathname}`,
         ...(storage ? { storage } : {}),
         persistence: createWorkspacePersistence(api), reveal: () => ctx.layout.selectPanel(null),
-        legacy: async signal => { signal.throwIfAborted(); const result = remoteValue(await api.workspaceLegacy()); signal.throwIfAborted(); return result },
         ...(sourceQuery.get('hapiSession') ? { sourceSessionQuery: sourceQuery.get('hapiSession')!,
             ...(sourceQuery.has('hapiMessage') ? { sourceMessageQuery: sourceQuery.get('hapiMessage')! } : {}),
             ...(sourceQuery.has('hapiRequest') ? { sourceRequestQuery: sourceQuery.get('hapiRequest')! } : {}),
@@ -191,7 +141,6 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     const composer = installSourceComposerBridge(ctx)
     disposers.push(() => composer.dispose())
     disposers.push(installWorkspaceStyles(document))
-    disposers.push(installRemoteSourceControls(ctx))
     disposers.push(installWorkspaceMenus(document))
     disposers.push(ctx.locale.register('hapiWorkspace', { en, zh }))
     // Page-global: covers local and remote Host panes. Automates the official
@@ -203,7 +152,7 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
         prefetchOlderPage?: () => unknown
         loadAfter?: () => Promise<boolean>
         returnToLive?: (signal?: AbortSignal) => boolean | Promise<boolean>
-        sourceWindow?: { getSnapshot(): import('../shared/source-frames.ts').SourceWindowProgress; subscribe(listener: () => void): () => void }
+        sourceWindow?: { getSnapshot(): import('./source-session-types.ts').SourceWindowProgress; subscribe(listener: () => void): () => void }
     }
     const sourceControl = (sessionId: string | null, pane?: HTMLElement): PagingControl | undefined => {
         const reader = pane ? remoteReadingOwner(pane) : undefined
@@ -238,43 +187,17 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
             return sourceControl(sessionId, pane)?.returnToLive?.(signal) ?? false
         },
     }))
-    disposers.push(installWithLegacyHapiCapability(sourceCapability, () => {
-        const installed: Array<() => void> = []
-        installed.push(installHapiTabs(ctx, api, composer))
-        administration = installSourceAdmin(ctx, api)
-        installed.push(administration)
-        installed.push(installSourceCompanion(ctx, api))
-        installed.push(installNativeRewindAction(ctx, api, () => { void controller.refresh() }))
-        return () => {
-            for (const dispose of installed.reverse()) dispose()
-            administration = undefined
-        }
-    }))
     disposers.push(installSourceAppearance(ctx))
+    const navigateSourceTarget = createAppTargetNavigation(controller)
+    disposers.push(installSourceConversation(ctx, composer, {
+        hostId: 'local', workspace: controller, navigate: (target, signal) => navigateSourceTarget(target, undefined, signal),
+    }))
     disposers.push(installWorkspaceLinkSettings(ctx))
-    disposers.push(installSourcePathActions(ctx, api))
-    disposers.push(installSourceFileActions(ctx, api))
-    disposers.push(installSourceTerminalActions(ctx, api))
-    disposers.push(installLegacyTerminalView(ctx, api))
-    disposers.push(installArtifactPreview(ctx, api))
-    disposers.push(installSourceMarkdown(ctx))
-    disposers.push(installNotifySummaryDisplay(ctx, api))
-    disposers.push(installSourceVoice(ctx, api))
-    disposers.push(installGeneratedMediaDisplay(ctx))
-    disposers.push(installToolProgressDisplay(ctx))
-    disposers.push(installSourceTranscript(ctx))
-    disposers.push(installNativeToolDetails(ctx))
-    disposers.push(installCodexReviewDisplay(ctx))
-    disposers.push(installNativeActionDock(ctx, native, api))
-    disposers.push(installSourceUsage(ctx))
-    disposers.push(installComposerPicker(ctx, controls, observedControls))
-    disposers.push(installRemoteFileUpload(ctx, ctx.remote.hhpi), installRemoteInputTriggers(ctx, ctx.remote.hhpi), installRemoteFeedbackPolicy(ctx))
-    disposers.push(installSourceDshChildControls(ctx, api))
-    disposers.push(installTurnSharing(ctx))
+    disposers.push(installSourceTerminalActions(ctx))
+    disposers.push(installSourceVoice(ctx, ctx.locale.getSnapshot().active))
     disposers.push(installNativeComposerAdmission(ctx.sessions, ctx.conversation.blocks, {
         t: ctx.locale.bind('hapiWorkspace'), subscribe: listener => ctx.locale.subscribe(listener),
     }))
-    const uploadInitialFile = async (sessionId: string, file: File, signal?: AbortSignal) => remoteValue(await ctx.fileUpload.upload(sessionId as SessionId, file, file.name, signal))
     const prepareWorkspaceDeparture = async (): Promise<void> => {
         const ui = ctx.get('hapiWorkspaceUi')
         const tr = (en: string, zh: string): string => ctx.locale.getSnapshot().active.startsWith('zh') ? zh : en
@@ -284,13 +207,8 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
         if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error(tr('Wait for the incoming share to finish preparing.', '请等待正在接收的分享完成准备。'))
         await ui.updates.checkpoint()
     }
-    const RunnerSkew = () => {
-        const capability = useSyncExternalStore(sourceCapability.subscribe, sourceCapability.getSnapshot)
-        return capability.catalogReady && capability.legacyHapi && administration
-            ? createElement(administration.RunnerSkew) : null
-    }
-    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'api' | 'language' | 'uploadInitialFile' | 'preferences' | 'prepareNavigation' | 'runnerSkew'>) => createElement(WorkspaceRoot, { ...props, controller, api, language: ctx.locale.getSnapshot().active, uploadInitialFile, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture, runnerSkew: createElement(RunnerSkew) })
-    const Sidebar = (props: Omit<SessionSidebarProps, 'controller' | 'controls' | 'api'>) => createElement(SessionSidebar, { ...props, controller, controls, api })
+    const Root = (props: Omit<WorkspaceRootProps, 'controller' | 'language' | 'preferences' | 'prepareNavigation'>) => createElement(WorkspaceRoot, { ...props, controller, language: ctx.locale.getSnapshot().active, preferences: ctx.get('hapiWorkspaceUi')?.preferences, prepareNavigation: prepareWorkspaceDeparture })
+    const Sidebar = (props: Omit<SessionSidebarProps, 'controller'>) => createElement(SessionSidebar, { ...props, controller })
     stage = 'register workspace slots'
     // Shadow one existing main cell while preserving official shell, plugin
     // pages, settings, overlays, and every Conversation factory contribution.
@@ -300,24 +218,18 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(ctx.slots.inject('sidebar.workspaces', () => ctx.slots.register({
         name: 'sidebar.workspaces', priority: -100, locale: 'hapiWorkspace',
     }, Sidebar)))
-    disposers.push(ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark', priority: -100 },
-        ({ size }) => createElement('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, 'aria-hidden': true },
-            createElement('path', { d: 'M3 3h18v18H3zM12 3v18M3 12h18' })))))
-    disposers.push(ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name', priority: -100 },
-        () => createElement('strong', { style: { fontSize: 16, letterSpacing: '-.02em' } }, 'HAPI'))))
-    const Fork = (props: Omit<NativeForkActionProps, 'controls' | 'open'>) => createElement(NativeForkAction, { ...props, controls, open: sessionId => {
-        void controller.refresh(); controller.openSession(sessionId, 'horizontal')
-    } })
-    disposers.push(ctx.slots.inject('conversation.chat.assistant-actions', () => ctx.slots.register({
-        name: 'conversation.chat.assistant-actions', id: 'hapi.native-fork', order: 100, locale: 'hapiWorkspace',
-    }, Fork)))
     // The target conversation must not wait for the independent sidebar
     // new-session adaptation. Start federation/local target first, then adapt
     // the official sidebar in the background; disposal awaits both.
     stage = 'start workspace federation'
     diagnosticMark('hapi-dsh:workspace:federation-start')
     disposers.push(installNewSessionShortcut(ctx.shortcuts, controller.requestNewSession))
-    disposers.push(installFederation(ctx, controller))
+    disposers.push(installFederation(ctx, controller, workspaceUi))
+    disposers.push(installWorkspaceSharing(ctx, controller))
+    disposers.push(installBrowserRecovery(ctx))
+    disposers.push(ctx.hapiWorkspaceUi.updates.registerCheckpoint({ kind: 'workspace', label: 'Workspace layout',
+        revision: () => controller.store.getSnapshot().revision, current: () => !disposed,
+        save: signal => controller.checkpoint(signal) }))
     stage = 'bind official sidebar navigation'
     diagnosticMark('hapi-dsh:sidebar:start')
     const sidebarNavigation = installSidebarNavigation(ctx, controller)
@@ -332,24 +244,25 @@ async function installWorkspace(ctx: Context): Promise<() => Promise<void>> {
     disposers.push(async () => {
         try { await (await sidebarNavigation)?.() } catch { /* startup failure already reported */ }
     })
-    disposers.push(installDeferredPlugins(ctx))
+    disposers.push(installDeferredPlugins(ctx, undefined, workspaceDeferredDemand(controller)))
     disposers.push(installShareInbox(ctx, controller))
     disposers.push(installDraftHandoff(ctx, controller))
-    const notifications = createWorkspaceNotifications(controller)
+    const notifications = createWorkspaceNotifications(controller, createAppTargetNavigation(controller))
     disposers.push(() => { notifications.dispose() })
-    disposers.push(installWithLegacyHapiCapability(sourceCapability, () => {
-        const installed: Array<() => void> = [installSourceReadSync(controller, api, notifications.readStatus)]
-        installed.push(installSourceNotifications(ctx, api, { ...notifications, prepareUpdate: async () => {
-            const ui = ctx.get('hapiWorkspaceUi')
-            if (!ui) throw new Error('The workspace editors are not ready.')
-            if (ui.voice.getSnapshot()) throw new Error('Finish the active voice call before updating the workspace.')
-            if (controller.getSnapshot().creation) throw new Error('Finish or close the new-session form before updating the workspace.')
-            if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error('Wait for the incoming share to finish preparing.')
-            await ui.updates.checkpoint()
-        } }))
-        return () => { for (const dispose of installed.reverse()) dispose() }
-    }))
-    let disposed = false
+    disposers.push(installWorkspaceReadSync(controller, ctx.remote.appServices, ctx.hapiWorkspaceUi, notifications.readStatus, (ctx.get('connection') as ConnectionHandle).state))
+    disposers.push(() => { ctx.hapiWorkspaceUi.application.clear(); ctx.hapiWorkspaceUi.shareInbox.setScope(undefined) })
+    disposers.push(installSourceNotifications(ctx, ctx.remote.appServices, { ...notifications,
+        onReady: (scope, deviceId) => {
+            ctx.hapiWorkspaceUi.application.set(scope, deviceId)
+            ctx.hapiWorkspaceUi.shareInbox.setScope(scope)
+        }, armForReload: () => armOrdinaryReadingForReload(ctx.hapiWorkspaceUi.updates), prepareUpdate: async () => {
+        const ui = ctx.get('hapiWorkspaceUi')
+        if (!ui) throw new Error('The workspace editors are not ready.')
+        if (ui.voice.getSnapshot()) throw new Error('Finish the active voice call before updating the workspace.')
+        if (controller.getSnapshot().creation) throw new Error('Finish or close the new-session form before updating the workspace.')
+        if (['loading', 'creating', 'inserting'].includes(ui.shareInbox.getSnapshot().phase)) throw new Error('Wait for the incoming share to finish preparing.')
+        await ui.updates.checkpoint()
+    } }))
     return async () => {
         if (disposed) return
         disposed = true

@@ -15,7 +15,7 @@ import {
 } from '../src/client/catalog-readiness.ts'
 import { WorkspaceController, type WorkspaceOptions } from '../src/client/controller.ts'
 import { sessionFileAddress } from '@deepseek-ai/dsh-util-workspace-path'
-import { bindSourceResources, displayGenerationRow, sourceRow } from '../src/workspace/legacy.ts'
+import { bindSourceAliases, legacyPaneReference } from '../src/workspace/legacy.ts'
 
 const HASH_A = '0123456789abcdef0123456789abcdef'
 const HASH_B = 'fedcba9876543210fedcba9876543210'
@@ -118,7 +118,7 @@ test('an exhausted catalog wait names the retry path instead of exposing an inte
         subscribe: () => () => {} }
     await assert.rejects(waitForCatalogSession({ list, async refresh() {} }, id, new AbortController().signal, { timeoutMs: 5, retryMs: 1 }),
         (error: unknown) => error instanceof Error && error.name === 'SessionCatalogTimeout'
-            && /catalog may still be attaching/.test(error.message) && !/hapi-observed-x/.test(error.message))
+            && /Retry after the source finishes connecting/.test(error.message) && !/hapi-observed-x/.test(error.message))
 })
 
 function fixture() {
@@ -187,32 +187,32 @@ const savedChat = (resource: Record<string, unknown>): string => JSON.stringify(
 const wait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms) })
 const focusedResource = (controller: WorkspaceController) => controller.store.focusedPane().resource
 
-test('a restored source pane re-binds the next display generation instead of claiming unavailability', async () => {
+test('a restored legacy source never adopts a newer display generation from projection metadata', async () => {
     const source = fixture()
     const oldId = `hapi-observed-${HASH_A}-r1`, nextId = `hapi-observed-${HASH_A}-r2`
     source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: oldId, sourceSessionId: 'orig-native', sourceHubId: 'hub' }))
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
     const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
-    assert.equal(controller.getSnapshot().leases.get(paneId)!.status, 'opening')
-    assert.equal(controller.getSnapshot().leases.get(paneId)!.reason, 'catalog-loading')
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.status, 'failed')
+    assert.equal(controller.getSnapshot().leases.get(paneId)!.reason, 'source-not-found')
     source.add(nextId, { hapiObserved: { ownership: 'hapi-runner', hubId: 'hub', hapiSessionId: 'orig-native' } } as never)
     await wait(1)
     const lease = controller.getSnapshot().leases.get(paneId)!
-    assert.equal(lease.status, 'ready')
-    assert.equal(lease.sessionId, nextId)
-    assert.deepEqual(focusedResource(controller), { kind: 'chat', sessionId: nextId, sourceSessionId: 'orig-native', sourceHubId: 'hub' })
+    assert.notEqual(lease.status, 'ready')
+    assert.equal(lease.reference, undefined)
+    assert.deepEqual(focusedResource(controller), { kind: 'chat', sessionId: oldId, sourceSessionId: 'orig-native', sourceHubId: 'hub' })
     controller.dispose()
 })
 
-test('a saved display-only pane upgrades to the original identity so a later restore does not depend on the display id', async () => {
+test('a saved legacy display keeps its exact original reference until a finite alias is installed', async () => {
     const source = fixture()
     const oldId = `hapi-codex-${HASH_B}-r1`, nextId = `hapi-codex-${HASH_B}-r2`
     source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: oldId }))
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
     source.add(nextId, { hapi: { engine: 'codex', hubId: 'hub', hapiSessionId: 'native-source' } } as never)
     await wait(1)
-    assert.deepEqual(focusedResource(controller), { kind: 'chat', sessionId: nextId, sourceSessionId: 'native-source', sourceHubId: 'hub' })
-    assert.equal(controller.getSnapshot().leases.get(controller.store.focusedPane().id)!.status, 'ready')
+    assert.deepEqual(focusedResource(controller), { kind: 'chat', sessionId: oldId })
+    assert.equal(source.refs.length, 0)
     controller.dispose()
 })
 
@@ -254,11 +254,10 @@ test('unrelated row updates do not turn a settled missing pane back into loading
     controller.dispose()
 })
 
-test('a deleted original HAPI session is reported after the catalog settles, without dumping its id into the message', async () => {
+test('an unmapped original session keeps its saved reference without adopting newer display rows', async () => {
     const source = fixture()
     source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: `hapi-observed-${HASH_A}-r1`, sourceSessionId: 'deleted-source', sourceHubId: 'hub' }))
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
-    controller.setSourceCatalog([], 'hub')
     const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
     await wait(40)
     const failed = controller.getSnapshot().leases.get(paneId)!
@@ -268,7 +267,8 @@ test('a deleted original HAPI session is reported after the catalog settles, wit
     assert.match(failed.detail!, /source=deleted-source/)
     source.add(`hapi-observed-${HASH_A}-r2`, { hapiObserved: { ownership: 'hapi-runner', hubId: 'hub', hapiSessionId: 'deleted-source' } } as never)
     await wait(1)
-    assert.equal(controller.getSnapshot().leases.get(paneId)!.status, 'ready')
+    assert.notEqual(controller.getSnapshot().leases.get(paneId)!.status, 'ready')
+    assert.equal(source.refs.length, 0)
     controller.dispose()
 })
 
@@ -278,19 +278,17 @@ test('a same session id on another Hub is never substituted for the saved source
     source.memory.set('workspace-test', savedChat(saved))
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
     const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
-    controller.setSourceCatalog([], 'new-hub')
     // The current Hub lists a different session that happens to share the
     // original source id (and even looks like a display generation of it).
     source.add(`hapi-observed-${HASH_A}-r2`, { hapiObserved: { ownership: 'hapi-runner', hubId: 'new-hub', hapiSessionId: 'orig-source' } } as never)
     await wait(40)
     const lease = controller.getSnapshot().leases.get(paneId)!
     assert.equal(lease.status, 'failed')
-    assert.equal(lease.reason, 'source-hub-changed')
+    assert.equal(lease.reason, 'source-not-found')
     assert.equal(lease.reference, undefined)
     assert.equal(source.refs.length, 0, 'another Hub\'s session must never be retained')
     assert.deepEqual(focusedResource(controller), saved, 'the saved Hub identity and display id stay untouched')
-    assert.match(lease.error!, /different HAPI Hub identity/)
-    assert.match(lease.nextStep!, /sidebar/i)
+    assert.match(lease.nextStep!, /original/i)
     controller.dispose()
 })
 
@@ -303,14 +301,13 @@ test('a saved document target on another Hub is never re-bound or rewritten', as
     source.memory.set('workspace-test', savedChat(saved))
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
     const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
-    controller.setSourceCatalog([], 'new-hub')
     // The other Hub exposes the same original session id under the next display
     // generation; the restore must not adopt it or rewrite the file target.
     source.add(`hapi-observed-${HASH_A}-r2`, { hapiObserved: { ownership: 'hapi-runner', hubId: 'new-hub', hapiSessionId: 'orig-source' } } as never)
     await wait(40)
     const lease = controller.getSnapshot().leases.get(paneId)!
     assert.equal(lease.status, 'failed')
-    assert.equal(lease.reason, 'source-hub-changed')
+    assert.equal(lease.reason, 'binding-failed')
     assert.equal(source.refs.length, 0)
     assert.deepEqual(focusedResource(controller), saved, 'display id, Hub identity, document and target are untouched')
     controller.dispose()
@@ -322,7 +319,6 @@ test('an archived display conversation is classified as archived so the user can
     const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5,
         workspaceState: { getSnapshot: () => ({ archivedSessionIds: ['archived-display'], pinnedSessionIds: [] as string[] }), subscribe: () => () => {} },
     })
-    controller.setSourceCatalog([], 'hub')
     const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
     await wait(40)
     const failed = controller.getSnapshot().leases.get(paneId)!
@@ -332,46 +328,17 @@ test('an archived display conversation is classified as archived so the user can
     controller.dispose()
 })
 
-test('an offline source Hub leaves source panes in a waiting state rather than a failure', async () => {
-    const source = fixture()
-    source.memory.set('workspace-test', savedChat({ kind: 'chat', sessionId: `hapi-observed-${HASH_A}`, sourceSessionId: 'orig-source', sourceHubId: 'hub' }))
-    const controller = new WorkspaceController({ ...source.options, catalogSettleMs: 5 })
-    controller.setSourceCatalog([], 'hub', { hosts: [], connected: false })
-    const paneId = panes(controller.store.getSnapshot().windows[0]!.root)[0]!.id
-    const lease = controller.getSnapshot().leases.get(paneId)!
-    assert.equal(lease.status, 'opening')
-    assert.equal(lease.reason, 'source-offline')
-    assert.match(lease.nextStep!, /reopens by itself/i)
-    controller.dispose()
-})
-
-test('saved identity binding is idempotent, generation aware and never guesses between candidates', () => {
-    const row = (id: string, source?: { sessionId: string; hubId?: string }): Parameters<typeof sourceRow>[1][string] => ({
-        id: id as SessionId, hostId: 'local', hostLabel: 'DSH', hostOnline: true, sourceSessionId: source?.sessionId ?? id,
-        archived: false, pinned: false, displayTitle: id, running: false, blank: false, updatedAt: 1, retainedBy: {},
-        ...(source ? { projectionValues: { hapiObserved: { ownership: 'hapi-runner', hubId: source.hubId, hapiSessionId: source.sessionId } } as never } : {}),
+test('saved legacy displays need an explicit offline alias and never choose a newer-looking suffix', () => {
+    const display = `hapi-observed-${HASH_A}-r1`, state = savedLayout({ kind: 'chat', sessionId: display })
+    assert.equal(bindSourceAliases(state, () => undefined), state)
+    assert.deepEqual(legacyPaneReference({ kind: 'chat', sessionId: display }), { kind: 'hapi-display', hostId: 'local', displayId: display })
+    const bound = bindSourceAliases(state, reference => {
+        assert.deepEqual(reference, { kind: 'hapi-display', hostId: 'local', displayId: display })
+        return { kind: 'federated-dsh', hostId: 'original-host', sessionId: 'original-native' }
     })
-    const base = `hapi-observed-${HASH_A}`
-    const rows = { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'hub' }) }
-    const state = savedLayout({ kind: 'chat', sessionId: `${base}-r1` })
-    const bound = bindSourceResources(state, rows)
-    assert.deepEqual(panes(bound.windows[0]!.root)[0]!.resource, { kind: 'chat', sessionId: `${base}-r2`, sourceSessionId: 'orig', sourceHubId: 'hub' })
-    assert.equal(bindSourceResources(bound, rows), bound, 'a resolved layout is stable')
-    assert.equal(displayGenerationRow(`${base}-r1`, rows)?.id, `${base}-r2`)
-    assert.equal(displayGenerationRow(`${base}-r3`, rows), undefined, 'older revisions never win')
-    const ambiguous = { [`${base}-r2`]: rows[`${base}-r2`]!, [`${base}-r3`]: row(`${base}-r3`) }
-    assert.equal(displayGenerationRow(`${base}-r1`, ambiguous), undefined, 'two candidates are never guessed')
-    // A saved Hub is an exact boundary: no unique-match fallback exists.
-    assert.equal(sourceRow({ kind: 'chat', sessionId: 'old', sourceSessionId: 'orig', sourceHubId: 'old-hub' },
-        { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'new-hub' }) }), undefined)
-    const crossHub = savedLayout({ kind: 'chat', sessionId: `${base}-r1`, sourceSessionId: 'orig', sourceHubId: 'old-hub' })
-    assert.equal(bindSourceResources(crossHub, { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'new-hub' }) }), crossHub,
-        'a restore never re-binds across Hub identities')
-    const sameHub = savedLayout({ kind: 'chat', sessionId: `${base}-r1`, sourceSessionId: 'orig', sourceHubId: 'hub' })
-    assert.equal(sourceRow(panes(crossHub.windows[0]!.root)[0]!.resource as never,
-        { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'hub' }) }), undefined,
-        'the candidate must also match the saved Hub exactly')
-    assert.equal(panes(bindSourceResources(sameHub, { [`${base}-r2`]: row(`${base}-r2`, { sessionId: 'orig', hubId: 'hub' }) }).windows[0]!.root)[0]!.resource.kind, 'chat')
+    const pane = panes(bound.windows[0]!.root)[0]!
+    assert.deepEqual(pane.resource, { kind: 'chat', sessionId: 'hapi-remote:original-host:original-native', draftOrigin: { sessionId: display } })
+    assert.equal(bindSourceAliases(bound, () => undefined), bound)
 })
 
 test('a restored HHPI pane resolves its exact identity despite a settled empty directory', async () => {

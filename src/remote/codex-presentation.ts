@@ -1,3 +1,4 @@
+import type { FileUploadValue, ImageUploadValue } from '@deepseek-ai/dsh-client-file-upload/types';
 /** Native display material; execution names and ownership never enter the DSH tool registry. */
 import type { ContentBlock } from '@deepseek-ai/dsh-llm';
 import { isRecord, nativeText, type NativeItem } from './codex-native.ts';
@@ -17,7 +18,7 @@ function outputContent(value: unknown): ContentBlock[] {
     return value.flatMap((part): ContentBlock[] => {
         if (!isRecord(part)) return text(part);
         if ((part.type === 'text' || part.type === 'inputText' || part.type === 'input_text' || part.type === 'output_text') && typeof part.text === 'string') return text(part.text);
-        if (part.type === 'image' || part.type === 'inputImage' || part.type === 'input_image') return text('Image output');
+        if (part.type === 'image' || part.type === 'inputImage' || part.type === 'input_image' || part.type === 'output_image') return text('Image output');
         if (part.type === 'audio' || part.type === 'inputAudio' || part.type === 'input_audio') return text('Audio output');
         if (part.type === 'encrypted_content') return text('Encrypted output');
         return text(part);
@@ -37,10 +38,11 @@ export function nativeUserContent(item: NativeItem): ContentBlock[] {
 }
 
 /** Preserve source semantics needed by the official shell, diff and details rows. */
-export function nativeToolPresentation(item: NativeItem): NativeToolPresentation | undefined {
+export function nativeToolPresentation(item: NativeItem, preparedContent?: readonly ContentBlock[]): NativeToolPresentation | undefined {
     const name = `codex.${item.type}`;
     const isError = item.status === 'failed' || item.status === 'declined' || item.success === false
-        || item.error != null || typeof item.exitCode === 'number' && item.exitCode !== 0;
+        || item.error != null || typeof item.exitCode === 'number' && item.exitCode !== 0
+        || item.type === 'mcpToolCall' && isRecord(item.result) && item.result.isError === true;
     switch (item.type) {
         case 'commandExecution': return { name, isError,
             input: { command: item.command, cwd: item.cwd, commandActions: item.commandActions ?? [],
@@ -50,20 +52,23 @@ export function nativeToolPresentation(item: NativeItem): NativeToolPresentation
         case 'webSearch': return { name, isError, input: { query: item.query, action: item.action }, content: text(item.results ?? item.action ?? item.query ?? '') };
         // This source emits the public read_image vocabulary so its unique, authorized
         // image-gallery child slot remains owned by the official DSH registrant.
-        case 'imageView': return { name: 'read_image', isError, input: { file_path: item.path }, content: text(nativeText(item.path)) };
+        case 'imageView': return { name: 'read_image', isError, input: { file_path: item.path }, content: preparedContent ? [...preparedContent] : text(nativeText(item.path)) };
         case 'imageGeneration': return { name, isError: isError || item.failure != null,
             input: { prompt: item.revisedPrompt, ...(typeof item.savedPath === 'string' ? { path: item.savedPath } : {}) },
-            content: text(item.failure ?? { status: item.status, ...(typeof item.savedPath === 'string' ? { path: item.savedPath } : {}) }) };
+            content: preparedContent ? [...preparedContent, ...(item.failure == null ? [] : text(item.failure))]
+                : text(item.failure ?? { status: item.status, ...(typeof item.savedPath === 'string' ? { path: item.savedPath } : {}) }) };
         case 'mcpToolCall': {
             const result = isRecord(item.result) ? item.result : undefined;
-            const content = result && Array.isArray(result.content) ? outputContent(result.content) : [];
+            // Preview preparation replaces only the native media blocks. It must
+            // not replace structured results or a source-reported error.
+            const content = preparedContent ? [...preparedContent] : result && Array.isArray(result.content) ? outputContent(result.content) : [];
             if (result?.structuredContent != null) content.push(...text(result.structuredContent));
             if (item.error != null) content.push(...text(isRecord(item.error) ? item.error.message ?? item.error : item.error));
             return { name, isError, input: { server: item.server, tool: item.tool, arguments: item.arguments ?? {} }, content };
         }
         case 'dynamicToolCall': return { name, isError,
             input: { namespace: item.namespace, tool: item.tool, arguments: item.arguments ?? {} },
-            content: outputContent(item.contentItems ?? item.output ?? []) };
+            content: preparedContent ? [...preparedContent] : outputContent(item.contentItems ?? item.output ?? []) };
         case 'collabAgentToolCall': return { name, isError,
             input: { tool: item.tool, prompt: item.prompt, receiverThreadIds: item.receiverThreadIds ?? [], model: item.model, reasoningEffort: item.reasoningEffort },
             content: text({ status: item.status, agentsStates: item.agentsStates ?? {} }) };
@@ -71,7 +76,7 @@ export function nativeToolPresentation(item: NativeItem): NativeToolPresentation
             input: { kind: item.kind, agentPath: item.agentPath, agentThreadId: item.agentThreadId, model: item.model, reasoningEffort: item.reasoningEffort },
             content: text({ kind: item.kind, agentPath: item.agentPath, model: item.model, reasoningEffort: item.reasoningEffort }) };
         case 'functionCallOutput': return { name, isError,
-            input: { tool: item.name, namespace: item.namespace }, content: outputContent(item.output) };
+            input: { tool: item.name, namespace: item.namespace }, content: preparedContent ? [...preparedContent] : outputContent(item.output) };
         case 'sleep': return { name, isError, input: { durationMs: item.durationMs }, content: text({ durationMs: item.durationMs }) };
         default: return undefined;
     }
@@ -83,4 +88,26 @@ export function nativeOtherContent(item: NativeItem): ContentBlock[] {
     if (item.type === 'enteredReviewMode' || item.type === 'exitedReviewMode') return text(nativeText(item.review) || 'Code review');
     if (item.type === 'contextCompaction') return text('Conversation context compacted.');
     return text(nativeText(item.text) || `Codex activity: ${item.type}`);
+}
+
+
+export interface NativeUploadedPart {
+    input: { type: 'text'; text: string; text_elements: never[] } | { type: 'localImage'; path: string };
+    value?: FileUploadValue | ImageUploadValue;
+}
+/** A persisted operation + exact native input, never an arbitrary text path, supplies durable file authority. */
+export function nativeUploadedContent(item: NativeItem, parts: readonly NativeUploadedPart[], prepared?: ContentBlock[]): ContentBlock[] | undefined {
+    if (item.type !== 'userMessage' || !Array.isArray(item.content) || !parts.some(part => part.value && 'file' in part.value)) return undefined;
+    const content = [...(prepared ?? nativeUserContent(item))];
+    let changed = false;
+    for (const part of parts) {
+        if (!part.value || !('file' in part.value) || part.input.type !== 'text') continue;
+        // Structured references can place receipts between other native inputs. Match only an exact source-issued input.
+        const expected = part.input.text;
+        if (!item.content.some((value: unknown) => isRecord(value) && value.type === 'text' && value.text === expected)) continue;
+        const index = content.findIndex(value => value.type === 'text' && value.text === expected);
+        if (index < 0) continue;
+        content[index] = { type: 'file', attachment: part.value.file }; changed = true;
+    }
+    return changed ? content : undefined;
 }

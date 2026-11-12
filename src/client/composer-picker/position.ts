@@ -4,8 +4,9 @@ export interface PickerPosition { left: number; top: number; width: number; maxH
 
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value))
 
-/** Anchor above the control whenever possible, including on phones. Constrain
- * to the owning pane and keyboard-adjusted viewport; long choices scroll inside. */
+/** Anchor above the control whenever possible, including on phones. Keep a
+ * readable popover inside the keyboard-adjusted viewport. Prefer the owning
+ * pane when it has room; a narrow split must not collapse the menu's text. */
 export function positionPicker(anchor: PickerAnchorBox, viewport: PickerViewport, contentHeight: number, pane?: PickerAnchorBox): PickerPosition {
     const margin = 12, gap = 8
     const insetX = Math.min(margin, Math.max(0, viewport.width) / 2), insetY = Math.min(margin, Math.max(0, viewport.height) / 2)
@@ -15,8 +16,14 @@ export function positionPicker(anchor: PickerAnchorBox, viewport: PickerViewport
     if (pane) {
         const paneInsetX = Math.min(margin, Math.max(0, pane.right - pane.left) / 2)
         const paneInsetY = Math.min(margin, Math.max(0, pane.bottom - pane.top) / 2)
-        leftEdge = clamp(pane.left + paneInsetX, leftEdge, rightEdge)
-        rightEdge = clamp(pane.right - paneInsetX, leftEdge, rightEdge)
+        const paneLeft = clamp(pane.left + paneInsetX, leftEdge, rightEdge)
+        const paneRight = clamp(pane.right - paneInsetX, paneLeft, rightEdge)
+        // The portal keeps its original button/session owner even when it
+        // needs to extend over a neighbouring split to remain readable.
+        if (paneRight - paneLeft >= Math.min(280, rightEdge - leftEdge)) {
+            leftEdge = paneLeft
+            rightEdge = paneRight
+        }
         topEdge = clamp(pane.top + paneInsetY, topEdge, bottomEdge)
         bottomEdge = clamp(pane.bottom - paneInsetY, topEdge, bottomEdge)
     }

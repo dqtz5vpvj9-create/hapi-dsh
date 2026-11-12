@@ -1,0 +1,13 @@
+# Workspace startup navigation ownership
+
+The pinned DSH `ui-workspace` restores its browser selection when its workspace and Session lists become ready. With no saved official selection, it connects the recent workspace through `sessions.create`. HHPI has a separate multi-pane workspace, so that hidden default restoration can create an unrelated ordinary DSH blank while the user opens an existing native conversation or file. The `RemoteSessions` facade correctly delegates ordinary creation; rejecting that command would also break explicit New Session.
+
+`@deepseek-ai/dsh-client-ui-workspace/client` therefore exposes optional `Config.restoreSelection`. Its default remains `true`. When `false`, the package skips only its startup restoration watcher, including retries after catalog updates. Its public New, connect, open, archive and directory operations keep their existing behavior. The service still disposes references opened explicitly.
+
+HHPI sets `restoreSelection: false` in the public Loader configuration of its Workspace consumers, both for initial pane graphs and for the provider's early hook or existing-entry update. The provider restores the original entry configuration when it releases ownership. Ordinary DSH without HHPI retains the default restoration policy. No Session method is intercepted, no Agent context is fabricated, and no HHPI wire field changes.
+
+This extends one package over pinned DSH `0.2.2-rc.1`; the official source offer and next coherent Host/Runner cohort must include it. It cannot be represented as a client-only fix against the older SDK that ignores the option.
+
+The controlled reproduction runs the actual pinned Workspace navigation and production `RemoteSessions` against in-memory Session/Workspace boundaries. It requests an unnamed blank without any user action and retries after a changed source catalog when the fixture refuses the first request. The source contract verifies default restoration, zero implicit creation under host-managed navigation, and explicit New/connect/open plus reference cleanup. A public `apply` contract verifies configuration forwarding; HHPI Loader/provider contracts verify the option and unchanged ordinary creation delegation. These are process-level results, not production-browser acceptance.
+
+The historical production Files probe recorded only the two blocked method names, without request arguments or initiating stacks. Those exact requests cannot retrospectively be assigned with certainty. Its successful file read remains valid, but the interception alone is not evidence that product startup has no creation side effects. The next actual entry check must record any attempted creation and its initiator while keeping user tasks read-only.

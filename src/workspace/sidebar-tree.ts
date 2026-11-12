@@ -2,9 +2,17 @@
  * Copyright HAPI contributors. AGPL-3.0-only; see NOTICE. */
 import type { WorkspaceCatalogRow } from '../client/controller.ts'
 import { sessionResourceId } from '../client/controller.ts'
+import { isSourceSessionId, parseSourceSessionId } from '../remote/protocol.ts'
 
 export type SidebarBranch = { row: WorkspaceCatalogRow; children: SidebarBranch[] }
 export type SidebarTreeRow = { id: string; branch: SidebarBranch; depth: number; expanded: boolean; rootId: string }
+function nativeLineageMatches(childId: string, parentId: string): boolean {
+    if (!isSourceSessionId(parentId)) return false
+    try {
+        const child = parseSourceSessionId(childId), parent = parseSourceSessionId(parentId)
+        return child.machineId === parent.machineId && child.sourceId === parent.sourceId && child.engine === parent.engine
+    } catch { return false }
+}
 
 /** HAPI's flat recent tree projection: expansion is resolved on content changes,
  * not on scroll, and even a deeply nested SDK history never uses the JS stack. */
@@ -28,6 +36,11 @@ export function sidebarTree(rows: readonly WorkspaceCatalogRow[]): SidebarBranch
     const parentIds = new Map<string, string>()
     for (const row of rows) {
         if (!row.parentId) continue
+        if (isSourceSessionId(row.sourceSessionId)) {
+            // Native lineage stays within the exact source identity. A same
+            // thread ID on another machine/source is a different conversation.
+            if (!nativeLineageMatches(row.sourceSessionId, row.parentId)) continue
+        }
         const id = sessionResourceId(row.hostId, row.parentId)
         if (id !== row.id && branches.has(id)) parentIds.set(row.id, id)
     }

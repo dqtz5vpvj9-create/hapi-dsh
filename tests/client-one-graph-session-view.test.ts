@@ -11,6 +11,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 import type { WorkspacePaneNavigation } from '../src/client/pane-navigation.ts'
 import { installSessionViewHost } from '../src/client/surface/session-view.tsx'
+import { installOrdinaryReadingMemory } from '../src/client/ordinary-reading-checkpoint.ts'
+import { WorkspaceApplicationIdentity } from '../src/client/application-identity.ts'
+import { createWorkspaceUpdatePreparations } from '../src/client/update-preparation.ts'
 
 const require = createRequire(import.meta.url)
 let published: { factory(resolve: (id: string) => unknown): typeof import('@deepseek-ai/dsh-client-ui-renderer/client') } | undefined
@@ -72,6 +75,9 @@ async function fixture(t: TestContext) {
         else Reflect.deleteProperty(globalThis, 'MutationObserver')
     })
     const root = new Context()
+    const application = new WorkspaceApplicationIdentity(), updates = createWorkspaceUpdatePreparations()
+    const stopMemory = installOrdinaryReadingMemory(root)
+    t.after(() => { stopMemory(); application.dispose(); updates.dispose() })
     root.reflect.provide('sessions', { list: { getSnapshot: () => ({ byId: {} }) } } as unknown as Context['sessions'])
     new SlotRegistry(root)
     const declaration = root.plugin({ name: 'test-official-shell-declaration', inject: ['slots'], apply(ctx: Context) {
@@ -137,7 +143,7 @@ async function fixture(t: TestContext) {
             },
         } as unknown as HTMLElement
         surfaces.push({ attributes, listeners, state, reading, measures: () => measures })
-        return { paneId, target, navigation: { paneId, state, reading } as unknown as WorkspacePaneNavigation }
+        return { paneId, target, navigation: { hostId: 'fixture-host', paneId, application, updates, state, reading } as unknown as WorkspacePaneNavigation }
     }
     const mount = (paneId: string, ref: SessionReference, onError?: (error: unknown) => void) => host.mount({
         ...surface(paneId), reference: ref,

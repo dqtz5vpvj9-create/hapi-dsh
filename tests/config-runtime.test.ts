@@ -1,12 +1,12 @@
 /** Configuration/process unit tests use a fake launcher; real DSH boot is covered separately. */
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createConfig, DSH_VERSION } from '../src/cli/config.ts';
 import { CLIENT_CHUNKS, assertProfileProviders, installProfile, runtimeEnvironment, startArguments, verifyBundleArtifacts, type Command, type CommandRunner } from '../src/cli/runtime.ts';
-import { checkHapi } from '../src/cli/doctor.ts';
+import { doctor } from '../src/cli/doctor.ts';
 import { parseDocument, stringify } from 'yaml';
 import { applyEntryPatches } from '@deepseek-ai/cordis-plugin-include';
 import { OFFICIAL_PROVIDERS, OFFICIAL_PROVIDER_PACKAGES, ROUTING_PROVIDERS } from '../src/shared/official-provider.ts';
@@ -33,7 +33,7 @@ test('official profile setup uses launcher flags and safe argv, and preserves ex
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-profile-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const packageRoot = await fixture(directory);
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     config.dsh.home = join(directory, 'dsh home');
     const calls: Command[] = [];
     const manifestPath = join(config.dsh.home, 'profiles', config.dsh.profile, 'package.json');
@@ -101,7 +101,7 @@ test('an incomplete existing profile is never reset by setup', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-incomplete-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const packageRoot = await fixture(directory);
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     config.dsh.home = join(directory, 'dsh');
     const profile = join(config.dsh.home, 'profiles', config.dsh.profile);
     await mkdir(profile, { recursive: true });
@@ -119,7 +119,7 @@ test('a missing official package manager is actionable while subprocess diagnost
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-prerequisite-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const packageRoot = await fixture(directory);
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     config.dsh.home = join(directory, 'dsh');
     const profile = join(config.dsh.home, 'profiles', config.dsh.profile);
     await mkdir(profile, { recursive: true });
@@ -177,50 +177,63 @@ test('artifact verification catches every missing deferred Client chunk and leav
 });
 
 test('runtime environment carries only the config path and start uses the official Web flags', () => {
-    const config = createConfig('http://127.0.0.1:3006', {});
-    config.hapi.token = 'fixture-private-token';
+    const config = createConfig({});
     config.server.publicUrl = 'https://work.example.test';
     config.server.trustedHosts = ['work.example.test:443'];
     config.server.tls = { certFile: '/private/chain.pem', keyFile: '/private/key.pem' };
     const env = runtimeEnvironment(config, '/private/config.json', {});
     assert.equal(env.HAPI_DSH_CONFIG_FILE, '/private/config.json');
-    assert.ok(!JSON.stringify(env).includes('fixture-private-token'));
+    assert.deepEqual(env, { DSH_HOME: config.dsh.home, HAPI_DSH_CONFIG_FILE: '/private/config.json' });
     const args = startArguments(config, true);
     assert.deepEqual(args, ['--profile', 'hapi', '--host', '127.0.0.1', '--port', '3080', '--public-url', 'https://work.example.test',
         '--trusted-host', 'work.example.test:443', '--tls-cert', '/private/chain.pem', '--tls-key', '/private/key.pem', '--no-open']);
-    assert.ok(!args.join(' ').includes('fixture-private-token'));
 });
 
-test('doctor exchanges the HAPI CLI token for a Web JWT before querying catalogs', async () => {
-    const config = createConfig('https://hub.example.test/mount', {});
-    const urls: string[] = [];
-    const fakeFetch: typeof fetch = async (input, init) => {
-        const url = String(input);
-        urls.push(url);
-        assert.equal(init?.redirect, 'error');
-        if (url.endsWith('/auth')) {
-            assert.deepEqual(JSON.parse(String(init?.body)), { accessToken: 'fixture-access-token' });
-            return Response.json({ token: 'fixture-web-jwt' });
+test('doctor checks native local configuration without contacting a retired Hub', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-local-doctor-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const config = createConfig({ DSH_HOME: join(directory, 'dsh') });
+    const profile = join(config.dsh.home, 'profiles', config.dsh.profile);
+    await mkdir(profile, { recursive: true });
+    await writeFile(join(profile, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-web-app', 'hapi-dsh'] } } }));
+    const network = t.mock.method(globalThis, 'fetch', async () => { throw new Error('Unexpected retired Hub request'); });
+    const result = await doctor(config, join(directory, 'config.json'), { packageRoot: await fixture(directory),
+        command: { executable: 'fixture-dsh', args: [] }, run: async command => ({ exitCode: 0,
+            stdout: command.executable === 'pnpm' ? '11.28.5' : command.args.includes('--version') ? DSH_VERSION : validDump, stderr: '' }) });
+    assert.equal(result.ok, true, JSON.stringify(result.checks));
+    assert.equal(network.mock.callCount(), 0);
+    assert.deepEqual(result.expectedUpstream, { dsh: DSH_VERSION });
+    assert.equal(result.checks.some(check => check.name.startsWith('hapi')), false);
+    assert.equal(result.checks.find(check => check.name === 'source-connectivity')?.status, 'skipped');
+});
+
+
+test('Runner setup links the existing source provider before the Host-only bundle and verifies its client resolution', async (t) => {
+    const directory = await mkdtemp('/mnt/cache/data-cache/hhpi-runner-setup-')
+    t.after(() => rm(directory, { recursive: true, force: true }))
+    const runner = join(directory, 'release/dist/runner'), provider = join(directory, 'release/dist/session-provider')
+    await mkdir(runner, { recursive: true }); await mkdir(provider, { recursive: true })
+    await writeFile(join(runner, 'package.json'), JSON.stringify({ name: 'hapi-dsh-runner', main: './index.js', dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    await writeFile(join(runner, 'index.js'), 'export {}'); await writeFile(join(runner, 'cordis.patch.yml'), '')
+    await writeFile(join(provider, 'package.json'), JSON.stringify({ name: 'hapi-dsh-session-provider', exports: { './client': './client.js' }, dsh: { client: { platform: 'web' } } }))
+    await writeFile(join(provider, 'client.js'), 'export {}')
+    const config = createConfig({}); config.dsh.home = join(directory, 'home')
+    const profile = join(config.dsh.home, 'profiles', config.dsh.profile), links: string[] = []
+    const run: CommandRunner = async command => {
+        if (command.args.includes('--version')) return { exitCode: 0, stdout: DSH_VERSION, stderr: '' }
+        if (command.args.includes('--from-default-profile')) {
+            await mkdir(join(profile, 'node_modules'), { recursive: true })
+            await writeFile(join(profile, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-web-app'] } } }))
         }
-        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer fixture-web-jwt');
-        return Response.json(url.endsWith('/sessions') ? { sessions: [{ id: 'fixture-session' }] } : { machines: [] });
-    };
-    const checks = await checkHapi(config, { env: { HAPI_DSH_TOKEN: 'fixture-access-token' }, fetch: fakeFetch });
-    assert.equal(urls[0], 'https://hub.example.test/mount/api/auth');
-    assert.equal(checks[0]!.status, 'pass');
-    assert.equal(checks.find((check) => check.name === 'hapi-machines')!.status, 'warn');
-    assert.ok(!JSON.stringify(checks).includes('fixture-web-jwt'));
-});
-
-test('doctor does not echo a Hub authentication error body', async () => {
-    const config = createConfig('http://127.0.0.1:3006', {});
-    await assert.rejects(checkHapi(config, {
-        env: { HAPI_DSH_TOKEN: 'fixture-access-token' },
-        fetch: async () => Response.json({ error: 'fixture-access-token' }, { status: 401 }),
-    }), (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /HTTP 401/);
-        assert.ok(!error.message.includes('fixture-access-token'));
-        return true;
-    });
-});
+        if (command.args.includes('add')) {
+            const target = command.args.at(-1)!.slice(5), name = JSON.parse(await readFile(join(target, 'package.json'), 'utf8')).name
+            links.push(name)
+            const pkg = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
+            pkg.dependencies = { ...pkg.dependencies, [name]: `link:${target}` }
+            await writeFile(join(profile, 'package.json'), JSON.stringify(pkg)); await symlink(target, join(profile, 'node_modules', name), 'dir')
+        }
+        return { exitCode: 0, stdout: '- id: hapi-dsh-session-provider\n- id: hapi-dsh-runner\n', stderr: '' }
+    }
+    await installProfile(config, join(directory, 'runner.json'), runner, { bundleName: 'hapi-dsh-runner', command: { executable: 'fixture-dsh', args: [] }, run, env: {} })
+    assert.deepEqual(links, ['hapi-dsh-session-provider', 'hapi-dsh-runner'])
+})

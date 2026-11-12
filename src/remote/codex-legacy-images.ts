@@ -8,7 +8,7 @@ import type { SourceSession } from './protocol.ts';
 
 export function retainSelectedLegacyImages(paths: readonly string[], index: SourceEventIndex, session: SourceSession,
     thread: NativeThread, items: readonly NativeItemEntry[]): void {
-    if (!items.some(({ item }) => item.type === 'imageView' || item.type === 'userMessage')) return;
+    if (!items.some(({ item }) => item.type === 'imageView' || item.type === 'imageGeneration' || item.type === 'userMessage')) return;
     for (const path of paths) {
         let db: DatabaseSync | undefined;
         try {

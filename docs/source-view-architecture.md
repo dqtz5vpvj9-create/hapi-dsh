@@ -1,3 +1,11 @@
+# 历史记录：V4 源消息窗口
+
+本文保留 HHPI 运行链路退休前的 V4 设计、故障和测量，不代表当前源码状态。当前三条来源、官方 reading occurrence/window commit、源 OS 资源与账号服务见[当前架构](architecture.md)。只在旧数据迁移或故障追溯时使用下文；不恢复 SourceFrame/display observer 执行链。
+
+当前 Windows 原源 Runner、真机与最终发布仍待验收。下文旧版本的通过记录不得替代这些证据。
+
+---
+
 # 源消息窗口与稳定执行归属
 
 本文记录 V4 的 SourceFrame 实现。HHPI 的目标是通用 Agent 远程接入 DSH Web，HAPI 仅为参考或可选接入来源；消除事件往返及客户端坐标重映射的目标方案见 [HHPI 远程接入架构](hhpi-remote-access-design.md)，尚未实现。

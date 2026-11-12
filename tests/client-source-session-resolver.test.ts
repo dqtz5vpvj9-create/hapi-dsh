@@ -1,67 +1,49 @@
-/** Public Remote/catalog protocol fixtures, with no alternate renderer or retained Session. */
-import assert from 'node:assert/strict';
-import test from 'node:test';
-import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client';
-import type { SessionId } from '@deepseek-ai/dsh-session/types';
-import { resolveOriginalSession } from '../src/client/source-session-resolver.ts';
-import { SourceResolutionError, sourceResolutionFailure } from '../src/client/source-session-state.ts';
+/** The authenticated application RPC is an explicit fixture; no retired Hub or writer exists here. */
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { resolveOriginalSession } from '../src/client/source-session-resolver.ts'
+import { SourceResolutionError, sourceResolutionFailure } from '../src/client/source-session-state.ts'
+import type { SourceAliasApi } from '../src/workspace/source-alias-api.ts'
+import type { AppSourceRoute } from '../src/workspace/app-service-types.ts'
 
-function catalog() {
-    const id = 'official-display' as SessionId;
-    let row: SessionSummary = { id, displayTitle: 'Synthetic', running: false, blank: false, updatedAt: 1, retainedBy: {} };
-    const listeners = new Set<() => void>(); let reads = 0;
-    const list = {
-        getSnapshot: (): SessionListState => ({ ids: [id], byId: { [id]: row }, phase: 'ready', projectionsBySession: {} }),
-        subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    };
-    return { list, refresh: async () => { reads++; }, reads: () => reads, listenerCount: () => listeners.size,
-        project(hubId: string, sourceSessionId: string) {
-            row = { ...row, projectionValues: { hapi: { hubId, hapiSessionId: sourceSessionId } } as never };
-            for (const listener of [...listeners]) listener();
-        } };
-}
-const source = { hubId: 'original-hub', sourceSessionId: 'original-source' };
+const reference = { kind: 'hapi-session' as const, hubId: 'old-hub', namespace: 'original-namespace', sessionId: 'old-session' }
+const reply = (source: AppSourceRoute): Awaited<ReturnType<SourceAliasApi['resolve']>> => ({ ok: true, value: { status: 'resolved', source, via: 'alias', recovery: [] } })
 
-test('source loading failures preserve authoritative missing, removed, denied and transport distinctions', () => {
-    for (const [status, expected] of [[404, 'not-found'], [410, 'removed'], [401, 'denied'], [403, 'denied'], [500, 'transport'], [503, 'transport'], [408, 'transport'], [429, 'transport']] as const) {
-        assert.equal(sourceResolutionFailure({ message: 'Synthetic source response', details: { status } }), expected);
+test('an exact finite reference returns the server-authorized local, federation or HHPI route without loading a retired source', async () => {
+    const routes: AppSourceRoute[] = [
+        { kind: 'local-dsh', hostId: 'local', sessionId: 'original-native' },
+        { kind: 'federated-dsh', hostId: 'paired-host', sessionId: 'original-native' },
+        { kind: 'hhpi', hostId: 'source-host', sessionId: 'hhpi:machine:source:codex:native', identity: { machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'native' } },
+    ]
+    for (const route of routes) {
+        let reads = 0
+        const signal = new AbortController().signal
+        const resolved = await resolveOriginalSession({ resolve: async (request, received) => {
+            reads++; assert.deepEqual(request, { reference }); assert.equal(received, signal); return reply(route)
+        } }, reference, signal)
+        assert.deepEqual(resolved, route); assert.equal(reads, 1)
     }
-    assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_not_ready' } }), 'not-ready');
-    assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_not_connected' } }), 'not-connected');
-    assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_hub_mismatch' } }), 'identity');
-    assert.equal(sourceResolutionFailure({ details: { sourceCode: 'source_identity_mismatch' } }), 'identity');
-    assert.equal(sourceResolutionFailure({ details: { outcome: 'indeterminate' } }), 'transport');
-    assert.equal(sourceResolutionFailure(new Error('English text mentions 404 or removed without a source status')), 'unknown');
-    assert.equal(sourceResolutionFailure(new SourceResolutionError('ambiguous', 'Multiple source bindings')), 'ambiguous');
-});
+})
 
-test('exact source hydration waits for the official projection, including a temporarily same-named foreign Hub', async () => {
-    const sessions = catalog(), lifetime = new AbortController(); let ready = false;
-    const waiting = resolveOriginalSession({ sourceSessionResolve: async request => ({ ok: true, value: { ...request, sessionId: 'official-display' } }) }, sessions, source, lifetime.signal)
-        .then(() => { ready = true; });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(ready, false, 'a display header alone is insufficient');
-    sessions.project('foreign-hub', source.sourceSessionId); await Promise.resolve(); assert.equal(ready, false);
-    sessions.project(source.hubId, 'foreign-source'); await Promise.resolve(); assert.equal(ready, false);
-    sessions.project(source.hubId, source.sourceSessionId); await waiting;
-    assert.equal(ready, true); assert.equal(sessions.listenerCount(), 0); assert.equal(sessions.reads(), 1);
-});
-
-test('a response for another source is rejected before refreshing or following its display', async () => {
-    for (const change of [{ hubId: 'foreign-hub' }, { sourceSessionId: 'foreign-source' }]) {
-        const sessions = catalog();
-        await assert.rejects(resolveOriginalSession({ sourceSessionResolve: async request => ({ ok: true, value: { ...request, ...change, sessionId: 'official-display' } }) },
-            sessions, source, new AbortController().signal), /another original session/);
-        assert.equal(sessions.reads(), 0); assert.equal(sessions.listenerCount(), 0);
+test('mapping failures remain explicit and never turn an unavailable, denied or ambiguous source into another route', async () => {
+    for (const [status, expected] of [['unmapped', 'not-found'], ['ambiguous', 'ambiguous'], ['unavailable', 'not-connected'], ['denied', 'denied'], ['scope-invalid', 'denied']] as const) {
+        const resolve: SourceAliasApi['resolve'] = async () => ({ ok: true, value: status === 'unmapped' || status === 'ambiguous' || status === 'unavailable'
+            ? { status, recovery: [] } : { status } })
+        await assert.rejects(resolveOriginalSession({ resolve }, reference, new AbortController().signal), error => error instanceof SourceResolutionError && error.resolution === expected)
     }
-});
+})
 
-test('disposing a pending source wait stops catalog reads and ignores a late Remote result', async () => {
-    const sessions = catalog(), lifetime = new AbortController(); let finish!: () => void;
-    const gate = new Promise<void>(resolve => { finish = resolve; });
-    const waiting = resolveOriginalSession({ sourceSessionResolve: async request => { await gate; return { ok: true, value: { ...request, sessionId: 'official-display' } }; } },
-        sessions, source, lifetime.signal);
-    lifetime.abort(new Error('Workspace closed')); finish();
-    await assert.rejects(waiting, /Workspace closed/);
-    assert.equal(sessions.reads(), 0); assert.equal(sessions.listenerCount(), 0);
-});
+test('connection disposal rejects a late authorized alias result instead of navigating with an old account', async () => {
+    const pending = Promise.withResolvers<Awaited<ReturnType<SourceAliasApi['resolve']>>>(), lifetime = new AbortController()
+    const opening = resolveOriginalSession({ resolve: () => pending.promise }, reference, lifetime.signal)
+    lifetime.abort(new Error('Original account connection closed'))
+    pending.resolve(reply({ kind: 'local-dsh', hostId: 'local', sessionId: 'late-native' }))
+    await assert.rejects(opening, /Original account connection closed/)
+})
+
+test('structured failures retain transport/auth distinctions without reading English error text as identity evidence', () => {
+    for (const [status, expected] of [[404, 'not-found'], [410, 'removed'], [401, 'denied'], [403, 'denied'], [500, 'transport'], [503, 'transport']] as const) {
+        assert.equal(sourceResolutionFailure({ details: { status } }), expected)
+    }
+    assert.equal(sourceResolutionFailure(new Error('mentions 404 without a structured status')), 'unknown')
+})

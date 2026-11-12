@@ -7,7 +7,7 @@ import { nativeOtherContent, nativeToolPresentation, nativeUserContent, type Nat
 import type { SourceSession } from './protocol.ts';
 
 /** Reproject accepted native records to expose plan actions and generated image galleries. */
-export const CODEX_HISTORY_PROJECTION_VERSION = 5;
+export const CODEX_HISTORY_PROJECTION_VERSION = 7;
 export interface CodexHistoryOptions {
     userContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
     toolContent?: (turnId: string, item: NativeItem) => ContentBlock[] | undefined;
@@ -17,6 +17,9 @@ export interface CodexHistoryOptions {
 }
 interface ItemState { item: NativeItem; turnId: string; time: number; completed: boolean; completedAtMs?: number; presentationContent?: ContentBlock[] }
 interface TurnState { turn: NativeTurn; time: number }
+/** A Review outer turn can lack task_started; this is a derived projection
+ * boundary at its first real item, not an invented native event or identity. */
+export interface NativeReviewStart { itemId: string; ordinal: number; turnOrdinal: number }
 const key = (...parts: string[]): string => JSON.stringify(parts);
 const turnKey = (id: string): string => key('turn', id);
 const itemKey = (turn: string, id: string): string => key('item', turn, id);
@@ -27,13 +30,21 @@ export class CodexHistory {
     hasTurn(id: string): boolean { return this.index.cached(turnKey(id)) !== undefined; }
     turnState(id: string): NativeTurn | undefined { return this.index.cached<TurnState>(turnKey(id))?.turn; }
     itemState(turnId: string, itemId: string): ItemState | undefined { return this.index.cached<ItemState>(itemKey(turnId, itemId)); }
+    /** Return only an event that this projection actually accepted for the exact native identity. */
+    locatePosition(turnId: string, itemId?: string): number | undefined {
+        if (itemId === undefined) return this.index.sequence(key('turn', turnId, 'start'));
+        const native = itemKey(turnId, itemId);
+        return this.index.sequence(key(native, 'message')) ?? this.index.sequence(key(native, 'tool/call'))
+            ?? this.index.sequence(key(native, 'step/start'));
+    }
     private event<T extends SessionEventType>(type: T, data: SessionEventMap[T], time: number): EventInput {
         return { type, data, time, ...(['user/message', 'assistant/message', 'tool/result'].includes(type) ? { surfaceOp: 'append' as const } : {}) } as EventInput;
     }
     private ensureTurn(turnId: string, time: number): { turn: number; start: string } {
         const ordinal = this.options.nativeOrder ? this.index.cached<number>(`source-turn:${turnId}`) : undefined;
+        const review = this.options.nativeOrder ? this.index.cached<NativeReviewStart>(`source-review-start:${turnId}`) : undefined;
         const turn = this.index.coordinate('turn', '', turnId, ordinal), start = key('turn', turnId, 'start');
-        if (this.index.sequence(start) === undefined) this.index.put(start, this.event('turn/start', { turn }, time), [], ordinal === undefined ? undefined : ordinal * 8);
+        if (this.index.sequence(start) === undefined) this.index.put(start, this.event('turn/start', { turn }, time), [], review ? review.ordinal * 8 : ordinal === undefined ? undefined : ordinal * 8);
         return { turn, start };
     }
     beginTurn(session: SourceSession, turn: NativeTurn): void {
@@ -86,7 +97,12 @@ export class CodexHistory {
         const { turnId, item } = entry, nativeKey = itemKey(turnId, item.id);
         const ordinal = this.options.nativeOrder ? this.index.cached<number>(`source-item:${turnId}:${item.id}`) : undefined;
         if (this.options.nativeOrder && ordinal === undefined) return; // Live snapshots wait for their authoritative native position.
-        const position = (slot: number): number | undefined => ordinal === undefined ? undefined : ordinal * 8 + slot;
+        const review = this.options.nativeOrder ? this.index.cached<NativeReviewStart>(`source-review-start:${turnId}`) : undefined;
+        // Keep the boundary after every subevent of the preceding native
+        // ordinal. Only this first Review item uses slots 1–5 instead of 0–4;
+        // slot 0 carries its derived turn/start. Native ordinals stay intact.
+        const shift = review?.itemId === item.id && review.ordinal === ordinal ? 1 : 0;
+        const position = (slot: number): number | undefined => ordinal === undefined ? undefined : ordinal * 8 + slot + shift;
         const prior = this.index.cached<ItemState>(nativeKey);
         // A replayed started event cannot downgrade an already completed item.
         if (prior?.completed && !completed) return;
@@ -114,7 +130,7 @@ export class CodexHistory {
             const putMessage = (content: ContentBlock[]): void => {
                 this.index.put(key(nativeKey, 'message'), this.event('assistant/message', { turn, step, message: message(content), stream: [] }, time), dependencies, position(1));
             };
-            const nativeTool = nativeToolPresentation(item);
+            const nativeTool = nativeToolPresentation(item, presentationContent);
             const tool = nativeTool && (this.options.toolPresentation?.(turnId, item, nativeTool) ?? nativeTool);
             if (item.type === 'agentMessage' || item.type === 'plan') putMessage([{ type: 'text', text: item.type === 'plan'
                 ? `<proposed_plan>\n${nativeText(item.text)}\n</proposed_plan>` : nativeText(item.text) }]);
@@ -133,7 +149,7 @@ export class CodexHistory {
                 if (state.completed) {
                     this.index.put(key(nativeKey, 'tool/result'), this.event('tool/result', { turn, step, message: freezeMessage({
                         id: MessageId(`${identity}:result`), role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId,
-                        content: tool.content !== nativeTool!.content ? tool.content : presentationContent ?? tool.content,
+                        content: tool.content,
                         ...(tool.isError ? { isError: true } : {}),
                     }), ...(item.type === 'imageView' && typeof item.path === 'string' ? { meta: { path: item.path } } : {}) }, time), [...dependencies, key(nativeKey, 'message'), callKey], position(3));
                 }

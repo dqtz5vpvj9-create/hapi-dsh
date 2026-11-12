@@ -7,22 +7,22 @@ import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import { createConfig, parseConfig, publicConfig, readConfig, writeConfig } from '../src/cli/config.ts';
 import { createRunnerConfig, parseRunnerConfig } from '../src/runner/config.ts';
-import { assertOrdinarySourceTarget, legacyWorkbenchSource } from '../src/shared/source-access.ts';
+import { assertOrdinarySourceTarget } from '../src/shared/source-access.ts';
 import { sourceSessionId } from '../src/remote/protocol.ts';
 
 test('HAPI-free configuration has no token requirement or invented legacy identity', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'hhpi-config-'));
     try {
-        const config = createConfig(undefined, { HOME: directory, XDG_CONFIG_HOME: directory });
-        assert.equal(config.hapi, undefined);
+        const config = createConfig({ HOME: directory, XDG_CONFIG_HOME: directory });
+        assert.equal(Reflect.get(config, 'hapi'), undefined);
         const file = join(directory, 'config.json'); await writeConfig(file, config);
         const before = await readFile(file, 'utf8');
         const parsed = await readConfig(file);
-        assert.equal(parsed.hapi, undefined); assert.deepEqual(publicConfig(parsed), parsed);
+        assert.equal(Reflect.get(parsed, 'hapi'), undefined); assert.deepEqual(publicConfig(parsed), parsed);
         assert.equal(await readFile(file, 'utf8'), before, 'no HAPI identity migration runs for a native-only Host');
         const source = { id: 'native', machineId: 'machine-a', engine: 'codex', command: 'codex', cwd: directory, ownership: 'shared' };
         assert.equal(parseConfig({ ...config, sources: [source] }).sources?.[0]?.id, 'native');
-        assert.equal(parseConfig({ ...config, sources: [] }).hapi, undefined);
+        assert.equal(Reflect.get(parseConfig({ ...config, sources: [] }), 'hapi'), undefined);
     } finally { await rm(directory, { recursive: true, force: true }); }
 });
 test('Runner sources use their paired machine identity and need no HAPI source', () => {
@@ -38,8 +38,10 @@ test('direct and malformed HHPI identities cannot enter ordinary filesystem or e
         const source = sourceSessionId({ machineId: 'm', sourceId: 's', engine: 'codex', nativeId: 'n' });
         for (const id of [source, 'hhpi:invalid', 'hhpi:']) {
             assert.throws(() => assertOrdinarySourceTarget(id), /exact native source capability/);
-            assert.throws(() => legacyWorkbenchSource(ctx, id), /exact native source capability/);
         }
-        assert.equal(legacyWorkbenchSource(ctx, 'ordinary-dsh-session'), undefined);
+        assert.doesNotThrow(() => assertOrdinarySourceTarget('ordinary-dsh-session'));
+        for (const id of [`hapi-codex-${'a'.repeat(32)}`, `hapi-observed-${'b'.repeat(32)}-r2`, 'hapi-codex-unknown']) {
+            assert.throws(() => assertOrdinarySourceTarget(id), /retired source/);
+        }
     } finally { await ctx.fiber.dispose(); }
 });

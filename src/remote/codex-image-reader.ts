@@ -4,6 +4,10 @@ import { CodexRpc } from './codex-rpc.ts';
 import { isRecord } from './codex-native.ts';
 import { SourceError } from './errors.ts';
 import type { DirectCodexConfig } from './protocol.ts';
+import { open, constants } from 'node:fs/promises';
+import { prepareImageFile } from '@deepseek-ai/dsh-attachment-local';
+import type { ImageMediaType } from '@deepseek-ai/dsh-attachment';
+import { SOURCE_INPUT_IMAGE_LIMITS } from '../shared/source-image-limits.ts';
 
 export const MAX_NATIVE_IMAGE_BYTES = 8 * 1024 * 1024;
 const MAX_BASE64_LENGTH = Math.ceil(MAX_NATIVE_IMAGE_BYTES / 3) * 4;
@@ -26,7 +30,8 @@ export class CodexImageReader {
     private slots = 0;
     private disposing: Promise<void> | undefined;
 
-    constructor(private readonly config: DirectCodexConfig, private readonly timeoutMs = 30_000) {}
+    constructor(private readonly config: DirectCodexConfig, private readonly timeoutMs = 30_000,
+        private readonly localFiles = false) {}
 
     async read(path: string, signal?: AbortSignal): Promise<{ dataBase64: string }> {
         const scope = signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal;
@@ -39,6 +44,10 @@ export class CodexImageReader {
         let image: { dataBase64: string };
         try {
             scope.throwIfAborted();
+            // Only an operator-registered local-system source may open these
+            // accepted transcript paths. Normalize here before any RPC/base64
+            // transfer, including originals saved by earlier client versions.
+            if (this.localFiles) return await this.readLocal(path, scope);
             rpc = new CodexRpc(this.config, this.timeoutMs);
             // Some non-thread requests are broadcast. This viewer must neither
             // answer them nor let CodexRpc send its default unsupported reply.
@@ -64,6 +73,35 @@ export class CodexImageReader {
         }
         scope.throwIfAborted();
         return image;
+    }
+
+    private async readLocal(path: string, signal: AbortSignal): Promise<{ dataBase64: string }> {
+        const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+        let data: Buffer;
+        try {
+            signal.throwIfAborted();
+            const info = await file.stat();
+            if (!info.isFile() || info.size <= 0 || info.size > 64 * 1024 * 1024) throw new SourceError('INVALID_REQUEST', 'The source image cannot be previewed.');
+            // Read a fixed, checked length, never an unbounded growing stream.
+            data = Buffer.alloc(info.size); let offset = 0;
+            while (offset < data.length) {
+                signal.throwIfAborted();
+                const { bytesRead } = await file.read(data, offset, Math.min(256 * 1024, data.length - offset), offset);
+                if (!bytesRead) throw new SourceError('STALE_VERSION', 'The source image changed while loading.');
+                offset += bytesRead;
+            }
+        } finally { await file.close(); }
+        signal.throwIfAborted();
+        let mediaType: ImageMediaType;
+        if (data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) mediaType = 'image/png';
+        else if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) mediaType = 'image/jpeg';
+        else if (data.toString('ascii', 0, 4) === 'RIFF' && data.toString('ascii', 8, 12) === 'WEBP') mediaType = 'image/webp';
+        else if (['GIF87a', 'GIF89a'].includes(data.toString('ascii', 0, 6))) mediaType = 'image/gif';
+        else throw new SourceError('UNSUPPORTED', 'The source file is not an image.');
+        const prepared = await prepareImageFile({ data, mediaType }, { ...SOURCE_INPUT_IMAGE_LIMITS, maxImageBytes: 64 * 1024 * 1024 },
+            { maxPixels: 4_000_000, maxDimension: 8192, maxBytes: 2 * 1024 * 1024 });
+        signal.throwIfAborted();
+        return { dataBase64: Buffer.from(prepared.data).toString('base64') };
     }
 
     private acquire(signal: AbortSignal): Promise<void> {

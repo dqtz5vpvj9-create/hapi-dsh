@@ -1,4 +1,4 @@
-import type { SourceWindowProgress } from '../../shared/source-frames.ts'
+import type { SourceWindowProgress } from '../source-session-types.ts'
 /**
  * Seamless earlier-history loading — strategy B (drive the official control).
  *

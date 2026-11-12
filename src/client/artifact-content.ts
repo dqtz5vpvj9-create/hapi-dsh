@@ -1,8 +1,12 @@
+import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 /** Transient source content for official DSH document renderers; never persisted into layout. */
 import type { DocumentContent } from '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/client'
 import { MAX_DOCUMENT_BYTES, type NativeWorkbenchApi, type WorkbenchResponse } from '../workbench-types.ts'
 import type { SourceDocumentReference } from '../workspace/artifacts.ts'
 import { remoteValue } from '../client-api.ts'
+import type { WorkspaceResource } from '../workbench-types.ts'
+import type { WorkspaceDocument } from '../workspace/service-types.ts'
+import { sourceFileAccess, type SourceFileClient, type SourceFileContext } from './source-workspace-provider.ts'
 
 export type ArtifactViewer = 'pdf' | 'markdown' | 'code' | 'text' | 'image' | 'html'
 export interface LoadedArtifact { reference: SourceDocumentReference; metadata: WorkbenchResponse<'nativeDocument'> }
@@ -93,7 +97,7 @@ export async function loadArtifact(api: ArtifactApi, reference: SourceDocumentRe
 }
 
 /** Viewer choices follow actual source content. No binary file is guessed into source text. */
-export function artifactViewers(metadata: WorkbenchResponse<'nativeDocument'>, candidates: readonly { id: string }[] = []): ArtifactViewer[] {
+export function artifactViewers(metadata: Pick<WorkspaceDocument, 'fileName' | 'mimeType' | 'text'> & { officePreview?: boolean }, candidates: readonly { id: string }[] = []): ArtifactViewer[] {
     const name = metadata.fileName.toLowerCase(), mime = metadata.mimeType.split(';', 1)[0]!.trim().toLowerCase()
     if (metadata.officePreview || mime === 'application/pdf' || name.endsWith('.pdf')) return ['pdf']
     if (/^image\/(?:png|jpeg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon|svg\+xml)$/.test(mime)) return metadata.text === null ? ['image'] : ['image', 'text']
@@ -101,6 +105,44 @@ export function artifactViewers(metadata: WorkbenchResponse<'nativeDocument'>, c
     if (/\.html?$/.test(name) || mime === 'text/html') return ['html', 'code', 'text']
     if (/\.(?:md|markdown|mdown)$/.test(name) || mime === 'text/markdown') return ['markdown', 'code', 'text']
     return candidates.some(value => value.id === '@deepseek-ai/dsh-client-ui-sidebar-documentpreview/code') ? ['code', 'text'] : ['text', 'code']
+}
+
+export interface LoadedWorkspaceArtifact { resource: WorkspaceResource; metadata: WorkspaceDocument; context: SourceFileContext }
+const sameResource = (left: WorkspaceResource, right: WorkspaceResource): boolean => left.target.hostId === right.target.hostId && left.target.sessionId === right.target.sessionId
+    && left.document.kind === right.document.kind && (left.document.kind === 'file' && right.document.kind === 'file' ? left.document.path === right.document.path
+        : left.document.kind !== 'file' && right.document.kind !== 'file' && left.document.id === right.document.id)
+export async function loadWorkspaceArtifact(client: SourceFileClient, resource: WorkspaceResource, signal: AbortSignal): Promise<LoadedWorkspaceArtifact> {
+    const active = AbortSignal.any([signal, AbortSignal.timeout(SOURCE_METADATA_DEADLINE_MS)])
+    const context = await abortable(client.resolve(resource.target.sessionId, active), active)
+    const target = context.owner.binding.target
+    if (target.hostId !== resource.target.hostId || target.sessionId !== resource.target.sessionId) throw new Error('This document belongs to another Host or source session. Its original reference is kept.')
+    const metadata = await abortable(context.services.documents.open(resource.document, sourceFileAccess(context.owner, active)), active)
+    active.throwIfAborted()
+    if (!sameResource(metadata.resource, resource)) throw new Error('The source returned another document. Its original reference is kept.')
+    return { resource, metadata, context }
+}
+/** The same captured account/source authority owns metadata and original bytes. */
+export async function readWorkspaceArtifactBytes(loaded: LoadedWorkspaceArtifact, signal: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
+    const active = AbortSignal.any([signal, AbortSignal.timeout(SOURCE_DOCUMENT_DEADLINE_MS)]), { metadata, context, resource } = loaded
+    if (metadata.bytes > MAX_DOCUMENT_BYTES) throw new Error('Source document exceeds the 64 MiB preview limit')
+    const bytes = await abortable(context.services.documents.bytes(resource.document, {}, sourceFileAccess(context.owner, active)), active)
+    active.throwIfAborted()
+    if (bytes.version !== metadata.version) throw new Error('The source document changed. Reload before opening or downloading its current version.')
+    if (bytes.offset !== 0 || !bytes.eof || bytes.data.length !== metadata.bytes || bytes.data.length > MAX_DOCUMENT_BYTES) throw new Error('The source did not return the complete original document. Retry its exact reference.')
+    return new Uint8Array(bytes.data)
+}
+export async function workspaceArtifactPresentation(loaded: LoadedWorkspaceArtifact, viewer: ArtifactViewer, signal: AbortSignal): Promise<ArtifactPresentation> {
+    signal.throwIfAborted()
+    if (viewer === 'text' || viewer === 'code' || viewer === 'markdown') {
+        if (loaded.metadata.text === null) throw new Error('The source did not identify this document as readable text')
+        const text = loaded.metadata.text
+        // Recheck captured authority even when no second byte read is needed.
+        const current = await loaded.context.services.documents.open(loaded.resource.document, sourceFileAccess(loaded.context.owner, signal))
+        signal.throwIfAborted()
+        if (current.version !== loaded.metadata.version || !sameResource(current.resource, loaded.resource)) throw new Error('The source document changed. Reload its exact reference.')
+        return { viewer, converted: false, content: { kind: 'text', text, eof: true, pages: [{ offset: 1, text, lines: text.split('\n').length }] } }
+    }
+    return { viewer, converted: false, content: { kind: 'bytes', data: await readWorkspaceArtifactBytes(loaded, signal) } }
 }
 
 export async function artifactPresentation(api: ArtifactApi, loaded: LoadedArtifact, viewer: ArtifactViewer,

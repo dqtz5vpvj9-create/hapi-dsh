@@ -8,14 +8,12 @@ import { bundleCommand } from './bundle.ts';
 import { findPackageRoot, installProfile, startProfile } from './runtime.ts';
 import { createInvitation, runnerCommand } from './federation.ts';
 import { revokePairing } from '../hub/federation-credentials.ts';
-import { login } from './login.ts';
 
-export const HELP = `hapi-dsh — official DSH Web profile with the HAPI workspace plugin
+export const HELP = `hapi-dsh — HHPI workspace for official DSH Web
 
 Usage:
-  hapi-dsh init [--hapi-url URL] [configuration options] [--config-only]
+  hapi-dsh init [configuration options] [--config-only]
   hapi-dsh install [--config FILE]
-  hapi-dsh login [--config FILE] [--stdin]
   hapi-dsh doctor [--config FILE] [--offline] [--json]
   hapi-dsh start [--config FILE] [--no-open]
   hapi-dsh config [--config FILE]
@@ -32,7 +30,6 @@ with mode 0600; transfer them privately to the intended Runner machine.
 
 Configuration options (init):
   --config FILE       Private JSON config; defaults to XDG_CONFIG_HOME/hapi-dsh/config.json
-  --hapi-url URL      Optional legacy HAPI Hub URL
   --dsh-home DIR      Dedicated DSH home or existing DSH home
   --profile NAME      Custom DSH profile name (default: hapi)
   --host IP          Concrete listening IP (default: 127.0.0.1)
@@ -41,25 +38,21 @@ Configuration options (init):
   --trusted-host HOST Bare host[:port] admitted by the official browser trust fence
   --tls-cert FILE    PEM certificate chain for the official DSH HTTPS listener
   --tls-key FILE     PEM private key; requires --tls-cert
-  --token-env NAME   Environment variable holding the HAPI access token (default: HAPI_DSH_TOKEN)
   --dsh-command PATH Override the bundled DSH launcher; its exact version is checked
   --config-only      Create config without installing the DSH profile
 
-login reads the HAPI access token without echoing it and saves it in the private
-config. --stdin reads it from a pipe instead. Environment variables still take priority.
 Credentials are never accepted as command-line arguments. init refuses
 to replace an existing config. install preserves an existing Web profile and its plugins.
 `;
 
-type CommandName = 'init' | 'install' | 'login' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'bundle' | 'help' | 'version';
-type FlagName = 'config' | 'hapi-url' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'token-env' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file' | 'stdin' | 'bundle-root' | 'tgz' | 'role' | 'style' | 'keep-previous' | 'dry-run';
+type CommandName = 'init' | 'install' | 'doctor' | 'start' | 'config' | 'pair' | 'revoke' | 'runner' | 'bundle' | 'help' | 'version';
+type FlagName = 'config' | 'dsh-home' | 'profile' | 'host' | 'port' | 'public-url' | 'trusted-host' | 'tls-cert' | 'tls-key' | 'dsh-command' | 'config-only' | 'offline' | 'json' | 'no-open' | 'name' | 'hub-url' | 'output' | 'machine-id' | 'pairing-file' | 'bundle-root' | 'tgz' | 'role' | 'style' | 'keep-previous' | 'dry-run';
 export interface ParsedArguments { command: CommandName; action?: string; flags: Partial<Record<FlagName, string | true>> }
-const valueFlags = new Set(['config', 'hapi-url', 'dsh-home', 'profile', 'host', 'port', 'public-url', 'trusted-host', 'tls-cert', 'tls-key', 'token-env', 'dsh-command', 'bundle-root', 'tgz', 'role', 'style', 'keep-previous']);
-const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open', 'stdin', 'dry-run']);
+const valueFlags = new Set(['config', 'dsh-home', 'profile', 'host', 'port', 'public-url', 'trusted-host', 'tls-cert', 'tls-key', 'dsh-command', 'bundle-root', 'tgz', 'role', 'style', 'keep-previous']);
+const booleanFlags = new Set(['config-only', 'offline', 'json', 'no-open', 'dry-run']);
 const allowed: Record<Exclude<CommandName, 'help' | 'version'>, ReadonlySet<string>> = {
     init: new Set([...valueFlags, 'config-only']),
     install: new Set(['config']), doctor: new Set(['config', 'offline', 'json']),
-    login: new Set(['config', 'stdin']),
     start: new Set(['config', 'no-open']), config: new Set(['config']),
     pair: new Set(['config', 'name', 'hub-url', 'output', 'machine-id']), revoke: new Set(['config', 'machine-id']),
     runner: new Set(['config']),
@@ -69,6 +62,7 @@ const allowed: Record<Exclude<CommandName, 'help' | 'version'>, ReadonlySet<stri
 export function parseArguments(argv: readonly string[]): ParsedArguments {
     if (argv.length === 1 && ['--version', '-V', 'version'].includes(argv[0]!)) return { command: 'version', flags: {} };
     if (argv.length === 0 || argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') return { command: 'help', flags: {} };
+    if (argv[0] === 'login') throw new Error('HAPI login is retired. Use official Runner pairing; retain old credentials only for offline migration or recovery.');
     const first = argv[0] === 'hub' ? 'start' : argv[0];
     if (!first || !Object.hasOwn(allowed, first)) throw new Error('Unknown command; run hapi-dsh --help');
     const command = first as Exclude<CommandName, 'help' | 'version'>;
@@ -83,7 +77,8 @@ export function parseArguments(argv: readonly string[]): ParsedArguments {
         if (!argument.startsWith('--')) throw new Error('Unexpected positional argument; run hapi-dsh --help');
         const separator = argument.indexOf('=');
         const name = argument.slice(2, separator < 0 ? undefined : separator);
-        if (/token|password|secret/i.test(name) && name !== 'token-env') {
+        if (name === 'hapi-url' || name === 'token-env') throw new Error('Legacy HAPI connection options are retired. Preserve the old configuration for offline migration or recovery and configure native sources or officially paired Runners.');
+        if (/token|password|secret/i.test(name)) {
             throw new Error('Credentials are not accepted in command-line arguments; use an environment variable or the private config');
         }
         if (!validFlags.has(name)) throw new Error('Unknown option for this command; run hapi-dsh --help');
@@ -106,8 +101,7 @@ function flagValue(flags: ParsedArguments['flags'], name: FlagName): string | un
 }
 
 export function configFromArguments(flags: ParsedArguments['flags'], env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
-    const url = flagValue(flags, 'hapi-url');
-    const config = createConfig(url, env);
+    const config = createConfig(env);
     const home = flagValue(flags, 'dsh-home');
     if (home) config.dsh.home = resolve(home);
     const profile = flagValue(flags, 'profile');
@@ -127,11 +121,6 @@ export function configFromArguments(flags: ParsedArguments['flags'], env: NodeJS
     const key = flagValue(flags, 'tls-key');
     if (Boolean(cert) !== Boolean(key)) throw new Error('--tls-cert and --tls-key must be supplied together');
     if (cert && key) config.server.tls = { certFile: resolve(cert), keyFile: resolve(key) };
-    const tokenEnv = flagValue(flags, 'token-env');
-    if (tokenEnv) {
-        if (!config.hapi) throw new Error('--token-env requires --hapi-url; federation uses separate pairing credentials');
-        config.hapi.tokenEnv = tokenEnv;
-    }
     const command = flagValue(flags, 'dsh-command');
     if (command) config.dsh.command = command;
     return parseConfig(config);
@@ -156,16 +145,10 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
             await installProfile(config, configFile, await findPackageRoot());
             process.stdout.write(`Official DSH Web profile ${config.dsh.profile} is ready.\n`);
         }
-        process.stdout.write(`${config.hapi ? 'Run hapi-dsh login, then ' : 'Run '}hapi-dsh doctor and hapi-dsh start. Use --config ${JSON.stringify(configFile)} for this configuration.\n`);
+        process.stdout.write(`Run hapi-dsh doctor and hapi-dsh start. Use --config ${JSON.stringify(configFile)} for this configuration.\n`);
         return 0;
     }
     const config = await readConfig(configFile);
-    if (command === 'login') {
-        await login(config, configFile, flags.stdin === true);
-        process.stdout.write('HAPI access token saved. Run hapi-dsh doctor to check the connection.\n');
-        if (config.hapi && process.env[config.hapi.tokenEnv]) process.stdout.write(`${config.hapi.tokenEnv} is set and takes priority over the saved token.\n`);
-        return 0;
-    }
     if (command === 'pair') {
         const name = flagValue(flags, 'name');
         const output = flagValue(flags, 'output');
@@ -200,7 +183,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
         if (flags.json) process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
         else {
             for (const check of result.checks) process.stdout.write(`${check.status.toUpperCase().padEnd(7)} ${check.name}: ${check.detail}\n`);
-            process.stdout.write(`Required HAPI source revision: ${result.expectedUpstream.hapiRevision} (not reported by the Hub API).\n`);
         }
         return result.ok ? 0 : 1;
     }

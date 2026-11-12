@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,19 +12,17 @@ function exitedPidRecord(): string {
     return `${execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' })}\n`;
 }
 
-test('identity migration takes over a lock left by an exited process', async (t) => {
+test('retired configuration does not consume or rewrite an old identity-migration lock', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-lock-migration-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'config.json');
-    const config = createConfig('http://127.0.0.1:3006', {});
-    const { id: _id, ...hapi } = config.hapi;
-    await writeFile(path, JSON.stringify({ ...config, hapi }), { mode: 0o600 });
-    await writeFile(`${path}.migration.lock`, exitedPidRecord(), { mode: 0o600 });
-    const results = await Promise.all([readConfig(path), readConfig(path)]);
-    assert.ok(results[0]!.hapi);
-    assert.ok(results[1]!.hapi);
-    assert.equal(results[0]!.hapi.id, results[1]!.hapi.id);
-    assert.deepEqual(await readdir(directory), ['config.json']);
+    const raw = JSON.stringify({ ...createConfig({}), hapi: { url: 'https://legacy.example.test' } });
+    await writeFile(path, raw, { mode: 0o600 });
+    const lock = exitedPidRecord();
+    await writeFile(`${path}.migration.lock`, lock, { mode: 0o600 });
+    await assert.rejects(readConfig(path), /retired.*offline migration/i);
+    assert.equal(await readFile(path, 'utf8'), raw);
+    assert.equal(await readFile(`${path}.migration.lock`, 'utf8'), lock);
 });
 
 test('pairing recovers an exited owner and serializes concurrent machine additions', async (t) => {

@@ -78,6 +78,7 @@ export function retainedNativeImageCache(cache: ReadonlyMap<string, unknown>, it
 /** Strip source paths and upload transport prefixes from visible image names. */
 export function nativeImageName(path: unknown): string {
     const name = typeof path === 'string' ? basename(path.replace(/\\/g, '/')) : '';
+    if (/^[0-9a-f]{64}$/i.test(name)) return 'Image';
     return name.replace(/^\d{10,16}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, '')
         .replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 255) || 'Image';
 }
@@ -211,7 +212,9 @@ export class CodexAttachments {
                     imageBytes += data.length;
                     if (imageBytes > limits.maxMessageImageBytes) throw new SourceError('CAPACITY_EXCEEDED', 'The native message exceeds its image preview budget.');
                     if (!this.current(state, expected, epoch, revision)) return undefined;
-                    const attachment = await saveImageFile(this.directory, { data, mediaType: mediaType(data), name }, limits, policy);
+                    const imageType = mediaType(data);
+                    const attachment = await saveImageFile(this.directory, { data, mediaType: imageType,
+                        name: name === 'Image' ? `image.${imageType.slice(6)}` : name }, limits, policy);
                     if (!this.current(state, expected, epoch, revision)) return undefined;
                     images.push(attachment);
                     if (state.item.type === 'imageView') content.push({ type: 'text',

@@ -136,9 +136,9 @@ const pageImages = (page: SourcePage) => page.entries.flatMap(({ event }) => (ev
     : event.type === 'tool/result' ? event.data.message.content : []).filter((block): block is Extract<ContentBlock, { type: 'image' }> => block.type === 'image'));
 
 /** Seed the actual v2 cache and official immutable storage before making the source file unavailable. */
-async function legacyImageFixture(t: TestContext, includeTool = false) {
+async function legacyImageFixture(t: TestContext, includeTool = false, version: 2 | 5 | 6 = 2) {
     const privateHome = await mkdtemp(join('/mnt/cache/data-cache', 'hhpi-image-upgrade-')), directory = join(privateHome, 'source');
-    const oldPath = join(directory, 'history', `${createHash('sha256').update(session.id).digest('hex')}.v2.sqlite`);
+    const oldPath = join(directory, 'history', `${createHash('sha256').update(session.id).digest('hex')}.v${version}.sqlite`);
     const old = new SourceEventIndex(oldPath, session), lifetime = new AbortController();
     const ready = Promise.withResolvers<void>(); let published = 0;
     const attachments = new CodexAttachments(old, join(directory, 'images'), async () => ({ dataBase64: PNG }), lifetime.signal, ({ turnId, itemId }) => {
@@ -180,8 +180,8 @@ async function legacyImageFixture(t: TestContext, includeTool = false) {
     return { adapter, oldPath, reference, oldEpoch, calls, sourceImageReads: () => sourceImageReads };
 }
 
-test('upgrading a v2 cache preserves saved user and tool images even after their original native files disappear', { timeout: 5000 }, async t => {
-    const f = await legacyImageFixture(t, true), originalBytes = readFileSync(f.oldPath);
+for (const version of [2, 5, 6] as const) test(`upgrading a v${version} cache preserves saved user and tool images even after their original native files disappear`, { timeout: 5000 }, async t => {
+    const f = await legacyImageFixture(t, true, version), originalBytes = readFileSync(f.oldPath);
     const page = await f.adapter.read({ sessionId: session.id, limit: 100 });
     assert.equal(pageImages(page).length, 2, 'both images are reprojected from verified immutable references during the upgrade');
     assert.notEqual(page.epoch, f.oldEpoch);

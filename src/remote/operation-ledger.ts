@@ -1,9 +1,10 @@
 /** Durable write-ahead receipts: loss of acknowledgement never becomes an automatic retry. */
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write';
 import type { SourceCreateRequest, SourceCreationReceipt, SourceOperation, SourceReceipt } from './protocol.ts';
+import { sourceSessionId, parseSourceSessionId } from './protocol.ts';
 import { SourceError } from './errors.ts';
 
 interface Outcome { status: 'accepted' | 'rejected' | 'indeterminate'; message: string; retryable?: true }
@@ -15,7 +16,7 @@ const isOutcome = (value: unknown): value is Outcome => typeof value === 'object
 /** Shared persistence for native operations and native creation; never stores prompt bodies. */
 export class ReceiptLedger<R extends Outcome> {
     private readonly inFlight = new Map<string, { fingerprint: string; promise: Promise<R> }>();
-    constructor(private readonly directory: string) {}
+    constructor(private readonly directory: string, private readonly persistReceipt: (receipt: R) => R = receipt => receipt) {}
     /** Lookup never installs an uncertainty marker and never invokes execute. */
     async lookup(identity: readonly string[], payload: unknown, valid: (value: unknown) => value is R,
         reconcile?: (receipt: R) => Promise<R | undefined>): Promise<R | null> {
@@ -58,7 +59,7 @@ export class ReceiptLedger<R extends Outcome> {
     private async store(key: string, record: Stored<R>): Promise<void> {
         const path = join(this.directory, `${key}.json`), temporary = `${path}.${randomUUID()}.tmp`;
         try {
-            await writeFile(temporary, `${JSON.stringify(record)}\n`, { mode: 0o600, flag: 'wx', flush: true });
+            await writeFile(temporary, `${JSON.stringify({ ...record, receipt: this.persistReceipt(record.receipt) })}\n`, { mode: 0o600, flag: 'wx', flush: true });
             await rename(temporary, path);
             if (process.platform !== 'win32') { const directory = await open(this.directory, 'r'); try { await directory.sync(); } finally { await directory.close(); } }
         } finally { await rm(temporary, { force: true }); }
@@ -126,12 +127,66 @@ export class OperationLedger {
 }
 export class CreationLedger {
     private readonly receipts: ReceiptLedger<SourceCreationReceipt>;
-    constructor(directory: string, private readonly sourceScope: string) { this.receipts = new ReceiptLedger(directory); }
-    run(request: SourceCreateRequest, execute: () => Promise<SourceCreationReceipt>): Promise<SourceCreationReceipt> {
+    private protectionRead: Promise<{ targets: Set<string>; unknown: boolean }> | undefined;
+    private readonly created = new Set<string>();
+    private creating = 0;
+    constructor(private readonly directory: string, private readonly sourceScope: string, private readonly operationDirectories: readonly string[] = []) {
+        this.receipts = new ReceiptLedger(directory, receipt => {
+            if (!receipt.session) return receipt;
+            // A durable creation receipt is a target correlation, not a saved
+            // source snapshot. The adapter re-reads that exact native identity
+            // before publishing a restarted receipt through the v1 wire.
+            const { id, machineId, sourceId, engine, nativeId } = receipt.session;
+            return { ...receipt, session: { id, machineId, sourceId, engine, nativeId } as NonNullable<SourceCreationReceipt['session']> };
+        });
+    }
+    invalidateProtection(): void { this.protectionRead = undefined; }
+    protectTarget(nativeId: string): void { this.created.add(nativeId); }
+    /** Failed/uncertain creation storage is protection, never deletion authority. */
+    async protection(): Promise<{ targets: ReadonlySet<string>; unknown: boolean }> {
+        this.protectionRead ??= (async () => {
+            const targets = new Set<string>(); let unknown = false;
+            for (const directory of [this.directory, ...this.operationDirectories]) {
+            let files: string[];
+            try { files = await readdir(directory); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') unknown = true; continue; }
+            if (files.length > 10_000) return { targets, unknown: true };
+            for (const file of files) {
+                if (!/^[a-f0-9]{64}\.json$/.test(file)) continue;
+                try {
+                    const stored = JSON.parse(await readFile(join(directory, file), 'utf8')) as Stored<SourceCreationReceipt & Partial<SourceReceipt> & { result?: { thread?: { id?: string } } }>;
+                    if (!isOutcome(stored.receipt)) { unknown = true; continue; }
+                    const receipt = stored.receipt;
+                    if (receipt.status === 'indeterminate') unknown = true;
+                    const session = receipt.session;
+                    if (session && sourceSessionId(session) === session.id
+                        && JSON.stringify([session.machineId, session.sourceId, session.engine]) === this.sourceScope) targets.add(session.nativeId);
+                    if (receipt.sessionId) {
+                        const identity = parseSourceSessionId(receipt.sessionId);
+                        if (JSON.stringify([identity.machineId, identity.sourceId, identity.engine]) === this.sourceScope) targets.add(identity.nativeId);
+                    }
+                    if (typeof receipt.result?.thread?.id === 'string') targets.add(receipt.result.thread.id);
+                } catch { unknown = true; }
+            }
+            }
+            return { targets, unknown };
+        })();
+        const saved = await this.protectionRead;
+        return { targets: new Set([...saved.targets, ...this.created]), unknown: saved.unknown || this.creating > 0 };
+    }
+    async run(request: SourceCreateRequest, execute: () => Promise<SourceCreationReceipt>): Promise<SourceCreationReceipt> {
         const uncertain: SourceCreationReceipt = { operationId: request.operationId, sourceId: request.sourceId, status: 'indeterminate', message: 'Native thread creation may have succeeded. It will not be retried automatically; refresh the source catalog.' };
-        return this.receipts.run([this.sourceScope, request.operationId], [request.sourceId, request.cwd ?? null], uncertain,
+        this.creating++;
+        try {
+        const receipt = await this.receipts.run([this.sourceScope, request.operationId], [request.sourceId, request.cwd ?? null], uncertain,
             (value): value is SourceCreationReceipt => isOutcome(value) && (value as SourceCreationReceipt).operationId === request.operationId
                 && (value as SourceCreationReceipt).sourceId === request.sourceId
-                && (value.status !== 'accepted' || typeof (value as SourceCreationReceipt).session?.id === 'string'), execute);
+                && (value.status !== 'accepted' || typeof (value as SourceCreationReceipt).session?.id === 'string'
+                    && (value as SourceCreationReceipt).session?.sourceId === request.sourceId
+                    && sourceSessionId((value as SourceCreationReceipt).session!) === (value as SourceCreationReceipt).session!.id), execute);
+        if (receipt.session) this.created.add(receipt.session.nativeId);
+        if (receipt.status === 'indeterminate') this.protectionRead = Promise.resolve({ targets: new Set(this.created), unknown: true });
+        return receipt;
+        } finally { this.creating--; }
     }
 }

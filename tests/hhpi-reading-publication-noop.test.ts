@@ -101,6 +101,7 @@ test('Pane state and source navigation notify independently and keep every actua
   let ownerListener = () => {}, readerListener = () => {}
   let reading = { version: 'initial', phase: 'ready', busy: false, hasBefore: true, hasAfter: false, before: 'older' }
   const pane = new module.exports.RemotePaneSession({ sessionId: session.id, projections: {}, historyRead: {}, metadata: {}, history: { sourceEpoch: 'epoch' },
+    registerDeliveryReader: () => () => {}, reconcilePublishedSubmissions: () => {},
     getSnapshot: () => base, subscribe: (listener: () => void) => { ownerListener = listener; return () => {} } } as never, Promise.resolve({} as never), 'pane')
   pane.attach({ viewId: 'pane', snapshot: { getSnapshot: () => reading, subscribe: (listener: () => void) => { readerListener = listener; return () => {} } },
     read: async () => { reading = { ...reading, before: 'even-older', version: 'next' }; return reading } } as never)

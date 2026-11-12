@@ -1,30 +1,31 @@
 # 配套源码快照
 
-这里保存 HHPI/V4 当前实现依赖的相邻仓库源码变更，供外部 Agent 在没有原机器的情况下恢复。它们是可应用补丁，不是新的运行时发布，也不表示连续阅读已经验收通过。
+这里保存当前 DSH 扩展的完整源码补丁，以及迁移和离线恢复所需的历史来源。源码身份由 [manifest.json](manifest.json) 和 [UPSTREAMS.json](../UPSTREAMS.json) 记录；运行实例的版本与验收结果另由对应正式发行记录确认。
 
-| 快照 | 上游基线 | 范围 |
+| 快照 | 上游基线 | 用途 |
 | --- | --- | --- |
-| `dsh-ext/source.patch` | `deepseek-ai/deepseek-harness` 的 `1f81c047fc48fa190a683e469daa699857e9afe8` | 三个相关包的源码/测试，以及 ext 源码、ADR、补丁系列与 PR 草稿。 |
-| `hapi/source.patch` | `dqtz5vpvj9-create/hapi` 的 `55166cf8d87814ccfb383b538a8e8c55283bed81` | 原工作区的 HAPI 源码、测试、构建及运维脚本变更。 |
+| [dsh-ext/source.patch](dsh-ext/source.patch) | DSH `0.2.2-rc.1`，提交 `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` | 当前完整二十二包扩展的合并源码与契约测试，对应 `hhpi-dsh-022-20261107.27`。 |
+| [dsh-ext/releases/0.2.1-rc.3](dsh-ext/releases/0.2.1-rc.3) | 提交 `1f81c047fc48fa190a683e469daa699857e9afe8` | 旧 rc 的补丁、增量和构建转换，仅供历史对照。 |
+| [hapi/source.patch](hapi/source.patch) | HAPI fork 提交 `55166cf8d87814ccfb383b538a8e8c55283bed81` | 已退休 HAPI 运行链路的历史源码、测试与运维来源，仅供迁移核对和显式离线恢复。 |
 
-完整变更路径记录在 `manifest.json`。不包含已安装依赖、包缓存、运行日志、ext 编译包、生产 profile、凭据或本机桌面上下文记录。已有许可证随各快照保存；原始仓库的许可证和来源声明继续适用。
+这里不保存已安装依赖、包缓存、运行日志、编译包、生产 profile、凭据或本机桌面上下文。原始许可证和来源声明继续适用。
 
-## 恢复源码
+## 准备当前 DSH 源码
 
-在所需仓库的干净 clone 中 checkout 对应基线后，使用本仓库的补丁绝对路径：
+在本仓库根目录运行受维护的准备脚本：
 
-```bash
-git checkout --detach 1f81c047fc48fa190a683e469daa699857e9afe8
-git apply --check /path/to/hapi-dsh/source-snapshots/dsh-ext/source.patch
-git apply --whitespace=nowarn /path/to/hapi-dsh/source-snapshots/dsh-ext/source.patch
+```sh
+node scripts/dsh-ext/prepare.mjs /mnt/cache/data-cache/hhpi-source-preparation
 ```
 
-HAPI 使用其上表基线和 `hapi/source.patch`，步骤相同。DSH 的此完整补丁已经包含 ext 改动，**不要在它之后再次应用 `ext/patches` 的历史系列**。快照生成时已分别在干净 Git index 上验证可应用，并核对恢复的源码树与所选原工作区源码一致；没有重置或修改相邻仓库工作区。
+脚本输出 JSON，其中 `directory` 是恢复后的源码目录。它检出固定上游提交，仅应用当前完整 `source.patch`，并记录补丁身份；已有目录只有通过源码校验才复用，不覆盖已修改的目录。可通过 `DSH_SOURCE_REFERENCE` 指定含固定提交的本地 checkout，以复用 Git objects。
 
-## 构建与安装边界
+当前补丁已经包含对应的原生持久化、阅读布局和其他扩展。不要在其后重放旧 rc 的 `native-persistence.patch`、`ui-chat-layout.patch`、历史 `ext/patches` 系列或构建转换。
 
-按照恢复后仓库的 `AGENTS.md`、`package.json` 和 package manager 版本安装、构建、运行受影响测试。DSH 的历史 `ext/scripts/pack.mjs` 仍有本机 registry 路径假设，外部环境打包前需改成自己的依赖位置；不能直接照搬 `/mnt/cache/src`。
+## 构建、安装与历史边界
 
-本仓库依赖声明仍固定官方 rc.3。官方 npm 包与恢复后的扩展源码不同：源码可恢复，不代表一次 `npm ci` 就安装了本机的 ext.18。原机器的编译包与 profile 没有装入这些补丁，也没有自动发布到 npm。外部实现者需要显式构建、打包并为 Host/Runner 安装同一扩展组合，或在 HHPI 重构中去掉相应依赖。
+当前依赖固定为 DSH `0.2.2-rc.1`，源构建使用 upstream 锁定的 `pnpm@11.28.5`。按[扩展安装说明](../docs/hhpi-extension-install.md)运行 `build-extension.mjs`、`create-release.mjs` 和 `install-extension.mjs`，构建并校验完整二十二包集合。`npm ci` 只还原包锁声明的原版依赖，随后仍须显式安装完整扩展；相同 npm rc 版本字符串不能证明扩展已安装。正式 Host/Runner 分发与回滚见[分发说明](../docs/distribution.md)。
 
-`ext` 中的旧六门禁材料仅作源码历史。新的测试与阅读验收以本仓库 `AGENTS.md`、`docs/testing.md` 和 `HANDOFF.md` 为准，不恢复旧的整夜测试流程。
+旧 rc 的增量及其原有恢复说明归入 manifest 的 `previousRc`，不属于当前准备步骤。HAPI 快照也不恢复为产品运行依赖；需要读取历史记录时，使用[独立离线恢复工具](../docs/offline-recovery.md)。
+
+源码、构建、部署、浏览器交互与物理设备是不同证据层。测试与实际路径验收沿用本仓库 [AGENTS.md](../AGENTS.md) 和[测试说明](../docs/testing.md)；历史门禁材料不作为当前验收结论。

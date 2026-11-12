@@ -10,7 +10,8 @@ export interface WorkspaceNotificationsBridge extends SourceNotificationsUiOptio
     dispose(): void
 }
 
-export function createWorkspaceNotifications(controller: WorkspaceController): WorkspaceNotificationsBridge {
+export function createWorkspaceNotifications(controller: WorkspaceController,
+    openTarget?: SourceNotificationsUiOptions['openSource']): WorkspaceNotificationsBridge {
     const listeners = new Set<() => void>()
     let readState: SourceReadStatus = 'pending'
     const publish = (): void => { for (const listener of [...listeners]) listener() }
@@ -25,8 +26,15 @@ export function createWorkspaceNotifications(controller: WorkspaceController): W
             return sidebarTree(rows).filter(({ row }) => controller.sidebar.isUnread(row.id, row.updatedAt)).length
         },
         subscribeUnread(listener) { listeners.add(listener); return () => { listeners.delete(listener) } },
-        openSource(source) { return controller.openSourceSession({ hubId: source.hubId, sessionId: source.sessionId,
-            ...(source.messageId ? { messageId: source.messageId } : {}), ...(source.requestId ? { requestId: source.requestId } : {}) }) },
+        captureNavigation() {
+            const layout = controller.store.getSnapshot();
+            return () => controller.store.getSnapshot() === layout;
+        },
+        openSource(target, requestState, signal) {
+            if (!openTarget) throw new Error('Original notification target navigation is not connected to this workspace.')
+            signal.throwIfAborted()
+            return openTarget(target, requestState, signal)
+        },
         readStatus(value) { if (readState !== value) { readState = value; publish() } },
         dispose() { for (const stop of stops) stop(); listeners.clear() },
     }

@@ -1,4 +1,4 @@
-/** Clean-package integration: real npm install and official profiles; no live HAPI or model call. */
+/** Clean-package integration: real npm install and official profiles; no live source or model call. */
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -8,15 +8,20 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { verifyExtensionSet } from './dsh-ext/install-extension.mjs';
+import { CLIENT_CHUNKS } from '../src/shared/client-artifacts.ts';
 
 const runFile = promisify(execFile);
+const extensionDirectory = process.argv[2];
+if (!extensionDirectory) throw new Error('Usage: node scripts/distribution-smoke.mjs <complete-extension-package-directory>');
+const extensions = await verifyExtensionSet(extensionDirectory);
 const [record] = (await readFile('artifacts/SHA256SUMS', 'utf8')).trim().split('\n');
 const match = /^([a-f0-9]{64})  (hapi-dsh-[A-Za-z0-9.+-]+\.tgz)$/.exec(record ?? '');
 if (!match) throw new Error('Run distribution-pack.mjs first to produce a verified package');
 const archive = resolve('artifacts', match[2]);
 assert.equal(createHash('sha256').update(await readFile(archive)).digest('hex'), match[1], 'Package checksum mismatch');
 const manifest = JSON.parse(await readFile('package.json', 'utf8'));
-const clientChunks = ['voice', 'capture', 'native-panels', 'session-panels', 'administration'].map(name => `client.${name}.js`);
+const clientChunks = CLIENT_CHUNKS;
 
 const temporaryRoot = process.env.HAPI_DSH_TEST_ROOT ?? (existsSync('/mnt/cache/data-cache') ? '/mnt/cache/data-cache' : tmpdir());
 await mkdir(temporaryRoot, { recursive: true });
@@ -38,9 +43,13 @@ let host;
 let hostClosed;
 try {
     process.stdout.write('Installing the tarball with runtime dependencies in a clean temporary directory…\n');
-    await npm(['install', '--prefix', directory, '--omit=dev', '--no-audit', '--no-fund', 'pnpm@11.28.5', archive]);
+    await npm(['install', '--prefix', directory, '--omit=dev', '--no-audit', '--no-fund', 'pnpm@11.28.5', archive, ...extensions.packages.map(item => item.path)]);
     const packageRoot = join(directory, 'node_modules', 'hapi-dsh');
     const cli = join(packageRoot, 'dist', 'cli.js');
+    for (const item of extensions.packages) {
+        const installedPackage = JSON.parse(await readFile(join(directory, 'node_modules', item.name, 'package.json'), 'utf8'));
+        assert.deepEqual(installedPackage.hhpiSourceExtension, item.identity, `${item.name} must use the supplied source extension`);
+    }
     for (const fileName of clientChunks) {
         const source = await readFile(join(packageRoot, 'dist', fileName), 'utf8');
         assert.ok(source.startsWith('window.__ModuleLoader__.load('), `${fileName} must be an official package-local chunk`);
@@ -48,23 +57,21 @@ try {
     }
     await run(process.execPath, ['--input-type=module', '-e', 'for (const path of process.argv.slice(1)) await import(path);',
         ...['index.js', 'session-controller.js', 'runner/index.js'].map(path => pathToFileURL(join(packageRoot, 'dist', path)).href)]);
-    assert.match(await installed(['--help']), /official DSH Web profile/);
+    assert.match(await installed(['--help']), /HHPI workspace for official DSH Web/);
     assert.equal((await installed(['--version'])).trim(), manifest.version);
     assert.equal((await npm(['exec', '--offline', '--', 'pnpm', '--version'])).trim(), '11.28.5');
 
     const config = join(directory, 'hub.json');
     const home = join(directory, 'dsh');
     process.stdout.write('Creating the main profile through the installed CLI and official DSH…\n');
-    await installed(['init', '--config', config, '--dsh-home', home, '--hapi-url', 'http://127.0.0.1:9', '--profile', 'package-main', '--port', '0']);
-    const secret = 'package-fixture-token';
-    const loginOutput = await installed(['login', '--stdin', '--config', config], `${secret}\n`);
-    assert.ok(!loginOutput.includes(secret));
-    assert.equal(JSON.parse(await readFile(config, 'utf8')).hapi.token, secret);
-    assert.ok(!(await installed(['config', '--config', config])).includes(secret));
+    await installed(['init', '--config', config, '--dsh-home', home, '--profile', 'package-main', '--port', '0']);
+    const initialized = JSON.parse(await readFile(config, 'utf8'));
+    assert.ok(!Object.hasOwn(initialized, 'hapi'), 'New profiles must not configure a retired Hub');
+    assert.ok(!Object.hasOwn(JSON.parse(await installed(['config', '--config', config])), 'hapi'));
     const doctor = JSON.parse(await installed(['doctor', '--offline', '--json', '--config', config]));
     assert.equal(doctor.ok, true);
     for (const name of ['dsh-version', 'bundle-artifacts', 'profile']) assert.equal(doctor.checks.find(check => check.name === name)?.status, 'pass');
-    assert.equal(doctor.checks.find(check => check.name === 'hapi')?.status, 'skipped');
+    assert.ok(!doctor.checks.some(check => check.name === 'hapi'), 'Doctor must not probe the retired Hub');
 
     process.stdout.write('Starting the installed official Web Host on an ephemeral loopback port…\n');
     host = spawn(process.execPath, [cli, 'start', '--config', config, '--no-open'], { cwd: directory, env, stdio: 'ignore', windowsHide: true });
@@ -119,7 +126,7 @@ try {
     await installed(['revoke', '--machine-id', 'package-fixture', '--config', config]);
     const paired = JSON.parse(await readFile(join(directory, 'runner-pairings.json'), 'utf8'));
     assert.deepEqual(paired.machines, []);
-    process.stdout.write('Clean tarball, npm executable, login, offline doctor, HTTP boot, five lazy chunk routes, Runner install, redaction, and revocation passed. No live HAPI/model call was made.\n');
+    process.stdout.write('Clean tarball, matching extensions, npm executable, official admission, offline doctor, HTTP boot, two lazy chunk routes, Runner install, redaction, and revocation passed. No live source/model call was made.\n');
 } finally {
     if (host?.pid && host.exitCode === null) {
         if (process.platform === 'win32') await runFile('taskkill.exe', ['/PID', String(host.pid), '/T', '/F']);

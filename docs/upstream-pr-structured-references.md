@@ -1,0 +1,9 @@
+# Draft: preserve opt-in structured references through composer submission
+
+A reference codec currently returns text, so adapters cannot receive the identity of a selected resource independently from the model prompt. This change lets a codec return a client-only typed reference and carries ordered text/reference parts through the existing official composer and Session face.
+
+`PromptReferencePart` contains a provider namespace, opaque provider ID, and an echo label. A Session explicitly accepts namespaces through `promptReferences.accepts`; ConversationController rejects unsupported references before admission or attachment ownership changes. `BeginSubmissionInput.content` gives an adapter the same serialized prompt before its subsequent prompt call. Existing codecs still return strings and retain their current path. The ordinary Host wire does not expand: the standard Session refuses unsupported reference parts before RPC.
+
+The trigger controller also passes the exact retained Session binding to the codec as an optional third argument. This keeps an asynchronous resource lookup tied to the submitting occurrence. The input shell preserves reference order and quote boundaries, retains chips and attachments on failure, and clears them only when submission is accepted.
+
+Affected packages: `api/session-controller`, `client/ui-conversation`, `client/ui-input-trigger`. ADR: [structured composer references](adr/hhpi-structured-references.md). Validation covers default text compatibility, structured order, failure/acceptance with an attachment, explicit Session opt-in, and rejection before the ordinary Host prompt wire. This is a source extension for commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db` (`0.2.2-rc.1`); it does not push an upstream PR or claim live native/browser acceptance.

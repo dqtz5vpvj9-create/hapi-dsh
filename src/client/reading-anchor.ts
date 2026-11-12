@@ -1,19 +1,40 @@
 /** Public Chat identities and DOM disclosure controls; no transcript text is saved. */
-export interface ReloadReadingAnchor { key: string; seq: number; offset: number; displayId?: string; sourceMessageId?: string }
+import type { SessionEventLikeEntry } from '@deepseek-ai/dsh-api-session-controller/client'
+export interface ReloadReadingAnchor { key: string; seq: number; offset: number; displayId?: string; sourceMessageId?: string; sourceEpoch?: string }
 export interface ChatReadingTarget { key: string; kind: string; turn?: number }
-interface ReadingNode { key: string; kind: string; anchorSeq: number; location?: { kind: string; turn?: { turn: number } } }
+interface ReadingNode { key: string; kind: string; anchorSeq: number; visibility?: string; data?: unknown; location?: { kind: string; turn?: { turn: number } } }
 export function parseReloadReadingAnchor(raw: string | null): ReloadReadingAnchor | undefined {
     if (!raw) return undefined
     try {
         const value: unknown = JSON.parse(raw)
         if (!value || typeof value !== 'object') return undefined
-        const { key, seq, offset, displayId, sourceMessageId } = value as Partial<ReloadReadingAnchor>
+        const { key, seq, offset, displayId, sourceMessageId, sourceEpoch } = value as Partial<ReloadReadingAnchor>
         if (typeof key === 'string' && key.length > 0 && typeof seq === 'number' && Number.isSafeInteger(seq) && seq >= 0
-            && typeof offset === 'number' && Number.isFinite(offset)) return { key, seq, offset, ...(typeof displayId === 'string' ? { displayId } : {}), ...(typeof sourceMessageId === 'string' ? { sourceMessageId } : {}) }
+            && typeof offset === 'number' && Number.isFinite(offset)) return { key, seq, offset, ...(typeof displayId === 'string' ? { displayId } : {}), ...(typeof sourceMessageId === 'string' ? { sourceMessageId } : {}), ...(typeof sourceEpoch === 'string' ? { sourceEpoch } : {}) }
     } catch { /* Invalid optional reading state starts with the official view. */ }
 }
-export function messageNodeTarget(snapshot: { nodes: { values(): readonly ReadingNode[] } } | undefined, seq: number): ChatReadingTarget | undefined {
-    const node = snapshot?.nodes.values().find(node => node.anchorSeq === seq)
+export function messageNodeTarget(snapshot: { nodes: { values(): readonly ReadingNode[] } } | undefined, seq: number,
+    entries?: readonly SessionEventLikeEntry[]): ChatReadingTarget | undefined {
+    const nodes = snapshot?.nodes.values().filter(node => node.visibility !== 'hidden') ?? []
+    const original = entries?.find(entry => entry.type === 'event' && entry.event.seq === seq)
+    const assistant = (node: ReadingNode) => node.kind === 'assistant-step'
+        && (node.data as { finalNode?: { seq: number } } | undefined)?.finalNode?.seq === seq
+    let node: ReadingNode | undefined
+    if (original?.type === 'event') {
+        const event = original.event
+        if (event.type === 'tool/call' || event.type === 'tool/result' && event.surfaceOp === 'append') {
+            const callId = event.type === 'tool/call' ? event.data.callId : event.data.message.source.callId
+            node = nodes.find(node => node.kind === 'tool-call'
+                && (node.data as { root?: { callId: string } } | undefined)?.root?.callId === callId)
+        } else if (event.type === 'assistant/message' && event.surfaceOp === 'append') {
+            // A live row retains its first streamed anchor after settlement;
+            // finalNode still names the exact committed Assistant event.
+            node = nodes.find(assistant)
+        } else if (event.type === 'user/message' && event.surfaceOp === 'append' || event.type === 'developer/message') {
+            node = nodes.find(node => node.anchorSeq === seq)
+        }
+        // Boundaries/audit records and model-only replacements have no body.
+    } else node = nodes.find(node => node.anchorSeq === seq) ?? nodes.find(assistant)
     return node ? { key: node.key, kind: node.kind, ...(node.location?.turn === undefined ? {} : { turn: node.location.turn.turn }) } : undefined
 }
 export function findChatElement(root: HTMLElement, key: string): HTMLElement | undefined {

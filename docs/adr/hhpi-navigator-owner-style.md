@@ -1,0 +1,9 @@
+# Keep navigator coverage inside its actual row
+
+Status: implemented against DSH `0.2.2-rc.1`, commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`.
+
+The file navigator used two unqualified ancestor queries in `ui-sidebar-files/FilesBody.module.css`: `:has(> .navigator.fill)` and the narrow-viewport equivalent. An actual source-history append produced 54 navigator-rule subtree invalidations, including BODY and HTML, although no file navigator was mounted. The browser resolved 5,127 styles during that bounded page diagnostic. No global theme or stylesheet write occurred. Adding an owner guard through `:is()` still produced the same invalidation; that attempted form is rejected.
+
+`FileNavigator` now publishes coverage classes on its actual layout row while mounted. It reuses the existing `layoutParent` calculation, which passes over official Factory wrappers with `display: contents`. A separate seat class marks the direct row branch containing the navigator, so CSS covers the other children without hiding the navigator's transparent wrapper. The row-fill class follows the existing navigator mode; the fullscreen rule remains in CSS. Hiding, changing modes and unmounting remove only the occurrence's classes. No public Factory props, remote API or HHPI field changes.
+
+The same bounded browser diagnostic with the two explicit owner rules produced zero navigator subtree invalidations, zero BODY/HTML subtree invalidations and 2,935 style resolutions. This is causal evidence for the invalidation scope, not an 80 ms performance pass. A real Chromium fixture checks desktop/mobile coverage, direct and transparent seats, keyboard focus and unchanged unrelated content. Production component tests check real row ownership and withdrawal during mode changes, hiding and disposal. The source offer includes the [upstream PR draft](../upstream-pr-navigator-owner-style.md). Installed continuous-history geometry and frame-budget acceptance remain separate.

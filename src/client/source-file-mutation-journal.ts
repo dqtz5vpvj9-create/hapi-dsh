@@ -1,24 +1,22 @@
 import { randomId } from './random-id.ts'
 /** Small, source-bound file-operation receipts. File/upload bytes never enter this store. */
 import { z } from 'zod'
-import { nativeFileManagementSchema, nativeFileOperationSchema, workbenchSourceSchema,
-  type WorkbenchResponse, type WorkbenchSource } from '../workbench-types.ts'
+import { workspaceFileOperationSchema } from '../workbench-types.ts'
+import { workspaceBindingSchema, workspaceEntrySchema, workspaceMutationResultSchema } from '../workspace/source-api.ts'
 
 export const sourceFileOwnerSchema = z.strictObject({
-  sourceHubId: workbenchSourceSchema.shape.sourceHubId.unwrap(),
-  sourceSessionId: workbenchSourceSchema.shape.sourceSessionId,
-  machineId: workbenchSourceSchema.shape.machineId.unwrap(),
+  scope: z.string().min(1).max(8192),
+  binding: workspaceBindingSchema,
 })
 export type SourceFileOwner = z.infer<typeof sourceFileOwnerSchema>
-export const sourceFileMutationRequestSchema = z.union([nativeFileOperationSchema,
-  z.strictObject({ action: z.literal('upload'), path: z.string().min(1).max(8192).refine(value => !value.includes('\0')) }),
+export const sourceFileMutationRequestSchema = z.union([workspaceFileOperationSchema,
+  z.strictObject({ action: z.literal('upload'), path: z.string().min(1).max(8192).refine(value => !value.includes('\0')),
+    bytes: z.number().int().nonnegative(), mimeType: z.string().min(1).max(1024), fileName: z.string().max(1024).optional(),
+    uploadId: z.string().min(1).max(8192).optional() }),
 ])
 export type SourceFileMutationRequest = z.infer<typeof sourceFileMutationRequestSchema>
-const resultSchema = nativeFileManagementSchema.extend({
-  error: z.string().max(8192).optional(), deletedPaths: z.array(z.string().max(8192)).max(32).optional(),
-  entry: nativeFileManagementSchema.shape.entry.unwrap().extend({ name: z.string().max(1024) }).optional(),
-})
-const observedSchema = z.array(z.strictObject({ path: z.string().min(1).max(8192), result: resultSchema })).max(2)
+const resultSchema = workspaceMutationResultSchema(workspaceEntrySchema.nullable())
+const observedSchema = z.array(z.strictObject({ path: z.string().min(1).max(8192), entry: workspaceEntrySchema.nullable() })).max(2)
 export const sourceFileMutationReceiptSchema = z.strictObject({
   operationId: z.string().uuid(), request: sourceFileMutationRequestSchema,
   phase: z.enum(['pending', 'unknown', 'confirmed', 'reviewed']),
@@ -28,15 +26,16 @@ export const sourceFileMutationReceiptSchema = z.strictObject({
 })
 export type SourceFileMutationReceipt = z.infer<typeof sourceFileMutationReceiptSchema>
 export const sourceFileMutationEntrySchema = z.strictObject({
-  version: z.literal(1), revision: z.string().uuid(), owner: sourceFileOwnerSchema, receipt: sourceFileMutationReceiptSchema,
+  version: z.literal(2), revision: z.string().uuid(), owner: sourceFileOwnerSchema, receipt: sourceFileMutationReceiptSchema,
 })
 export type SourceFileMutationEntry = z.infer<typeof sourceFileMutationEntrySchema>
-export const SOURCE_FILE_MUTATION_DATABASE = 'hapi-dsh-source-file-mutations'
+export const SOURCE_FILE_MUTATION_DATABASE = 'hhpi-workspace-file-mutations'
 const maxRecordBytes = 2 * 1024 * 1024
 
-export function sourceFileMutationKey(source: WorkbenchSource): string {
+export function sourceFileMutationKey(source: SourceFileOwner): string {
   const owner = sourceFileOwnerSchema.parse(source)
-  return JSON.stringify([owner.sourceHubId, owner.sourceSessionId, owner.machineId])
+  const { binding } = owner
+  return JSON.stringify([owner.scope, binding.target.hostId, binding.target.sessionId, binding.machineId, binding.workspaceId])
 }
 function parsedEntry(value: unknown, owner: SourceFileOwner): SourceFileMutationEntry | null {
   if (value === undefined || value === null) return null
@@ -47,14 +46,8 @@ function parsedEntry(value: unknown, owner: SourceFileOwner): SourceFileMutation
   return parsed.data
 }
 /** Keep source evidence, with an explicit count when a large partial-delete list is bounded. */
-export function sourceFileMutationResult(value: WorkbenchResponse<'nativeFileManage'>): { result: SourceFileMutationReceipt['result']; omittedPaths: number } {
-  const parsed = nativeFileManagementSchema.parse(value)
-  const result = resultSchema.parse({ ...parsed,
-    ...(parsed.error === undefined ? {} : { error: parsed.error.slice(0, 8192) }),
-    ...(parsed.entry === undefined ? {} : { entry: { ...parsed.entry, name: parsed.entry.name.slice(0, 1024) } }),
-    ...(parsed.deletedPaths === undefined ? {} : { deletedPaths: parsed.deletedPaths.slice(0, 32) }),
-  })
-  return { result, omittedPaths: Math.max(0, (parsed.deletedPaths?.length ?? 0) - 32) }
+export function sourceFileMutationResult(value: NonNullable<SourceFileMutationReceipt['result']>): { result: SourceFileMutationReceipt['result']; omittedPaths: number } {
+  return { result: resultSchema.parse(value), omittedPaths: 0 }
 }
 
 export interface SourceFileMutationStorage {
@@ -104,7 +97,7 @@ export class BrowserSourceFileMutationStorage implements SourceFileMutationStora
   }
   async write(source: SourceFileOwner, expectedRevision: string | null, input: SourceFileMutationReceipt): Promise<SourceFileMutationEntry> {
     const owner = sourceFileOwnerSchema.parse(source), key = sourceFileMutationKey(owner)
-    const value = sourceFileMutationEntrySchema.parse({ version: 1, revision: randomId(), owner, receipt: input })
+    const value = sourceFileMutationEntrySchema.parse({ version: 2, revision: randomId(), owner, receipt: input })
     if (new TextEncoder().encode(JSON.stringify(value)).byteLength > maxRecordBytes) throw new Error('The source file receipt exceeds its metadata limit. Upload content cannot be stored here.')
     const database = await this.open()
     return new Promise((resolve, reject) => {

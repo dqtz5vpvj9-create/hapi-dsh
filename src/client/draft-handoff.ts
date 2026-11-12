@@ -141,6 +141,37 @@ export class WorkspaceDraftHandoffs {
         this.endpoints.add(endpoint); this.publish({}); this.changed();
         return () => { this.endpoints.delete(endpoint); this.publish({}); this.changed(); };
     }
+    /** One explicit document action appends through the selected live composer. */
+    async appendText(address: HandoffAddress, paneId: string, text: string, signal: AbortSignal): Promise<HandoffDraft> {
+        await this.loading;
+        const active = AbortSignal.any([signal, this.lifetime.signal]); active.throwIfAborted();
+        if (this.state.busy || this.blocksSource(address)) throw new Error('Finish the existing draft comparison before adding this selection.');
+        this.publish({ busy: true });
+        let release: (() => void) | undefined;
+        try {
+            const current = () => [...this.endpoints].find(endpoint => sameAddress(endpoint.address, address) && endpoint.paneId === paneId);
+            const endpoint = current() ?? await new Promise<HandoffEndpoint>((resolve, reject) => {
+                const finish = (value?: HandoffEndpoint) => { stop(); active.removeEventListener('abort', aborted); if (value) resolve(value); else reject(active.reason); };
+                const changed = () => { const value = current(); if (value) finish(value); };
+                const aborted = () => finish();
+                const stop = this.subscribe(changed);
+                active.addEventListener('abort', aborted, { once: true });
+                if (active.aborted) aborted(); else changed();
+            });
+            active.throwIfAborted();
+            if (!this.endpoints.has(endpoint) || !endpoint.writable()) throw new Error('The original composer is busy or unavailable. The selection has been retained.');
+            release = endpoint.retain();
+            const before = endpoint.capture();
+            if (before.paneId !== paneId) throw new Error('The original composer occurrence changed. The selection has been retained.');
+            const accepted = await endpoint.insert({ bindingId: before.bindingId, paneId, revision: before.revision,
+                text, references: [], attachmentIds: [], files: [] }, before, active);
+            active.throwIfAborted();
+            if (!this.endpoints.has(endpoint) || !endpoint.writable() || !handoffDraftMatches(endpoint.capture(), accepted)) {
+                throw new Error('The original composer changed after accepting this selection. Review its draft before retrying the retained selection.');
+            }
+            endpoint.focus(); return accepted;
+        } finally { release?.(); this.publish({ busy: false }); }
+    }
     changed = (): void => {
         const record = this.state.record;
         const target = record ? [...this.endpoints].find(endpoint => sameAddress(endpoint.address, record.to) && endpoint.writable()) : undefined;

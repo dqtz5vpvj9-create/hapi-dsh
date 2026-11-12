@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { Context } from '@deepseek-ai/cordis';
+import { Loader } from '@deepseek-ai/cordis-plugin-loader';
+import type { ClientModuleLoaderTarget } from '@deepseek-ai/dsh-client-modules/client';
 import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules';
-import { syncDeferredStages } from '../src/client/deferred-plugins.ts';
+import { syncDeferredStages, workspaceDeferredDemand } from '../src/client/deferred-plugins.ts';
+import type { WorkspaceController } from '../src/client/controller.ts';
+import { assertStableBootEntries, workspaceBootGraph, workspaceResourceBootGraph } from '../src/shared/boot-graph.ts';
+import { createGraphModules } from '../src/client/graph-document.ts';
+import { prepareOfficialBrowserLibrary, resolveOfficialBrowserDependency } from './contracts/official-browser-library.ts';
+
+declare module '@deepseek-ai/dsh-client-ui-slots' { interface LocaleNamespaceMap { fixtureResource: 'title' } }
 
 const modules = '@deepseek-ai/dsh-client-modules';
 const account = '@deepseek-ai/dsh-client-ui-settings-account';
@@ -100,4 +111,87 @@ test('disposing during download prevents activation when the resource arrives', 
     controller.abort(new Error('disposed')); releaseDownload.resolve();
     await assert.rejects(work, /disposed/);
     assert.equal(activations, 0);
+});
+
+/** Actual pinned module reconciliation/Cordis/locale; editor and source binding
+ * are explicit DOM/protocol fixtures. This is not real layout/browser evidence. */
+test('official cumulative resource activation and late locale keep the focused reader draft and source owner', async () => {
+    const require = createRequire(import.meta.url);
+    const { JSDOM } = require('jsdom') as { JSDOM: new (html: string, options: { url: string }) => { window: { document: Document; close(): void } } };
+    const dom = new JSDOM('<!doctype html><body></body>', { url: 'https://fixture.invalid/' });
+    const ctx = new Context(), document = dom.window.document;
+    const previous = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const previousCss = Object.getOwnPropertyDescriptor(globalThis, 'CSS');
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: document });
+    Object.defineProperty(globalThis, 'CSS', { configurable: true, value: { escape: (value: string) => value } });
+    try {
+        let selectedResource: { kind: string; sessionId?: string } = { kind: 'empty' };
+        const workspace = { store: { focusedPane: () => ({ id: 'p1', resource: selectedResource }), subscribe: () => () => {} },
+            getSnapshot: () => ({ catalogDiscovery: { hosts: [] }, catalog: { byId: { 'readonly-thread': { projectionValues: { hhpiSource: { capabilities: { send: false } } } } } } }) } as unknown as WorkspaceController;
+        const demand = workspaceDeferredDemand(workspace);
+        assert.equal(demand(), 'ready', 'an empty workspace can load independent views');
+        selectedResource = { kind: 'terminal', sessionId: 'readonly-thread' };
+        assert.equal(demand(), 'requested', 'explicit/restored resources bypass unfinished chat and idle');
+        selectedResource = { kind: 'chat', sessionId: 'readonly-thread' };
+        const readonly = document.createElement('section'); readonly.dataset.hapiPaneInstance = 'p1';
+        readonly.append(Object.assign(document.createElement('article'), { textContent: 'Source-readable body' }));
+        readonly.firstElementChild!.setAttribute('data-chat-node-key', 'source-body'); document.body.append(readonly);
+        assert.equal(demand(), 'ready', 'a legitimate readonly reader does not need a composer'); readonly.remove();
+        await prepareOfficialBrowserLibrary();
+        let registration: { factory: (require: unknown) => typeof import('@deepseek-ai/dsh-client-locale/client') } | undefined;
+        new Function('window', readFileSync(require.resolve('@deepseek-ai/dsh-client-locale/client'), 'utf8'))({ __ModuleLoader__: { load(value: typeof registration) { registration = value; } } });
+        const { LocaleRuntime } = registration!.factory(resolveOfficialBrowserDependency);
+        const locale = new LocaleRuntime(ctx);
+        const official = createGraphModules(document, readFileSync(require.resolve('@deepseek-ai/dsh-client-modules/client'), 'utf8'));
+        const core = 'fixture-conversation', files = '@deepseek-ai/dsh-client-ui-sidebar-files';
+        const full: WebBootGraph = { rev: 'same-release', entries: [modules, core, files].map(id => ({ id, rev: 'r1', url: '/plugins/' + id })), batches: [] };
+        full.entries[2]!.inject = [core];
+        full.batches = full.entries.map(row => ({ phase: 'application', url: row.url, rev: row.rev, entries: [row.id] }));
+        const initial = workspaceBootGraph(full), resource = workspaceResourceBootGraph(full);
+        const binding = { nativeId: 'original-thread', pending: ['original-queue-item'] };
+        let mounts = 0, stops = 0, resourceAttempts = 0;
+        const editor = document.createElement('input'), body = document.createElement('article');
+        editor.value = '中文草稿，尚未发送'; body.textContent = 'Accepted original source body';
+        const target: ClientModuleLoaderTarget = { mode: 'queue', pendingQueue: [], load() {}, create() { throw new Error('Use the official module factory'); } };
+        const system = official.createClientModuleSystem(target, { id: modules, exports: official as unknown as Record<string, unknown> }, {
+            boot: initial, staticModules: {}, async loadBundle(url) {
+                const id = full.entries.find(row => row.url === url)!.id;
+                target.load({ id, factory: () => ({ apply(owner: Context) {
+                    if (id === core) return owner.effect(() => {
+                        mounts++; document.body.append(body, editor); editor.focus();
+                        owner.reflect.provide('fixtureReader' as never, binding as never);
+                        return () => { stops++; body.remove(); editor.remove(); };
+                    });
+                    if (++resourceAttempts === 1) throw new Error('Intentional independent resource activation failure');
+                    return owner.effect(() => locale.register('fixtureResource', { en: { title: 'Files' }, zh: { title: '文件' } }));
+                } }) });
+            },
+        });
+        await ctx.plugin(Loader); ctx.loader.internal = system as never;
+        await system.entries.start(ctx.loader, system.manifest);
+        const fiber = [...ctx.loader.entries()].find(entry => entry.options.name === core)!.fiber;
+        const reached = deferred(), release = deferred(), revision = locale.getSnapshot().revision;
+        const sync = syncDeferredStages(full, { signal: new AbortController().signal, stages: [resource], requested: () => false, idle: async () => {},
+            async preload() { reached.resolve(); await release.promise; },
+            async sync(graph) { assertStableBootEntries(graph, system.manifest.modules); await system.entries.sync(graph); },
+        });
+        await reached.promise;
+        assert.equal(mounts, 1); assert.equal(document.activeElement, editor);
+        release.resolve(); await sync;
+        assert.equal(system.entries.state.getSnapshot().failures.length, 1, 'the independent failure stays explicit');
+        assert.equal(document.activeElement, editor); assert.equal(editor.value, '中文草稿，尚未发送');
+        assert.equal(stops, 0, 'failed independent activation cannot retire the running reader');
+        await system.entries.sync(resource); // A subsequent explicit resource demand retries its original entry.
+        assert.ok(locale.getSnapshot().revision > revision, 'the late official dictionary actually published a revision');
+        assert.equal([...ctx.loader.entries()].find(entry => entry.options.name === core)!.fiber, fiber);
+        assert.equal(Reflect.get(ctx, 'fixtureReader'), binding);
+        assert.equal(document.activeElement, editor); assert.equal(editor.value, '中文草稿，尚未发送');
+        assert.equal(document.querySelector('article'), body); assert.deepEqual(binding.pending, ['original-queue-item']);
+        assert.equal(mounts, 1); assert.equal(stops, 0); assert.deepEqual(system.entries.state.getSnapshot().failures, []);
+    } finally {
+        await ctx.fiber.dispose();
+        if (previous) Object.defineProperty(globalThis, 'document', previous); else Reflect.deleteProperty(globalThis, 'document');
+        if (previousCss) Object.defineProperty(globalThis, 'CSS', previousCss); else Reflect.deleteProperty(globalThis, 'CSS');
+        dom.window.close();
+    }
 });

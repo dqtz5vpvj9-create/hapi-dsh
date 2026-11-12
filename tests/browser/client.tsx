@@ -7,7 +7,6 @@ import type { PropsRuntime, PropsRenderFactories, PropsRenderSlots } from '@deep
 import { createWindowCommitFactory } from 'hhpi-window-commit'
 import { ACTIVE_CONVERSATION_INPUT } from '../contracts/conversation-content-input.ts'
 import { RemoteSessions } from '../../src/client/remote-sessions.ts'
-import { SourceSessions } from '../../src/client/source-sessions.ts'
 import { RemotePaneSession } from '../../src/client/remote-reading-session.ts'
 import { installSeamlessHistory, type SeamlessHistoryEvent } from '../../src/client/seamless/controller.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
@@ -52,7 +51,7 @@ const api: HhpiRemoteApi = {
     } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
   },
 } as HhpiRemoteApi
-const remote = new RemoteSessions(ctx, original, api), sessions = new SourceSessions(remote)
+const remote = new RemoteSessions(ctx, original, api), sessions = remote
 await remote.refresh()
 ctx.reflect.provide('sessions', sessions)
 const { RemoteStream } = runtime.__HHPI_REQUIRE__('@deepseek-ai/dsh-api-gateway/client') as typeof import('@deepseek-ai/dsh-api-gateway/client')
@@ -168,7 +167,7 @@ function snapshot() {
 runtime.__hhpi = {
   ready: true, snapshot,
   async latest(key: 'a' | 'b'): Promise<void> { const control = controls.get(key); if (!control) throw new Error('No mounted control'); await control.toLatest() },
-  async dispose(): Promise<void> { collecting = false; cancelAnimationFrame(raf); stopPaging(); unmount(); panes.a.reference.release(); panes.b.reference.release(); canonical.release(); sessions.dispose(); remote.dispose(); await ctx.fiber.dispose() },
+  async dispose(): Promise<void> { collecting = false; cancelAnimationFrame(raf); stopPaging(); unmount(); panes.a.reference.release(); panes.b.reference.release(); canonical.release(); remote.dispose(); await ctx.fiber.dispose() },
 }
 
 }

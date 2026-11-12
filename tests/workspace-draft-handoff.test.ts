@@ -141,3 +141,33 @@ test('public mutation coordinates collapse each semantic reference and command t
     assert.equal(handoffDetectEnd({ draft: 'A @path B', occurrences: [{ source: 'file', ref: '/path', label: 'path', clipboardText: '@path', occurrenceId: 1, offset: 2, length: 5 }] }), 5);
     assert.equal(handoffDetectEnd({ draft: '/compact arg', occurrences: [], claim: { name: 'compact', token: '/compact ', hint: '' } }), 5);
 });
+
+test('an explicit selection waits for its exact conversation pane and appends once while preserving the existing draft and files', async () => {
+    const handoffs = new WorkspaceDraftHandoffs('selection-window', new Memory());
+    const hiddenFile = endpoint(from, draft('file-pane', 'Hidden file graph draft'));
+    const original = endpoint(from, { ...draft('original-chat', 'Original draft'), attachmentIds: ['original-file'], files: [{ id: 'original-file', file }] });
+    let focused = 0; original.api.focus = () => { focused++; };
+    handoffs.register(hiddenFile.api);
+    const active = new AbortController(), append = handoffs.appendText(from, 'original-chat', 'Selected source text', active.signal);
+    await Promise.resolve(); await Promise.resolve();
+    assert.equal(hiddenFile.inserted, 0); assert.equal(handoffs.getSnapshot().busy, true);
+    handoffs.register(original.api);
+    const accepted = await append;
+    assert.equal(accepted.text, 'Original draft\n\nSelected source text'); assert.equal(original.inserted, 1);
+    assert.equal(hiddenFile.current.text, 'Hidden file graph draft'); assert.equal(hiddenFile.inserted, 0);
+    assert.equal(original.current.files[0]?.file, file); assert.equal(focused, 1); assert.equal(original.clears, 0);
+    assert.equal(original.holds, 0); assert.equal(handoffs.getSnapshot().busy, false); handoffs.dispose();
+});
+
+test('a busy conversation or cancelled navigation never appends to a later-mounted composer', async () => {
+    const handoffs = new WorkspaceDraftHandoffs('selection-window', new Memory()), original = endpoint(from, draft('original-chat', 'Keep me'));
+    original.api.writable = () => false; const unregister = handoffs.register(original.api);
+    await assert.rejects(handoffs.appendText(from, 'original-chat', 'Selected source text', new AbortController().signal), /busy or unavailable/);
+    assert.equal(original.inserted, 0); unregister();
+    const active = new AbortController(), append = handoffs.appendText(from, 'original-chat', 'Selected source text', active.signal);
+    await Promise.resolve(); await Promise.resolve(); active.abort(new Error('The original source was replaced'));
+    await assert.rejects(append, /original source was replaced/);
+    original.api.writable = () => true; handoffs.register(original.api); await Promise.resolve();
+    assert.equal(original.inserted, 0); assert.equal(original.current.text, 'Keep me');
+    assert.equal(handoffs.getSnapshot().busy, false); handoffs.dispose();
+});

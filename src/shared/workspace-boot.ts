@@ -1,5 +1,6 @@
 /** A small layout preview before the unchanged official Web graph activates. */
 import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver';
+import { COMPACT_WORKSPACE_QUERY, workspaceFocusesSinglePane } from './workspace-presentation.ts';
 
 // No messages, drafts or credentials enter this document. The browser reads
 // only its existing layout and puts labels into textContent, never HTML.
@@ -13,11 +14,13 @@ html,body{overscroll-behavior-y:none}
 #hapi-workspace-boot [data-boot-pane]{min-width:0;min-height:0;flex:1;border:1px solid #ddd;border-radius:8px;display:flex;align-items:center;justify-content:center;background:#fff;color:#888}
 #hapi-workspace-boot footer{display:flex;gap:12px;padding:10px 16px;min-height:42px;border-top:1px solid #ddd;overflow:hidden}#hapi-workspace-boot footer span{white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}#hapi-workspace-boot [aria-current=true]{color:#111;font-weight:600}
 #hapi-workspace-boot button{font:inherit;border:1px solid #bbb;border-radius:6px;padding:4px 10px;background:transparent;color:inherit;cursor:pointer}
-@media(max-width:767px){#hapi-workspace-boot aside{display:none}}
+@media ${COMPACT_WORKSPACE_QUERY}{#hapi-workspace-boot aside{display:none}}
 @media(prefers-color-scheme:dark){#hapi-workspace-boot{background:#141414;color:#eee}#hapi-workspace-boot aside{background:#191919}#hapi-workspace-boot [data-boot-pane]{background:#1c1c1c}#hapi-workspace-boot aside,#hapi-workspace-boot header,#hapi-workspace-boot footer,#hapi-workspace-boot [data-boot-pane]{border-color:#333}#hapi-workspace-boot [aria-current=true]{color:#fff}}
 `;
 
 export const WORKSPACE_BOOT_SCRIPT = String.raw`(()=>{
+  const singlePane=${workspaceFocusesSinglePane.toString()};
+  const compact=typeof matchMedia==='function'&&matchMedia(${JSON.stringify(COMPACT_WORKSPACE_QUERY)}).matches;
   const entries=[...document.querySelectorAll('script[type="application/x-hapi-entry"]')];
   let released=false;
   const start=()=>{if(released)return;released=true;for(const original of entries){
@@ -31,9 +34,9 @@ export const WORKSPACE_BOOT_SCRIPT = String.raw`(()=>{
     const tr=(en,cn)=>zh?cn:en;
     const root=document.createElement('div');root.id='hapi-workspace-boot';root.dataset.hapiWorkspaceBoot='layout';
     const make=(tag,text)=>{const element=document.createElement(tag);if(text)element.textContent=text;return element;};
-    const aside=make('aside');aside.append(make('strong','HAPI'),make('small',tr('Restoring workspace','正在恢复工作区')));
+    const aside=make('aside');aside.append(make('strong','HHPI'),make('small',tr('Restoring workspace','正在恢复工作区')));
     const main=make('main'),header=make('header'),status=make('span',tr('Preparing conversations…','正在准备会话…'));
-    status.setAttribute('role','status');header.append(make('strong','HAPI'),status);
+    status.setAttribute('role','status');header.append(make('strong','HHPI'),status);
     const layout=make('div');layout.dataset.bootLayout='';
     const footer=make('footer');
     main.append(header,layout,footer);root.append(aside,main);
@@ -44,14 +47,14 @@ export const WORKSPACE_BOOT_SCRIPT = String.raw`(()=>{
     let count=0;
     const render=(node,depth=0)=>{
       if(!node||typeof node!=='object'||depth>32||++count>512)throw new Error('layout');
-      if(node.type==='pane') {const pane=make('section',tr('Conversation','会话'));pane.dataset.bootPane='';return pane;}
+      if(node.type==='pane') {const pane=make('section',tr('Conversation','会话'));pane.dataset.bootPane='';pane.dataset.bootPaneId=node.id;return pane;}
       if(node.type!=='split'||!['horizontal','vertical'].includes(node.axis)||!Array.isArray(node.children)||node.children.length<2||node.children.length>128||!Array.isArray(node.weights)||node.weights.length!==node.children.length||!node.weights.every(w=>typeof w==='number'&&Number.isFinite(w)&&w>0))throw new Error('layout');
       const split=make('div');split.dataset.bootSplit='';split.style.flexDirection=node.axis==='horizontal'?'row':'column';
       node.children.forEach((child,index)=>{const element=render(child,depth+1);element.style.flex=node.weights[index]+' 1 0';split.append(element);});return split;
     };
     let searched=0;
     const find=(node,id,depth=0)=>{if(!node||depth>32||++searched>512)return;if(node.type==='pane')return node.id===id?node:undefined;if(Array.isArray(node.children))for(const child of node.children){const result=find(child,id,depth+1);if(result)return result;}};
-    try{if(active){const node=saved.zoomed?.[active.id]?find(active.root,saved.focused?.[active.id]):active.root;layout.append(render(node));}}catch{layout.replaceChildren();}
+    try{if(active){const node=singlePane(compact,saved.zoomed?.[active.id])?find(active.root,saved.focused?.[active.id]):active.root;layout.append(render(node));}}catch{layout.replaceChildren();}
     if(!layout.childElementCount){const pane=make('section',tr('Your workspace is starting','正在打开工作区'));pane.dataset.bootPane='';layout.append(pane);}
     for(const window of windows.slice(0,32)){if(!window||typeof window.name!=='string')continue;const tab=make('span',window.name.slice(0,200));if(window===active)tab.setAttribute('aria-current','true');footer.append(tab);}
     if(!footer.childElementCount)footer.append(make('span',tr('Workspace','工作区')));

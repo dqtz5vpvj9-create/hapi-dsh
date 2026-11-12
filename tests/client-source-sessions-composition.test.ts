@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { Loader } from '@deepseek-ai/cordis-plugin-loader'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import { SOURCE_SESSIONS_REALM, sourceInitialNavigation, sourceSessionsContext, sourceSessionsLoader } from '../src/client/source-sessions-composition.ts'
+import { SOURCE_SESSIONS_REALM, prepareSourceSession, sourceInitialNavigation, sourceSessionsContext, sourceSessionsLoader } from '../src/client/source-sessions-composition.ts'
 
 const sessionConsumer = '@deepseek-ai/dsh-client-ui-session'
 const workspaceConsumer = '@deepseek-ai/dsh-client-ui-workspace'
@@ -23,6 +23,22 @@ async function provideFacade(ctx: Context, symbol: symbol, facade: object) {
     owner.reflect.provide('sessions', facade as Context['sessions'])
   } })
 }
+
+test('the host-managed Workspace disables only automatic restore and preserves its other public config', async () => {
+  const original = { kind: 'original' }, facade = { kind: 'facade' }
+  const seen: unknown[] = []
+  const ctx = await graph(original, () => ({ inject: ['sessions'], apply(_owner: Context, config: unknown) { seen.push(config) } }))
+  try {
+    const entry = ctx.loader.resolve(await ctx.loader.create({ name: workspaceConsumer, config: { marker: 7, restoreSelection: true } }))
+    assert.deepEqual(entry.options.config, { marker: 7, restoreSelection: false })
+    await provideFacade(ctx, entry.context[Context.isolate].sessions!, facade)
+    await entry.fiber
+    assert.deepEqual(seen, [{ marker: 7, restoreSelection: false }])
+    const ordinary = ctx.loader.resolve(await ctx.loader.create({ name: 'fixture-ordinary', config: { restoreSelection: true } }))
+    await ordinary.fiber
+    assert.deepEqual(ordinary.options.config, { restoreSelection: true })
+  } finally { await ctx.fiber.dispose() }
+})
 
 test('initial and later consumers start once in the facade realm while ordinary entries retain the owner', async () => {
   const original = { kind: 'original' }, facade = { kind: 'facade' }
@@ -141,14 +157,14 @@ test('shared Host view context resolves the consumer facade and retains the orig
   } finally { await ctx.fiber.dispose() }
 })
 
-test('compatibility graphs without a source provider navigate with their original sessions service', async () => {
+test('paired ordinary graphs suppress automatic restore while retaining original sessions and explicit navigation', async () => {
   const id = 'hapi-codex-compatibility-fixture' as SessionId
   const original = { list: { getSnapshot() { return { byId: { [id]: { sessionId: id } } } } } }
   const opened: SessionId[] = []
   let ready = 0
   const ctx = new Context()
   try {
-    await ctx.plugin(Loader)
+    await ctx.plugin(sourceSessionsLoader(Loader, false))
     ctx.reflect.provide('sessions', original as unknown as Context['sessions'])
     ctx.loader.internal = { version: 'client', import: () => ({ inject: ['sessions'], apply(owner: Context) {
       assert.equal(owner.sessions, original)
@@ -156,10 +172,51 @@ test('compatibility graphs without a source provider navigate with their origina
     } }) } as unknown as NonNullable<Loader['internal']>
     const navigation = sourceInitialNavigation(ctx, id, new AbortController().signal, () => { ready++ }, false)
     const entry = ctx.loader.resolve(await ctx.loader.create({ name: workspaceConsumer }))
+    assert.deepEqual(entry.options.config, { restoreSelection: false })
     await navigation
     assert.deepEqual(opened, [id]); assert.equal(ready, 1)
     assert.equal(entry.options.isolate?.sessions, undefined)
     assert.equal(ctx.sessions, original)
     assert.equal(ctx.get('hapiSourceSessions'), undefined)
   } finally { await ctx.fiber.dispose() }
+})
+
+
+test('exact foreground source preparation reads on real service arrival before unrelated UI activation and hands off one binding', async () => {
+  const ctx = new Context(), lifetime = new AbortController()
+  let selected = 'hhpi:windows:source:codex:first' as SessionId
+  const listeners = new Set<() => void>(), rows: Record<string, { id: SessionId }> = {}
+  const reads: string[] = [], retained: string[] = [], released: string[] = []
+  const binding = { exact: true }
+  const sessions = {
+    list: { getSnapshot: () => ({ byId: rows, phase: 'loading' }), subscribe: () => () => {} },
+    async resolveSession(id: SessionId) { reads.push(id); rows[id] = { id } },
+    retain(id: SessionId) { retained.push(id); return { binding, ready: Promise.resolve(binding), release() { released.push(id) } } },
+  }
+  const prepared = prepareSourceSession(ctx, { current: () => selected,
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener) } } }, lifetime.signal)
+  let unblock!: () => void
+  const slowUI = ctx.plugin({ async apply() { await new Promise<void>(resolve => { unblock = resolve }) } })
+  try {
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(reads, [], 'no source read or substitute service before the real provider')
+    const unprovide = ctx.reflect.provide('hhpiSessions', sessions as unknown as Context['hhpiSessions'])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(reads, [selected]); assert.deepEqual(retained, [selected])
+    // An actual Pane has now retained the same provider/binding.
+    const pane = sessions.retain(selected)
+    assert.equal(pane.binding, binding)
+    prepared.release(selected)
+    assert.deepEqual(released, [selected]); assert.deepEqual(retained, [selected, selected])
+    for (const listener of listeners) listener()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(reads.length, 1, 'catalog updates do not restart a handed-off preparation')
+    selected = 'hhpi:windows:source:codex:second' as SessionId
+    for (const listener of listeners) listener()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.equal(reads.at(-1), selected); assert.equal(retained.at(-1), selected)
+    lifetime.abort()
+    assert.equal(released.at(-1), selected)
+    unprovide(); pane.release()
+  } finally { prepared.dispose(); unblock(); await slowUI; await ctx.fiber.dispose() }
 })

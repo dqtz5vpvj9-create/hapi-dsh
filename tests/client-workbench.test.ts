@@ -1,30 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TerminalOutputTracker, decodeGitPath, parseWorkbenchChanges, terminalKey } from '../src/client/workbench-model.ts';
+import { decodeGitPath, parseWorkbenchChanges, terminalKey } from '../src/client/workbench-model.ts';
 import { discardNativeDocumentDraft, hasDirtyNativeDocument, nativeDocumentDraft, rememberNativeDocumentDraft } from '../src/client/workbench-drafts.ts';
-import type { TerminalOutputStream, WorkbenchResponse } from '../src/workbench-types.ts';
+import type { WorkbenchResponse } from '../src/workbench-types.ts';
 
-const stream = (startOffset: number, endOffset: number, replay = false): TerminalOutputStream => ({ version: 1, epoch: 'source-epoch', startOffset, endOffset, replay });
-test('PTY replay advances only for accepted output and deduplicates overlapping UTF-16 ranges', () => {
-    const tracker = new TerminalOutputTracker(); const output: string[] = [];
-    tracker.receive('abc', stream(0, 3, true), () => false); assert.equal(tracker.cursor, undefined);
-    tracker.receive('abc', stream(0, 3, true), value => { output.push(value); });
-    tracker.reconnect(); tracker.receive('bc😀', stream(1, 5, true), value => { output.push(value); });
-    tracker.receive('abc😀', stream(0, 5, true), () => { throw new Error('Duplicate replay must not be appended'); });
-    assert.deepEqual(output, ['abc', '😀']); assert.deepEqual(tracker.cursor, { epoch: 'source-epoch', offset: 5 });
-});
-test('PTY gaps, changed epochs, malformed bounds and legacy reconnect block input without inventing output', () => {
-    for (const invalid of [{ ...stream(0, 1, true), gap: 'epoch-changed' as const }, stream(0, 2, true), stream(1, 2, false)]) {
-        const tracker = new TerminalOutputTracker(); tracker.receive('x', invalid, () => { throw new Error('Bad output cannot enter xterm'); }); assert.equal(tracker.blocked, true);
-    }
-    const tracker = new TerminalOutputTracker(); tracker.receive('x', stream(0, 1, true), () => {});
-    tracker.receive('y', { ...stream(1, 2), epoch: 'new-epoch' }, () => { throw new Error('New epoch cannot append'); }); assert.equal(tracker.blocked, true);
-    tracker.reset(); tracker.receive('old', undefined, () => {}); tracker.reconnect(); assert.equal(tracker.issue, 'legacy');
-});
-test('initial source-truncated scrollback is explicit but retains a valid live cursor', () => {
-    const tracker = new TerminalOutputTracker(); tracker.receive('tail', { ...stream(100, 104, true), truncated: true }, () => {});
-    assert.equal(tracker.issue, 'truncated'); assert.equal(tracker.blocked, false); assert.equal(tracker.cursor?.offset, 104);
-});
 test('porcelain-v2 parsing preserves spaced, renamed, conflicted and quoted UTF-8 paths', () => {
     const result = parseWorkbenchChanges([
         '# branch.head feature', '1 MM N... 100644 100644 100644 aaa bbb file with spaces.ts',

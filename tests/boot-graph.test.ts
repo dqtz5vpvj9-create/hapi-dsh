@@ -5,7 +5,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createGraphModules } from '../src/client/graph-document.ts';
 import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules';
-import { workspaceBootGraph, deferredBootStages, independentBootBatches, stageWorkspaceBoot } from '../src/shared/boot-graph.ts';
+import { assertStableBootEntries, workspaceBootGraph, workspaceResourceBootGraph, deferredBootStages, independentBootBatches, stageWorkspaceBoot } from '../src/shared/boot-graph.ts';
+import { PANE_GRAPH_POLICY } from '../src/client/surface/pane-graph.ts';
 
 const { parseBootManifest } = createGraphModules({} as Document,
     readFileSync(createRequire(import.meta.url).resolve('@deepseek-ai/dsh-client-modules/client'), 'utf8'));
@@ -88,8 +89,8 @@ test('pinned graph retains first-run onboarding, composer and live Cordis dispat
     assert.ok(kept.has('@deepseek-ai/dsh-client-ui-cordis'));
     for (const id of [models, cordisRunner, '@deepseek-ai/dsh-client-ui-model-selection',
         '@deepseek-ai/dsh-api-session-controller', '@deepseek-ai/dsh-client-ui-conversation',
-        '@deepseek-ai/dsh-client-ui-attachment', '@deepseek-ai/dsh-client-ui-trajectory',
-        '@deepseek-ai/dsh-client-ui-open-in-app', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview']) assert.ok(kept.has(id), id);
+        '@deepseek-ai/dsh-client-ui-attachment', '@deepseek-ai/dsh-client-ui-trajectory']) assert.ok(kept.has(id), id);
+    for (const id of ['@deepseek-ai/dsh-client-ui-open-in-app', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview']) assert.ok(!kept.has(id), `${id} waits for resource demand`);
     const resumed = independentBootBatches(full);
     assert.equal(resumed.entries, full.entries);
     assert.ok(resumed.entries.some(row => row.id === models));
@@ -194,4 +195,31 @@ test('every pinned deferred stage preserves first-run services and its complete 
         assert.doesNotThrow(() => parseBootManifest(stage));
     }
     assert.deepEqual(stages.at(-1)!.entries, full.entries);
+});
+
+test('resource demand is cumulative and restored resource panes have their official views before chat idle', () => {
+    const full = officialGraph(), first = workspaceBootGraph(full), resources = workspaceResourceBootGraph(full);
+    const resourcePane = PANE_GRAPH_POLICY.transform(full);
+    assert.ok(first.entries.every(row => resources.entries.includes(row)));
+    for (const id of ['@deepseek-ai/dsh-client-ui-open-in-app', '@deepseek-ai/dsh-client-ui-sidebar-documentpreview']) {
+        assert.ok(resources.entries.some(row => row.id === id), id);
+        assert.ok(resourcePane.entries.some(row => row.id === id), `restored/explicit resource graph already includes ${id}`);
+    }
+    assert.ok(!resources.entries.some(row => row.id === account));
+    assertStableBootEntries(resources, first.entries);
+    assert.doesNotThrow(() => parseBootManifest(resources));
+});
+
+test('a refreshed optional graph cannot replace a running conversation, source or input revision', () => {
+    const full = officialGraph();
+    // The standalone installed-package fixture recursively includes official
+    // packages only; model the existing separately shipped source contribution.
+    full.entries.push({ id: 'hapi-dsh-session-provider', rev: 'source-r1', url: 'plugins/source/client.js' });
+    const active = workspaceBootGraph(full).entries;
+    assert.doesNotThrow(() => assertStableBootEntries(full, active));
+    for (const id of ['@deepseek-ai/dsh-client-ui-conversation', '@deepseek-ai/dsh-api-session-controller', 'hapi-dsh-session-provider']) {
+        const changed = { ...full, entries: full.entries.map(row => row.id === id ? { ...row, rev: 'changed-while-downloading' } : row) };
+        assert.throws(() => assertStableBootEntries(changed, active), /controlled update/, id);
+    }
+    assert.throws(() => assertStableBootEntries({ ...full, entries: full.entries.filter(row => row.id !== 'hapi-dsh') }, active), /controlled update/);
 });

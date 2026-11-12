@@ -3,17 +3,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import type { CatalogSession } from '../src/client-api.ts'
-import { hapiProjectionSchema } from '../src/codex/projection-types.ts'
+import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
+import type { WorkspaceCatalogRow } from '../src/client/controller.ts'
 import { SessionRowState } from '../src/client/sidebar-row-state.tsx'
 import { en, type WorkspaceTranslate } from '../src/client/locales.ts'
 import { sessionRelativeTime, sourceTimeMilliseconds } from '../src/workspace/sidebar-row.ts'
-import { sessionActivity, sessionCompletedAt } from '../src/workspace/presentation.ts'
+import { sessionActivity } from '../src/workspace/presentation.ts'
 
 const t: WorkspaceTranslate = (key, params) => en[key].replace(/\{(\w+)\}/g, (_, field: string) => String(params?.[field] ?? field))
-const empty: NonNullable<CatalogSession['sourceRowState']> = { todoProgress: null, futureScheduledMessageCount: null, nextScheduledAt: null,
-    serviceTier: null, backgroundTaskCount: null, pendingRequestsCount: null }
-const render = (state: CatalogSession['sourceRowState'], detailed = true) => renderToStaticMarkup(createElement(SessionRowState, { state, detailed, t }))
+const identity = { machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'thread' }
+const source: SourceSession = { ...identity, id: sourceSessionId(identity), title: 'Source', cwd: '/source', updatedAt: 1,
+    status: 'running', activeTurnId: 'turn', capabilities: { send: true, steer: true, cancel: true, approve: true, files: true }, pendingRequests: [] }
+const render = (source: SourceSession | undefined) => renderToStaticMarkup(createElement(SessionRowState, { source, t }))
 
 test('source time accepts original seconds or milliseconds and has exact minute/day cutoffs without changing sorting', () => {
     const now = new Date(2026, 9, 20, 12).getTime()
@@ -28,38 +29,13 @@ test('source time accepts original seconds or milliseconds and has exact minute/
     assert.equal(sessionRelativeTime(Number.MAX_VALUE, t, now), null)
 })
 
-test('unknown counts are not fabricated; mobile standard retains tasks, fast and pending while details show source schedule', () => {
+test('row facts show only current native requests and do not fabricate source tasks or schedules', () => {
     assert.equal(render(undefined), '')
-    assert.equal(render(empty), '')
-    const state = { ...empty, todoProgress: { completed: 1, total: 3 }, serviceTier: 'fast', pendingRequestsCount: 2, backgroundTaskCount: 4,
-        futureScheduledMessageCount: 5, nextScheduledAt: new Date(2026, 9, 21, 12).getTime() }
-    const compact = render(state, false), detailed = render(state)
-    for (const text of ['Fast service tier', 'Tasks: 1/3', '2 pending requests']) assert.ok(compact.includes(text))
-    assert.ok(!compact.includes('scheduled messages')); assert.ok(!compact.includes('background tasks'))
-    assert.ok(detailed.includes('5 scheduled messages')); assert.ok(detailed.includes('4 background tasks'))
-    assert.equal(render({ ...empty, todoProgress: { completed: 3, total: 3 }, futureScheduledMessageCount: 0, pendingRequestsCount: 0, backgroundTaskCount: 0, serviceTier: 'standard' }), '')
-})
-
-test('a real connected background task keeps running status, but a disconnected source never appears active', () => {
-    const row = { running: false, hostOnline: true, sourceRowState: { ...empty, backgroundTaskCount: 2, pendingRequestsCount: 1 } }
-    assert.deepEqual(sessionActivity(row), { kind: 'background', running: true, pending: true, compacting: false })
-    assert.deepEqual(sessionActivity({ ...row, hostOnline: false }), { kind: 'offline', running: false, pending: true, compacting: false })
-    assert.equal(sessionActivity({ ...row, sourceRowState: empty }).kind, 'idle')
-})
-
-test('completion needs an original completion timestamp after the latest start', () => {
-    const source = hapiProjectionSchema.parse({ engine: 'codex', nativeConnection: 'attached', pendingRequests: [], error: null,
-        hubId: 'hub', hapiSessionId: 'source', logicalSessionId: 'display', displayRevision: 1, machineId: null, machineName: null,
-        nativeId: 'thread', nativeHome: null, readOnly: false, model: 'astra', reasoningEffort: null, delivery: [], resolvedRequests: [],
-        execution: { owner: 'native', generation: 'one', sequence: 1, turnId: 'turn', status: 'idle', waitingOn: [], startedAt: 100, completedAt: 200 } })!
-    const row = { running: false, hostOnline: true, projectionValues: { hapi: source } }
-    assert.equal(sessionCompletedAt(row), 200)
-    assert.equal(sessionActivity(row).kind, 'completed')
+    assert.equal(render(source), '')
+    const pending = { ...source, pendingRequests: [{ id: 'request', method: 'item/commandExecution/requestApproval', turnId: 'turn', itemId: null, params: {} }] }
+    assert.ok(render(pending).includes('1 pending request'))
+    const row = { sourceSessionId: source.id, running: true, hostOnline: true, projectionValues: { hhpiSource: source } } satisfies Pick<WorkspaceCatalogRow, 'sourceSessionId' | 'running' | 'hostOnline' | 'projectionValues'>
+    assert.deepEqual(sessionActivity(row), { kind: 'running', running: true, pending: false, compacting: false })
     assert.equal(sessionActivity({ ...row, hostOnline: false }).kind, 'offline')
-    source.execution!.completedAt = 50
-    assert.equal(sessionCompletedAt(row), undefined)
-    assert.equal(sessionActivity(row).kind, 'idle')
-    source.execution!.status = 'active'
-    assert.equal(sessionActivity(row).kind, 'running')
-    assert.equal(sessionCompletedAt(row), undefined)
+    assert.equal(sessionActivity({ ...row, projectionValues: { hhpiSource: { ...source, status: 'idle' } } }).kind, 'idle')
 })

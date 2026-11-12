@@ -15,6 +15,8 @@
 import { randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { digestOfEntries, sha256Bytes, sha256File } from './digest.mjs';
 import { BUNDLE_LAYOUT, bundleLayoutErrors, computeReleaseId, formatSums, parseSums, payloadEntries, releaseDirName, releaseIdentity, validateBundleManifest } from './manifest.mjs';
@@ -480,6 +482,25 @@ export async function readProfileManifest(directory) {
     }
 }
 
+/** Select a verified installed bundle, including after an interrupted plugin add. */
+export async function ensureProfileBundleSelected(directory, name) {
+    const manifest = await readProfileManifest(directory);
+    if (!manifest) throw new Error('the installed profile manifest is missing');
+    const bundles = manifest.dsh?.profile?.bundles ?? [];
+    if (bundles.includes(name)) return false;
+    manifest.dsh = { ...manifest.dsh, profile: { ...manifest.dsh?.profile, bundles: [...bundles, name] } };
+    const path = join(directory, 'package.json');
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+    try {
+        await rename(temporary, path);
+    } catch (error) {
+        await rm(temporary, { force: true });
+        throw error;
+    }
+    return true;
+}
+
 export function existingOverrides(profileManifest) {
     const value = profileManifest?.pnpm?.overrides;
     if (value === undefined) return {};
@@ -493,11 +514,26 @@ export function linkDependencyName(role) {
 }
 
 export function linkTarget(releaseRoot, role) {
-    // The Host plugin lives inside the pinned runtime so every @deepseek-ai/*
+    // Both plugins live inside the pinned runtime so every @deepseek-ai/*
     // import resolves to the runtime's single package copies.
     return role === 'runner'
-        ? join(releaseRoot, 'package/dist/runner')
+        ? join(releaseRoot, 'runtime/node_modules/hapi-dsh/dist/runner')
         : join(releaseRoot, 'runtime/node_modules/hapi-dsh');
+}
+
+/** Existing plain dependency; the Runner bundle activates its public Host contribution. */
+export function runnerSourceProviderTarget(releaseRoot) {
+    return join(releaseRoot, 'runtime/node_modules/hapi-dsh/dist/session-provider');
+}
+
+function runnerSourceProviderLinked(manifest, directory, releaseRoot) {
+    const provider = manifest?.dependencies?.['hapi-dsh-session-provider'];
+    if (typeof provider !== 'string' || !provider.startsWith('link:')
+        || resolve(directory, provider.slice(5)) !== resolve(runnerSourceProviderTarget(releaseRoot))) return false;
+    try {
+        return realpathSync(createRequire(join(directory, 'package.json')).resolve('hapi-dsh-session-provider/client'))
+            === realpathSync(join(runnerSourceProviderTarget(releaseRoot), 'client.js'));
+    } catch { return false; }
 }
 
 export function stagedOverrides({ current, manifest, profile, dshHome, releaseRoot, style, extractedExtDirectories, previousManaged }) {
@@ -612,8 +648,11 @@ export async function inspectHapiLink({ dshHome, profile, releaseRoot, role }) {
     const resolvedSpec = resolve(directory, spec);
     const target = await lstat(expectedTarget).then(() => expectedTarget).catch(() => undefined);
     if (!target) return { name, ok: false, problems: [`release does not contain ${relative(releaseRoot, expectedTarget)}`] };
-    const ok = resolve(resolvedSpec) === resolve(target);
-    return { name, ok, spec: dependency, problems: ok ? [] : [`${name} links ${spec}, expected the active release ${expectedTarget}`] };
+    const problems = resolve(resolvedSpec) === resolve(target) ? [] : [`${name} links ${spec}, expected the active release ${expectedTarget}`];
+    if (role === 'runner' && !runnerSourceProviderLinked(manifest, directory, releaseRoot)) {
+        problems.push('the Runner source provider package/client does not resolve to the active release');
+    }
+    return { name, ok: problems.length === 0, spec: dependency, problems };
 }
 
 /**
@@ -727,10 +766,13 @@ export function isIdempotentReinstall({ state, dshHome, profile, role, releaseId
     // Only the managed keys must match; every other override belongs to the user.
     if (!Object.entries(managedOverrides).every(([name, value]) => live[name] === value)) return false;
     const name = linkDependencyName(role);
+    if (!(currentProfile?.dsh?.profile?.bundles ?? []).includes(name)) return false;
     const dependency = currentProfile?.dependencies?.[name];
     if (typeof dependency !== 'string') return false;
     const spec = dependency.startsWith('link:') ? dependency.slice('link:'.length) : dependency;
-    return resolve(profileDirectory(dshHome, profile), spec) === resolve(linkTarget(releaseRoot, role));
+    if (resolve(profileDirectory(dshHome, profile), spec) !== resolve(linkTarget(releaseRoot, role))) return false;
+    if (role === 'runner' && !runnerSourceProviderLinked(currentProfile, profileDirectory(dshHome, profile), releaseRoot)) return false;
+    return true;
 }
 
 export { BUNDLE_LAYOUT, computeReleaseId, releaseDirName, releaseIdentity, sha256Bytes, assertTargetInside, buildManagedOverrides, mergeOverrides, overridesEqual, formatSums };

@@ -2,6 +2,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import WebSocket from 'ws';
 import { SourceError, waitFor } from './errors.ts';
 import type { DirectCodexConfig } from './protocol.ts';
@@ -15,6 +16,7 @@ interface Pending {
 }
 interface Connection {
     generation: number; child?: ChildProcessWithoutNullStreams; socket?: WebSocket;
+    daemonBinding?: string;
     closed: boolean; stopped: Promise<void>; send(line: string, dispatched?: () => void): Promise<void>; close(): void;
 }
 const MAX_FRAME = 16 * 1024 * 1024;
@@ -42,6 +44,13 @@ export class CodexRpc {
     constructor(private readonly config: DirectCodexConfig, private readonly timeoutMs = 30_000) {}
     get online(): boolean { return Boolean(this.initialized && this.connection && !this.connection.closed); }
     get currentGeneration(): number { return this.connection?.generation ?? this.generation; }
+    /** A private source-local Unix listener is rebound when its daemon changes.
+     * TCP/forwarded listeners and owned child restarts supply no durable instance
+     * identity; their cached requests cannot be restored across connections. */
+    get daemonIdentity(): string | undefined {
+        const binding = this.online && this.connection?.daemonBinding;
+        return binding && this.initialized ? createHash('sha256').update(JSON.stringify([binding, this.initialized.codexHome])).digest('hex') : undefined;
+    }
     onNotification(listener: (value: NativeNotification) => void): () => void { this.notifications.add(listener); return () => { this.notifications.delete(listener); }; }
     onRequest(listener: (value: NativeRequest) => void): () => void { this.requests.add(listener); return () => { this.requests.delete(listener); }; }
     onDisconnect(listener: () => void): () => void { this.disconnects.add(listener); return () => { this.disconnects.delete(listener); }; }
@@ -77,12 +86,14 @@ export class CodexRpc {
         const generation = ++this.generation;
         if (this.config.endpoint) {
             const unix = this.config.endpoint.startsWith('unix://');
-            if (unix) {
-                const path = this.config.endpoint.slice(7), stat = await lstat(path);
-                if (!stat.isSocket() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0) {
+            const socketBinding = async (): Promise<string> => {
+                const path = this.config.endpoint!.slice(7), stat = await lstat(path, { bigint: true });
+                if (!stat.isSocket() || Number(stat.uid) !== process.getuid?.() || (Number(stat.mode) & 0o077) !== 0) {
                     throw new SourceError('TARGET_UNAVAILABLE', 'The native Unix endpoint must be a private socket owned by this account.');
                 }
-            }
+                return JSON.stringify([path, String(stat.dev), String(stat.ino), String(stat.ctimeNs), String(stat.uid)]);
+            };
+            const binding = unix ? await socketBinding() : undefined;
             const url = unix ? `ws+unix://${this.config.endpoint.slice(7)}:/` : this.config.endpoint;
             const socket = new WebSocket(url, { ...(unix ? { headers: { Host: 'localhost' } } : {}), maxPayload: MAX_FRAME, followRedirects: false, handshakeTimeout: this.timeoutMs });
             const connection: Connection = { generation, socket, closed: false, stopped: new Promise<void>(resolve => { socket.once('close', () => { resolve(); }); }),
@@ -104,6 +115,12 @@ export class CodexRpc {
                 const cleanup = (): void => { socket.off('open', done); socket.off('error', error); socket.off('close', error); };
                 socket.once('open', done); socket.once('error', error); socket.once('close', error);
             });
+            if (binding !== undefined) {
+                if (await socketBinding() !== binding) { this.lost(connection); throw new SourceError('TARGET_UNAVAILABLE', 'The native Unix listener changed while connecting.'); }
+                // A configured metadata helper may describe a forwarded native
+                // OS. Its local listener does not identify the remote daemon.
+                if (!this.config.historyMetadata) connection.daemonBinding = binding;
+            }
             return connection;
         }
         const child = spawn(this.config.command ?? 'codex', this.config.args ?? ['app-server'], {

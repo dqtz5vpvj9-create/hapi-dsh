@@ -1,0 +1,11 @@
+# Preserve resident Contexts while a dependency-prefixed body grows
+
+Status: implemented against DSH `0.2.2-rc.1`, commit `66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`; browser performance acceptance is separate.
+
+A source can retain an old dependency before its visible body. For example, `[turn/start #1, body #100]` grows into `[#1, body #50, #100]`. The complete-window publisher previously classified `#50` as an interior insertion and rebuilt its entire official assembler. Real HHPI source pages have this shape. The old dependency is not the body's pagination boundary.
+
+In the actual browser trace, each earlier-page publication entered `ConversationHistoryView.commitSnapshot`, the window commit coordinator, synchronous publication, and the virtual row layout effect. Nine paging tasks took 95–196 ms. Style recalculation consumed 35–55 ms per task and layout 9–21 ms; two recalculations reached 2,139 document elements. The final workspace held 559 elements, 29 virtual rows and 15 business nodes. The trace also contained `publishCompleteEntries → replaceWindow`, confirming the unnecessary full rebuild. These are measured call paths, not a claim that this change alone satisfies the 80 ms gate.
+
+For complete-window growth whose retained entries are unchanged, the publisher now submits newly added entries before the old tail through the existing `assembler.prepend`. That operation already sorts the inputs, updates locations, merges matches in source order, and replays affected Contexts. New tail entries still use append. A changed or removed retained entry still requires replacement. No reader, cursor, correction, capacity or execution policy is relaxed, and no new public API or HHPI field is introduced.
+
+The production publication regression retains a dependency prefix, adds an older body between it and a resident node, and checks the resident node's object identity. A Definition callback proves that only the independent candidate reconstructs its Context; live publication does not reconstruct it again. The same case verifies that a true retained-event revision replaces its node and removal retires it. The original source fails the identity assertion. The source offer includes this decision and the [upstream PR draft](../upstream-pr-complete-window-dependency-prefix.md).

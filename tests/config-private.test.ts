@@ -3,35 +3,25 @@ import { chmod, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createConfig, parseConfig, publicConfig, readConfig, resolveHapiToken, writeConfig, writePrivateJson } from '../src/cli/config.ts';
+import { createConfig, parseConfig, publicConfig, readConfig, readPrivateJson, writeConfig, writePrivateJson } from '../src/cli/config.ts';
 import { configFromArguments, parseArguments } from '../src/cli/index.ts';
 import { createInvitation, readInvitation } from '../src/cli/federation.ts';
 import { readPairingStore } from '../src/hub/federation-credentials.ts';
+import { createRunnerConfig, parseRunnerConfig, readRunnerConfig, writeRunnerConfig } from '../src/runner/config.ts';
 
-test('configuration normalizes Hub URLs and preserves a random Hub identity across address changes', () => {
-    const config = createConfig('https://hub.example.test/subpath/', {});
-    assert.equal(config.hapi.url, 'https://hub.example.test/subpath');
-    assert.match(config.hapi.id, /^[0-9a-f-]{36}$/);
-    const changed = parseConfig({ ...config, hapi: { ...config.hapi, url: 'https://other.example.test' } });
-    assert.ok(changed.hapi);
-    assert.equal(changed.hapi.id, config.hapi.id);
-    assert.notEqual(createConfig(config.hapi.url, {}).hapi.id, config.hapi.id);
+test('native-only configuration preserves explicit DSH home and creates no Hub identity or credential', () => {
+    const config = createConfig({ DSH_HOME: '/private/native-dsh' });
+    assert.equal(config.dsh.home, '/private/native-dsh');
+    assert.equal(Reflect.get(config, 'hapi'), undefined);
+    assert.deepEqual(publicConfig(config), config);
 });
 
-test('Companion configuration preserves the original Hub and requires an explicit HTTPS origin without leaking credentials', () => {
-    const config = createConfig('http://127.0.0.1:3006/original-prefix', {});
-    const parsed = parseConfig({ ...config, hapi: { ...config.hapi, token: 'fixture-private-token', companionUrl: 'https://MOBILE.example.test:443/' } });
-    assert.ok(parsed.hapi);
-    assert.equal(parsed.hapi.companionUrl, 'https://mobile.example.test');
-    assert.equal(parsed.hapi.url, config.hapi.url);
-    const publicView = publicConfig(parsed); assert.ok(publicView.hapi);
-    assert.equal(publicView.hapi.companionUrl, parsed.hapi.companionUrl);
-    assert.equal(JSON.stringify(publicConfig(parsed)).includes('fixture-private-token'), false);
-    for (const companionUrl of ['http://mobile.example.test', 'https://mobile.example.test/api', 'https://mobile.example.test/%2f',
-        'https://mobile.example.test?code=fixture-secret', 'https://mobile.example.test#fixture-secret', 'https://user:fixture-secret@mobile.example.test',
-        'https://mobile.example.test?', 'https://mobile.example.test#', 'hapicompanion://bind']) {
-        assert.throws(() => parseConfig({ ...config, hapi: { ...config.hapi, companionUrl } }), (error: unknown) => {
+test('legacy Hub configuration is rejected with offline migration guidance and no credential disclosure', () => {
+    for (const hapi of [null, undefined, { id: 'old-hub', url: 'https://user:fixture-secret@hub.example.test', token: 'fixture-secret' }]) {
+        const legacy = { ...createConfig({}), hapi };
+        for (const parse of [parseConfig, publicConfig]) assert.throws(() => parse(legacy), (error: unknown) => {
             assert.ok(error instanceof Error);
+            assert.match(error.message, /retired.*offline migration/i);
             assert.equal(error.message.includes('fixture-secret'), false);
             return true;
         });
@@ -39,7 +29,7 @@ test('Companion configuration preserves the original Hub and requires an explici
 });
 
 test('invalid profile, listener and credential-bearing URL are rejected without echoing credentials', () => {
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     for (const profile of ['web', 'sdk', '../web', 'Hapi']) {
         assert.throws(() => parseConfig({ ...config, dsh: { ...config.dsh, profile } }));
     }
@@ -49,45 +39,54 @@ test('invalid profile, listener and credential-bearing URL are rejected without 
     for (const port of [-1, 65536, 3.5, '3080']) {
         assert.throws(() => parseConfig({ ...config, server: { ...config.server, port } }));
     }
-    assert.throws(() => createConfig('https://user:fixture-secret@hub.example.test'), (error: unknown) => {
+    assert.throws(() => parseConfig({ ...config, server: { ...config.server, publicUrl: 'https://user:fixture-secret@hub.example.test' } }), (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.ok(!error.message.includes('fixture-secret'));
         return true;
     });
-    assert.throws(() => parseConfig({ ...config, hapi: { ...config.hapi, unexpected: true } }), /unknown fields/);
+    assert.throws(() => parseConfig({ ...config, unexpected: true }), /unknown fields/);
 });
 
-test('private config creation is atomic, exclusive, and never exposes the token in the public view', async (t) => {
+test('a paired Runner can retain the original Web profile without relaxing workspace or listener validation', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'hhpi-web-runner-config-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const config = createRunnerConfig('https://display.example.test', { id: 'original-web', dshHome: directory });
+    config.dsh.profile = 'web';
+    const path = join(directory, 'runner.json');
+    await writeRunnerConfig(path, config);
+    assert.deepEqual(await readRunnerConfig(path), config, 'the same home, profile and machine survive a private configuration round trip');
+    assert.throws(() => parseConfig({ version: 1, dsh: config.dsh, server: config.server }), /dedicated custom profile/);
+    for (const profile of ['sdk', 'headless', '../web']) {
+        assert.throws(() => parseRunnerConfig({ ...config, dsh: { ...config.dsh, profile } }));
+    }
+    assert.throws(() => parseRunnerConfig({ ...config, server: { host: '192.0.2.1', port: 0 } }), /bind 127.0.0.1/);
+    assert.throws(() => parseRunnerConfig({ ...config, sources: [{ id: 'source', engine: 'codex', machineId: 'another-machine' }] }), /paired machine ID/);
+});
+
+test('native private config creation is atomic and exclusive', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-config-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'config.json');
-    const config = createConfig('http://127.0.0.1:3006', {});
-    config.hapi.token = 'fixture-file-token';
+    const config = createConfig({});
     const results = await Promise.allSettled([writeConfig(path, config), writeConfig(path, config)]);
     assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
     assert.deepEqual(await readConfig(path), config);
     if (process.platform !== 'win32') assert.equal((await lstat(path)).mode & 0o777, 0o600);
     assert.deepEqual(await readdir(directory), ['config.json']);
-    assert.equal(resolveHapiToken(config, { HAPI_DSH_TOKEN: 'fixture-env-token' }), 'fixture-env-token');
-    assert.equal(resolveHapiToken(config, {}), 'fixture-file-token');
-    const rendered = JSON.stringify(publicConfig(config));
-    assert.ok(!rendered.includes('fixture-file-token'));
-    assert.ok(!rendered.includes('fixture-env-token'));
-    assert.equal(publicConfig(config).hapi.credentialConfigured, true);
+    assert.deepEqual(publicConfig(config), config);
 });
 
-test('legacy config identity migration gives concurrent readers the same persistent identity', async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-migrate-'));
+test('concurrent product readers reject a legacy config without rewriting the offline original', async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-retired-config-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'config.json');
-    const current = createConfig('http://127.0.0.1:3006', {});
-    const { id: _id, ...legacyHapi } = current.hapi;
-    await writeFile(path, JSON.stringify({ ...current, hapi: legacyHapi }), { mode: 0o600 });
-    const results = await Promise.all([readConfig(path), readConfig(path), readConfig(path)]);
-    for (const result of results) assert.ok(result.hapi);
-    assert.equal(new Set(results.map((result) => result.hapi!.id)).size, 1);
-    const persisted = JSON.parse(await readFile(path, 'utf8')) as { hapi: { id: string } };
-    assert.equal(persisted.hapi.id, results[0]!.hapi!.id);
+    const legacy = { ...createConfig({}), hapi: { url: 'https://legacy.example.test', token: 'fixture-private-token' } };
+    const raw = JSON.stringify(legacy);
+    await writeFile(path, raw, { mode: 0o600 });
+    const results = await Promise.allSettled([readConfig(path), readConfig(path), readConfig(path)]);
+    assert.equal(results.every(result => result.status === 'rejected' && /retired.*offline migration/i.test(String(result.reason))), true);
+    assert.equal(await readFile(path, 'utf8'), raw);
+    assert.deepEqual(await readPrivateJson(path), legacy, 'the explicit private JSON reader remains available to offline tools');
     assert.deepEqual(await readdir(directory), ['config.json']);
 });
 
@@ -95,19 +94,19 @@ test('symlinks and broad config permissions are refused', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-mode-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'config.json');
-    await writeConfig(path, createConfig('http://127.0.0.1:3006', {}));
+    await writeConfig(path, createConfig({}));
     if (process.platform !== 'win32') {
         const link = join(directory, 'link.json');
         await symlink(path, link);
         await assert.rejects(readConfig(link), /symlink/);
-        await assert.rejects(writeConfig(link, createConfig('http://127.0.0.1:3006', {}), true), /non-regular/);
+        await assert.rejects(writeConfig(link, createConfig({}), true), /non-regular/);
         await chmod(path, 0o644);
         await assert.rejects(readConfig(path), /0600/);
     }
 });
 
 test('CLI accepts explicit config options and rejects secret-bearing arguments', () => {
-    const parsed = parseArguments(['init', '--hapi-url=https://hub.example.test', '--port', '0', '--config-only']);
+    const parsed = parseArguments(['init', '--port', '0', '--config-only']);
     const config = configFromArguments(parsed.flags, {});
     assert.equal(config.server.port, 0);
     assert.equal(parsed.flags['config-only'], true);
@@ -122,11 +121,11 @@ test('CLI accepts explicit config options and rejects secret-bearing arguments',
             return true;
         });
     }
-    assert.throws(() => configFromArguments({ 'hapi-url': 'http://localhost', port: '3e2' }), /integer/);
+    assert.throws(() => configFromArguments({ port: '3e2' }), /integer/);
 });
 
 test('remote deployment uses explicit canonical trusted authorities and a complete TLS pair', () => {
-    const parsed = parseArguments(['init', '--hapi-url', 'https://hub.example.test', '--public-url', 'https://work.example.test/ui',
+    const parsed = parseArguments(['init', '--public-url', 'https://work.example.test/ui',
         '--trusted-host', 'work.example.test:443', '--tls-cert', '/private/chain.pem', '--tls-key', '/private/key.pem']);
     const config = configFromArguments(parsed.flags, {});
     assert.deepEqual(config.server.trustedHosts, ['work.example.test:443']);
@@ -134,14 +133,14 @@ test('remote deployment uses explicit canonical trusted authorities and a comple
     for (const host of ['work.example.test/path', 'user@work.example.test', 'work.example.test:0443', '*.example.test', ' work.example.test']) {
         assert.throws(() => parseConfig({ ...config, server: { ...config.server, trustedHosts: [host] } }));
     }
-    assert.throws(() => configFromArguments({ 'hapi-url': 'https://hub.example.test', 'tls-cert': '/private/chain.pem' }), /supplied together/);
+    assert.throws(() => configFromArguments({ 'tls-cert': '/private/chain.pem' }), /supplied together/);
 });
 
 test('oversized private updates leave the readable configuration untouched', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-size-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const path = join(directory, 'config.json');
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     await writeConfig(path, config);
     await assert.rejects(writePrivateJson(path, { value: 'x'.repeat(65_536) }, true), /64 KiB/);
     assert.deepEqual(await readConfig(path), config);
@@ -150,7 +149,7 @@ test('oversized private updates leave the readable configuration untouched', asy
 test('Runner pairing infers HTTPS when the official Hub listener uses TLS', async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-dsh-pair-tls-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
-    const config = createConfig('http://127.0.0.1:3006', {});
+    const config = createConfig({});
     config.server.tls = { certFile: join(directory, 'cert.pem'), keyFile: join(directory, 'key.pem') };
     config.federation = { credentialsFile: join(directory, 'pairings.json') };
     const configFile = join(directory, 'config.json');

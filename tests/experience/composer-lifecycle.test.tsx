@@ -5,27 +5,34 @@ import { expect, test, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { installComposerAutosave } from '../../src/client/composer-autosave-seat.tsx'
-import { composerDraftKey, composerRecoveryKey } from '../../src/client/composer-autosave.ts'
+import { accountComposerDraftKey, composerRecoveryKey } from '../../src/client/composer-autosave.ts'
+import { WorkspaceApplicationIdentity } from '../../src/client/application-identity.ts'
+import { createWorkspaceUpdatePreparations } from '../../src/client/update-preparation.ts'
 import { WorkspacePaneProvider } from '../../src/client/surface/pane-context.tsx'
 import { context, input, pane, slots } from './fixtures.tsx'
 
-function fixture() {
+function fixture(authenticated = true) {
   const registered = slots(), inputs = new Map<string, ReturnType<typeof input>>()
-  const ctx = context({ slots: registered.registry, locale: { getSnapshot: () => ({ active: 'en' }) },
+  const updates = createWorkspaceUpdatePreparations()
+  const application = new WorkspaceApplicationIdentity()
+  if (authenticated) application.set({ accountId: 'one', origin: 'https://experience.invalid' }, 'device')
+  const ctx = context({ get: (name: string) => name === 'hapiWorkspaceUi' ? { updates } : undefined,
+    slots: registered.registry, locale: { getSnapshot: () => ({ active: 'en' }) },
     sessions: { binding: (id: string) => inputs.has(id) ? { ctx: inputs.get(id) } : undefined },
     conversation: { input: { for: (value: ReturnType<typeof input>) => value.composer } } })
-  const stop = installComposerAutosave(ctx), Seat = registered.component('hapi.composer-autosave')
+  const stop = installComposerAutosave(ctx, application), Seat = registered.component('hapi.composer-autosave')
   function add(id: string, initial = '', sourceId = 'source-a') {
-    const editor = input(initial); inputs.set(id, editor)
-    const props = { sessionId: id as SessionId, inputActions: editor.actions, useInput: editor.useInput,
-      useProjection: (name: string) => name === 'hapi' ? { hubId: 'hub', hapiSessionId: sourceId } : undefined } as PropsRuntime<'conversation.input.dock'>
+    const sessionId = `dsh-${sourceId}`
+    const editor = input(initial); inputs.set(sessionId, editor)
+    const props = { sessionId: sessionId as SessionId, inputActions: editor.actions, useInput: editor.useInput } as PropsRuntime<'conversation.input.dock'>
     const Pane = ({ label }: { label: string }) => <WorkspacePaneProvider value={pane(label)}><Seat {...props}/><editor.Editor label={label}/></WorkspacePaneProvider>
     return { ...editor, Pane }
   }
-  return { add, stop, key: composerDraftKey('fixture-host', 'unused', { hubId: 'hub', hapiSessionId: 'source-a' }) }
+  return { add, stop: () => { stop(); updates.dispose() }, application, updates,
+    key: accountComposerDraftKey(application.getSnapshot()?.scope ?? 'unknown', 'fixture-host', 'dsh-source-a') }
 }
 
-test('typed Chinese draft survives close and a new display generation without being sent', async () => {
+test('typed Chinese draft survives close and a new Pane binding without being sent', async () => {
   const f = fixture(), first = f.add('hapi-codex-first'), user = userEvent.setup()
   const view = render(<StrictMode><first.Pane label="First draft"/></StrictMode>)
   await user.type(screen.getByRole('textbox', { name: 'First draft' }), '中文草稿，还没发送')
@@ -34,6 +41,48 @@ test('typed Chinese draft survives close and a new display generation without be
   render(<StrictMode><next.Pane label="Restored draft"/></StrictMode>)
   expect(screen.getByRole('textbox', { name: 'Restored draft' })).toHaveValue('中文草稿，还没发送')
   expect(first.actions.submit).not.toHaveBeenCalled(); expect(next.actions.submit).not.toHaveBeenCalled()
+  f.stop()
+})
+
+test('an unknown account never recovers an unscoped draft and keeps the original copy', () => {
+  const original = JSON.stringify({ version: 1, draft: { text: 'Private old draft', references: [] } })
+  localStorage.setItem('hapi-dsh:composer-draft:v1:["dsh","fixture-host","dsh-source-a"]', original)
+  const f = fixture(false), current = f.add('unknown')
+  render(<current.Pane label="Unknown account"/>)
+  expect(screen.getByRole('textbox', { name: 'Unknown account' })).toHaveValue('')
+  expect(localStorage.length).toBe(1); expect(localStorage.getItem(localStorage.key(0)!)).toBe(original)
+  f.stop()
+})
+
+test('the same source under another account cannot recover the first account draft', async () => {
+  const f = fixture(), first = f.add('first'), user = userEvent.setup()
+  const view = render(<first.Pane label="Account one"/>)
+  await user.type(screen.getByRole('textbox', { name: 'Account one' }), 'Private account one')
+  view.unmount()
+  f.application.set({ accountId: 'two', origin: 'https://experience.invalid' }, 'device')
+  const second = f.add('second')
+  const next = render(<second.Pane label="Account two"/>)
+  expect(screen.getByRole('textbox', { name: 'Account two' })).toHaveValue('')
+  expect(JSON.parse(localStorage.getItem(f.key)!).draft.text).toBe('Private account one')
+  next.unmount()
+  f.application.set({ accountId: 'one', origin: 'https://experience.invalid' }, 'device')
+  const original = f.add('restored')
+  render(<original.Pane label="Original account"/>)
+  expect(screen.getByRole('textbox', { name: 'Original account' })).toHaveValue('Private account one')
+  f.stop()
+})
+
+test('changing accounts retires late autosaves from the original input', async () => {
+  const f = fixture(), first = f.add('first'), user = userEvent.setup()
+  const view = render(<first.Pane label="Original input"/>)
+  await user.type(screen.getByRole('textbox', { name: 'Original input' }), 'Original private bytes')
+  await act(async () => f.application.set({ accountId: 'two', origin: 'https://experience.invalid' }, 'device'))
+  await user.type(screen.getByRole('textbox', { name: 'Original input' }), ' late')
+  view.unmount()
+  const newKey = accountComposerDraftKey(f.application.getSnapshot()!.scope, 'fixture-host', 'dsh-source-a')
+  expect(localStorage.getItem(newKey)).toBeNull()
+  expect(JSON.parse(localStorage.getItem(f.key)!).draft.text).toBe('Original private bytes')
+  expect(first.composer.notify).toHaveBeenCalledWith('error', expect.stringContaining('earlier authenticated draft'))
   f.stop()
 })
 
@@ -87,4 +136,25 @@ test('storage quota failure reports an error while preserving typed text', async
   expect(current.composer.notify).toHaveBeenCalledWith('error', expect.stringContaining('Quota exceeded'))
   expect(current.actions.submit).not.toHaveBeenCalled()
   f.stop()
+})
+
+test('the installed autosave participant rejects an unsaved checkpoint and retries the original draft after storage recovers', async () => {
+  const f = fixture(), current = f.add('checkpoint'), user = userEvent.setup()
+  render(<current.Pane label="Checkpoint draft"/>)
+  const failure = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('Draft quota', 'QuotaExceededError') })
+  await user.type(screen.getByRole('textbox', { name: 'Checkpoint draft' }), 'Retained checkpoint text')
+  await expect(f.updates.checkpoint()).rejects.toThrow(/Message drafts: .*Draft quota/)
+  expect(screen.getByRole('textbox', { name: 'Checkpoint draft' })).toHaveValue('Retained checkpoint text')
+  failure.mockRestore(); await f.updates.checkpoint()
+  expect(JSON.parse(localStorage.getItem(f.key)!).draft.text).toBe('Retained checkpoint text')
+  expect(current.actions.submit).not.toHaveBeenCalled(); f.stop()
+})
+
+test('an unknown account cannot update away a live unsaved input while its original text remains in the editor', async () => {
+  const f = fixture(false), current = f.add('unassigned'), user = userEvent.setup()
+  render(<current.Pane label="Unassigned draft"/>)
+  await user.type(screen.getByRole('textbox', { name: 'Unassigned draft' }), 'Keep until account is ready')
+  await expect(f.updates.checkpoint()).rejects.toThrow(/Draft account is unavailable/)
+  expect(screen.getByRole('textbox', { name: 'Unassigned draft' })).toHaveValue('Keep until account is ready')
+  expect(localStorage.length).toBe(0); f.stop()
 })

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { WorkspaceController } from './controller.ts';
-import { parseSessionResourceId } from './controller.ts';
 import { parseShareFields, shareFromFragment } from './share-transfer.ts';
 import { resolveShareCandidate, shareTargetForRow, type SharePickerCandidate } from '../workspace/share-picker.ts';
 import { SharePayloadPreview, ShareTargetPicker, sharePickerStyles } from './share-picker.tsx';
@@ -36,9 +35,7 @@ function installRootShareInbox(ctx: Context, controller: WorkspaceController): (
     let awaitingCreatedIdentity: string | null = null;
     const created = controller.subscribeCreated(id => {
         if (inbox.getSnapshot().phase !== 'creating') return;
-        const row = controller.getSnapshot().catalog.byId[id], source = parseSessionResourceId(id);
-        const target = row ? shareTargetForRow(row) : /^(?:hapi-codex-|hapi-observed-)/u.test(source.sessionId) ? null
-            : { kind: 'dsh' as const, hostId: source.hostId, sessionId: source.sessionId };
+        const row = controller.getSnapshot().catalog.byId[id], target = row && shareTargetForRow(row);
         if (target) { awaitingCreatedIdentity = null; inbox.created(target); }
         else awaitingCreatedIdentity = id;
     });

@@ -45,7 +45,7 @@ export interface InstallOptions {
     runtimeProbe?: () => Promise<RuntimeSnapshot | undefined>;
     /** Test seam: replace the pinned-runtime assembly (defaults to the real builder). */
     runtimeBuilder?: (options: {
-        run: CommandRunner; pnpm: BundleCommand; env: NodeJS.ProcessEnv; releaseRoot: string;
+        run: CommandRunner; pnpm: BundleCommand; pnpmVersion?: string; env: NodeJS.ProcessEnv; releaseRoot: string; previousReleaseRoot?: string;
         manifest: { version?: string; release: { upstreamVersion: string; extRelease?: string };
             payload: { dshExt: Array<{ name: string; version: string; tarball: string }> } };
         logger?: (message: string) => void;
