@@ -1,0 +1,157 @@
+{
+  "schema": 1,
+  "at": "2026-11-14T11:21:31.203Z",
+  "status": "deployed; core creation workflows and visual review passed; cleanup confirmation incomplete",
+  "sourceCommit": "6402f8e48760f2eb693f51c6ed241f78431c6f14",
+  "freeze": {
+    "revision": 2,
+    "sha256": "50f123cc8a164bf91ab60a3b6a8eb500a9643051742b6a740e7a1753d01eadf0",
+    "productionFiles": 6,
+    "testFiles": 2
+  },
+  "releaseId": "d69c7cb68a1cdc8b5db6ca3cf1520d412bbdf4450cfbd651ef4683e91a637599",
+  "bundleSha256": "9e46f7caab9a446529ec18dd0122ff1fd1e07ca9ce59f443a24f23d7acfabeda",
+  "hostBuildId": "2752a89d31226a71c29edefa9ae88943ddcd9e593edc2f450b6a492aa5b5abe2",
+  "extRelease": "hhpi-dsh-022-20261107.29",
+  "packages": 24,
+  "sdkRebuilt": false,
+  "behavior": "Complete the exact accepted creation intent after opening its target; keep source creation attached to its owning Host; route Hosts without native sources through the existing DSH creation path.",
+  "deployment": {
+    "central": {
+      "at": "2026-11-14T11:18:47.398Z",
+      "main": "5fa678bf2c8c",
+      "provider": "9687fde91f33",
+      "graphRelease": {
+        "version": "0.2.2-rc.1",
+        "commit": "c59d10a"
+      },
+      "graphRevision": "260694460161",
+      "authenticated": true,
+      "compressedWebSocket": true,
+      "servedBytesVerified": true
+    },
+    "windowsOwnedSource": {
+      "provider": "327ef3caf021",
+      "sameHostBuild": true,
+      "providerBytesVerified": true,
+      "centralMainEntry": false
+    },
+    "ordinaryDshRunner": {
+      "updated": false,
+      "releaseDirectory": "r-dd4fa4126c9c6964",
+      "sourcesConfigured": 0
+    },
+    "offlinePaired": {
+      "count": 2,
+      "updated": false
+    },
+    "reconnectWaitMs": 34
+  },
+  "protections": {
+    "linuxNativePidAndBirthPreserved": true,
+    "windowsCurrentNativePidAndBirthPreserved": true,
+    "configurationPreserved": true,
+    "ordinaryDshIdleChecked": true,
+    "retainedShellGuard": true,
+    "windowsScheduledTaskIdentityPreserved": true,
+    "nativeAdaptersChanged": false,
+    "nativeDaemonRestarted": false,
+    "metadataHelperChanged": false
+  },
+  "checks": {
+    "reused": {
+      "DOM": {
+        "pass": 13,
+        "span": "e51fe27d-08c6-412f-9775-0ab9bf6c33b3"
+      },
+      "creationNode": {
+        "pass": 8,
+        "span": "e6c37789-8cc2-49ad-95b4-7470a682722d"
+      },
+      "clientAndExperienceTypes": {
+        "passed": true,
+        "span": "3d16e290-c66e-4a0c-ba75-c3a01f4e5d78"
+      }
+    },
+    "carrierBuild": {
+      "passed": true,
+      "span": "a0b1d909-fa00-4c56-bd2f-9c9c14cd1480"
+    },
+    "centralInstall": {
+      "passed": true,
+      "span": "fd18ac0c-269b-4fe1-bbfe-60734bf2fb23"
+    },
+    "windowsInstall": {
+      "passed": true,
+      "span": "2fb96127-e713-4dbb-95f7-74215e4ef4dd"
+    },
+    "centralActivation": {
+      "passed": true,
+      "span": "8b9b7a54-7293-4bde-ac89-d9ba742374ec"
+    },
+    "windowsActivation": {
+      "passed": true,
+      "span": "35f247d0-c46c-425f-b10a-d49b47793e8e"
+    },
+    "servedCohort": {
+      "passed": true,
+      "span": "f754ad2c-22df-4503-addc-93ea378f8bd5"
+    },
+    "initialPublisherCheck": {
+      "passed": false,
+      "span": "27e49136-f847-4bc1-8f3d-844eb0f75863",
+      "cause": "Publisher incorrectly required the central main entry in the Windows source-only plugin graph. Archived actual graph confirms that Host supplies the source provider without the central main. Corrected the check scope and ran that read-only check once; no product change or rebuild."
+    },
+    "fullSuite": {
+      "executedThisSlice": false,
+      "lastFullStatus": "failed",
+      "lastNode": {
+        "passed": 1723,
+        "failed": 64,
+        "cancelled": 1,
+        "skipped": 9
+      },
+      "rawOutputGap": "The historical full Node output was not retained completely. Remaining failures and cancellation are not classified as passed or established baseline.",
+      "evidence": "../hhpi-long-image-legibility-20261112/release-test-boundaries.json"
+    }
+  },
+  "productionAcceptance": {
+    "coreWorkflowsPassed": true,
+    "span": "8688994c-c840-4be0-ab54-1fbaa07bb998",
+    "scenes": 2,
+    "windowsOwnedCreates": 1,
+    "duplicateCreates": 0,
+    "pageErrors": 0,
+    "blockedRequests": 0,
+    "behaviors": [
+      "Fresh native creation opens a complete Windows conversation editor and permits typing/clearing an owned draft.",
+      "A restored accepted receipt is secondary to a fresh creation form; opening its original target completes the exact old intent without another creation."
+    ],
+    "visualReview": {
+      "passed": true,
+      "by": "root",
+      "kind": "Actual owned browser DOM exported through fixed webshot; images inspected; images contain private sidebar/cwd and are not committed."
+    },
+    "rawBrowserResult": {
+      "passed": false,
+      "exitCode": 1,
+      "evidence": "browser-result.json"
+    },
+    "cleanup": {
+      "archiveAccepted": true,
+      "immediateCatalogExcludesOwnedTarget": false,
+      "eventualRemovalVerified": false,
+      "note": "The aggregate failed only at the immediate post-archive catalog exclusion assertion; keep this unresolved confirmation boundary separate from passed creation/open/input behavior."
+    },
+    "userRecordsWritten": false,
+    "evidence": "acceptance.json"
+  },
+  "scope": "Central UI and the Windows owned-source provider consumer updated. Ordinary DSH Runner, offline paired Hosts, SDK29, native adapters and original source execution are unchanged.",
+  "profileDecision": {
+    "status": "incomplete",
+    "closed": true,
+    "workDone": true,
+    "userWorkflows": "passed",
+    "failedCheckPreserved": "owned-cleanup-immediate-catalog-removal"
+  }
+}

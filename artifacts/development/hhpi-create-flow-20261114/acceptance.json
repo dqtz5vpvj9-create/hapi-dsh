@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "at": "2026-11-14T11:24:35.516Z",
+  "status": "user creation paths passed; original aggregate cleanup assertion failed and retained",
+  "sourceCommit": "6402f8e48760f2eb693f51c6ed241f78431c6f14",
+  "releaseId": "d69c7cb68a1cdc8b5db6ca3cf1520d412bbdf4450cfbd651ef4683e91a637599",
+  "hostBuildId": "2752a89d31226a71c29edefa9ae88943ddcd9e593edc2f450b6a492aa5b5abe2",
+  "centralMain": "5fa678bf2c8c",
+  "centralProvider": "9687fde91f33",
+  "windowsSourceProvider": "327ef3caf021",
+  "browser": {
+    "span": "8688994c-c840-4be0-ab54-1fbaa07bb998",
+    "originalExitCode": 1,
+    "rawResult": "browser-result.json",
+    "sceneBudgetMs": 60000,
+    "sceneCount": 2,
+    "firstScene": {
+      "status": "passed",
+      "name": "windows-create-open-type-clear",
+      "passed": true,
+      "editorWidth": 993,
+      "editorHeight": 44,
+      "draftTypedAndCleared": true,
+      "nextNewIsFresh": true,
+      "sourceCreateRequests": 1,
+      "durationMs": 10012
+    },
+    "secondScene": {
+      "coreStatus": "passed",
+      "oldAcceptedIsolatedLocalFixture": true,
+      "sameRealOwnedTarget": true,
+      "oldAcceptedAllowsNewForm": true,
+      "exactOwnedTargetRecovered": true,
+      "noReplacementCreate": true,
+      "successfullyOpenedIntentConsumed": true,
+      "editorWidth": 993,
+      "originalAggregateStatus": "failed-at-cleanup-catalog-assertion"
+    },
+    "writeBoundary": {
+      "createCount": 1,
+      "renameCount": 1,
+      "archiveCount": 1,
+      "onlyExactOwnedTarget": true,
+      "modelMessages": 0,
+      "userWorkspaceWrites": 0,
+      "blocked": [],
+      "pageErrors": []
+    },
+    "cleanup": {
+      "exactOwnedNativeArchiveReceipt": "accepted",
+      "immediateSourceCatalogStillContainsTarget": true,
+      "finalSidebarRemoval": "not observed",
+      "noRepeatedArchive": true,
+      "ownedIdentity": "identifiable named fixture; exact operation/canonical/native IDs retained privately"
+    },
+    "releasedSafe": true
+  },
+  "visual": {
+    "status": "passed-for-form-and-full-editor",
+    "images": [
+      {
+        "file": "historical-accepted-fresh-form.png",
+        "sha256": "0d5cec4791553edfc2ef49e806a449609e6eac3ccadc25810f7e0269ffca38b9",
+        "visibility": "private local only; not committed",
+        "method": "fixed webshot rendering of actual live DOM/CSS snapshot",
+        "viewedByPathOwner": true,
+        "viewedByRoot": true
+      },
+      {
+        "file": "windows-created-editor.png",
+        "sha256": "51b160df43a964ae20273657f49acc60b8aca954f0649867033a5cc6b8baf2ba",
+        "visibility": "private local only; not committed",
+        "method": "fixed webshot rendering of actual live DOM/CSS snapshot",
+        "viewedByPathOwner": true,
+        "viewedByRoot": true
+      }
+    ],
+    "boundary": "Actual browser interactions and geometry are separate evidence; images are offline fixed-webshot DOM/CSS renders. Original images contain private sidebar/path data and stay local."
+  },
+  "checks": {
+    "dom": {
+      "passed": 13,
+      "span": "e51fe27d-08c6-412f-9775-0ab9bf6c33b3"
+    },
+    "creationNode": {
+      "passed": 8,
+      "span": "e6c37789-8cc2-49ad-95b4-7470a682722d"
+    },
+    "clientAndExperienceTypes": {
+      "passed": true,
+      "span": "3d16e290-c66e-4a0c-ba75-c3a01f4e5d78"
+    },
+    "review": {
+      "independentFirstPassFindings": 5,
+      "followupDiffFindings": [
+        "ordinary DSH context directory inherited into forwarded native source",
+        "unavailable retry without source API was a no-op",
+        "stale initial source ID locked single-source form"
+      ],
+      "allFixedAndTargetedRechecked": true,
+      "rootExactCASAndHostOwnerGuardReviewed": true
+    }
+  },
+  "limits": {
+    "macAndAllOffline": "targeted DOM branch evidence only",
+    "mobile": "not tested",
+    "fullSuite": "not rerun; historical failures remain, see publication.json",
+    "modelExecution": "not tested or requested; no messages sent",
+    "userExistingAcceptedRecord": "isolated local reconstruction against a real owned accepted target, not mutation of user browser persistence"
+  }
+}

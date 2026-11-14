@@ -1,0 +1,69 @@
+{
+  "passed": false,
+  "step": "historical-accepted-opens-fresh-form-and-recovers-exact-target",
+  "scenes": [
+    {
+      "name": "windows-create-open-type-clear",
+      "passed": true,
+      "editorWidth": 993,
+      "editorHeight": 44,
+      "draftTypedAndCleared": true,
+      "nextNewIsFresh": true,
+      "sourceCreateRequests": 1,
+      "durationMs": 10012
+    },
+    {
+      "name": "historical-accepted-opens-fresh-form-and-recovers-exact-target",
+      "passed": false,
+      "legacyReceiptFixture": "isolated browser persistence, same real accepted owned target",
+      "oldAcceptedAllowsNewForm": true,
+      "exactOwnedTargetRecovered": true,
+      "editorWidth": 993,
+      "noReplacementCreate": true,
+      "successfullyOpenedIntentConsumed": true,
+      "ownedArchived": true,
+      "ownedAbsentFromSourceCatalog": false
+    }
+  ],
+  "writes": [
+    {
+      "method": "hhpi/create",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    },
+    {
+      "method": "hhpi/nativeCall",
+      "nativeMethod": "thread/name/set",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    },
+    {
+      "method": "hhpi/nativeCall",
+      "nativeMethod": "thread/archive",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    }
+  ],
+  "blocked": [],
+  "pageErrors": [],
+  "modelMessages": 0,
+  "userWorkspaceWrites": 0,
+  "hostBuildId": "2752a89d31226a71c29edefa9ae88943ddcd9e593edc2f450b6a492aa5b5abe2",
+  "sourceHostBuildId": "2752a89d31226a71c29edefa9ae88943ddcd9e593edc2f450b6a492aa5b5abe2",
+  "sourceProviderRevision": "327ef3caf021",
+  "revisions": [
+    {
+      "id": "hapi-dsh-session-provider",
+      "revision": "9687fde91f33"
+    },
+    {
+      "id": "hapi-dsh",
+      "revision": "5fa678bf2c8c"
+    }
+  ],
+  "error": "false == true",
+  "browserReleasedSafe": true
+}
