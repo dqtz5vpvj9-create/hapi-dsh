@@ -1,0 +1,147 @@
+{
+  "passed": true,
+  "step": "complete",
+  "scenes": [
+    {
+      "name": "windows-folder-roots-child-select-create-open",
+      "passed": true,
+      "realWindowsRoots": true,
+      "otherDriveOpened": true,
+      "childLevelsEntered": 6,
+      "folderChosenWithoutTyping": true,
+      "editorWidth": 993,
+      "editorHeight": 44,
+      "draftTypedAndCleared": true,
+      "durationMs": 11440
+    },
+    {
+      "name": "central-forwarded-windows-folder-cancel-return",
+      "passed": true,
+      "forwardedUsesOriginalWindowsOwner": true,
+      "cancelDidNotChooseOrCreate": true,
+      "sameEditorAndDraftReturned": true,
+      "ownedArchived": true,
+      "catalogRemovalNotRequired": true,
+      "durationMs": 2288
+    }
+  ],
+  "writes": [
+    {
+      "method": "hhpi/create",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    },
+    {
+      "method": "hhpi/nativeCall",
+      "nativeMethod": "thread/name/set",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    },
+    {
+      "method": "hhpi/nativeCall",
+      "nativeMethod": "thread/archive",
+      "ok": true,
+      "status": "accepted",
+      "onlyOwned": true
+    }
+  ],
+  "directoryReads": [
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    },
+    {
+      "onOriginalWindowsOwner": true,
+      "sameSource": true,
+      "ok": true,
+      "driveRootCount": 4,
+      "win32": true
+    }
+  ],
+  "blocked": [],
+  "pageErrors": [],
+  "modelMessages": 0,
+  "userWorkspaceWrites": 0,
+  "hostBuildId": "ee99b8a28f8fa0658e2f7b8aa79ca0706c8e612c6e82407f93f7f9901c537400",
+  "sourceHostBuildId": "ee99b8a28f8fa0658e2f7b8aa79ca0706c8e612c6e82407f93f7f9901c537400",
+  "sourceProviderRevision": "694ac970c870",
+  "revisions": [
+    {
+      "id": "hapi-dsh-session-provider",
+      "revision": "03cfc478087b"
+    },
+    {
+      "id": "hapi-dsh",
+      "revision": "decca7f820b4"
+    }
+  ],
+  "browserReleasedSafe": true
+}

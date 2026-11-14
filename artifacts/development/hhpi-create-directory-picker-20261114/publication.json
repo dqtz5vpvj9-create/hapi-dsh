@@ -1,0 +1,182 @@
+{
+  "schema": 1,
+  "at": "2026-11-14T12:08:54.400Z",
+  "status": "deployed; requested folder-selection workflows and visual review passed; historical full-suite boundary retained",
+  "sourceCommit": "b6e6b438cc166ef4ee22b130943849b69e0c3400",
+  "freeze": {
+    "revision": 1,
+    "sha256": "492011d05d9c0872fcd25c44e295a2367a2e12ec8c2727f167dc4ff3a05036de",
+    "productionFiles": 14,
+    "testFiles": 4
+  },
+  "releaseId": "c96c0c12ac2900f3e619d32cfa4faca0a85e447939b2f465dc2e4fe477a40a9b",
+  "bundleSha256": "1ed07cdca5591a2f388a32005bdf753144dfe0df5b37059d728907a42a0916d1",
+  "hostBuildId": "ee99b8a28f8fa0658e2f7b8aa79ca0706c8e612c6e82407f93f7f9901c537400",
+  "extRelease": "hhpi-dsh-022-20261107.29",
+  "packages": 24,
+  "sdkRebuilt": false,
+  "behavior": "Native creation opens a source-owned directory browser backed by the pinned official BrowseDirectoryPicker capability and DSH UI primitives. Source-level directory listing requires no session and is authorized for the exact machine/source/engine. A forwarded Windows source routes to its paired Windows filesystem owner rather than the central filesystem.",
+  "dependency": {
+    "package": "@deepseek-ai/dsh-host-directory-picker-browse",
+    "version": "0.2.2-rc.1",
+    "newDirectDeclaration": true,
+    "alreadyInstalled": true,
+    "existingLockedPackageRecordsUnchanged": true,
+    "newPackagesDownloaded": 0
+  },
+  "deployment": {
+    "central": {
+      "at": "2026-11-14T11:59:36.505Z",
+      "main": "decca7f820b4",
+      "provider": "03cfc478087b",
+      "graphRelease": {
+        "version": "0.2.2-rc.1",
+        "commit": "c59d10a"
+      },
+      "graphRevision": "b4cbe9dccad9",
+      "authenticated": true,
+      "compressedWebSocket": true,
+      "servedBytesVerified": true
+    },
+    "windowsOwnedSource": {
+      "provider": "694ac970c870",
+      "sameHostBuild": true,
+      "providerBytesVerified": true,
+      "centralMainEntry": false
+    },
+    "ordinaryDshRunner": {
+      "updated": false,
+      "releaseDirectory": "r-dd4fa4126c9c6964",
+      "sourcesConfigured": 0
+    },
+    "offlinePaired": {
+      "count": 2,
+      "updated": false
+    },
+    "reconnectWaitMs": 30
+  },
+  "protections": {
+    "linuxNativePidAndBirthPreserved": true,
+    "windowsCurrentNativePidAndBirthPreserved": true,
+    "configurationPreserved": true,
+    "ordinaryDshIdleChecked": true,
+    "retainedShellGuard": true,
+    "windowsScheduledTaskIdentityPreserved": true,
+    "nativeAdaptersChanged": false,
+    "nativeDaemonRestarted": false,
+    "metadataHelperChanged": false
+  },
+  "checks": {
+    "reused": {
+      "node": {
+        "passed": 20,
+        "span": "4dc0be42-d952-4ab9-9798-0f7039867e63"
+      },
+      "dom": {
+        "passed": 18,
+        "span": "9bc2a940-a713-49fb-8c80-e65d6dbd8334",
+        "updatedPendingOwnerCase": {
+          "passed": 1,
+          "skippedUnchanged": 17,
+          "span": "8f4dc458-30b9-47cd-8a8b-d6227f139bae"
+        }
+      },
+      "hostTypes": {
+        "passed": true,
+        "span": "4791a565-5402-4e24-8610-76cf68140779",
+        "boundary": "Only Host passed in this invocation; Client/experience failures retained. Host input unchanged afterwards."
+      },
+      "clientExperienceTypes": {
+        "passed": true,
+        "span": "ede991bb-4079-40c7-ac05-4f7f8eaec0a0"
+      },
+      "diffCheck": true
+    },
+    "carrierBuild": {
+      "passed": true,
+      "span": "0724cc28-2bc2-4703-9b2f-637a060a1760"
+    },
+    "centralInstall": {
+      "passed": true,
+      "span": "0b6d599e-6d90-49c1-b0d7-a2b9db5eaba9"
+    },
+    "windowsInstall": {
+      "passed": true,
+      "span": "d5ab3995-4a8c-4db5-a897-e53b9ceb42a4",
+      "elapsedMs": 36987.397580000004
+    },
+    "centralActivation": {
+      "passed": true,
+      "span": "6480c43b-5104-4445-b75e-63883d9d363d",
+      "elapsedMs": 7944.807578
+    },
+    "windowsActivation": {
+      "passed": true,
+      "span": "33d220f2-5a2e-49c4-85a2-0d6fac6e6d2f",
+      "elapsedMs": 6347.077105
+    },
+    "servedCohort": {
+      "passed": true,
+      "span": "03f9e50f-6f46-4ef1-b53a-5bf190c10980",
+      "elapsedMs": 383.660257
+    },
+    "fullSuite": {
+      "executedThisSlice": false,
+      "lastFullStatus": "failed",
+      "lastNode": {
+        "passed": 1723,
+        "failed": 64,
+        "cancelled": 1,
+        "skipped": 9
+      },
+      "rawOutputGap": "Historical full Node output was not retained completely. Remaining failures and cancellation are not reclassified as passed or established baseline.",
+      "evidence": "../hhpi-long-image-legibility-20261112/release-test-boundaries.json"
+    }
+  },
+  "productionAcceptance": {
+    "passed": true,
+    "evidence": "acceptance.json",
+    "rawEvidence": "browser-result.json",
+    "span": "8367c5cc-e403-44c4-bce3-0466e2e0294d",
+    "exitCode": 0,
+    "scenes": [
+      {
+        "name": "windows-folder-roots-child-select-create-open",
+        "passed": true,
+        "durationMs": 11440
+      },
+      {
+        "name": "central-forwarded-windows-folder-cancel-return",
+        "passed": true,
+        "durationMs": 2288
+      }
+    ],
+    "directoryReads": 11,
+    "allDirectoryReadsOnOriginalWindowsOwner": true,
+    "ownedCreates": 1,
+    "modelMessages": 0,
+    "userWorkspaceWrites": 0,
+    "pageErrors": 0,
+    "blockedRequests": 0,
+    "visualReview": {
+      "passed": true,
+      "by": [
+        "path-owner",
+        "root"
+      ],
+      "kind": "Actual browser interactions and geometry; fixed webshot images rendered offline from actual DOM/CSS and personally inspected. Private images/HTML/paths/target IDs are not committed."
+    },
+    "cleanup": {
+      "onlyExactOwnedRenameAndArchive": true,
+      "archiveReceipt": "accepted",
+      "immediatePhysicalCatalogRemoval": "not required or claimed"
+    }
+  },
+  "scope": "Central runtime/client and the Windows owned-source runtime/provider consumer updated. Ordinary DSH Runner, offline paired Hosts, SDK29, native adapters and original source execution remain unchanged.",
+  "profileSummary": {
+    "ownerWorkDone": true,
+    "userWorkflows": "passed",
+    "finalClosingOwnedBy": "root",
+    "historicalFullSuiteFailedBoundaryRetained": true
+  }
+}

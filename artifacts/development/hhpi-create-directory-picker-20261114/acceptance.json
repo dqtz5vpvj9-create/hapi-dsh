@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "at": "2026-11-14T12:05:18.239Z",
+  "status": "passed for requested desktop folder-selection and creation paths",
+  "sourceCommit": "b6e6b438cc166ef4ee22b130943849b69e0c3400",
+  "releaseId": "c96c0c12ac2900f3e619d32cfa4faca0a85e447939b2f465dc2e4fe477a40a9b",
+  "hostBuildId": "ee99b8a28f8fa0658e2f7b8aa79ca0706c8e612c6e82407f93f7f9901c537400",
+  "centralMain": "decca7f820b4",
+  "centralProvider": "03cfc478087b",
+  "windowsSourceProvider": "694ac970c870",
+  "freeze": {
+    "revision": 1,
+    "sha256": "492011d05d9c0872fcd25c44e295a2367a2e12ec8c2727f167dc4ff3a05036de",
+    "productionLeaves": 14,
+    "testLeaves": 4,
+    "sdkRebuilt": false
+  },
+  "browser": {
+    "span": "8367c5cc-e403-44c4-bce3-0466e2e0294d",
+    "exitCode": 0,
+    "sceneCount": 2,
+    "maxSceneBudgetMs": 60000,
+    "scenes": [
+      {
+        "name": "windows-folder-roots-child-select-create-open",
+        "passed": true,
+        "realWindowsRoots": true,
+        "otherDriveOpened": true,
+        "childLevelsEntered": 6,
+        "folderChosenWithoutTyping": true,
+        "editorWidth": 993,
+        "editorHeight": 44,
+        "draftTypedAndCleared": true,
+        "durationMs": 11440
+      },
+      {
+        "name": "central-forwarded-windows-folder-cancel-return",
+        "passed": true,
+        "forwardedUsesOriginalWindowsOwner": true,
+        "cancelDidNotChooseOrCreate": true,
+        "sameEditorAndDraftReturned": true,
+        "ownedArchived": true,
+        "catalogRemovalNotRequired": true,
+        "durationMs": 2288
+      }
+    ],
+    "rawEvidence": "browser-result.json",
+    "directoryReadCount": 11,
+    "allDirectoryReadsOnOriginalWindowsOwner": true,
+    "availableWindowsDriveRoots": 4,
+    "onlyOneOwnedThreadCreated": true,
+    "onlyExactOwnedRenameAndArchive": true,
+    "archiveReceipt": "accepted; final catalog physical removal not required or claimed",
+    "modelMessages": 0,
+    "userWorkspaceWrites": 0,
+    "pageErrors": [],
+    "blocked": [],
+    "releasedSafe": true
+  },
+  "visual": {
+    "status": "passed",
+    "scope": "Expanded desktop selector exposes real drive roots, parent/breadcrumb navigation, children and unobstructed Select this folder; after selection the created conversation has a full official editor. Expanded form scrolls.",
+    "images": [
+      {
+        "file": "windows-folder-browser.png",
+        "sha256": "6842fef00a2284f7782a814c3b29d4bd0616aeb61c029811650ab77877f371bb",
+        "storage": "private local only; not committed",
+        "render": "fixed webshot of actual live DOM/CSS snapshot",
+        "viewedByPathOwner": true,
+        "viewedByRoot": true
+      },
+      {
+        "file": "windows-folder-created-editor.png",
+        "sha256": "9d35475086d246c5325cacbcfd4b1811976a8884360e7886bcb96c1df4d242c3",
+        "storage": "private local only; not committed",
+        "render": "fixed webshot of actual live DOM/CSS snapshot",
+        "viewedByPathOwner": true,
+        "viewedByRoot": true
+      }
+    ],
+    "boundary": "Real interactions/geometry are browser evidence; fixed-webshot images are offline renders of saved live DOM/CSS and were personally viewed. Private sidebar titles and real paths remain local."
+  },
+  "checks": {
+    "uniqueTargetedCases": 38,
+    "node": {
+      "passed": 20,
+      "span": "4dc0be42-d952-4ab9-9798-0f7039867e63"
+    },
+    "dom": {
+      "passed": 18,
+      "span": "9bc2a940-a713-49fb-8c80-e65d6dbd8334",
+      "pendingOwnerCaseUpdatedAndRechecked": {
+        "passed": 1,
+        "notRepeated": 17,
+        "span": "8f4dc458-30b9-47cd-8a8b-d6227f139bae"
+      }
+    },
+    "hostTypes": {
+      "passed": true,
+      "span": "4791a565-5402-4e24-8610-76cf68140779",
+      "scope": "Host project only. This first invocation failed Client/experience and those diagnostics are retained."
+    },
+    "finalClientExperienceTypes": {
+      "passed": true,
+      "span": "ede991bb-4079-40c7-ac05-4f7f8eaec0a0"
+    },
+    "review": {
+      "sourceAuthorizationAndExactOSIdentity": true,
+      "cancelAndOwnerReplacement": true,
+      "forwardedOwnerDemand": true,
+      "findingsFixed": [
+        "Windows drive-root access with bounded 500ms root probes and 30s owner cache",
+        "Home unavailable after a bad inherited cwd"
+      ],
+      "noDuplicateReviewerTests": true
+    }
+  },
+  "contract": {
+    "method": "sourceWorkspace/directories",
+    "readOnly": true,
+    "requiresSourceGrant": true,
+    "sessionNotCreatedForBrowsing": true,
+    "hhpiV1Unchanged": true,
+    "ordinaryDshDirectoryFlowUnchanged": true,
+    "nativeExecutionAndCreationLedgerPreserved": true
+  },
+  "limits": {
+    "mobile": "not tested",
+    "fps": "not tested",
+    "mac": "not visited this slice; ordinary DSH branch unchanged",
+    "fullSuite": "not rerun; historical non-green boundary retained",
+    "models": "no task or message sent",
+    "rootsTimeout": "controlled Node boundary; actual Windows directory navigation also passed",
+    "unregisteredSource": "stays unavailable, no central filesystem fallback"
+  }
+}
