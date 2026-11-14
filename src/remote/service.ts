@@ -15,7 +15,7 @@ import { DirectCodexAdapter } from './codex-adapter.ts';
 import { SourceAccessDenied, SourceError } from './errors.ts';
 import { withWorkspaceService } from '../shared/source-access.ts';
 import { createSourceWorkspaceProviders } from '../workspace/source-services.ts';
-import { SOURCE_WORKSPACE_HOST_CONTRACT, type SourceWorkspaceDescription } from '../workspace/source-api.ts';
+import { SOURCE_WORKSPACE_HOST_CONTRACT, type SourceDirectoryRequest, type SourceDirectoryListing, type SourceWorkspaceDescription } from '../workspace/source-api.ts';
 import { SOURCE_TERMINAL_HOST_CONTRACT } from '../workspace/terminal-api.ts';
 import { SOURCE_NAVIGATION_HOST_CONTRACT } from '../workspace/source-navigation-api.ts';
 import { SourceNavigationService } from '../workspace/source-navigation-service.ts';
@@ -73,6 +73,13 @@ export function registerSourceWorkspaceContract(ctx: Context): void {
 export class SourceWorkspaceService extends TypertRemoteService {
     constructor(ctx: Context, private readonly gateway: SourceGateway, private readonly options: { localHostId: string; scopeId: string }) {
         super(ctx, 'sourceWorkspace');
+    }
+    @Remote({ name: 'directories', resources: { hhpiSource: addressedSource } })
+    async directories(request: SourceDirectoryRequest, signal?: AbortSignal): Promise<SourceDirectoryListing> {
+        try {
+            const { sourceAccess, access } = this.callAccess(signal);
+            return await this.gateway.directories(request, sourceAccess, access.signal);
+        } catch (error) { remoteError(error); }
     }
     private callAccess(signal?: AbortSignal): { access: WorkspaceAccess; sourceAccess: SourceAccess } {
         const ctx = this.ctx, invocation = ctx.invocation;

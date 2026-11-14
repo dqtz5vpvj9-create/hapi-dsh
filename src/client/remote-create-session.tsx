@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import type { SourceCatalog, SourceSession } from '../remote/protocol.ts'
 import type { SourceStorage } from './remote-storage.ts'
 import { RemoteCreationController } from './remote-creation.ts'
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { CreationChoice } from './source-create-choice.tsx'
 import { readableEngine } from './locales.ts'
+import { SourceDirectoryPicker, type SourceDirectoryBrowser } from './source-directory-picker.tsx'
 
 export interface RemoteCreateSessionProps {
   api: HhpiRemoteApi
@@ -22,6 +23,7 @@ export interface RemoteCreateSessionProps {
   sourceEngine?: string
   sourceLabels?: Readonly<Record<string, string>>
   onBusyChange?(busy: boolean): void
+  browseDirectories?: SourceDirectoryBrowser
 }
 export interface CreationCatalogState { catalog: SourceCatalog | null; loading: boolean; error: string | null; refresh(): Promise<void> }
 export function useCreationCatalog(api: Pick<HhpiRemoteApi, 'catalog'> | undefined, language: string): CreationCatalogState {
@@ -45,7 +47,7 @@ export function useCreationCatalog(api: Pick<HhpiRemoteApi, 'catalog'> | undefin
   return { catalog, loading, error, refresh }
 }
 /** A native source is selected before its directory; defaults remain source-owned. */
-export function RemoteCreateSessionForm({ api, access, open, close, initialSourceId, initialDirectory, intent, language = 'en', creation: suppliedCreation, createDsh, catalogState, sourceEngine, sourceLabels, onBusyChange }: RemoteCreateSessionProps) {
+export function RemoteCreateSessionForm({ api, access, open, close, initialSourceId, initialDirectory, intent, language = 'en', creation: suppliedCreation, createDsh, catalogState, sourceEngine, sourceLabels, onBusyChange, browseDirectories }: RemoteCreateSessionProps) {
   const zh = language.startsWith('zh'), text = (en: string, cn: string): string => zh ? cn : en
   const creation = useMemo(() => suppliedCreation ?? new RemoteCreationController(api, access, intent ? { intent } : {}), [api, access?.scope, access?.storage, intent, suppliedCreation])
   const state = useSyncExternalStore(creation.subscribe, creation.getSnapshot)
@@ -53,7 +55,7 @@ export function RemoteCreateSessionForm({ api, access, open, close, initialSourc
   const { catalog, loading: catalogLoading, error: catalogError, refresh: loadCatalog } = catalogState ?? ownCatalog
   const [sourceId, setSourceId] = useState(initialSourceId ?? ''), [directory, setDirectory] = useState(initialDirectory ?? '')
   const [error, setError] = useState<string | null>(null), [opening, setOpening] = useState(false), [newAttempt, setNewAttempt] = useState(state.record?.phase === 'accepted')
-  const generation = useRef(0), submittedInView = useRef(false), fieldsId = useId()
+  const generation = useRef(0), submittedInView = useRef(false)
   useEffect(() => { ++generation.current; return () => { ++generation.current; if (!suppliedCreation) creation.dispose() } }, [creation, suppliedCreation])
   useEffect(() => {
     if (!catalog || state.record && !['accepted', 'rejected'].includes(state.record.phase)) return
@@ -118,13 +120,10 @@ export function RemoteCreateSessionForm({ api, access, open, close, initialSourc
           ...sources.map(item => ({ id: item.id, disabled: !item.online || !item.create,
             label: `${readableEngine(item.engine)} · ${sourceLabels?.[item.id] || item.id}${!item.online ? text(' (offline)', '（离线）') : !item.create ? text(' (creation unavailable)', '（无法新建）') : ''}` })),
         ]} onChange={next => { setSourceId(next); setDirectory(''); setError(null) }}/>}
-      <label className="hhpi-create-field" htmlFor={`${fieldsId}-directory`}>{text('Working directory', '工作目录')}
-        <Input id={`${fieldsId}-directory`} value={directory} disabled={locked} required placeholder={text('Directory on this source', '此来源上的工作目录')}
-          onChange={event => setDirectory(event.currentTarget.value)}/>
-      </label>
+      {source && <SourceDirectoryPicker key={JSON.stringify([source.machineId, source.id, source.engine])} source={{ machineId: source.machineId, sourceId: source.id, engine: source.engine }}
+        value={directory} disabled={locked} language={language} {...(browseDirectories ? { browse: browseDirectories } : {})} onChange={setDirectory}/>}
       {!!directories.length && <CreationChoice label={text('Recent directories on this Agent', '此 Agent 的最近目录')} value={directories.includes(directory) ? directory : ''} disabled={locked}
         placeholder={text('Choose a directory', '选择目录')} options={directories.map(path => ({ id: path, label: path }))} onChange={setDirectory}/>}
-      {!directory.trim() && !unresolved && <p role="status">{text('Choose a recent directory or enter a path on this Agent’s machine.', '请选择最近目录，或填写此 Agent 所在机器上的路径。')}</p>}
       {catalog && !catalog.sources.some(item => item.online && item.create) && !state.record
         && <p role="status">{text('No source on this Host is available for creation. Choose another Host or refresh after reconnecting.', '此机器暂无可新建的来源。请选择其他机器，或连接后刷新。')}</p>}
     </> : !error && <p role="status">{catalogLoading ? text('Loading sources…', '正在加载来源…')

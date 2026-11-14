@@ -50,7 +50,10 @@ async function mount() {
     const gateway = new SourceGateway([adapter]), lifetime = new AbortController();
     const bindings: WorkspaceBinding[] = [], owners: SourceWorkspaceOwner[] = [];
     let create = (binding: WorkspaceBinding, _owner: SourceWorkspaceOwner): WorkspaceServices | Promise<WorkspaceServices> => services(binding);
+    let directories = async (_path: string | undefined, _signal: AbortSignal) => ({ roots: [{ name: '/', path: '/', hidden: false }], listing: { path: '/source', home: '/source', crumbs: [{ name: '/', path: '/', hidden: false }], entries: [], truncated: false } });
+    const directoryCalls: unknown[] = [];
     const unregister = gateway.registerWorkspace({ source: identity, workspaceId: 'source-os', pathStyle: 'posix', signal: lifetime.signal,
+        directories(path, signal) { directoryCalls.push({ path, signal }); return directories(path, signal); },
         create(binding, owner) { bindings.push(binding); owners.push(owner); return create(binding, owner); } });
     new SourceWorkspaceService(ctx, gateway, { localHostId: 'source-host', scopeId: '/source-installation' }); registerSourceWorkspaceContract(ctx);
     const carrier = new TypertGatewayService(ctx, TypertGatewayService.Config({})), grants: RemoteAccessBinding[] = [];
@@ -62,12 +65,51 @@ async function mount() {
     const stream = (method: string, args: Readonly<Record<string, unknown>>, principal: Principal = { kind: 'workspace-service-fixture' }) =>
         carrier.stream({ peer: peer(principal), namespace: 'sourceWorkspace', method, args });
     return { ctx, gateway, adapter, grants, bindings, owners, unregister, peerController, invoke, stream,
+        directoryCalls, setDirectories(value: typeof directories) { directories = value; },
         setCreate(value: typeof create) { create = value; },
         allow(methods: string[], id = session.id) { grants.push({ role: { name: 'Selected workspace', resource: 'session', actions: methods.map(method => `sourceWorkspace/${method}` as const) }, resource: { kind: 'session', id: SessionId(id) } }); },
         async close() { peerController.abort(); await gateway.dispose(); await ctx.fiber.dispose(); } };
 }
 const denied = (error: unknown) => error instanceof RemoteError && error.code === 'remote-access/denied';
 const access = (controller = new AbortController()): WorkspaceAccess => ({ scope: 'account', signal: controller.signal, assertAllowed() {} });
+
+test('pre-creation folder browsing requires the exact source grant, not a session read grant or another machine', async () => {
+    const app = await mount(), request = { machineId: identity.machineId, sourceId: identity.sourceId, engine: identity.engine };
+    try {
+        app.allow(['read', 'resolve']);
+        await assert.rejects(app.invoke('directories', { request }), denied);
+        assert.equal(app.directoryCalls.length, 0);
+        app.grants.push({ role: { name: 'Source folders', resource: 'hhpiSource', actions: ['sourceWorkspace/directories'] }, resource: { kind: 'hhpiSource', id: identity.sourceId } });
+        const value = await app.invoke('directories', { request }) as { source: unknown; listing: { path: string } };
+        assert.deepEqual(value.source, request); assert.equal(value.listing.path, '/source'); assert.equal(app.directoryCalls.length, 1);
+        await assert.rejects(app.invoke('directories', { request: { ...request, machineId: 'another-machine' } }));
+        await assert.rejects(app.invoke('directories', { request: { ...request, engine: 'another-engine' } }));
+        assert.equal(app.directoryCalls.length, 1);
+        assert.equal(sourceWorkspaceInputs.directories.safeParse({ ...request, sessionId: session.id }).success, false);
+        assert.equal(app.ctx.get('agent'), undefined); assert.equal(app.bindings.length, 0, 'listing folders never creates a session workspace');
+        await app.unregister();
+        await assert.rejects(app.invoke('directories', { request }), /not enabled/);
+        assert.equal(app.directoryCalls.length, 1, 'an unregistered source never falls back to the serving Host');
+    } finally { await app.close(); }
+});
+
+test('source directory responses recheck access and discard a replaced OS owner', async () => {
+    const app = await mount(), request = { machineId: identity.machineId, sourceId: identity.sourceId, engine: identity.engine };
+    app.grants.push({ role: { name: 'Source folders', resource: 'hhpiSource', actions: ['sourceWorkspace/directories'] }, resource: { kind: 'hhpiSource', id: identity.sourceId } });
+    const value = { roots: [{ name: '/', path: '/', hidden: false }], listing: { path: '/source', home: '/source', crumbs: [{ name: '/', path: '/', hidden: false }], entries: [], truncated: false } };
+    let settle!: (result: typeof value) => void, entered!: () => void;
+    try {
+        let started = new Promise<void>(resolve => { entered = resolve; });
+        app.setDirectories(async () => { entered(); return new Promise(resolve => { settle = resolve; }); });
+        const revoked = app.invoke('directories', { request }); await started; app.grants.length = 0; settle(value);
+        await assert.rejects(revoked, denied);
+        app.grants.push({ role: { name: 'Source folders', resource: 'hhpiSource', actions: ['sourceWorkspace/directories'] }, resource: { kind: 'hhpiSource', id: identity.sourceId } });
+        started = new Promise<void>(resolve => { entered = resolve; });
+        const replaced = app.invoke('directories', { request }); await started; await app.unregister(); settle(value);
+        await assert.rejects(replaced);
+        assert.equal(app.bindings.length, 0); assert.equal(app.ctx.get('workspaceFiles'), undefined);
+    } finally { await app.close(); }
+});
 
 test('source save/manage/receipt use exact resource grants and reject a caller-chosen Host before mutation', async () => {
     const app = await mount(); let saves = 0, manages = 0, observedTarget: unknown, observedBinding: unknown;

@@ -7,6 +7,7 @@ import { SourceWorkspaceRegistry, type SourceWorkspaceRegistration } from '../wo
 import type { WorkspaceAccess, WorkspaceAction, WorkspaceServices } from '../workspace/service-types.ts';
 import type { WorkspaceTarget } from '../workbench-types.ts';
 import type { SourceUploadInput, SourceUploadInputsProvider } from '../workspace/source-api.ts';
+import type { SourceDirectoryRequest, SourceDirectoryListing } from '../workspace/source-api.ts';
 import type { NotificationCursor, SourceAttentionBatch, SourceAttentionFeed, SourceAttentionSourceBatch, SourceAttentionSourceFeed } from '../workspace/notification-events.ts';
 import { sourcePositionRequest, sourcePositionResult, sourceResumeRequest, sourceResumeContext, type SourceResumeRequest, type SourceResumeContext, type SourcePositionRequest, type SourcePositionResult } from '../workspace/source-navigation-api.ts';
 import { parseSourceSessionId, sourceSessionId, type SourceAdapter, type SourceCatalog, type SourceChanges, type SourceChangesRequest,
@@ -238,6 +239,17 @@ export class SourceGateway {
             throw new SourceError('INVALID_REQUEST', 'The workspace registration does not belong to a configured source.');
         }
         return this.workspaces.register(registration);
+    }
+    async directories(request: SourceDirectoryRequest, access: SourceAccess, signal?: AbortSignal): Promise<SourceDirectoryListing> {
+        this.assertLive(); signal?.throwIfAborted();
+        const source = { machineId: request.machineId, sourceId: request.sourceId, engine: request.engine };
+        const adapter = this.adapters.get(source.sourceId);
+        this.assertAllowed(access, { kind: 'source', id: source.sourceId });
+        if (!adapter || adapter.machineId !== source.machineId || adapter.engine !== source.engine) throw new SourceError('TARGET_UNAVAILABLE', 'The selected source machine is unavailable.');
+        const result = await this.workspaces.directories(source, request.path, AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])]));
+        this.assertLive(); signal?.throwIfAborted(); this.assertAllowed(access, { kind: 'source', id: source.sourceId });
+        if (this.adapters.get(source.sourceId) !== adapter) throw new SourceError('TARGET_UNAVAILABLE', 'The selected source owner changed.');
+        return { source, ...result };
     }
     async workspace(target: WorkspaceTarget, sourceAccess: SourceAccess, access: WorkspaceAccess, action: WorkspaceAction): Promise<WorkspaceServices> {
         await access.assertAllowed(target, action);

@@ -117,6 +117,7 @@ async function installWorkspace(ctx: Context, workspaceUi: ReturnType<typeof cre
         readHead: createSourceReadHead('local', ctx.remote.session, ctx.remote.hhpi),
         locateSourcePosition: (request, signal) => ctx.remote.sourceNavigation.locatePosition(request, signal),
         resumeContext: (request, signal) => ctx.remote.sourceNavigation.resumeContext(request, signal),
+        sourceDirectories: (request, signal) => ctx.remote.sourceWorkspace.directories(request, signal),
         application: workspaceUi.root.application,
         sessions: ctx.sessions, sourceCreation: ctx.hhpiSessions, sourceActions: ctx.hhpiSessions.sourceActions, navigation: ctx.uiWorkspace, workspaceState: ctx.workspaces.list, workspaces: ctx.workspaces,
         directoryBrowsing: [...ctx.loader.entries()].some(entry => entry.options.name === '@deepseek-ai/dsh-client-ui-directory-picker-browse'),

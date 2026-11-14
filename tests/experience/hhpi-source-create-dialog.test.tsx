@@ -7,9 +7,96 @@ import { SourceCreateDialog } from '../../src/client/source-create-dialog.tsx'
 import { RemoteCreationController } from '../../src/client/remote-creation.ts'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceSession } from '../../src/remote/protocol.ts'
+import type { SourceDirectoryIdentity, SourceDirectoryListing } from '../../src/workspace/source-api.ts'
 import { memoryOperations } from '../fixtures/operation-transactions.ts'
 
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
+
+function directoryInput() {
+    if (!screen.queryByLabelText('Working directory')) fireEvent.click(screen.getByRole('button', { name: 'Enter a path (optional)' }))
+    return screen.getByLabelText('Working directory')
+}
+
+function directoryPage(source: SourceDirectoryIdentity, path = 'C:\\Users\\owned'): SourceDirectoryListing {
+    const drive = path.startsWith('D:') ? 'D:\\' : 'C:\\'
+    return { source, roots: [{ name: 'C:\\', path: 'C:\\', hidden: false }, { name: 'D:\\', path: 'D:\\', hidden: false }], listing: {
+        path, home: 'C:\\Users\\owned', crumbs: [{ name: drive, path: drive, hidden: false }, ...(path === drive ? [] : [{ name: path.split('\\').at(-1)!, path, hidden: false }])],
+        entries: path.endsWith('Projects') ? [] : [{ name: 'Projects', path: drive + 'Projects', hidden: false }], truncated: false,
+    } }
+}
+
+test('the central forwarded Windows Agent browses its exact paired owner, chooses another drive folder and creates without typing', async () => {
+    const local = sourceHost('central-machine'), windows = sourceHost('windows-machine')
+    const catalog = await windows.api.catalog(); if (!catalog.ok) throw new Error('fixture catalog')
+    vi.mocked(local.api.catalog).mockResolvedValue(catalog)
+    vi.mocked(local.api.create).mockImplementation(async request => ({ ok: true, value: { sourceId: request.sourceId, operationId: request.operationId, status: 'accepted', message: 'Created', session: windows.session } }))
+    vi.mocked(local.api.resolve!).mockResolvedValue({ ok: true, value: windows.session })
+    const centralBrowse = vi.fn(), hostBrowse = vi.fn(), source = { machineId: 'windows-machine', sourceId: 'same-source', engine: 'codex' }
+    const windowsBrowse = vi.fn(async (request: SourceDirectoryIdentity & { path?: string }) => ({ ok: true as const, value: directoryPage(source, request.path) }))
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: { ...local.navigation, listDirectory: hostBrowse }, sourceCreation: local.sourceCreation,
+        sourceDirectories: centralBrowse, storageKey: 'forwarded-source-folder-picker' })
+    controller.setHostDiscovery([{ id: 'windows-machine', label: 'Windows source', online: true }])
+    let remove = () => {}
+    const open = vi.spyOn(controller, 'openCreatedSession').mockImplementation(() => {})
+    controller.requestNewSession('source', { hostId: 'local', directory: '' })
+    const view = render(<CreationFlow controller={controller}/>)
+    try {
+        fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' }))
+        await waitFor(() => expect(controller.pendingDirectoryMachineId).toBe('windows-machine'))
+        expect(centralBrowse).not.toHaveBeenCalled(); expect(windowsBrowse).not.toHaveBeenCalled()
+        act(() => { remove = controller.addHost({ id: 'windows-machine', label: 'Windows source', sessions: windows.sessions, navigation: windows.navigation,
+            sourceCreation: windows.sourceCreation, sourceDirectories: windowsBrowse, renderConversation: () => null }) })
+        await screen.findByRole('button', { name: 'D:\\' }); fireEvent.click(screen.getByRole('button', { name: 'D:\\' }))
+        await waitFor(() => expect(windowsBrowse).toHaveBeenLastCalledWith({ ...source, path: 'D:\\' }, expect.any(AbortSignal)))
+        fireEvent.click(screen.getByRole('button', { name: 'Projects' }))
+        await screen.findByRole('button', { name: 'Parent folder' }); fireEvent.click(screen.getByRole('button', { name: 'Parent folder' }))
+        await waitFor(() => expect(windowsBrowse).toHaveBeenLastCalledWith({ ...source, path: 'D:\\' }, expect.any(AbortSignal)))
+        fireEvent.click(screen.getByRole('button', { name: 'Projects' })); await screen.findByRole('button', { name: 'Parent folder' })
+        fireEvent.click(screen.getByRole('button', { name: 'Select this folder' }))
+        expect(screen.queryByLabelText('Working directory')).not.toBeInTheDocument(); expect(screen.getByText('D:\\Projects')).toBeVisible()
+        expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled(); expect(local.api.create).not.toHaveBeenCalled()
+        expect(centralBrowse).not.toHaveBeenCalled(); expect(hostBrowse).not.toHaveBeenCalled()
+        fireEvent.click(screen.getByRole('button', { name: 'Create' })); await waitFor(() => expect(open).toHaveBeenCalledWith(sessionResourceId('local', windows.session.id)))
+        expect(local.api.create).toHaveBeenCalledExactlyOnceWith({ sourceId: 'same-source', cwd: 'D:\\Projects', operationId: expect.any(String) })
+    } finally { view.unmount(); remove(); controller.dispose(); local.creation.dispose(); windows.creation.dispose() }
+})
+
+test.each(['source', 'machine', 'close'] as const)('a late folder listing cannot change a %s replacement creation view', async action => {
+    const local = sourceHost('local-machine'), remote = sourceHost('remote-machine'), source = { machineId: 'local-machine', sourceId: 'same-source', engine: 'codex' }
+    const catalog = await local.api.catalog(); if (!catalog.ok) throw new Error('fixture catalog')
+    vi.mocked(local.api.catalog).mockResolvedValue({ ok: true, value: { ...catalog.value, sources: [...catalog.value.sources, { ...catalog.value.sources[0]!, id: 'other-source' }] } })
+    let finish!: (result: { ok: true; value: SourceDirectoryListing }) => void, readSignal: AbortSignal | undefined
+    const listing = vi.fn(async (_request: unknown, signal?: AbortSignal) => { readSignal = signal; return new Promise<{ ok: true; value: SourceDirectoryListing }>(resolve => { finish = resolve }) })
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: local.navigation, sourceCreation: local.sourceCreation, sourceDirectories: listing, storageKey: 'folder-cancellation-'+action })
+    const remove = controller.addHost({ id: 'remote', label: 'Other machine', sessions: remote.sessions, navigation: remote.navigation, sourceCreation: remote.sourceCreation, renderConversation: () => null })
+    controller.requestNewSession('source', { hostId: 'local', directory: '' }); const view = render(<CreationFlow controller={controller}/>)
+    try {
+        fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' })); await waitFor(() => expect(listing).toHaveBeenCalledTimes(1))
+        if (action === 'source') { fireEvent.click(screen.getByRole('button', { name: /^Connection / })); fireEvent.click(screen.getAllByRole('menuitem')[1]!) }
+        else if (action === 'machine') { fireEvent.click(screen.getByRole('button', { name: /^Machine / })); fireEvent.click(screen.getByRole('menuitem', { name: 'Other machine' })) }
+        else act(() => controller.closeNewSession())
+        expect(readSignal?.aborted).toBe(true)
+        await act(async () => finish({ ok: true, value: directoryPage(source, 'C:\\stale-folder') }))
+        expect(screen.queryByText('C:\\stale-folder')).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Select this folder' })).not.toBeInTheDocument()
+        expect(local.api.create).not.toHaveBeenCalled(); expect(remote.api.create).not.toHaveBeenCalled()
+    } finally { view.unmount(); remove(); controller.dispose(); local.creation.dispose(); remote.creation.dispose() }
+})
+
+test('an unavailable inherited directory can recover through Home without typing a path', async () => {
+    const local = sourceHost('local-machine'), source = { machineId: 'local-machine', sourceId: 'same-source', engine: 'codex' }
+    const listing = vi.fn(async (request: SourceDirectoryIdentity & { path?: string }) => {
+        if (request.path) throw new Error('The old directory is unavailable')
+        return { ok: true as const, value: directoryPage(source) }
+    })
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: local.navigation, sourceCreation: local.sourceCreation, sourceDirectories: listing, storageKey: 'folder-home-recovery' })
+    controller.requestNewSession('source', { hostId: 'local', sourceSessionId: local.session.id, directory: 'C:\\removed' }); const view = render(<CreationFlow controller={controller}/>)
+    try {
+        fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' })); await screen.findByRole('alert')
+        fireEvent.click(screen.getByRole('button', { name: 'Home' })); await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+        fireEvent.click(screen.getByRole('button', { name: 'Select this folder' })); expect(screen.getByText('C:\\Users\\owned')).toBeVisible()
+        expect(listing).toHaveBeenLastCalledWith(source, expect.any(AbortSignal)); expect(local.api.create).not.toHaveBeenCalled()
+    } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
+})
 
 function sourceHost(id: string) {
     const session: SourceSession = { id: `hhpi:${id}:same-source:codex:created`, machineId: id, sourceId: 'same-source', engine: 'codex', nativeId: 'created',
@@ -74,7 +161,7 @@ test('a Host with no native sources offers the real DSH path on that same Host w
         expect(screen.queryByText(/no available native sources/)).not.toBeInTheDocument()
         expect(controller.getSnapshot().creationContext?.hostId).toBe('imac')
         expect(screen.getByRole('button', { name: 'Machine lis-imac' })).toBeVisible()
-        expect(screen.getByLabelText('Working directory')).toHaveValue('/owned/isolated-create')
+        expect(directoryInput()).toHaveValue('/owned/isolated-create')
         fireEvent.click(screen.getByRole('button', { name: 'Create' }))
         await waitFor(() => expect(open).toHaveBeenCalled())
         expect(workspace).toHaveBeenCalledExactlyOnceWith({ path: '/owned/isolated-create' })
@@ -95,7 +182,7 @@ test('an old accepted intent opens a fresh form; successful open completes it an
     const view = render(<CreationFlow controller={controller}/>)
     try {
         await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled())
-        expect(screen.getByLabelText('Working directory')).toHaveValue('/new-project')
+        expect(directoryInput()).toHaveValue('/new-project')
         expect(screen.queryByRole('button', { name: 'Create another conversation' })).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: 'Open last created conversation' })).toBeVisible()
         fireEvent.click(screen.getByRole('button', { name: 'Create' }))
@@ -140,7 +227,7 @@ test('Windows directory choices belong to its exact source, and changing machine
         expect(screen.getByRole('menuitem', { name: 'C:\\Users\\owned\\project' })).toBeVisible()
         expect(screen.queryByText('/home/linux/project')).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('menuitem', { name: 'C:\\Users\\owned\\project' }))
-        expect(screen.getByLabelText('Working directory')).toHaveValue('C:\\Users\\owned\\project')
+        expect(directoryInput()).toHaveValue('C:\\Users\\owned\\project')
         expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
         expect(browse).not.toHaveBeenCalled()
         fireEvent.click(screen.getByRole('button', { name: 'Machine Windows machine' }))
@@ -151,7 +238,7 @@ test('Windows directory choices belong to its exact source, and changing machine
         fireEvent.click(screen.getByRole('button', { name: 'Agent Codex (unavailable on this machine)' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'DSH' }))
         expect(screen.getByRole('button', { name: 'Agent DSH' })).toBeVisible()
-        expect(screen.getByLabelText('Working directory')).toHaveValue('')
+        expect(directoryInput()).toHaveValue('')
         expect(windows.api.create).not.toHaveBeenCalled(); expect(mac.api.create).not.toHaveBeenCalled()
     } finally { view.unmount(); removeWin(); removeMac(); controller.dispose(); local.creation.dispose(); windows.creation.dispose(); mac.creation.dispose() }
 })
@@ -164,7 +251,7 @@ test('forwarded native cwd is not inherited by ordinary DSH on the serving Host'
     const view = render(<CreationFlow controller={controller}/>)
     try {
         await screen.findByRole('button', { name: 'Agent DSH' })
-        expect(screen.getByLabelText('Working directory')).toHaveValue('')
+        expect(directoryInput()).toHaveValue('')
         expect(view.container.querySelector('option[value="C:\\\\Users\\\\owned\\\\project"]')).toBeNull()
     } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
 })
@@ -177,11 +264,11 @@ test('native creation never inherits an unidentified DSH path and a removed sour
     const view = render(<CreationFlow controller={controller}/>)
     try {
         await screen.findByRole('button', { name: 'Create' })
-        expect(screen.getByLabelText('Working directory')).toHaveValue('')
+        expect(directoryInput()).toHaveValue('')
         act(() => controller.closeNewSession())
         act(() => controller.requestNewSession('source', { hostId: 'local', directory: '/wrong/removed', sourceSessionId: 'hhpi:native-machine:removed:codex:old' }))
         await screen.findByRole('button', { name: 'Create' })
-        expect(screen.getByLabelText('Working directory')).toHaveValue('')
+        expect(directoryInput()).toHaveValue('')
         fireEvent.click(screen.getByRole('button', { name: 'Recent directories on this Agent Choose a directory' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'C:\\Users\\owned\\current' }))
         expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
@@ -208,7 +295,7 @@ test('offline native sources do not block the same machine’s DSH Agent', async
         await screen.findByText('This machine cannot create Codex conversations. Choose another Agent or machine.')
         vi.mocked(remote.api.catalog).mockResolvedValue({ ok: true, value: result.value })
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-        await waitFor(() => expect(screen.getByLabelText('Working directory')).toBeVisible())
+        await waitFor(() => expect(directoryInput()).toBeVisible())
         expect(screen.getByRole('button', { name: 'Agent Codex' })).toBeVisible()
     } finally { view.unmount(); remove(); controller.dispose(); local.creation.dispose(); remote.creation.dispose() }
 })
@@ -224,11 +311,11 @@ test('an unknown native creation remains protected while an unrelated DSH Agent 
     const view = render(<CreationFlow controller={controller}/>)
     try {
         await screen.findByRole('button', { name: 'Check original result' })
-        expect(screen.getByLabelText('Working directory')).toBeDisabled()
+        expect(screen.getByRole('button', { name: 'Choose folder' })).toBeDisabled()
         fireEvent.click(screen.getByRole('button', { name: 'Agent Codex' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'DSH' }))
-        expect(screen.getByLabelText('Working directory')).toBeEnabled()
-        expect(screen.getByLabelText('Working directory')).toHaveValue('')
+        expect(directoryInput()).toBeEnabled()
+        expect(directoryInput()).toHaveValue('')
         expect(local.creation.getSnapshot().record?.phase).toBe('confirming')
         expect(local.creation.getSnapshot().record?.request.cwd).toBe('/original')
         expect(local.api.create).toHaveBeenCalledTimes(1)
@@ -275,7 +362,7 @@ test('a late official DSH create result cannot open or close a replacement form'
         await act(async () => { gate.resolve('exact-original-session'); await gate.promise })
         expect(open).not.toHaveBeenCalled(); expect(created).not.toHaveBeenCalled()
         expect(controller.getSnapshot().creationContext?.hostId).toBe('remote')
-        expect(screen.getByLabelText('Working directory')).toHaveValue('/second')
+        expect(directoryInput()).toHaveValue('/second')
     } finally { view.unmount(); stop(); remove(); controller.dispose(); local.creation.dispose(); remote.creation.dispose() }
 })
 
@@ -315,11 +402,11 @@ test('a failed source list is actionable and refresh recovers native creation wi
         expect(screen.getAllByRole('menuitem')).toHaveLength(1)
         expect(screen.queryByText('Choose a source')).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('menuitem', { name: 'Codex' }))
-        expect(screen.getByLabelText('Working directory')).toHaveValue('/repo')
-        fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: ' ' } })
+        expect(directoryInput()).toHaveValue('/repo')
+        fireEvent.change(directoryInput(), { target: { value: ' ' } })
         fireEvent.submit(view.container.querySelector('form')!)
         expect(remote.api.create).not.toHaveBeenCalled()
-        fireEvent.change(screen.getByLabelText('Working directory'), { target: { value: '/repo' } })
+        fireEvent.change(directoryInput(), { target: { value: '/repo' } })
         fireEvent.click(screen.getByRole('button', { name: 'Create' }))
         await waitFor(() => expect(remote.api.create).toHaveBeenCalledOnce())
         expect(local.api.create).not.toHaveBeenCalled()
@@ -346,7 +433,7 @@ test('a native-only directory Host uses its explicit default service and stays e
         expect(screen.queryByRole('button', { name: 'Browse directories' })).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'Create' }))
         expect(await screen.findByRole('alert')).toHaveTextContent('Enter a working directory on this machine.')
-        expect(screen.getByLabelText('Working directory')).toBeEnabled()
+        expect(directoryInput()).toBeEnabled()
         expect(listDirectory).not.toHaveBeenCalled(); expect(pickDirectory).not.toHaveBeenCalled()
         expect(createWorkspace).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled()
         initializeDefault.mockResolvedValueOnce({ workspaceId: 'official-default' })

@@ -4,11 +4,20 @@ import { TYPERT_REMOTE as FILES_REMOTE } from '@deepseek-ai/dsh-api-workspace-fi
 import type { SessionId } from '@deepseek-ai/dsh-session/types';
 import { RemoteError, type InvocationDescriptor, type RemoteResult, type TypertRemoteContribution, type TypertRemoteNamespaceMap } from '@deepseek-ai/dsh-typert-protocol';
 import type { WorkspaceFileBytes, WorkspaceFileStat } from '@deepseek-ai/dsh-api-workspace-files/types';
+import type { DirectoryEntry, DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types';
 import { workspaceDocumentRefSchema, workspaceFileManageRequestSchema, workspaceFileSaveRequestSchema, workspaceResourceSchema, workspaceTargetSchema, workspaceUploadStartSchema, workspaceUploadRequestSchema, workspaceUploadDestinationSchema } from '../workbench-types.ts';
 import type { WorkspaceAccess, WorkspaceAction, WorkspaceBinding, WorkspaceDocument, WorkspaceEntry, WorkspaceMutationResult, WorkspaceServices, WorkspaceUploadReceipt, WorkspaceUploadService, WorkspaceUploadStatus, WorkspaceUploadTransfer } from './service-types.ts';
 
 const id = z.string().min(1).max(8192).refine(value => !value.includes('\0'));
 const path = z.string().max(8192).refine(value => !value.includes('\0'));
+export const sourceDirectoryIdentity = z.strictObject({ machineId: id, sourceId: id, engine: id });
+export type SourceDirectoryIdentity = z.infer<typeof sourceDirectoryIdentity>;
+export const sourceDirectoryRequest = sourceDirectoryIdentity.extend({ path: path.optional() });
+export type SourceDirectoryRequest = z.infer<typeof sourceDirectoryRequest>;
+export interface SourceDirectoryListing { source: SourceDirectoryIdentity; roots: DirectoryEntry[]; listing: DirectoryListing }
+const directoryEntry = z.strictObject({ name: z.string(), path: id, hidden: z.boolean() });
+const sourceDirectoryListing = z.strictObject({ source: sourceDirectoryIdentity, roots: z.array(directoryEntry).max(27), listing: z.strictObject({ path: id, home: id,
+    crumbs: z.array(directoryEntry), entries: z.array(directoryEntry), truncated: z.boolean() }) });
 export const workspaceBindingSchema = z.strictObject({ target: workspaceTargetSchema, machineId: id, workspaceId: id, root: id, pathStyle: z.enum(['posix', 'win32']) });
 export interface SourceWorkspaceDescription {
     binding: WorkspaceBinding;
@@ -30,6 +39,7 @@ export const workspaceDocumentSchema = z.strictObject({ resource: workspaceResou
 const document = workspaceDocumentSchema;
 const byteOptions = z.strictObject({ range: z.strictObject({ offset: z.number().int().nonnegative().optional(), length: z.number().int().positive().optional() }).optional(), baseFile: path.optional() });
 export const sourceWorkspaceInputs = {
+    directories: sourceDirectoryRequest,
     resolve: z.strictObject({ sessionId: id }),
     openDocument: z.strictObject({ sessionId: id, document: workspaceDocumentRefSchema }),
     readDocumentBytes: z.strictObject({ sessionId: id, document: workspaceDocumentRefSchema, options: byteOptions }),
@@ -53,6 +63,8 @@ export interface SourceUploadInputsProvider {
 }
 type OfficialWorkspaceFilesApi = TypertRemoteNamespaceMap['workspaceFiles'];
 export interface SourceWorkspaceApi extends OfficialWorkspaceFilesApi {
+    /** Source-level, read-only selection before a conversation exists; never a serving-Host filesystem fallback. */
+    directories(request: SourceDirectoryRequest, signal?: AbortSignal): Promise<RemoteResult<SourceDirectoryListing>>;
     resolve(request: Request<'resolve'>, signal?: AbortSignal): Promise<RemoteResult<SourceWorkspaceDescription>>;
     openDocument(request: Request<'openDocument'>, signal?: AbortSignal): Promise<RemoteResult<WorkspaceDocument>>;
     readDocumentBytes(request: Request<'readDocumentBytes'>, signal?: AbortSignal): Promise<RemoteResult<WorkspaceFileBytes>>;
@@ -71,6 +83,7 @@ export interface SourceWorkspaceApi extends OfficialWorkspaceFilesApi {
 declare module '@deepseek-ai/dsh-typert-protocol' {
     interface TypertRemoteNamespaceMap { sourceWorkspace: SourceWorkspaceApi }
     interface TypertRemoteMap {
+        'sourceWorkspace/directories': SourceWorkspaceApi['directories'];
         'sourceWorkspace/resolve': SourceWorkspaceApi['resolve'];
         'sourceWorkspace/read': SourceWorkspaceApi['read'];
         'sourceWorkspace/readBytes': SourceWorkspaceApi['readBytes'];
@@ -123,7 +136,7 @@ const uploadTransfer = z.strictObject({ uploadId: id, target: workspaceTargetSch
 const uploadResult = workspaceMutationResultSchema(uploadReceipt);
 const uploadStatus = z.discriminatedUnion('state', [z.strictObject({ state: z.literal('uploading'), transfer: uploadTransfer }),
     z.strictObject({ state: z.literal('finished'), result: uploadResult }), z.strictObject({ state: z.literal('cancelled') })]);
-const results = { resolve: codec('description', description), openDocument: codec('document', document), readDocumentBytes: bytes,
+const results = { directories: codec('sourceDirectories', sourceDirectoryListing), resolve: codec('description', description), openDocument: codec('document', document), readDocumentBytes: bytes,
     inspect: codec('entry', entry.nullable()), search: codec('entries', z.array(entry)),
     git: codec('git', z.strictObject({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int() })),
     uploadInputs: codec('uploadInputs', z.strictObject({ input: z.array(z.discriminatedUnion('type', [

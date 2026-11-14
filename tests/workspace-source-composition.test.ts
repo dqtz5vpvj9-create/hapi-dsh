@@ -13,7 +13,7 @@ import { parseRunnerConfig } from '../src/runner/config.ts';
 import { SourceGateway } from '../src/remote/gateway.ts';
 import { registerSourceContract, SourceWorkspaceService, HhpiSourceService } from '../src/remote/service.ts';
 import { SourceTerminalService } from '../src/workspace/source-terminal-service.ts';
-import { installLocalSourceWorkspaces } from '../src/workspace/local-source.ts';
+import { installLocalSourceWorkspaces, sourceDirectoryRoots } from '../src/workspace/local-source.ts';
 import { sourceSessionId, type SourceAdapter, type SourceSession } from '../src/remote/protocol.ts';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import type { TerminalInput, TerminalFrame, TerminalShell, WebTerminalInfo } from '@deepseek-ai/dsh-api-terminal-controller/types';
@@ -54,6 +54,10 @@ test('combined source face reads the real selected workspace without an Agent an
         const invoke = (namespace: string, method: string, args: Record<string, unknown>) => gateway.invoke({ peer, namespace, method, args });
         await assert.rejects(invoke('sourceWorkspace', 'resolve', { request: { sessionId: session.id } }), /not registered/);
         installLocalSourceWorkspaces(ctx, source, parseConfig(config).sources!, [{ sourceId: 'source', provider: 'local-system' }], directory);
+        const folders = await invoke('sourceWorkspace', 'directories', { request: { machineId: identity.machineId, sourceId: identity.sourceId, engine: identity.engine, path: directory } }) as { source: unknown; listing: { path: string; entries: { name: string }[] }; roots: { path: string }[] };
+        assert.deepEqual(folders.source, { machineId: identity.machineId, sourceId: identity.sourceId, engine: identity.engine });
+        assert.equal(folders.listing.path, directory); assert(folders.listing.entries.some(entry => entry.name === 'workspace')); assert(folders.roots.some(root => root.path === '/'));
+        await assert.rejects(invoke('sourceWorkspace', 'directories', { request: { machineId: identity.machineId, sourceId: identity.sourceId, engine: identity.engine, path: '../relative' } }));
         const resolved = await invoke('sourceWorkspace', 'resolve', { request: { sessionId: session.id } }) as { binding: { root: string }; registered: { terminals: boolean; mutations: boolean } };
         assert.equal(resolved.binding.root, workspace);
         assert.equal(resolved.registered.terminals, true); assert.equal(resolved.registered.mutations, true);
@@ -103,6 +107,24 @@ test('combined source face reads the real selected workspace without an Agent an
         assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
         assert.equal(ctx.get('agent'), undefined); assert.equal(ctx.get('subprocess'), undefined);
     } finally { lifetime.abort(); await source.dispose(); await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test('Windows source roots are bounded, cached and keep available drives when another drive times out', async t => {
+    const lifetime = new AbortController(), deadline = new AbortController(), caller = new AbortController();
+    t.mock.method(AbortSignal, 'timeout', () => deadline.signal);
+    const probes: string[] = [];
+    const roots = sourceDirectoryRoots(lifetime.signal, 'win32', async path => {
+        probes.push(path);
+        if (path === 'D:\\') return { isDirectory: () => true };
+        if (path === 'Z:\\') return new Promise(() => {});
+        throw new Error('Drive is not mounted');
+    });
+    const first = roots(caller.signal);
+    await Promise.resolve(); await Promise.resolve(); deadline.abort();
+    assert.deepEqual(await first, [{ name: 'D:\\', path: 'D:\\', hidden: false }]); assert.equal(probes.length, 26);
+    assert.deepEqual(await roots(caller.signal), [{ name: 'D:\\', path: 'D:\\', hidden: false }]); assert.equal(probes.length, 26, 'entering child folders does not reprobe drive roots');
+    caller.abort(); await assert.rejects(roots(caller.signal));
+    lifetime.abort();
 });
 
 function inputChannel() {

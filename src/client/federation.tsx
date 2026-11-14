@@ -1160,6 +1160,7 @@ async function bootHost(root: Context, workspace: WorkspaceController, host: Fed
             ...(catalog!.ctx.get('hhpiSessions') ? { sourceCreation: catalog!.ctx.hhpiSessions, sourceActions: catalog!.ctx.hhpiSessions.sourceActions } : {}),
             locateSourcePosition: (request, signal) => catalog!.ctx.remote.sourceNavigation.locatePosition(request, signal),
             resumeContext: (request, signal) => catalog!.ctx.remote.sourceNavigation.resumeContext(request, signal),
+            sourceDirectories: (request, signal) => catalog!.ctx.remote.sourceWorkspace.directories(request, signal),
             renderPane, renderConversation: (reference, options) => <RemoteSession sourceId={reference.sessionId} resource={{ kind: 'chat', sessionId: sessionResourceId(host.id, reference.sessionId) }} options={options ?? { paneId: reference.sessionId, focused: true }}/>,
             ...(shared ? { warmSession } : {}),
         })
@@ -1207,6 +1208,7 @@ export function installFederation(ctx: Context, workspace: WorkspaceController, 
     const activity = observeForegroundActivity(document)
     let pairedHosts: readonly FederationHost[] = []
     const boots = new HostBootQueue(() => {
+        if (workspace.pendingDirectoryMachineId && pairedHosts.some(host => host.id === workspace.pendingDirectoryMachineId && host.online)) return workspace.pendingDirectoryMachineId
         if (workspace.pendingStartupSourceId) return preferredSourceBootHost({ hostId: 'local', sessionId: workspace.pendingStartupSourceId }, pairedHosts)
         const resource = workspace.store.focusedPane().resource
         return resource.kind === 'empty' ? undefined : preferredSourceBootHost(parseSessionResourceId(resource.sessionId), pairedHosts)

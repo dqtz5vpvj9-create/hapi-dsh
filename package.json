@@ -165,6 +165,7 @@
     "@deepseek-ai/dsh-file-reference-local": "0.2.2-rc.1",
     "@deepseek-ai/dsh-fs": "0.2.2-rc.1",
     "@deepseek-ai/dsh-fs-local": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-host-directory-picker-browse": "0.2.2-rc.1",
     "@deepseek-ai/dsh-host-webserver": "0.2.2-rc.1",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
     "@deepseek-ai/dsh-scope": "0.2.2-rc.1",

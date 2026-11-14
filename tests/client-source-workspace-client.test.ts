@@ -26,6 +26,7 @@ function fixture(hostId = 'host-one') {
         transfer = value; return { ok: true, value };
     };
     const api = {
+        async directories() { throw new Error('This session-owned fixture does not browse source folders'); },
         async readDocumentBytes() { throw new Error('No document byte request belongs to this wire fixture'); },
         async inspect() { return { ok: true, value: null }; }, async search() { return { ok: true, value: [] }; },
         async git() { return { ok: true, value: { stdout: '', stderr: '', exitCode: 0 } }; },

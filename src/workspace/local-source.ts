@@ -2,6 +2,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import TerminalController from '@deepseek-ai/dsh-api-terminal-controller';
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local';
+import BrowseDirectoryPicker, { raceAbort } from '@deepseek-ai/dsh-host-directory-picker-browse';
 import { stat } from 'node:fs/promises';
 import { SourceAttachments } from './source-attachments.ts';
 import { SourceUploads } from './source-uploads.ts';
@@ -11,6 +12,28 @@ import type { SourceGateway } from '../remote/gateway.ts';
 import type { DirectSourceConfig } from '../remote/protocol.ts';
 import { LocalSourceFileOwner } from './source-files.ts';
 import { SourceTerminalOwners } from './source-terminal-service.ts';
+import type { DirectoryEntry } from '@deepseek-ai/dsh-host-directory-picker/types';
+
+/** A bounded, short-lived drive inventory; an unreachable mapped drive cannot hold a folder listing. */
+export function sourceDirectoryRoots(lifetime: AbortSignal, platform: NodeJS.Platform = process.platform,
+    inspect: (path: string) => Promise<{ isDirectory(): boolean }> = stat, deadlineMs = 500): (signal: AbortSignal) => Promise<DirectoryEntry[]> {
+    let cached: { at: number; value: Promise<DirectoryEntry[]> } | undefined;
+    return async signal => {
+        lifetime.throwIfAborted(); signal.throwIfAborted();
+        if (platform !== 'win32') return [{ name: '/', path: '/', hidden: false }];
+        if (!cached || Date.now() - cached.at > 30_000) {
+            const deadline = AbortSignal.any([lifetime, AbortSignal.timeout(deadlineMs)]);
+            cached = { at: Date.now(), value: Promise.all(Array.from({ length: 26 }, async (_, index) => {
+                const path = `${String.fromCharCode(65 + index)}:\\`;
+                try { return (await raceAbort(inspect(path), deadline)).isDirectory() ? { name: path, path, hidden: false } : null; }
+                catch { return null; }
+            })).then(values => values.filter(value => value !== null)) };
+        }
+        const roots = await raceAbort(cached.value, signal);
+        lifetime.throwIfAborted(); signal.throwIfAborted();
+        return [...roots];
+    };
+}
 
 export function installLocalSourceWorkspaces(ctx: Context, gateway: SourceGateway, sources: readonly DirectSourceConfig[],
     configured: readonly SourceWorkspaceConfig[], directory: string, uploadReceipts: ReadonlyMap<string, string> = new Map()): void {
@@ -21,6 +44,9 @@ export function installLocalSourceWorkspaces(ctx: Context, gateway: SourceGatewa
         // Keep source subprocess ownership separate from the display Host's
         // default Agent services, including their sandbox and lifecycle.
         const scope = new Context();
+        const picker = new BrowseDirectoryPicker(scope, BrowseDirectoryPicker.Config()).capability();
+        if (picker.kind !== 'browse') throw new Error('The registered source directory browser must support read-only listings');
+        const directoryRoots = sourceDirectoryRoots(lifetime.signal);
         const subprocess = new LocalSubprocessRuntime(scope);
         const terminals = new SourceTerminalOwners(scope, { subprocess,
             async ensureDirectory(root, signal) {
@@ -66,6 +92,15 @@ export function installLocalSourceWorkspaces(ctx: Context, gateway: SourceGatewa
         const unregister = gateway.registerWorkspace({
             source: { sourceId: source.id, machineId: source.machineId, engine: source.engine },
             workspaceId: `local-system:${source.id}`, pathStyle: process.platform === 'win32' ? 'win32' : 'posix', signal: lifetime.signal,
+            async directories(path, signal) {
+                // At most 26 drive roots, no directory recursion or extra file reads.
+                // The official picker owns path validation and the bounded child listing.
+                const listing = await picker.list(path, signal);
+                const roots = await directoryRoots(signal);
+                const currentRoot = listing.crumbs[0];
+                if (currentRoot && !roots.some(root => root.path === currentRoot.path)) roots.push(currentRoot);
+                return { listing, roots };
+            },
             async create(binding, owner) { const workspace = files.workspace(binding); return { ...workspace, documents: attachments.documents(binding, workspace.documents), uploads: uploads.workspace(binding), terminals: await terminals.forWorkspace(binding, owner) }; },
             async dispose() {
                 lifetime.abort();

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { sessionResourceId, type WorkspaceController, type WorkspaceHost } from './controller.ts'
 import { RemoteCreateSessionForm, useCreationCatalog, type CreationCatalogState } from './remote-create-session.tsx'
 import { DshSessionForm } from './dsh-session.tsx'
@@ -6,6 +6,7 @@ import { CreationChoice } from './source-create-choice.tsx'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { isSourceSessionId, parseSourceSessionId } from '../remote/protocol.ts'
 import { en, zh as chinese, readableEngine, readableHost, type WorkspaceTranslate } from './locales.ts'
+import type { SourceDirectoryIdentity } from '../workspace/source-api.ts'
 
 function HostCreation({ controller, host, engine, language, catalog, setBusy }: {
     controller: WorkspaceController; host: WorkspaceHost; engine: string; language: string; catalog: CreationCatalogState; setBusy(busy: boolean): void
@@ -27,9 +28,11 @@ function HostCreation({ controller, host, engine, language, catalog, setBusy }: 
         ? parseSourceSessionId(context.sourceSessionId) : undefined
     const originalSource = original?.engine === engine && catalog.catalog?.sources.find(source => source.id === original.sourceId
         && source.machineId === original.machineId && source.engine === original.engine)
+    const browse = useCallback((source: SourceDirectoryIdentity, path: string | undefined, signal: AbortSignal) => controller.listSourceDirectories(host.id, source, path, signal), [controller, host])
     if (old.loading || !choice.current) return <p role="status">{language.startsWith('zh') ? '正在准备新建聊天…' : 'Preparing conversation…'}</p>
     const creation = choice.current.creation
     return <RemoteCreateSessionForm api={owner.api} access={undefined} creation={creation} catalogState={catalog} sourceEngine={engine} sourceLabels={sourceLabels} onBusyChange={setBusy}
+        browseDirectories={browse}
         language={language} {...(original?.engine === engine ? { initialSourceId: original.sourceId } : {})}
         {...(originalSource && context?.hostId === host.id ? { initialDirectory: context.directory } : {})}
         close={controller.closeNewSession} open={async (session, isCurrent) => {

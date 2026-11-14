@@ -1,4 +1,5 @@
 import type { SourceNavigationApi } from '../workspace/source-navigation-api.ts'
+import type { SourceDirectoryIdentity, SourceDirectoryListing, SourceWorkspaceApi } from '../workspace/source-api.ts'
 import type { WorkspaceApplicationIdentity } from './application-identity.ts'
 import { NoticeGate } from './error-policy.ts'
 import { migrateCutoverDraft } from './draft-cutover.ts'
@@ -44,6 +45,7 @@ export interface WorkspacePersistence {
 }
 
 export interface WorkspaceOptions {
+    sourceDirectories?: SourceWorkspaceApi['directories']
     sourceActions?: WorkspaceSourceActions
     sourceExporter?: SourceExportApi
     readHead?: import('./source-reading-head.ts').SourceReadHead
@@ -85,6 +87,7 @@ export interface WorkspaceOptions {
 }
 
 export interface WorkspaceHost {
+    readonly sourceDirectories?: SourceWorkspaceApi['directories']
     readonly sourceActions?: WorkspaceSourceActions
     readonly sourceExporter?: SourceExportApi
     readonly readHead?: import('./source-reading-head.ts').SourceReadHead
@@ -317,6 +320,7 @@ export class WorkspaceController {
     private readonly leases = new Map<string, PaneLease>()
     private readonly previousLeases = new Map<string, { lease: PaneLease; timer: ReturnType<typeof setTimeout> }>()
     private readonly hosts = new Map<string, WorkspaceHost>()
+    private directoryDemand: { machineId: string; signal: AbortSignal } | undefined
     private readonly hostCatalogs = new Map<string, { label: string; catalog: SessionListState }>()
     private readonly hostUnsubscribers = new Map<string, Array<() => void>>()
     private readonly hostMainIds = new Map<string, string | undefined>()
@@ -402,6 +406,7 @@ export class WorkspaceController {
             ...(options.sourceHubQuery === undefined ? {} : { hubId: options.sourceHubQuery }) } : null
         this.sidebar = new SidebarState(options.storage, `${options.storageKey}:sidebar`)
         this.hosts.set('local', { id: 'local', label: 'DSH', sessions: options.sessions, navigation: options.navigation,
+            ...(options.sourceDirectories ? { sourceDirectories: options.sourceDirectories } : {}),
             ...(options.directoryBrowsing === undefined ? {} : { directoryBrowsing: options.directoryBrowsing }),
             ...(options.sourceActions ? { sourceActions: options.sourceActions } : {}),
             ...(options.sourceExporter ? { sourceExporter: options.sourceExporter } : {}),
@@ -447,6 +452,7 @@ export class WorkspaceController {
 
     /** Pending canonical navigation outranks passive restored resource views. */
     get pendingStartupSourceId(): string | undefined { return this.pendingSourceSession?.sessionId }
+    get pendingDirectoryMachineId(): string | undefined { return this.directoryDemand?.signal.aborted ? undefined : this.directoryDemand?.machineId }
 
     cancelStartupFocus(): void {
         if (!this.pendingSourceSession && !this.nativeSourceLink) return
@@ -985,6 +991,37 @@ export class WorkspaceController {
     }
 
     host(hostId: string): WorkspaceHost | undefined { return this.hosts.get(hostId) }
+    /** A source-level browse follows its real OS owner, never a forwarded Host filesystem. */
+    async listSourceDirectories(hostId: string, source: SourceDirectoryIdentity, path: string | undefined, signal: AbortSignal): Promise<SourceDirectoryListing> {
+        signal.throwIfAborted()
+        const selected = this.hosts.get(hostId)
+        if (!selected) throw new Error('The selected machine disconnected. Reconnect it before choosing a folder.')
+        const paired = this.discovery.host(source.machineId)
+        if (paired?.phase === 'unavailable') throw new Error('Reconnect the original source machine before choosing a folder.')
+        if (paired && !this.hosts.has(source.machineId)) {
+            const demand = { machineId: source.machineId, signal }; this.directoryDemand = demand
+            try {
+                await new Promise<void>((resolve, reject) => {
+                    const check = (): void => {
+                        if (signal.aborted || this.disposed || this.hosts.get(hostId) !== selected) { finish(new Error('The folder selection was cancelled or replaced.')); return }
+                        if (this.hosts.has(source.machineId)) finish()
+                        else if (this.discovery.host(source.machineId)?.phase === 'unavailable') finish(new Error('The original source machine could not be connected.'))
+                    }
+                    const finish = (error?: Error): void => { stop(); signal.removeEventListener('abort', check); error ? reject(error) : resolve() }
+                    const stop = this.subscribe(check)
+                    signal.addEventListener('abort', check, { once: true }); this.publish(); check()
+                })
+            } finally { if (this.directoryDemand === demand) { this.directoryDemand = undefined; this.publish() } }
+        }
+        const owner = this.hosts.get(source.machineId) ?? selected
+        if (!owner.sourceDirectories) throw new Error('Folder browsing is unavailable on the original source machine. Reconnect it and retry.')
+        const result = await owner.sourceDirectories({ ...source, ...(path === undefined ? {} : { path }) }, signal)
+        signal.throwIfAborted()
+        if (this.disposed || this.hosts.get(hostId) !== selected || this.hosts.get(owner.id) !== owner) throw new Error('The source connection changed. Select the folder again.')
+        if (!result.ok) throw result.error
+        if (result.value.source.machineId !== source.machineId || result.value.source.sourceId !== source.sourceId || result.value.source.engine !== source.engine) throw new Error('The folder result belongs to another source machine.')
+        return result.value
+    }
     /** Replace only a Host's rendering face; catalogs and references stay owned. */
     bindRenderer(hostId: string, renderPane: NonNullable<WorkspaceHost['renderPane']>, warmSession?: WorkspaceHost['warmSession']): () => void {
         const previous = this.hosts.get(hostId)
