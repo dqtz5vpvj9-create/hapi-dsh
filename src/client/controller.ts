@@ -1517,15 +1517,17 @@ export class WorkspaceController {
         this.options.navigation.startSession()
     }
 
-    async createSession(hostId: string, directory: string, requestedId: string): Promise<string> {
+    async createSession(hostId: string, directory: string, requestedId: string, isCurrent: () => boolean = () => true): Promise<string> {
         const host = this.hosts.get(hostId)
         if (!host) throw new Error('The selected Host is offline')
+        const current = (): boolean => isCurrent() && this.hosts.get(hostId) === host
         // A response may have been lost after creation. If the named Session is
         // already visible, opening it also remains safe after it became active;
         // invoking DSH create again would intentionally allocate another Session
         // once that named Session is no longer a reusable blank.
         await host.sessions.refresh()
         const catalog = host.sessions.list.getSnapshot()
+        if (!current()) throw new Error('This creation view was closed or replaced.')
         if (catalog.phase !== 'ready') throw new Error('The selected Host conversation list is not ready. Retry when it reconnects.')
         let sourceId = catalog.byId[requestedId as SessionId]?.id
         if (!sourceId) {
@@ -1533,15 +1535,18 @@ export class WorkspaceController {
             let workspace
             if (!directory.trim()) workspace = await host.workspaces.initializeDefault?.()
             if (!workspace) {
+                if (!current()) throw new Error('This creation view was closed or replaced.')
                 const path = directory.trim() || (host.directoryBrowsing !== false ? (await host.navigation.listDirectory?.())?.path : undefined)
                 if (!path) throw new WorkspaceDirectoryRequired('Choose a working directory on the selected Host')
                 // Official blank Conversation requires Workspace membership.
                 // Adopt only the explicit path or the browse backend's home.
                 workspace = await host.workspaces.create({ path })
             }
+            if (!current()) throw new Error('This creation view was closed or replaced.')
             sourceId = await host.sessions.create({ sessionId: requestedId as SessionId, workspaceId: workspace.workspaceId })
         }
         const id = sessionResourceId(hostId, sourceId)
+        if (!current()) throw new Error('This creation view was closed or replaced. The original conversation was kept.')
         this.openCreatedSession(id)
         await host.sessions.refresh()
         return id

@@ -168,5 +168,27 @@ export class RemoteCreationController {
     if (!session || session.id !== target.id || sourceSessionId(session) !== target.id) throw new Error('The created conversation is not readable at its exact source yet. Its original receipt has been kept.')
     return session
   }
+  /** Consume only this successfully opened presentation intent. Native creation
+   * receipts and the created conversation remain owned by the original source. */
+  async completeOpened(operationId: string, sessionId: string): Promise<boolean> {
+    await this.ready()
+    const generation = this.generation
+    if (!this.ledger || this.disposed || this.state.record?.phase !== 'accepted'
+      || this.state.record.request.operationId !== operationId || this.state.record.target?.id !== sessionId) return false
+    let completed = false
+    const raw = await this.ledger.transition(this.id, (value, terminal) => {
+      this.assertCurrent(generation)
+      if (terminal) { completed = true; return null }
+      if (!value) return null
+      const current = decode(value)
+      if (current.phase === 'accepted' && current.request.operationId === operationId && current.target?.id === sessionId) {
+        completed = true; return null
+      }
+      return value
+    }, this.mirror)
+    this.assertCurrent(generation)
+    this.publish({ record: raw ? decode(raw) : null, error: null })
+    return completed
+  }
   dispose(): void { this.disposed = true; ++this.generation; this.stop(); this.listeners.clear() }
 }

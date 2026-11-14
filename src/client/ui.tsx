@@ -7,7 +7,6 @@ import { paneRectangles, panes, splitBoundaries, type PaneNode, type SplitBounda
 import { PrefixKeys, runWorkspaceCommand, WORKSPACE_PREFIX_TIMEOUT_MS } from './shortcuts.ts'
 import type { SessionSidebarProps, WorkspaceRootProps } from './slots.ts'
 import { SourceCreateDialog } from './source-create-dialog.tsx'
-import { DshSessionForm } from './dsh-session.tsx'
 import { sessionModel, sourceProjection, paneTitle, sessionActivity, sessionDestinations, sessionFolder, windowActivity, windowAlias, windowTitle, type ActivityKind } from '../workspace/presentation.ts'
 import { useNarrowViewport, useWorkspaceViewport } from '../workspace/viewport.ts'
 import { workspaceFocusesSinglePane } from '../shared/workspace-presentation.ts'
@@ -542,12 +541,7 @@ export function WorkspaceRoot({ controller, language, t, preferences, prepareNav
             })}
         </div></Dialog>}
         {rename && <RenameDialog key={rename.id} title={t('renameWindow')} initial={rename.name} save={name => controller.store.renameWindow(rename.id, name)} close={() => setRename(null)} t={t}/>}
-        {snapshot.creation === 'choose' && <Dialog title={t('newSession')} close={controller.closeNewSession} t={t}><div className="hapi-new-choice">
-            <button type="button" onClick={() => controller.requestNewSession('dsh')}><strong>DSH</strong><span>{t('dshCreateHelp')}</span></button>
-            <button type="button" onClick={() => controller.requestNewSession('source')}><strong>{t('sourceEngines')}</strong><span>{t('sourceCreateHelp')}</span></button>
-        </div></Dialog>}
-        {(snapshot.creation === 'source' || snapshot.creation === 'codex') && <Dialog title={`${t('sourceEngines')} · ${t('newSession')}`} close={controller.closeNewSession} t={t}><SourceCreateDialog controller={controller} language={language}/></Dialog>}
-        {snapshot.creation === 'dsh' && <Dialog title={`DSH · ${t('newSession')}`} close={controller.closeNewSession} t={t}><DshSessionForm controller={controller} close={controller.closeNewSession} t={t}/></Dialog>}
+        {snapshot.creation && <Dialog title={t('newSession')} close={controller.closeNewSession} t={t}><SourceCreateDialog controller={controller} language={language}/></Dialog>}
         {help && <Dialog title={t('shortcuts')} close={() => setHelp(false)} t={t}><p>{t('shortcutHint')}</p><dl className="hapi-shortcuts">{shortcuts.map(([key, label]) => <div key={key}><dt><kbd>{key}</kbd></dt><dd>{t(label)}</dd></div>)}</dl><p>{t('closeHelp')}</p></Dialog>}
     </div>
 }

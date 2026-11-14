@@ -5,14 +5,20 @@ import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import type { DirectoryListing } from '@deepseek-ai/dsh-host-directory-picker/types'
 import { errorMessage, WorkspaceDirectoryRequired, type WorkspaceController } from './controller.ts'
 import type { WorkspaceTranslate } from './locales.ts'
+import { isSourceSessionId } from '../remote/protocol.ts'
 
 /** Select a real Host and directory, then create through its official Session Controller. */
-export function DshSessionForm({ controller, close, t }: { controller: WorkspaceController; close: () => void; t: WorkspaceTranslate }) {
+export function DshSessionForm({ controller, close, t, selectedHostId, initialDirectory, onPendingChange }: {
+    controller: WorkspaceController; close: () => void; t: WorkspaceTranslate; selectedHostId?: string; initialDirectory?: string; onPendingChange?(busy: boolean): void
+}) {
     const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot)
     const focused = controller.store.focusedPane().resource
     const selected = focused.kind === 'chat' ? snapshot.catalog.byId[focused.sessionId] : undefined
-    const [hostId, setHostId] = useState(snapshot.creationContext?.hostId ?? selected?.hostId ?? 'local')
-    const [directory, setDirectory] = useState(snapshot.creationContext?.directory ?? selected?.cwd ?? '')
+    const [hostId, setHostId] = useState(selectedHostId ?? snapshot.creationContext?.hostId ?? selected?.hostId ?? 'local')
+    const context = snapshot.creationContext
+    const [directory, setDirectory] = useState(initialDirectory ?? (selectedHostId === undefined
+        ? context ? context.sourceSessionId && isSourceSessionId(context.sourceSessionId) ? '' : context.directory
+            : selected && !isSourceSessionId(selected.sourceSessionId) ? selected.cwd ?? '' : '' : ''))
     const [pending, setPending] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [listing, setListing] = useState<DirectoryListing | null>(null)
@@ -23,11 +29,13 @@ export function DshSessionForm({ controller, close, t }: { controller: Workspace
     const [uncertain, setUncertain] = useState(false)
     const attempt = useRef<{ hostId: string; directory: string; sessionId: string } | null>(null)
     const scan = useRef<AbortController | null>(null)
+    const generation = useRef(0)
     const datalist = useId()
     const host = controller.host(hostId)
     const hosts = controller.availableHosts()
-    const directories = [...new Set(Object.values(snapshot.catalog.byId).filter(row => row.hostId === hostId && row.cwd).map(row => row.cwd!))]
-    useEffect(() => () => { scan.current?.abort() }, [])
+    const directories = [...new Set(Object.values(snapshot.catalog.byId).filter(row => row.hostId === hostId && row.cwd && !isSourceSessionId(row.sourceSessionId)).map(row => row.cwd!))]
+    useEffect(() => { ++generation.current; return () => { ++generation.current; scan.current?.abort() } }, [])
+    useEffect(() => { onPendingChange?.(pending); return () => onPendingChange?.(false) }, [pending, onPendingChange])
     const browse = async (path?: string): Promise<void> => {
         const navigation = host?.navigation
         if (!navigation?.listDirectory || host?.directoryBrowsing === false) return
@@ -45,17 +53,21 @@ export function DshSessionForm({ controller, close, t }: { controller: Workspace
         if (pending || !host) return
         const request = attempt.current ?? { hostId, directory, sessionId: randomId() }
         attempt.current = request
+        const current = generation.current
         setPending(true); setError(null)
-        void controller.createSession(request.hostId, request.directory, request.sessionId).then(close, reason => {
+        void controller.createSession(request.hostId, request.directory, request.sessionId, () => generation.current === current).then(() => {
+            if (generation.current === current) close()
+        }, reason => {
+            if (generation.current !== current) return
             // DSH's public named-blank contract makes an explicit retry of this
             // exact identity safe. It never changes the target directory mid-flight.
             if (reason instanceof WorkspaceDirectoryRequired) { attempt.current = null; setError(t('directoryRequired')) }
             else { setUncertain(true); setError(errorMessage(reason)) }
-        }).finally(() => setPending(false))
+        }).finally(() => { if (generation.current === current) setPending(false) })
     }}>
-        <CreationChoice label={t('machine')} value={hostId} disabled={pending || uncertain} placeholder={t('machine')}
+        {selectedHostId === undefined && <CreationChoice label={t('machine')} value={hostId} disabled={pending || uncertain} placeholder={t('machine')}
             options={hosts.map(item => ({ id: item.id, label: item.id === 'local' ? t('primaryHost') : item.label }))}
-            onChange={next => { scan.current?.abort(); setListing(null); setBrowsing(false); setHostId(next); setDirectory(''); setError(null) }}/>
+            onChange={next => { scan.current?.abort(); setListing(null); setBrowsing(false); setHostId(next); setDirectory(''); setError(null) }}/>}
         <label className="hhpi-create-field">{t('directory')}<Input value={directory} list={datalist} disabled={pending || uncertain}
             placeholder={t('hostDefaultDirectory')} onChange={event => setDirectory(event.currentTarget.value)}/></label>
         <datalist id={datalist}>{directories.map(path => <option key={path} value={path}/>)}</datalist>
@@ -75,6 +87,6 @@ export function DshSessionForm({ controller, close, t }: { controller: Workspace
         </section>}
         {error && <p className="hapi-error" role="alert">{error}</p>}
         {uncertain && <p>{t('namedSessionRetry')}</p>}
-        <div className="hapi-button-row"><Button type="button" disabled={pending} onClick={close}>{t('cancel')}</Button><Button variant="primary" type="submit" disabled={pending || !host}>{pending ? t('loading') : uncertain ? t('retry') : t('create')}</Button></div>
+        <div className="hapi-button-row"><Button type="button" onClick={() => { ++generation.current; close() }}>{t('cancel')}</Button><Button variant="primary" type="submit" disabled={pending || !host}>{pending ? t('loading') : uncertain ? t('retry') : t('create')}</Button></div>
     </form>
 }

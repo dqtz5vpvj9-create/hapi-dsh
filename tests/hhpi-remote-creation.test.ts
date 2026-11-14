@@ -82,6 +82,24 @@ test('an unavailable created target keeps its identity and reopens without anoth
   assert.equal((await owner.resolveTarget()).nativeId, session.nativeId); assert.equal(writes, 1)
 })
 
+test('opening the exact accepted result completes that intent and a later explicit creation gets a fresh identity', async t => {
+  const storage = new BrowserStorage(), access = { storage, scope: 'creation-completed' }, requests: SourceCreateRequest[] = []
+  const api = { ...readApi(), async create(request: SourceCreateRequest) { requests.push(request); return ok(accepted(request)) } }
+  const owner = new RemoteCreationController(api, access, { operationId: () => 'first' }); t.after(() => owner.dispose())
+  await owner.start(source, '/repo')
+  assert.equal(await owner.completeOpened('another-operation', session.id), false)
+  assert.equal(await owner.completeOpened('first', session.id + '-foreign'), false)
+  assert.equal(owner.getSnapshot().record?.phase, 'accepted')
+  await owner.resolveTarget()
+  assert.equal(await owner.completeOpened('first', session.id), true)
+  assert.equal(owner.getSnapshot().record, null)
+  const next = new RemoteCreationController(api, access, { operationId: () => 'second' }); t.after(() => next.dispose()); await next.ready()
+  assert.equal(next.getSnapshot().record, null)
+  assert.equal((await next.start(source, '/repo'))?.request.operationId, 'second')
+  assert.deepEqual(requests.map(request => request.operationId), ['first', 'second'])
+  assert.equal(await owner.completeOpened('first', session.id), false, 'a late opener cannot consume the next creation')
+})
+
 test('quota and account revocation cannot dispatch or resurrect a saved creation', async t => {
   const storage = new BrowserStorage(), access = { storage, scope: 'creation-revoke' }; let writes = 0
   const gate = Promise.withResolvers<SourceCreationReceipt>(), entered = Promise.withResolvers<SourceCreateRequest>()
