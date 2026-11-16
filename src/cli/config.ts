@@ -7,6 +7,7 @@ import { replacePrivateFile } from '../shared/atomic-rename.ts';
 import { isWildcardHost, normalizeBindAddress } from '@deepseek-ai/dsh-host-webserver';
 import { parseSources, parseSourceWorkspaces, type SourceWorkspaceConfig } from '../remote/config.ts';
 import type { DirectSourceConfig } from '../remote/protocol.ts';
+import type { RemoteCarrierConfig } from '../shared/remote-carrier.ts';
 
 export const DSH_VERSION = '0.2.2-rc.1';
 export const CONFIG_VERSION = 1;
@@ -29,6 +30,7 @@ export interface RuntimeConfig {
         loginPasswordFile?: string;
     };
     federation?: { credentialsFile: string };
+    remote?: RemoteCarrierConfig;
     sources?: DirectSourceConfig[];
     sourceWorkspaces?: SourceWorkspaceConfig[];
 }
@@ -81,7 +83,7 @@ function trustedAuthority(value: unknown): string {
 export function parseConfig(input: unknown, options: { composition?: 'host' | 'runner' } = {}): RuntimeConfig {
     const config = record(input, 'configuration');
     if (Object.hasOwn(config, 'hapi')) throw new Error('Legacy HAPI Hub configuration is retired. Keep the original file for offline migration or recovery, then configure native sources or officially paired Runners before starting.');
-    keys(config, ['version', 'dsh', 'server', 'federation', 'sources', 'sourceWorkspaces'], 'configuration');
+    keys(config, ['version', 'dsh', 'server', 'federation', 'remote', 'sources', 'sourceWorkspaces'], 'configuration');
     if (config.version !== CONFIG_VERSION) throw new Error(`Unsupported configuration version; expected ${CONFIG_VERSION}`);
     const dsh = record(config.dsh, 'dsh');
     const server = record(config.server, 'server');
@@ -146,6 +148,25 @@ export function parseConfig(input: unknown, options: { composition?: 'host' | 'r
         const credentialsFile = string(federation.credentialsFile, 'federation.credentialsFile');
         if (!isAbsolute(credentialsFile)) throw new Error('federation.credentialsFile must be an absolute path');
         result.federation = { credentialsFile };
+    }
+    if (config.remote !== undefined) {
+        const remote = record(config.remote, 'remote'); keys(remote, ['serverUrl', 'hosts'], 'remote');
+        const serverUrl = normalizeHttpUrl(remote.serverUrl, 'remote.serverUrl');
+        if (new URL(serverUrl).origin !== serverUrl) throw new Error('remote.serverUrl must be a bare origin');
+        if (!Array.isArray(remote.hosts) || remote.hosts.length > 256) throw new Error('remote.hosts must be an array of at most 256 Host bindings');
+        const ids = new Set<string>(), devices = new Set<string>();
+        const hosts = remote.hosts.map(input => {
+            const binding = record(input, 'Remote Host binding'); keys(binding, ['hostId', 'deviceId', 'identityKey'], 'Remote Host binding');
+            const hostId = string(binding.hostId, 'remote hostId');
+            const deviceId = string(binding.deviceId, 'remote deviceId');
+            const identityKey = string(binding.identityKey, 'remote identityKey');
+            if (!/^[A-Za-z0-9_-]{1,128}$/.test(hostId) || !/^[A-Za-z0-9-]{16,64}$/.test(deviceId) ||
+                !/^[A-Za-z0-9_-]{43}$/.test(identityKey) || ids.has(hostId) || devices.has(deviceId)) {
+                throw new Error('Remote Host bindings must have unique stable IDs and a pinned public identity');
+            }
+            ids.add(hostId); devices.add(deviceId); return { hostId, deviceId, identityKey };
+        });
+        result.remote = { serverUrl, hosts };
     }
     return result;
 }

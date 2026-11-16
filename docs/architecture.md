@@ -82,3 +82,26 @@ This extraction does not change the live network carrier or start a second
 Codex executor. The new Remote multi-host transport is a separate acceptance
 step. Native package tests, HHPI checks and clean-package installation validate
 the shared dependency; they do not establish Web/Android or Windows cutover.
+
+### Remote carrier admission and staged Host cutover
+
+The optional `remote` runtime configuration binds existing HHPI Host IDs to Remote
+Host device IDs and pinned public keys. `local` names this display Host; every
+other ID remains the existing federation identity, so old session links retain
+their meaning. An absent binding keeps the existing carrier. A selected binding
+has one Remote carrier and never falls back to an HTTP writer after an error.
+
+The authenticated owner HTTP endpoints `/hapi-dsh/remote/describe` and
+`/hapi-dsh/remote/enroll` preserve the existing HHPI login. Enrollment calls the
+installed Remote Host plugin's `registerOwnedClient` method with the Client's
+public descriptor and returns independent Client credentials bound to that
+identity. Host credentials and Client private keys never cross this boundary.
+Only a self-hosted account-owned Host can enroll; paired inbound-only Hosts
+cannot. Configuration does not enable a binding until that Host passes cutover
+acceptance. Default configuration exposes an empty binding list.
+
+A system service must launch HHPI through its stable profile path
+`DSH_HOME/profiles/PROFILE/node_modules/hapi-dsh/dist/cli.js`, not a historical
+release directory. The profile link follows an installed upgrade or rollback;
+retaining two rollback releases must not leave the service pointing into a third
+release that can be pruned.

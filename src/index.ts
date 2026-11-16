@@ -12,6 +12,7 @@ import { WorkspaceShell } from './hub/workspace-shell.ts';
 import { WorkspaceRepository } from './hub/workspaces.ts';
 import { FederationHub } from './hub/federation.ts';
 import { runtimeIdentity } from './runner/identity.ts';
+import { mountRemoteCarrier, type RemoteOwnerRuntime } from './shared/remote-carrier.ts';
 import { AppServicesController } from './workspace/app-service.ts';
 import { ShareService } from './workspace/share-service.ts';
 import { AppNotificationHost } from './workspace/notification-host.ts';
@@ -60,6 +61,8 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     }), 'hapi-dsh: multiplexed official plugin events');
     // The Host controller publishes one package face containing both namespaces.
     const gateway = installSources(ctx, config.sources ?? [], join(dataDirectory, 'sources'), config.sourceWorkspaces);
+    ctx.effect(() => mountRemoteCarrier({ webServer: ctx.webServer, connection: ctx.connection,
+        runtime: () => ctx.get('dshRemote') as RemoteOwnerRuntime | undefined }, config.remote), 'hhpi: Remote owner admission');
     installSourceTranslation(ctx, gateway, join(dataDirectory, 'application', 'translations.sqlite'));
     const appOrigin = new URL(config.server.publicUrl ?? `http://localhost:${config.server.port}`).origin;
     const appDirectory = join(dataDirectory, 'application');
