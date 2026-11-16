@@ -95,6 +95,19 @@ test('geometry diagnostics correlate each slow call with anonymous retained, cha
   } finally { dom.window.close(); }
 });
 
+test('native queue observation stays scoped to the smoke conversation and cannot mutate', () => {
+  const target = 'hhpi:machine:source:codex:thread';
+  for (const method of ['hhpi/queue/list', 'thread/queue/list']) {
+    const request = { sourceId: 'source', method, params: { threadId: 'thread' } };
+    const policy = value => hhpiRequestPolicy('hhpi/nativeCall', { payload: { args: { request: value } } }, target);
+    assert.equal(policy(request), 'read');
+    assert.equal(policy({ ...request, sourceId: 'other' }), 'block');
+    assert.equal(policy({ ...request, params: { threadId: 'other' } }), 'block');
+    assert.equal(policy({ ...request, operationId: 'write' }), 'block');
+    assert.equal(policy({ ...request, method: method.replace('/list', '/add') }), 'block');
+  }
+});
+
 test('the navigation checkpoint includes a head read queued by the previous publication', async () => {
   const first = Promise.withResolvers(), next = Promise.withResolvers();
   const publications = [first.promise], responses = new Set();

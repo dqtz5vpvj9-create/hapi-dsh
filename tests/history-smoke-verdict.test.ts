@@ -24,6 +24,11 @@ test('release probe blocks execution and unknown writes while preserving genuine
   assert.equal(requestPolicy('dynamicCordisRunner/syncInspectManifest', { payload: { args: { providers: [], execute: true } } }), 'block')
   assert.equal(requestPolicy('dynamicCordisRunner/syncInspectManifest', { payload: { args: { providers: [{ id: 'sample', description: 'read', methods: [], execute: true }] } } }), 'block')
   assert.equal(streamPolicy('/hapi-dsh/remote.mux', { type: 'open', endpoint: 'workspace/follow' }), 'read')
+  const proxy = '/hapi-dsh/socket?machine=fixture-host&path=%2Fremote.mux'
+  assert.equal(streamPolicy(proxy, { type: 'open', endpoint: 'workspace/follow' }), 'read')
+  assert.equal(streamPolicy(proxy, { type: 'item', streamId: 'control', value: { action: 'cancel' } }), 'block')
+  assert.equal(streamPolicy('/hapi-dsh/socket?path=%2Fremote.mux', { type: 'open', endpoint: 'workspace/follow' }), 'block')
+  assert.equal(streamPolicy('/hapi-dsh/socket?machine=fixture-host&path=%2Fterminal', { type: 'open', endpoint: 'workspace/follow' }), 'block')
   assert.equal(streamPolicy('/hapi-dsh/remote.mux', { type: 'open', endpoint: 'session/control' }), 'read')
   assert.equal(streamPolicy('/hapi-dsh/remote.mux', { type: 'item', streamId: 'control', value: { action: 'cancel' } }), 'block')
   assert.equal(streamPolicy('/hapi-dsh/notifications', { type: 'presence', visibility: 'visible' }), 'isolate-presence')

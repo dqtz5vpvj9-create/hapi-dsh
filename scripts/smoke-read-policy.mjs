@@ -29,6 +29,9 @@ export function requestPolicy(method, body) {
   return 'block';
 }
 export function streamPolicy(path, message) {
+  const address = new URL(path, 'https://smoke.invalid');
+  path = address.pathname === '/hapi-dsh/socket' && address.searchParams.get('machine')
+    ? address.searchParams.get('path') ?? '' : address.pathname;
   if (path.endsWith('/hapi-dsh/notifications') && message?.type === 'presence'
     && ['visible', 'hidden'].includes(message.visibility)
     && Object.keys(message).length === 2) return 'isolate-presence';

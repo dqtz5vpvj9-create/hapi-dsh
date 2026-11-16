@@ -130,6 +130,9 @@ export function hhpiRequestPolicy(method, body, targetId) {
     const request = args.request;
     if (request?.sourceId !== sourceId || request.operationId !== undefined) return 'block';
     if (request.method === 'model/list' || request.method === 'permissionProfile/list') return 'read';
+    if (request.method === 'hhpi/queue/list' || request.method === 'thread/queue/list') {
+      return request.params?.threadId === nativeId ? 'read' : 'block';
+    }
     return request.method === 'thread/read' && request.params?.threadId === nativeId && request.params?.includeTurns === false ? 'read' : 'block';
   }
   if (method === 'hhpi/catalog') return requestPolicy(method, body) === 'read' && args.request === undefined ? 'read' : 'block';
@@ -360,7 +363,12 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
   const originalSend = WebSocket.prototype.send;
   WebSocket.prototype.send = function(data) {
     let message, path = '';
-    try { message = typeof data === 'string' ? JSON.parse(data) : null; path = new URL(this.url).pathname; } catch {}
+    try {
+      message = typeof data === 'string' ? JSON.parse(data) : null;
+      const address = new URL(this.url);
+      path = address.pathname === '/hapi-dsh/socket' && address.searchParams.get('machine')
+        ? address.searchParams.get('path') ?? '' : address.pathname;
+    } catch {}
     if (path.endsWith('/hapi-dsh/notifications') && message?.type === 'presence'
       && ['visible', 'hidden'].includes(message.visibility) && Object.keys(message).length === 2) {
       state.isolatedPresence++; return;
