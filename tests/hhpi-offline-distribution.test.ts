@@ -16,13 +16,16 @@ test('the separate recovery archive restores selected draft and Blob bytes witho
     const paths = listTgz(bytes).map(entry => entry.path)
     for (const path of ['package/cli.mjs', 'package/api.mjs', 'package/README.md', 'package/LICENSES/HHPI-AGPL-3.0-only.txt',
         'package/LICENSES/ZOD-MIT.txt', 'package/SOURCE/scripts/migrations/hapi-offline/sessions.ts',
-        'package/SOURCE/scripts/migrations/hapi-offline/pack.mjs']) assert.ok(paths.includes(path), path)
+        'package/SOURCE/scripts/migrations/hapi-offline/pack.mjs',
+        'package/LICENSES/Remote-native-runtime-AGPL-3.0-only.txt',
+        'package/SOURCE/node_modules/@dsh-remote/native-runtime/src/remote/protocol.ts',
+        'package/SOURCE/node_modules/@dsh-remote/native-runtime/tsconfig.json']) assert.ok(paths.includes(path), path)
     assert.equal(paths.some(path => path.startsWith('package/dist/') || path.includes('/runner-pairings.json')), false)
     await extractTgz(bytes, join(root, 'extracted'))
     const packageRoot = join(root, 'extracted/package'), manifest = JSON.parse(await readFile(join(packageRoot, 'manifest.json'), 'utf8'))
     assert.equal(manifest.productRegistration, false)
     assert.equal(manifest.automaticDispatch, false)
-    assert.deepEqual(manifest.bundledDependencies.map((value: { name: string }) => value.name), ['zod'])
+    assert.deepEqual(manifest.bundledDependencies.map((value: { name: string }) => value.name), ['zod', '@dsh-remote/native-runtime'])
     assert.equal(manifest.runtimeImports.some((value: string) => /node:(?:https?|net|tls|child_process)/.test(value)), false)
     const metadata = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
     assert.equal(metadata.dsh, undefined); assert.equal(metadata.dependencies, undefined)

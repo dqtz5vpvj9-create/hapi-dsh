@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** A separate offline archive, never a product plugin or bundle payload. */
 import { build } from 'esbuild';
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -16,7 +16,7 @@ try {
     const packageRoot = join(scratch, 'package');
     await mkdir(packageRoot);
     const result = await build({ absWorkingDir: root, entryPoints: [join(directory, 'api.ts')], outfile: join(packageRoot, 'api.mjs'),
-        bundle: true, platform: 'node', format: 'esm', target: 'node24', metafile: true, legalComments: 'linked',
+        bundle: true, platform: 'node', format: 'esm', target: 'node24', metafile: true, legalComments: 'linked', preserveSymlinks: true,
         banner: { js: '// HHPI offline recovery. Corresponding source and licenses accompany this archive.' },
     });
     const sourceFiles = Object.keys(result.metafile.inputs).sort();
@@ -42,8 +42,23 @@ try {
     for (const [from, name] of [['LICENSE', 'HHPI-AGPL-3.0-only.txt'], ['NOTICE', 'NOTICE.txt'], ['node_modules/zod/LICENSE', 'ZOD-MIT.txt']])
         await copyFile(join(root, from), join(packageRoot, 'LICENSES', name));
     const zod = JSON.parse(await readFile(join(root, 'node_modules/zod/package.json'), 'utf8'));
+    const nativePath = 'node_modules/@dsh-remote/native-runtime';
+    const native = JSON.parse(await readFile(join(root, nativePath, 'package.json'), 'utf8'));
+    const upstreams = JSON.parse(await readFile(join(root, 'UPSTREAMS.json'), 'utf8'));
+    if (native.name !== upstreams.remoteNativeRuntime.package || native.version !== upstreams.remoteNativeRuntime.version)
+        throw Error('Offline recovery requires the pinned shared native runtime.');
+    // The protocol now comes from the shared package. Its compiled closure is
+    // above; include the original buildable source and its license as well.
+    for (const name of ['src', 'scripts', 'tests', 'tsconfig.json', 'package.json', 'README.md', 'NOTICE.md', 'LICENSE']) {
+        const target = join(packageRoot, 'SOURCE', nativePath, name);
+        await mkdir(dirname(target), { recursive: true });
+        await cp(join(root, nativePath, name), target, { recursive: true });
+    }
+    await copyFile(join(root, nativePath, 'LICENSE'), join(packageRoot, 'LICENSES/Remote-native-runtime-AGPL-3.0-only.txt'));
+    await copyFile(join(root, nativePath, 'NOTICE.md'), join(packageRoot, 'LICENSES/Remote-native-runtime-NOTICE.md'));
     await writeFile(join(packageRoot, 'SOURCE/package.json'), JSON.stringify({ name: 'hhpi-offline-recovery-source', private: true,
-        version: manifest.version, type: 'module', license: manifest.license, dependencies: { zod: zod.version },
+        version: manifest.version, type: 'module', license: manifest.license,
+        dependencies: { zod: zod.version, [native.name]: upstreams.remoteNativeRuntime.tarball },
         devDependencies: { esbuild: manifest.devDependencies.esbuild },
     }, null, 2) + '\n');
     await copyFile(join(root, 'LICENSE'), join(packageRoot, 'SOURCE/LICENSE'));
@@ -56,7 +71,8 @@ try {
     if (runtimeImports.some(value => !value.startsWith('node:'))) throw Error('Standalone recovery has an unbundled runtime dependency');
     await writeFile(join(packageRoot, 'manifest.json'), JSON.stringify({ version: 1, tool: 'hapi-dsh-offline-recovery', toolVersion: manifest.version,
         node: '>=24', productRegistration: false, automaticInstall: false, automaticDispatch: false,
-        runtimeImports: [...new Set(runtimeImports)].sort(), bundledDependencies: [{ name: 'zod', version: zod.version, license: 'MIT' }],
+        runtimeImports: [...new Set(runtimeImports)].sort(), bundledDependencies: [{ name: 'zod', version: zod.version, license: 'MIT' },
+            { name: native.name, version: native.version, license: native.license }],
         sourceFiles, buildTool: { name: 'esbuild', version: manifest.devDependencies.esbuild },
     }, null, 2) + '\n');
     await mkdir(output, { recursive: true });
