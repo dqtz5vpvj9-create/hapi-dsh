@@ -13,6 +13,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { readTgz } from './tar.mjs';
 import { canonicalJson, sha256Bytes } from './digest.mjs';
 import { verifyReleaseDirectory } from './release.mjs';
+import { prepareNativeRuntimeDependency } from './native-runtime-dependency.mjs';
 
 const RUNTIME_INSTALL_TIMEOUT_MS = 30 * 60 * 1000;
 const RUNTIME_IDENTITY_FILE = 'runtime-identity.json';
@@ -185,6 +186,7 @@ export async function prepareRuntime({ run, pnpm, pnpmVersion, env, releaseRoot,
     // pnpm reconciles changed file: payloads and dependency inputs itself. Keep
     // existing resolution state instead of deleting it whenever its path moves.
     const lockfileSource = await reuseRuntimeLockfile({ releaseRoot, manifest, previousReleaseRoot, pnpmVersion, logger });
+    const pinnedFiles = await prepareNativeRuntimeDependency({ releaseRoot, manifest });
     const install = await run({ ...pnpm, args: [...pnpm.args, 'install', '--prod', '--ignore-scripts', '--no-frozen-lockfile'] },
         { env, cwd: directory, timeoutMs: RUNTIME_INSTALL_TIMEOUT_MS });
     if (install.exitCode !== 0) {
@@ -203,7 +205,7 @@ export async function prepareRuntime({ run, pnpm, pnpmVersion, env, releaseRoot,
         packages.push(await overlayPackage(directory, join(releaseRoot, item.tarball), item, logger));
     }
     const files = {};
-    for (const path of ['package.json', 'pnpm-lock.yaml', 'node_modules/.pnpm/lock.yaml', 'node_modules/.modules.yaml']) {
+    for (const path of ['package.json', 'pnpm-lock.yaml', 'node_modules/.pnpm/lock.yaml', 'node_modules/.modules.yaml', ...pinnedFiles]) {
         files[path] = sha256Bytes(await readFile(join(directory, path)));
     }
     // Seal the DSH launcher's own files (not its nested dependency closure) so

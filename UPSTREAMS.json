@@ -40,6 +40,8 @@
     "license": "AGPL-3.0-only",
     "package": "@dsh-remote/native-runtime",
     "sourceDirectory": "packages/native-runtime",
+    "tarball": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/download/hhpi-native-v0.1.0-2/dsh-remote-native-runtime-0.1.0-hhpi.2.tgz",
+    "integrity": "sha512-IG1g3OkEdfAwdRe843rb5oF+EZYv1Tbn+tfbS5yKSqA2YQmmPINQy3lLsJIkvzyUL5UYWPrjGOFO22fJMsRPuA==",
     "release": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/tag/hhpi-native-v0.1.0-2"
   }
 }
