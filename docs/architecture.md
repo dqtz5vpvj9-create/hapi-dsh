@@ -67,11 +67,16 @@ Host、Client、Runner 入口分别是 `src/index.ts`、`src/client/index.ts`、
 
 ## Shared native implementation (Remote migration)
 
-The 52 native runtime and shared contract modules now resolve to the exact
-`@dsh-remote/native-runtime@0.1.0-hhpi.2` release in the owned Remote fork.
-`src/remote` compatibility exports preserve the existing import graph, persisted
+Native Codex execution, source workspaces, file operations, durable uploads,
+navigation and terminal ownership now resolve to the exact
+`@dsh-remote/native-runtime@0.1.0-hhpi.3` release in the owned Remote fork.
+Compatibility exports preserve the existing import graph, persisted
 source IDs, private native endpoints and receipt stores. HHPI no longer contains
-a second implementation of these modules. Provenance is in `UPSTREAMS.json`.
+a second implementation of these modules. Their source behavior contracts live
+with the Remote implementation; client composition and interface contracts stay
+here. Provenance is in `UPSTREAMS.json`. Source terminals use the pinned DSH
+extension SDK from the same runtime closure; a plain SDK without resource-owned
+terminals is rejected before registering a local source workspace.
 
 This extraction does not change the live network carrier or start a second
 Codex executor. The new Remote multi-host transport is a separate acceptance

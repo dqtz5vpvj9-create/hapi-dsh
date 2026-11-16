@@ -35,13 +35,13 @@
     "repository": "https://github.com/dqtz5vpvj9-create/ds-harness-remote",
     "upstreamRepository": "https://github.com/liguobao/ds-harness-remote",
     "upstreamCommit": "f8e62202b709240452e5cc0c8924c2e67d73521c",
-    "commit": "37959cda77ff2b38ad1320a797adb8a6b9a1603c",
-    "version": "0.1.0-hhpi.2",
+    "commit": "0bdd0158e9692dba95e0f3905a1ef6a7856237b8",
+    "version": "0.1.0-hhpi.3",
     "license": "AGPL-3.0-only",
     "package": "@dsh-remote/native-runtime",
     "sourceDirectory": "packages/native-runtime",
-    "tarball": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/download/hhpi-native-v0.1.0-2/dsh-remote-native-runtime-0.1.0-hhpi.2.tgz",
-    "integrity": "sha512-IG1g3OkEdfAwdRe843rb5oF+EZYv1Tbn+tfbS5yKSqA2YQmmPINQy3lLsJIkvzyUL5UYWPrjGOFO22fJMsRPuA==",
-    "release": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/tag/hhpi-native-v0.1.0-2"
+    "tarball": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/download/hhpi-native-v0.1.0-3/dsh-remote-native-runtime-0.1.0-hhpi.3.tgz",
+    "integrity": "sha512-7aVwwymV1tOvJmSljvvGNRYQHqSiVqWrbL/Jcularng2ikVuyFbF58JtROoPAKv2INuqJ5U3q5GBrbhlMZ/K0w==",
+    "release": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/tag/hhpi-native-v0.1.0-3"
   }
 }

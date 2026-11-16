@@ -1,3 +1,2 @@
-/** Binary bytes use an authenticated exact Fetch route, separate from HHPI v1 JSON. */
-export const SOURCE_UPLOAD_CHUNK_PATH = '/api/hhpi/workspace/uploadChunk';
-export const SOURCE_UPLOAD_CHUNK_BYTES = 256 * 1024;
+// Shared implementation and license: Remote fork packages/native-runtime.
+export * from '@dsh-remote/native-runtime/shared/source-upload';
