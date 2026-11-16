@@ -1,3 +1,4 @@
+import { clientDependencies } from './contracts/official-client-dependencies.ts'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -56,7 +57,7 @@ test('the unchanged official incremental assembler accepts a final hidden upsert
     new Function('window', source)({ __ModuleLoader__: { load(value: typeof registration) { registration = value } } })
     assert.ok(registration)
     const unused = new Proxy({}, { get() { throw new Error('The assembler-only test unexpectedly reached a browser service') } })
-    const exports = registration.factory(id => id === '@deepseek-ai/dsh-client-ui-primitives' || id === '@deepseek-ai/dsh-client-store' ? unused : require(id))
+    const exports = registration.factory(clientDependencies(id => id === '@deepseek-ai/dsh-client-ui-primitives' || id === '@deepseek-ai/dsh-client-store' ? unused : require(id)))
     type Node = ChatNode<'hapi-tool-progress'>
     type Input = { type: 'event'; event: ConversationMatch['event'] }
     const Assembler = exports.ConversationNodeAssembler as new (events: { entries(): typeof definition[]; fallbackEntry(): undefined },

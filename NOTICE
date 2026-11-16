@@ -113,3 +113,14 @@ original notice remain for distribution provenance; current browser code does
 not load the Companion QR encoder.
 Copyright (c) 2012 Ryan Day. MIT License.
 Original license: docs/licenses/QRCODE-MIT.txt.
+
+Remote shared native runtime
+---------------------------
+The native Codex implementation is maintained in @dsh-remote/native-runtime
+0.1.0-hhpi.2, under AGPL-3.0-only, in the owned ds-harness-remote fork.
+HHPI retains compatibility exports and consumes the immutable release archive.
+Source: https://github.com/dqtz5vpvj9-create/ds-harness-remote/tree/hhpi-native-v0.1.0-2/packages/native-runtime
+The package includes corresponding source, tests, build scripts, LICENSE and
+NOTICE.md. It derives from HHPI 28076c7a35adc4f62bacab6a82b786193942b9a8;
+its existing HAPI and DeepSeek attribution remains in force. The Remote
+repository's other MIT components do not change this package's AGPL license.

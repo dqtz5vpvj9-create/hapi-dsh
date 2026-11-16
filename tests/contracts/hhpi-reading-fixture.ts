@@ -1,3 +1,4 @@
+import { clientDependencies } from './official-client-dependencies.ts'
 import { memoryOperations } from '../fixtures/operation-transactions.ts'
 /** Installed production Session/Renderer/Conversation/Input/Chat contracts.
  * Only source RPC, settings, locale and unused workspace/file services are fixtures.
@@ -45,10 +46,10 @@ function official(name: string, extension = true, rendering = true): { apply(ctx
     else Reflect.deleteProperty(target, '__ModuleLoader__')
   }
   assert.ok(registration)
-  return registration.factory(rendering ? resolveOfficialBrowserDependency : Object.assign((id: string) => {
+  return registration.factory(rendering ? resolveOfficialBrowserDependency : Object.assign(clientDependencies((id: string) => {
     if (id !== '@deepseek-ai/dsh-client-ui-primitives') return require(id)
     return new Proxy({}, { get: (_target, key) => () => { throw new Error(`The assembly-only fixture cannot render ${String(key)}.`) } })
-  }, { asset: (id: string) => id }))
+  }), { asset: (id: string) => id }))
 }
 /** Compile a freshly prepared pinned Chat package without mutating the installed extension. */
 async function preparedChat(source: string): Promise<ReturnType<typeof official>> {

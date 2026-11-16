@@ -173,7 +173,7 @@ async function fixture(t: TestContext, options: { fillPage?: boolean; hhpiPane?:
     const RemotePaneViewsClass = options.hhpiPane ? (await loadSourceClasses()).RemotePaneViews : undefined
     const paneViews = RemotePaneViewsClass ? new RemotePaneViewsClass() : undefined
     let paneReference: SessionReference | undefined, paneReady = false
-    const paneOwner = { ...session, historyRead: { version: 1, openView: async () => ({}) },
+    const paneOwner = { ...session, registerDeliveryReader: () => () => {}, reconcilePublishedSubmissions() {}, historyRead: { version: 1, openView: async () => ({}) },
         metadata: observable({}), history: { sourceEpoch: 'preparation-epoch', savedAnchor: () => undefined } }
     const held = { sessionId: id, binding: { ...binding, session: paneOwner } as unknown as SessionBinding, ready: preparation.promise,
         release() {}, [Symbol.dispose]() {} } as SessionReference

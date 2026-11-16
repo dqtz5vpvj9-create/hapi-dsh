@@ -1,15 +1,2 @@
-import type { ImageAttachmentLimits } from '@deepseek-ai/dsh-attachment'
-
-/** Existing HHPI image frame budget, including base64 expansion. */
-export const SOURCE_IMAGE_BASE64_LIMIT = 8 * 1024 * 1024
-export const SOURCE_IMAGE_COUNT_LIMIT = 10
-export const SOURCE_INPUT_IMAGE_LIMITS: Readonly<ImageAttachmentLimits> = Object.freeze({
-  maxImageBytes: 20 * 1024 * 1024,
-  maxMessageImageBytes: 200 * 1024 * 1024,
-  maxImagesPerMessage: SOURCE_IMAGE_COUNT_LIMIT,
-  maxImagePixels: 64_000_000,
-  // Match the official raster admission ceiling. A long screenshot must not
-  // lose most of its width merely to fit the default preview long-edge cap.
-  maxImageDimension: 65535,
-  mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] as const,
-})
+// Shared implementation and license: Remote fork packages/native-runtime.
+export * from '@dsh-remote/native-runtime/shared/source-image-limits';

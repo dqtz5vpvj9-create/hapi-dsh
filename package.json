@@ -185,17 +185,18 @@
     "@deepseek-ai/dsh-util-workspace-path": "0.2.2-rc.1",
     "@deepseek-ai/dsh-web-frontend": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "3.19.0",
+    "@dsh-remote/native-runtime": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/download/hhpi-native-v0.1.0-2/dsh-remote-native-runtime-0.1.0-hhpi.2.tgz",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-serialize": "0.14.0",
     "@xterm/headless": "6.0.0",
     "@xterm/xterm": "6.0.0",
     "html2canvas-pro": "2.2.4",
     "qrcode": "1.5.4",
+    "sharp": "0.35.5",
     "web-push": "3.6.7",
     "ws": "8.21.0",
     "yaml": "2.8.2",
-    "zod": "4.4.3",
-    "sharp": "0.35.5"
+    "zod": "4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.1.0"

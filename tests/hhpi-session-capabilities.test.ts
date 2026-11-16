@@ -74,6 +74,10 @@ async function fixture(t: TestContext, initial = metadata()) {
   const reference = retain()
   await reference.ready
   const face = reference.binding.session as RemoteSourceSession
+  // This source-owner contract supplies the reader acknowledgement boundary;
+  // actual reader publication is covered by the history journey tests.
+  const published = new Set<string>()
+  t.after(face.registerDeliveryReader(nativeId => published.has(nativeId)))
   await face.historyRead.openView('capability-reader', { events: 20, bytes: 16_384, nodes: 20 })
   const row = (id = initial.id): SourceSession => sessions.list.getSnapshot().byId[id as SessionReference['sessionId']]!.projectionValues!.hhpiSource as SourceSession
   const holdCatalog = (values: SourceSession[]) => {
@@ -91,6 +95,7 @@ async function fixture(t: TestContext, initial = metadata()) {
     observe: async (operationId: string) => {
       const retired = Promise.withResolvers<void>(), stop = face.subscribe(() => { if (!face.getSnapshot().pendingSubmissions.length) retired.resolve() })
       try {
+        published.add(operationId)
         index.edit(index.session, () => index.put('native-user-message', { type: 'user/message', time: 1001, surfaceOp: 'append',
           data: { id: 'native-user-message', role: 'user', source: { kind: 'user-rpc', rpcId: operationId }, content: [{ type: 'text', text: 'hello' }] } } as EventInput))
         await retired.promise

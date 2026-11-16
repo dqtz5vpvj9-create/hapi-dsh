@@ -64,3 +64,16 @@ JSON 导出保留源事件，Markdown 使用可读用户/助手正文、工具�
 Host、Client、Runner 入口分别是 `src/index.ts`、`src/client/index.ts`、`src/runner/index.ts`。官方 plugin/profile 管理仍负责依赖与注册；技术包名、数据目录和公开技术标识暂不改名。[安装](install.md)、[分发](distribution.md)和[测试](testing.md)说明对应流程。
 
 源码和契约完成不等于整项交付。Windows 原源 Runner/真实 FS与PTY、真机输入/通知、最终 bundle 的全量检查和同版发布仍需各自证据。旧测量、旧 rc 安装与历史站点记录保留于[旧架构记录](archive/architecture-before-hhpi-retirement-20261107.md)，不能用于证明当前产物已通过。
+
+## Shared native implementation (Remote migration)
+
+The 52 native runtime and shared contract modules now resolve to the exact
+`@dsh-remote/native-runtime@0.1.0-hhpi.2` release in the owned Remote fork.
+`src/remote` compatibility exports preserve the existing import graph, persisted
+source IDs, private native endpoints and receipt stores. HHPI no longer contains
+a second implementation of these modules. Provenance is in `UPSTREAMS.json`.
+
+This extraction does not change the live network carrier or start a second
+Codex executor. The new Remote multi-host transport is a separate acceptance
+step. Native package tests, HHPI checks and clean-package installation validate
+the shared dependency; they do not establish Web/Android or Windows cutover.

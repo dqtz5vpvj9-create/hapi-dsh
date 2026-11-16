@@ -30,5 +30,16 @@
     "nativeMethodInventory": "src/remote/codex-methods.ts",
     "inventoryCommand": "codex app-server generate-json-schema --experimental",
     "emptyPaginatedThread": "supported"
+  },
+  "remoteNativeRuntime": {
+    "repository": "https://github.com/dqtz5vpvj9-create/ds-harness-remote",
+    "upstreamRepository": "https://github.com/liguobao/ds-harness-remote",
+    "upstreamCommit": "f8e62202b709240452e5cc0c8924c2e67d73521c",
+    "commit": "37959cda77ff2b38ad1320a797adb8a6b9a1603c",
+    "version": "0.1.0-hhpi.2",
+    "license": "AGPL-3.0-only",
+    "package": "@dsh-remote/native-runtime",
+    "sourceDirectory": "packages/native-runtime",
+    "release": "https://github.com/dqtz5vpvj9-create/ds-harness-remote/releases/tag/hhpi-native-v0.1.0-2"
   }
 }
