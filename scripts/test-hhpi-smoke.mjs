@@ -137,6 +137,9 @@ export function hhpiRequestPolicy(method, body, targetId) {
     const [, , sourceId, , nativeId] = targetId.split(':').map(decodeURIComponent);
     const request = args.request;
     if (request?.sourceId !== sourceId || request.operationId !== undefined) return 'block';
+    if (request.method === 'session/models') {
+      return request.params?.sessionId === nativeId && Object.keys(request.params).length === 1 ? 'read' : 'block';
+    }
     if (request.method === 'model/list' || request.method === 'permissionProfile/list') return 'read';
     if (request.method === 'hhpi/queue/list' || request.method === 'thread/queue/list') {
       return request.params?.threadId === nativeId ? 'read' : 'block';

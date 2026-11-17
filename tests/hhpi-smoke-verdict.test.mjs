@@ -124,6 +124,18 @@ test('native queue observation stays scoped to the smoke conversation and cannot
   }
 });
 
+test('ACP model observation is read-only and scoped to the smoke conversation', () => {
+  const target = 'hhpi:machine:source:antigravity:native';
+  const request = { sourceId: 'source', method: 'session/models', params: { sessionId: 'native' } };
+  const policy = value => hhpiRequestPolicy('hhpi/nativeCall', { payload: { args: { request: value } } }, target);
+  assert.equal(policy(request), 'read');
+  assert.equal(policy({ ...request, sourceId: 'other' }), 'block');
+  assert.equal(policy({ ...request, params: { sessionId: 'other' } }), 'block');
+  assert.equal(policy({ ...request, params: { sessionId: 'native', model: 'change' } }), 'block');
+  assert.equal(policy({ ...request, method: 'session/set_model' }), 'block');
+  assert.equal(policy({ ...request, operationId: 'write' }), 'block');
+});
+
 test('the navigation checkpoint includes a head read queued by the previous publication', async () => {
   const first = Promise.withResolvers(), next = Promise.withResolvers();
   const publications = [first.promise], responses = new Set();
