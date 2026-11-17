@@ -113,3 +113,14 @@ or require its pairing token. Remote outages cannot reactivate that connector.
 The optional field is omitted for sources not yet migrated; their transport is
 unchanged. Rollback restores the prior matching release and private configuration,
 without replaying native operations.
+
+### Antigravity source ownership
+
+`engine: "antigravity"` is composed in Remote's shared native runtime. The
+source adapter owns identity, persistent operation receipts and the versioned
+history index; it consumes the Remote Host's independent local ACP source port.
+The existing ACP gateway and virtual Harness own execution and DSH event
+projection. No second AGY process adapter or Web/Go event mapper is introduced.
+Model reads and changes require the exact native session identity. Unsupported
+approval, Fast and queue controls are not advertised for this backend. Failed
+history reads preserve the previously accepted index and return an error.

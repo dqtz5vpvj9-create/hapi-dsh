@@ -12,6 +12,7 @@ import { SourceControls, type InputProps } from './composer-picker/index.tsx'
 import { validPickerAction, type PickerAction, type PickerData, type PickerPending } from './composer-picker/data.ts'
 import { CodexActions } from './remote-codex-actions.tsx'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
+import { DirectAcpControls } from './remote-acp-controls.tsx'
 
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 interface Model { model: string; displayName: string; supportedReasoningEfforts: Array<{ reasoningEffort: string; description: string }>; serviceTiers?: Array<{ id: string; name?: string }> }
@@ -153,6 +154,7 @@ export class CodexSettingsController {
 }
 export function DirectCodexControls({ ctx, api, props }: { ctx: Context; api: HhpiRemoteApi; props: InputProps }) {
   const session = (props.sessionBinding ?? ctx.sessions.binding(props.sessionId))?.session as RemoteSourceSession | undefined
+  if (session?.metadata.getSnapshot().engine === 'antigravity') return <DirectAcpControls key={props.sessionId} ctx={ctx} api={api} props={props} session={session}/>
   return session ? <Controls key={props.sessionId} ctx={ctx} api={api} props={props} session={session}/> : null
 }
 function Controls({ ctx, api, props, session }: { ctx: Context; api: HhpiRemoteApi; props: InputProps; session: RemoteSourceSession }) {

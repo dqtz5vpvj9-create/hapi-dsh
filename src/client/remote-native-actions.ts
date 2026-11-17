@@ -158,7 +158,7 @@ export class NativeActionOwner {
     const assertTarget = (): void => this.assertTarget(generation, input.sessionId, revocation)
     assertTarget()
     if (!access || !ledger || this.restoreError) throw new Error('Native action storage is unavailable. Nothing was sent.')
-    if (!input.intent.trim() || (codexMethods[input.request.method as CodexMethod] !== 'write' && input.request.method !== QUEUED_STEER_METHOD)) throw new Error('A native write and a stable user intent are required.')
+    if (!input.intent.trim() || (codexMethods[input.request.method as CodexMethod] !== 'write' && input.request.method !== QUEUED_STEER_METHOD && input.request.method !== 'session/selectModel')) throw new Error('A native write and a stable user intent are required.')
     const now = this.options.now?.() ?? Date.now()
     const record: NativeActionRecord = { version: 1, sessionId: input.sessionId, intent: input.intent, kind: input.kind,
       request: JSON.parse(JSON.stringify({ ...input.request, operationId: input.request.operationId ?? this.options.operationId?.() ?? randomId() })) as NativeActionRecord['request'],

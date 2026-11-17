@@ -43,7 +43,9 @@ export function nativeActionKey(sessionId: string, intent: string): string {
 
 export function assertNativeActionTarget(record: Pick<NativeActionRecord, 'sessionId' | 'request'>): void {
   const identity = parseSourceSessionId(record.sessionId)
-  if (record.request.sourceId !== identity.sourceId || record.request.params?.threadId !== identity.nativeId) {
+  const target = identity.engine === 'antigravity' && record.request.method === 'session/selectModel'
+    ? record.request.params?.sessionId : record.request.params?.threadId
+  if (record.request.sourceId !== identity.sourceId || target !== identity.nativeId) {
     throw new Error('The native action belongs to a different source conversation.')
   }
 }
