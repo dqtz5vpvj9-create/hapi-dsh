@@ -69,7 +69,7 @@ Host、Client、Runner 入口分别是 `src/index.ts`、`src/client/index.ts`、
 
 Native Codex execution, source workspaces, file operations, durable uploads,
 navigation and terminal ownership now resolve to the exact
-`@dsh-remote/native-runtime@0.1.0-hhpi.4` release in the owned Remote fork.
+`@dsh-remote/native-runtime@0.1.0-hhpi.5` release in the owned Remote fork.
 Compatibility exports preserve the existing import graph, persisted
 source IDs, private native endpoints and receipt stores. HHPI no longer contains
 a second implementation of these modules. Their source behavior contracts live
