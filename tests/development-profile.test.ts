@@ -366,6 +366,18 @@ test('profile records dependency-ready waiting and blocked work separately', t =
   assert.equal(report.tasks.find(t => t.node === 'b').initialQueueMs, 200)
 })
 
+test('profile preserves task transition order when timestamps coincide', t => {
+  const { store, directory } = fixture(t)
+  startRun(store, { id: 'same-time', root: directory, now: 1000 })
+  transitionTask(store, 'same-time', 'work', 'running', { now: 1100 })
+  transitionTask(store, 'same-time', 'work', 'blocked', { now: 1100, reason: 'waiting' })
+  transitionTask(store, 'same-time', 'work', 'running', { now: 1200 })
+  store.db.prepare("UPDATE spans SET id='z' WHERE run=? AND kind='task' AND label='running' AND started=1100").run('same-time')
+  store.db.prepare("UPDATE spans SET id='a' WHERE run=? AND kind='task' AND label='blocked'").run('same-time')
+  const report = profileReport(store, 'same-time', 1300)
+  assert.equal(report.tasks[0].blockedMs, 100)
+})
+
 test('evidence-backed cancellation preserves the frozen plan, removes only its dependency and never counts as completion', t => {
   const { store, directory } = fixture(t)
   const dag = { nodes: [{ id: 'S2' }, { id: 'real' }, { id: 'V3', depends_on: ['S2', 'real'] }] }

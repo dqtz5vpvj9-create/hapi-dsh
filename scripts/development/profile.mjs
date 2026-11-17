@@ -240,7 +240,7 @@ export function unionDuration(intervals) {
 
 export function profileReport(store, runId, now = Date.now()) {
   const run = runRecord(store, runId)
-  const spans = store.db.prepare('SELECT * FROM spans WHERE run=? ORDER BY started,id').all(runId).map(row => ({ ...row, data: decode(row.data) }))
+  const spans = store.db.prepare('SELECT * FROM spans WHERE run=? ORDER BY started,rowid').all(runId).map(row => ({ ...row, data: decode(row.data) }))
   const observations = store.db.prepare('SELECT rowid AS sequence,* FROM observations WHERE run=? ORDER BY created,sequence').all(runId)
   const checks = [...run.checks]
   for (const observation of observations) if (!checks.some(c => c.requirement === observation.requirement && c.layer === observation.layer)) {

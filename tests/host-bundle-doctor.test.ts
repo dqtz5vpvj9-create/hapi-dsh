@@ -55,7 +55,7 @@ test('doctor verifies an installed bundle release without leaking the private ho
         assert.equal(check(result, 'node').status, 'pass')
         assert.equal(check(result, 'pnpm').status, 'pass')
         assert.equal(check(result, 'manifest-hash').status, 'pass')
-        assert.equal(check(result, 'release-integrity').status, 'warn', 'a first install has no previous release yet')
+        assert.equal(check(result, 'release-integrity').status, 'pass', 'a first install needs no previous release')
         assert.equal(check(result, 'ext-capabilities').status, 'pass')
         assert.equal(check(result, 'ext-resolution').status, 'pass')
         assert.equal(check(result, 'profile-overrides').status, 'pass')
@@ -139,14 +139,14 @@ test('doctor detects a corrupt previous release', async () => {
     const harness = await createHarness()
     try {
         await seedProfile(harness.dshHome, harness.profile)
-        assert.equal((await harness.install('a')).ok, true)
-        assert.equal((await harness.install('b')).ok, true)
+        assert.equal((await harness.install('a', { keepPrevious: 2 })).ok, true)
+        assert.equal((await harness.install('b', { keepPrevious: 2 })).ok, true)
         let result = await runDoctor(harness)
-        assert.equal(check(result, 'release-integrity').status, 'warn', 'two releases are required before the retention check passes')
+        assert.equal(check(result, 'release-integrity').status, 'pass', 'the retained previous release is healthy')
 
         const state = await release.readBundleState(harness.dshHome)
         const previous = state.profiles[harness.profile]!.previous[0]!
-        assert.equal((await harness.install('c')).ok, true)
+        assert.equal((await harness.install('c', { keepPrevious: 2 })).ok, true)
         await rm(release.releaseDirectory(harness.dshHome, previous.releaseId), { recursive: true, force: true })
         result = await runDoctor(harness)
         const integrity = check(result, 'release-integrity')

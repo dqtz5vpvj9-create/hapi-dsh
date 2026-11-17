@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fingerprint, readJson, snapshot, withLock, writeJson } from './cache.mjs';
 export const UPSTREAM_COMMIT = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db';
 export const UPSTREAM_VERSION = '0.2.2-rc.1';
-export const UI_EXTENSION_PACKAGES = ['packages/client/file-upload', 'packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands', 'packages/client/ui-sidebar-files', 'packages/client/ui-workspace', 'packages/client/ui-theme'];
+export const UI_EXTENSION_PACKAGES = ['packages/client/file-upload', 'packages/api/session-controller', 'packages/client/ui-slots', 'packages/client/ui-renderer', 'packages/client/ui-session', 'packages/client/ui-conversation', 'packages/client/ui-chat', 'packages/client/ui-trajectory', 'packages/client/ui-tool', 'packages/client/ui-user-questions', 'packages/client/ui-plan', 'packages/client/ui-input-trigger', 'packages/client/ui-commands', 'packages/client/ui-sidebar-files', 'packages/client/ui-workspace', 'packages/client/ui-theme'];
 export const NATIVE_EXTENSION_PACKAGES = ['packages/session/session-persistence', 'packages/session/session-format-v3-to-v4', 'packages/session/session-persistence-jsonl'];
 export const WORKSPACE_EXTENSION_PACKAGES = ['packages/api/terminal-controller'];
 export const FILESYSTEM_EXTENSION_PACKAGES = ['packages/fs/fs', 'packages/fs/fs-local', 'packages/fs/fs-sandbox'];

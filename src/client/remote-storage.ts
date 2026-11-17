@@ -17,7 +17,7 @@ export function clearSourceStorage(storage: Storage): void {
   const keys: string[] = []
   for (let index = 0; index < storage.length; index++) {
     const key = storage.key(index)
-    if (key?.startsWith('hhpi:reading:v1:') || key?.startsWith('hhpi:outbox:v1:') || key?.startsWith('hhpi:native-actions:v1:') || key?.startsWith('hhpi:creation:v1:')) keys.push(key)
+    if (key?.startsWith('hhpi:reading:v1:') || key?.startsWith('hhpi:outbox:v1:') || key?.startsWith('hhpi:native-actions:v1:') || key?.startsWith('hhpi:creation:v1:') || key?.startsWith('hhpi:question-presentation:v1:')) keys.push(key)
   }
   for (const key of keys) {
     if (key.startsWith('hhpi:outbox:v1:') || key.startsWith('hhpi:native-actions:v1:') || key.startsWith('hhpi:creation:v1:')) {

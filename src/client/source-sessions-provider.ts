@@ -28,7 +28,13 @@ function diagnosticMark(name: string): void {
 }
 
 
-declare module '@deepseek-ai/cordis' { interface Context { hapiSourceSessions: RemoteSessions } }
+declare module '@deepseek-ai/cordis' { interface Context {
+  hapiSourceSessions: RemoteSessions
+  questionPresentationPolicy: {
+    autoPresent(sessionId: import('@deepseek-ai/dsh-session/types').SessionId, callId: import('@deepseek-ai/dsh-llm/brand').ToolCallId): boolean
+    dismiss(sessionId: import('@deepseek-ai/dsh-session/types').SessionId, callId: import('@deepseek-ai/dsh-llm/brand').ToolCallId): void
+  }
+} }
 
 export const name = 'hapi-dsh-session-provider'
 export const inject = ['loader']
@@ -121,6 +127,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       let hhpiOwner: Fiber | undefined
       let unprovideFiles: (() => void) | undefined
       let unprovideRemote: (() => void) | undefined
+      let unprovideQuestionPolicy: (() => void) | undefined
       try {
         // The adapter consumes the mounted source namespace. Installing it
         // earlier can suspend an already active official terminal row while
@@ -134,6 +141,11 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
           // same realm; the root retains the original execution owner.
           const scope = await sourceSessionsContext(owner)
           remote = new RemoteSessions(scope, owner.sessions, hhpiContext.remote.hhpi, browserSourceStorage(), undefined, hhpiContext.remote.sourceWorkspace)
+          const questionPolicy: Context['questionPresentationPolicy'] = {
+            autoPresent: (sessionId, callId) => remote!.questionAutoPresent(sessionId, callId),
+            dismiss: (sessionId, callId) => remote!.dismissQuestionPresentation(sessionId, callId),
+          }
+          unprovideQuestionPolicy = owner.reflect.provide('questionPresentationPolicy', questionPolicy)
           const transport = owner.get('sourceWorkspaceTransport') ?? { hostId: 'local', fetch: globalThis.fetch.bind(globalThis) }
           unprovideFiles = owner.reflect.provide('sourceFiles', createSourceFileClient(hhpiContext.remote.sourceWorkspace, remote, transport))
           stopFiles = await installSourceWorkspaceFilesProvider(ctx)
@@ -153,6 +165,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       } catch (error) {
         unprovideFiles?.()
         unprovideRemote?.()
+        unprovideQuestionPolicy?.()
         await hhpiOwner?.dispose()
         await provider?.dispose()
         remote?.dispose()
@@ -162,6 +175,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       return async () => {
         unprovideFiles?.()
         unprovideRemote?.()
+        unprovideQuestionPolicy?.()
         await hhpiOwner?.dispose()
         await provider?.dispose()
         remote?.dispose()

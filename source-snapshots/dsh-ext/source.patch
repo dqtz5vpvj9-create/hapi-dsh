@@ -18734,3 +18734,233 @@ index d6ef3e50..fd144476 100644
        '@deepseek-ai/dsh-fs':
          specifier: workspace:*
          version: link:../fs
+diff --git a/packages/client/ui-user-questions/src/client/PlanReviewPanel.tsx b/packages/client/ui-user-questions/src/client/PlanReviewPanel.tsx
+index b63a64c0..24a2091c 100644
+--- a/packages/client/ui-user-questions/src/client/PlanReviewPanel.tsx
++++ b/packages/client/ui-user-questions/src/client/PlanReviewPanel.tsx
+@@ -38,7 +38,7 @@ export function PlanReviewPanel({ pending, review, t, renderSlot }: PlanReviewPa
+       .then(() => {
+         if (!remote) return
+         setBusy(false)
+-        void pending.dismiss().catch(() => { setError(t('status.sent')) })
++        void pending.dismiss('sent').catch(() => { setError(t('status.sent')) })
+       })
+       .catch((cause: unknown) => {
+         setBusy(false)
+diff --git a/packages/client/ui-user-questions/src/client/QuestionComposer.tsx b/packages/client/ui-user-questions/src/client/QuestionComposer.tsx
+index a24372c9..732bdf18 100644
+--- a/packages/client/ui-user-questions/src/client/QuestionComposer.tsx
++++ b/packages/client/ui-user-questions/src/client/QuestionComposer.tsx
+@@ -406,7 +406,7 @@ function QuestionFlow({ pending, t, useStore, useQuestionCard, actions }: Questi
+         sentVia.current = null
+         setBusy(null)
+         setError(null)
+-        void pending.dismiss().catch(() => { setError({ key: 'status.sent' }) })
++        void pending.dismiss('sent').catch(() => { setError({ key: 'status.sent' }) })
+       })
+       .catch((cause: unknown) => {
+         sentVia.current = null
+diff --git a/packages/client/ui-user-questions/src/client/contract/slots.ts b/packages/client/ui-user-questions/src/client/contract/slots.ts
+index 4d1e9fd0..56040ffb 100644
+--- a/packages/client/ui-user-questions/src/client/contract/slots.ts
++++ b/packages/client/ui-user-questions/src/client/contract/slots.ts
+@@ -144,7 +144,7 @@ export interface QuestionRpcChannel {
+ /** The composer seat a card occupies while it is visible. */
+ export interface QuestionSeat {
+   /** Withdraw the card from the pending-interaction registry without ending the request. */
+-  hide(): void
++  hide(reason: 'user' | 'sent'): void
+ }
+ 
+ /** One waterfall request as the Remote Event listener awaits it. */
+@@ -545,9 +545,9 @@ export class PendingQuestion {
+    * reopens it. A card the Host never named ends its request instead, because
+    * nothing could bring it back.
+    */
+-  dismiss(): Promise<void> {
++  dismiss(reason: 'user' | 'sent' = 'user'): Promise<void> {
+     if (this.dismissal === 'hide') {
+-      return settlePendingComposer(() => { this.#seat?.hide() }, 'pending question hide failed')
++      return settlePendingComposer(() => { this.#seat?.hide(reason) }, 'pending question hide failed')
+     }
+     const waterfall = this.#waterfall
+     if (waterfall === undefined) return Promise.reject(new Error('no channel accepts a cancellation yet'))
+diff --git a/packages/client/ui-user-questions/src/client/index.ts b/packages/client/ui-user-questions/src/client/index.ts
+index 0f8255d6..204f37d6 100644
+--- a/packages/client/ui-user-questions/src/client/index.ts
++++ b/packages/client/ui-user-questions/src/client/index.ts
+@@ -44,6 +44,18 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+   }
+ }
+ 
++/** Optional owner of local presentation decisions for continued questions. */
++export interface QuestionPresentationPolicy {
++  /** Whether a newly discovered continued question should occupy the composer. */
++  autoPresent(sessionId: SessionId, callId: ToolCallId): boolean
++  /** Record a user closing the panel without answering the question. */
++  dismiss(sessionId: SessionId, callId: ToolCallId): void
++}
++
++declare module '@deepseek-ai/cordis' {
++  interface Context { questionPresentationPolicy: QuestionPresentationPolicy }
++}
++
+ /** Dictionary namespace owned by this plugin. */
+ const NS = 'question'
+ 
+@@ -82,7 +94,7 @@ interface QuestionCard {
+ class QuestionCards {
+   readonly #cards = new Map<string, QuestionCard>()
+ 
+-  constructor(private readonly publish: PendingInteractionPublisher<PendingQuestion>) {}
++  constructor(private readonly publish: PendingInteractionPublisher<PendingQuestion>, private readonly ctx: ClientContext) {}
+ 
+   byCallId(sessionId: SessionId, callId: string): QuestionCard | undefined {
+     return this.#cards.get(PendingQuestion.keyOf(sessionId, callId))
+@@ -106,16 +118,16 @@ class QuestionCards {
+    * Return the card of a tool call, creating and publishing it when absent.
+    * A request without a call id always gets a fresh card.
+    */
+-  ensure(sessionId: SessionId, questions: readonly AskUserQuestionItem[], callId: ToolCallId | undefined): QuestionCard {
++  ensure(sessionId: SessionId, questions: readonly AskUserQuestionItem[], callId: ToolCallId | undefined, visible = true): QuestionCard {
+     if (callId !== undefined) {
+       const existing = this.byCallId(sessionId, callId)
+       if (existing !== undefined) return existing
+     }
+-    return this.#create(new PendingQuestion(sessionId, questions, callId, () => this.keysFor(sessionId)))
++    return this.#create(new PendingQuestion(sessionId, questions, callId, () => this.keysFor(sessionId)), visible)
+   }
+ 
+   /** Publish one carrier into the composer seat and register the card that owns it. */
+-  #create(pending: PendingQuestion): QuestionCard {
++  #create(pending: PendingQuestion, visible = true): QuestionCard {
+     const requests = new Set<Promise<void>>()
+     const delegate = async (): Promise<void> => {
+       pending.delegate()
+@@ -123,7 +135,7 @@ class QuestionCards {
+     }
+     // Republishing is how a revealed card reaches the seat: the registry keeps
+     // the last entry of equal precedence, and it rejects a duplicate key.
+-    let unpublish: (() => void) | undefined = this.publish(pending, delegate)
++    let unpublish: (() => void) | undefined = visible ? this.publish(pending, delegate) : undefined
+     const card: QuestionCard = {
+       pending,
+       hide: () => {
+@@ -150,7 +162,10 @@ class QuestionCards {
+     }
+     // A review card has no request left to park: closing it drops the card, and
+     // the tool call row builds another one from the same transcript record.
+-    pending.attachSeat({ hide: pending.review === undefined ? card.hide : card.remove })
++    pending.attachSeat({ hide: pending.review === undefined ? reason => {
++      if (reason === 'user' && pending.callId !== undefined) this.ctx.get('questionPresentationPolicy')?.dismiss(pending.sessionId, pending.callId)
++      card.hide()
++    } : card.remove })
+     this.#cards.set(pending.key, card)
+     return card
+   }
+@@ -286,6 +301,7 @@ async function answerQuestion(
+ function publishContinuedQuestions(ctx: ClientContext, cards: QuestionCards): () => void {
+   const sessions = ctx.sessions
+   const stopProjections = new Map<SessionId, () => void>()
++  const automatic = new Map<string, boolean>()
+ 
+   const unwrap = <T>(result: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
+     if (!result.ok) throw new Error(result.error.message)
+@@ -331,7 +347,15 @@ function publishContinuedQuestions(ctx: ClientContext, cards: QuestionCards): ()
+     }
+     for (const { sessionId, row } of rows.values()) {
+       if (row.state === 'continued') {
+-        const card = cards.ensure(sessionId, row.questions, row.callId)
++        const visible = ctx.get('questionPresentationPolicy')?.autoPresent(sessionId, row.callId) ?? true
++        const key = PendingQuestion.keyOf(sessionId, row.callId)
++        const previous = automatic.get(key)
++        const card = cards.ensure(sessionId, row.questions, row.callId, visible)
++        automatic.set(key, visible)
++        if (previous !== undefined && previous !== visible) {
++          if (visible) card.reveal()
++          else card.hide()
++        }
+         card.pending.attachRpc(rpcFor(sessionId, row.callId))
+         card.pending.setState('continued')
+         continue
+@@ -346,6 +370,7 @@ function publishContinuedQuestions(ctx: ClientContext, cards: QuestionCards): ()
+         || card.hasRequest()
+         || card.pending.hasWaterfall()) continue
+       card.remove()
++      automatic.delete(card.pending.key)
+     }
+   }
+ 
+@@ -371,7 +396,7 @@ export function apply(ctx: ClientContext): void {
+   const registerPendingInteraction = ctx.uiSession.registerPendingInteraction<PendingQuestion>(
+     pending => pending.kind === 'plan-review' ? 2 : 1,
+   )
+-  const cards = new QuestionCards(registerPendingInteraction)
++  const cards = new QuestionCards(registerPendingInteraction, ctx)
+   ctx.effect(() => () => { cards.dispose() }, 'ui-user-questions: cards')
+   const disposePanels = ctx.reflect.provide('userQuestionPanels', {
+     reveal: (sessionId, callId) => cards.reveal(sessionId, callId),
+diff --git a/packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts b/packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts
+index 07a4479c..a4dbec95 100644
+--- a/packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts
++++ b/packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts
+@@ -11,7 +11,7 @@ import type { PendingUserQuestion, UserQuestionProjectionView } from '@deepseek-
+ import { QuestionComposer } from '../src/client/QuestionComposer.tsx'
+ import { PendingQuestion } from '../src/client/contract/slots.ts'
+ import { createQuestionDraftStore } from '../src/client/draft-store.ts'
+-import { apply, inject } from '../src/client/index.ts'
++import { apply, inject, type QuestionPresentationPolicy } from '../src/client/index.ts'
+ import { TimedQuestionWait } from '../../../interaction/user-questions/src/timed-wait.ts'
+ 
+ const SESSION_ID = 'session-question' as SessionId
+@@ -57,6 +57,7 @@ async function bench(
+   durable: readonly PendingUserQuestion[] | 'absent' = [],
+   remainingMs = 60_000,
+   initialInbox: InboxWireState = emptyInbox(),
++  presentation?: QuestionPresentationPolicy,
+ ) {
+   const ctx = new Context()
+   await ctx.plugin(SlotRegistry).await()
+@@ -137,6 +138,7 @@ async function bench(
+   }
+   ctx.provide('remote.userQuestions', remoteQuestions as never)
+   ctx.provide('remote', { $on: on, userQuestions: remoteQuestions } as never)
++  if (presentation) ctx.provide('questionPresentationPolicy', presentation)
+   const fiber = ctx.plugin({ inject: [...inject], apply })
+   await fiber.await()
+   const invoke = (
+@@ -180,6 +182,34 @@ const timed = (): QuestionRequest => ({
+ })
+ 
+ describe('apply', () => {
++  it('keeps a policy-hidden question reachable and reports only an explicit close', async () => {
++    const dismiss = vi.fn(), policy = { autoPresent: () => false, dismiss }
++    const b = await bench(true, [CONTINUED], 60_000, emptyInbox(), policy)
++    expect(b.pending.getSnapshot()).toEqual([])
++    expect(b.panels()?.reveal(SESSION_ID, CALL)).toBe(true)
++    const pending = b.pending.getSnapshot()[0]!
++    await pending.dismiss('sent')
++    expect(dismiss).not.toHaveBeenCalled()
++    expect(b.panels()?.reveal(SESSION_ID, CALL)).toBe(true)
++    await pending.dismiss()
++    expect(dismiss).toHaveBeenCalledOnce()
++    expect(dismiss).toHaveBeenCalledWith(SESSION_ID, CALL)
++    expect(b.pending.getSnapshot()).toEqual([])
++    expect(b.remoteQuestions.answer).not.toHaveBeenCalled()
++  })
++
++  it('only automatically presents a newly eligible question after a projection update', async () => {
++    let visible = false
++    const b = await bench(true, [CONTINUED], 60_000, emptyInbox(), { autoPresent: () => visible, dismiss: () => {} })
++    expect(b.pending.getSnapshot()).toEqual([])
++    visible = true
++    b.projection.set(view([CONTINUED]))
++    expect(b.pending.getSnapshot()).toHaveLength(1)
++    visible = false
++    b.projection.set(view([CONTINUED]))
++    expect(b.pending.getSnapshot()).toEqual([])
++    expect(b.panels()?.reveal(SESSION_ID, CALL)).toBe(true)
++  })
+   it('delegates an expired foreground wait and releases its claim stream', async () => {
+     const b = await bench()
+     const dispose = vi.fn()

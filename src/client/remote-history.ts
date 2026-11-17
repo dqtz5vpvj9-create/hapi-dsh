@@ -69,6 +69,7 @@ export class RemoteSourceHistory {
   private readonly windows = new Map<string, RemoteHistoryWindow>()
   private readonly observers = new Set<(session: SourceSession) => void>()
   private readonly entryObservers = new Set<(entries: readonly SourceEntry[]) => void>()
+  private readonly headObservers = new Set<(page: SourcePage) => void>()
   private readonly versionObservers = new Set<() => void>()
   private readonly lifetime = new AbortController()
   private connection: AbortController | undefined
@@ -108,6 +109,11 @@ export class RemoteSourceHistory {
     this.entryObservers.add(listener)
     listener([...this.entries.values()].map(value => value.entry))
     return () => { this.entryObservers.delete(listener) }
+  }
+  /** A live tail read, never a cached or historical page. */
+  subscribeHead(listener: (page: SourcePage) => void): () => void {
+    this.headObservers.add(listener)
+    return () => { this.headObservers.delete(listener) }
   }
   private notifyEntries(entries: readonly SourceEntry[]): void {
     for (const observer of this.entryObservers) observer(entries)
@@ -262,6 +268,7 @@ export class RemoteSourceHistory {
         seqs: page.entries.filter(entry => this.entries.has(entry.event.seq)).map(entry => entry.event.seq), used: ++this.clock })
       if (request.before === undefined && request.after === undefined && request.around === undefined) {
         this.cachedOpening = this.materializePage(page)
+        if (!page.hasAfter) for (const observer of this.headObservers) observer(this.cachedOpening)
       }
       this.persist()
       return page

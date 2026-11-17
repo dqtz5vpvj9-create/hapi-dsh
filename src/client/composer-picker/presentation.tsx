@@ -61,7 +61,7 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
     onToggle(mode: PickerMode): void; tr: Translate; utilities?: ReactNode
 }) {
     const effort = explicitEffort(summary.effort), tier = visibleServiceTier(summary.serviceTier)
-    const model = summary.model ?? tr('Model', '模型')
+    const model = summary.model && summary.model !== 'host-settings' ? summary.model : tr('Model', '模型')
     const effortText = effort ? effortLabel({ value: effort, label: effort }, tr) : null
     const tierText = tier === 'fast' ? '⚡' : tier
     const shared = (mode: PickerMode) => ({ 'aria-haspopup': 'dialog' as const, 'aria-expanded': open === mode,

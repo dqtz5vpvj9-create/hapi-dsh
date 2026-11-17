@@ -11,6 +11,7 @@ import { SourceActions, SourceTools } from '../../src/client/source-file-actions
 import { createSourceFileMutations } from '../../src/client/source-file-mutation-journal.ts'
 import { createWorkspaceUpdatePreparations } from '../../src/client/update-preparation.ts'
 import type { SourceFileClient, SourceFileContext } from '../../src/client/source-workspace-provider.ts'
+import type { WorkspaceEntry } from '../../src/workspace/service-types.ts'
 import { SourceFileLocksFixture, SourceFileStorageFixture } from '../source-file-mutation-fixture.ts'
 import { documentJournalFixture, fileContext, fileOwner } from '../source-file-context-fixture.ts'
 
@@ -49,6 +50,93 @@ test('read-only source tools expose reading but disable every file mutation', as
   expect(screen.getByRole('button', { name: 'upload' })).toBeDisabled()
   expect(screen.getByRole('button', { name: 'search' })).toBeEnabled()
   expect(f.actions.edits.size).toBe(0)
+})
+
+function inspectedFile(path = '/source/file.txt', version = 'stat:revision'): WorkspaceEntry {
+  return { absolutePath: path, name: path.split('/').at(-1)!, type: 'file', version, bytes: 8, entryCount: 1 }
+}
+
+test('rename inspects on submit before debounce and sends the source version once', async () => {
+  const context = fileContext(), inspect = vi.fn(async (path: string) => inspectedFile(path)), manage = vi.spyOn(context.services.mutations!, 'manage')
+  context.services.documents.inspect = inspect
+  fixture(context)
+  fireEvent.click(await screen.findByRole('button', { name: 'tools' }))
+  await waitFor(() => expect(screen.getByLabelText('name')).toBeEnabled())
+  fireEvent.change(screen.getByLabelText('name'), { target: { value: 'renamed.txt' } })
+  fireEvent.click(screen.getByRole('button', { name: 'execute' }))
+  await waitFor(() => expect(manage).toHaveBeenCalledTimes(1))
+  expect(inspect).toHaveBeenCalledTimes(1)
+  expect(manage.mock.calls[0]![0].operation).toEqual({ action: 'rename', path: '/source/file.txt', destination: '/source/renamed.txt', expectedVersion: 'stat:revision' })
+})
+
+test('delete can execute during background inspection and keeps the fresh version and confirmation', async () => {
+  const context = fileContext(), background = Promise.withResolvers<WorkspaceEntry | null>()
+  const inspect = vi.fn().mockImplementationOnce(() => background.promise).mockImplementationOnce(async (path: string) => inspectedFile(path, 'stat:fresh'))
+  context.services.documents.inspect = inspect
+  const manage = vi.spyOn(context.services.mutations!, 'manage'), confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  fixture(context)
+  fireEvent.click(await screen.findByRole('button', { name: 'tools' }))
+  await waitFor(() => expect(screen.getByLabelText('operation')).toBeEnabled())
+  vi.useFakeTimers()
+  try {
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/temporary.txt' } })
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/file.txt' } })
+    act(() => vi.advanceTimersByTime(150))
+    expect(inspect).toHaveBeenCalledTimes(1)
+    const backgroundSignal = inspect.mock.calls[0]![1].signal as AbortSignal
+    fireEvent.change(screen.getByLabelText('operation'), { target: { value: 'delete' } })
+    expect(screen.getByRole('button', { name: 'execute' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'execute' }))
+    fireEvent.click(screen.getByRole('button', { name: 'execute' }))
+    expect(backgroundSignal.aborted).toBe(true)
+    await act(async () => { await Promise.resolve(); background.resolve(inspectedFile('/source/file.txt', 'stat:stale')); await Promise.resolve() })
+  } finally { vi.useRealTimers() }
+  await waitFor(() => expect(manage).toHaveBeenCalledTimes(1))
+  expect(confirm).toHaveBeenCalledOnce(); expect(confirm.mock.calls[0]![0]).toContain('/source/file.txt')
+  expect(manage.mock.calls[0]![0].operation).toEqual({ action: 'delete', path: '/source/file.txt', expectedVersion: 'stat:fresh', recursive: false })
+  confirm.mockRestore()
+})
+
+test('a late automatic inspection cannot replace the newly selected path', async () => {
+  const context = fileContext(), first = Promise.withResolvers<WorkspaceEntry | null>()
+  const inspect = vi.fn().mockImplementationOnce(() => first.promise).mockImplementation(async (path: string) => inspectedFile(path, 'new-version'))
+  context.services.documents.inspect = inspect; const manage = vi.spyOn(context.services.mutations!, 'manage'); fixture(context)
+  fireEvent.click(await screen.findByRole('button', { name: 'tools' }))
+  await waitFor(() => expect(screen.getByLabelText('path')).toBeEnabled())
+  vi.useFakeTimers()
+  try {
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/temporary.txt' } })
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/file.txt' } })
+    act(() => vi.advanceTimersByTime(150))
+    const signal = inspect.mock.calls[0]![1].signal as AbortSignal
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/other.txt' } })
+    expect(signal.aborted).toBe(true)
+    act(() => vi.advanceTimersByTime(150))
+    await act(async () => { await Promise.resolve(); first.resolve(inspectedFile('/source/file.txt', 'stale-version')); await Promise.resolve() })
+    expect(screen.queryByText(/new-version|stale-version/)).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('name'), { target: { value: 'renamed.txt' } })
+    fireEvent.click(screen.getByRole('button', { name: 'execute' }))
+  } finally { vi.useRealTimers() }
+  await waitFor(() => expect(manage).toHaveBeenCalledTimes(1))
+  expect(manage.mock.calls[0]![0].operation).toMatchObject({ path: '/source/other.txt', expectedVersion: 'new-version' })
+})
+
+test('manual inspection is not cancelled by the scheduled automatic check', async () => {
+  const context = fileContext(), reply = Promise.withResolvers<WorkspaceEntry | null>()
+  const inspect = vi.fn((_path: string, _access: Parameters<typeof context.services.documents.inspect>[1]) => reply.promise)
+  context.services.documents.inspect = inspect; fixture(context)
+  fireEvent.click(await screen.findByRole('button', { name: 'tools' }))
+  await waitFor(() => expect(screen.getByLabelText('path')).toBeEnabled())
+  vi.useFakeTimers()
+  try {
+    fireEvent.change(screen.getByLabelText('path'), { target: { value: '/source/manual.txt' } })
+    fireEvent.click(screen.getByRole('button', { name: 'target' }))
+    const signal = inspect.mock.calls[0]![1].signal as AbortSignal
+    act(() => vi.advanceTimersByTime(150))
+    expect(inspect).toHaveBeenCalledTimes(1); expect(signal.aborted).toBe(false)
+    await act(async () => { reply.resolve(inspectedFile('/source/manual.txt')); await Promise.resolve() })
+    expect(screen.getByText(/stat:revision/)).toBeVisible()
+  } finally { vi.useRealTimers() }
 })
 
 test('ordinary DSH Files keep their native tools without resolving an HHPI workspace', () => {

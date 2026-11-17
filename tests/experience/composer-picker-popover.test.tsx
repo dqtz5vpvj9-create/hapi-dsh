@@ -3,7 +3,8 @@ import { userEvent } from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { SourceControls, type InputProps } from '../../src/client/composer-picker/index.tsx'
-import type { PickerData } from '../../src/client/composer-picker/data.ts'
+import { modelLabel, type PickerData, type PickerPending } from '../../src/client/composer-picker/data.ts'
+import { DirectAcpControls } from '../../src/client/remote-acp-controls.tsx'
 
 // Only the unavailable jsdom browser APIs/layout are fixtures. The production
 // controls, retained subtree, focus, state and source callbacks run unchanged.
@@ -131,4 +132,50 @@ test('browsers without native popover keep outside dismissal, Escape return and 
   await user.click(draft); expect(screen.queryByRole('dialog', { name: 'Choose model' })).not.toBeInTheDocument()
   await user.click(trigger); await user.keyboard('{Escape}')
   expect(trigger).toHaveFocus(); expect(draft).toHaveValue('Unsent A')
+})
+
+test('an open picker does not poll or steal focus on refresh; pending changes reconcile', () => {
+  vi.useFakeTimers()
+  try {
+    bounds()
+    const refresh = vi.fn(async () => {}), ctx = { get: () => undefined, locale: { getSnapshot: () => ({ active: 'en' }), subscribe: () => () => {} } } as unknown as Context
+    const props = { sessionId: 'A', sessionBinding: { session: { metadata: { getSnapshot: () => ({ capabilities: {} }) } } }, useInput: () => false, useSession: () => false, renderSlot: () => null } as unknown as InputProps
+    const make = (value: PickerData, loading: boolean, pending: PickerPending | null) => <SourceControls ctx={ctx} props={props}
+      initial={{ model: 'first', effort: null, permission: null, serviceTier: null }} permissionCapable data={value}
+      loading={loading} busy={false} pending={pending} error={null} sourceLocked={false} refresh={refresh} apply={async () => true}/>
+    const view = render(make(data, false, null))
+    fireEvent.click(screen.getByRole('button', { name: 'First' }))
+    const second = screen.getByRole('radio', { name: 'Second' }); second.focus()
+    const calls = refresh.mock.calls.length
+    view.rerender(make({ ...data }, true, null))
+    expect(second).toHaveFocus()
+    act(() => vi.advanceTimersByTime(9000)); expect(refresh).toHaveBeenCalledTimes(calls)
+    view.rerender(make(data, false, { operationId: 'pending', change: { kind: 'model', value: 'second' } }))
+    act(() => vi.advanceTimersByTime(3000)); expect(refresh).toHaveBeenCalledTimes(calls + 1)
+  } finally { vi.useRealTimers() }
+})
+
+test('the internal host-settings placeholder never becomes a model caption', () => {
+  expect(modelLabel('host-settings', [{ value: 'host-settings', label: 'host-settings' }])).toBeNull()
+  expect(modelLabel('actual', [{ value: 'actual', label: 'host-settings' }])).toBeNull()
+})
+
+test('ACP host-settings remains a clean model caption after its catalog loads', async () => {
+  const ctx = { get: () => undefined, locale: { getSnapshot: () => ({ active: 'zh' }), subscribe: () => () => {} } } as unknown as Context
+  const props = { sessionId: 'A', sessionBinding: { session: { metadata: { getSnapshot: () => ({ capabilities: {} }) } } }, useInput: () => false, useSession: () => false, renderSlot: () => null } as unknown as InputProps
+  const metadata = { id: 'A', sourceId: 'agy', nativeId: 'thread', engine: 'antigravity', status: 'idle', agent: { model: 'host-settings' } }
+  const empty: never[] = []
+  const session = { metadata: { getSnapshot: () => metadata, subscribe: () => () => {} }, nativeActions: {
+    view: () => ({ getSnapshot: () => empty, subscribe: () => () => {} }), recover: async () => {},
+  } }
+  const api = { nativeCall: async () => ({ ok: true, value: { status: 'accepted', result: {
+    current: { provider: 'antigravity', model: 'host-settings' }, routable: true,
+    groups: [{ id: 'antigravity', models: [{ id: 'real-model', name: 'Gemini' }] }], failures: [],
+  } } }) }
+  render(<DirectAcpControls ctx={ctx} props={props} session={session as never} api={api as never}/>)
+  await screen.findByRole('button', { name: '模型' })
+  expect(document.body).not.toHaveTextContent('host-settings')
+  fireEvent.click(screen.getByRole('button', { name: '模型' }))
+  expect(await screen.findByText('Gemini')).toBeVisible()
+  expect(document.body).not.toHaveTextContent('host-settings')
 })

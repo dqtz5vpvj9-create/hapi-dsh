@@ -20,40 +20,43 @@ export interface RemoteCreateSessionProps {
   createDsh?(): void
   creation?: RemoteCreationController
   catalogState?: CreationCatalogState
+  initialCatalog?: SourceCatalog | null
   sourceEngine?: string
   sourceLabels?: Readonly<Record<string, string>>
   onBusyChange?(busy: boolean): void
   browseDirectories?: SourceDirectoryBrowser
 }
 export interface CreationCatalogState { catalog: SourceCatalog | null; loading: boolean; error: string | null; refresh(): Promise<void> }
-export function useCreationCatalog(api: Pick<HhpiRemoteApi, 'catalog'> | undefined, language: string): CreationCatalogState {
-  const [catalog, setCatalog] = useState<SourceCatalog | null>(null), [loading, setLoading] = useState(!!api), [error, setError] = useState<string | null>(null)
+export function useCreationCatalog(api: Pick<HhpiRemoteApi, 'catalog'> | undefined, language: string, initialCatalog: SourceCatalog | null = null): CreationCatalogState {
+  const [catalog, setCatalog] = useState<SourceCatalog | null>(initialCatalog), [loading, setLoading] = useState(!!api && !initialCatalog), [error, setError] = useState<string | null>(null)
+  const catalogRef = useRef(catalog); catalogRef.current = catalog
   const current = useRef<AbortController | null>(null)
   const refresh = useCallback(async (): Promise<void> => {
     current.current?.abort()
     if (!api) { setCatalog(null); setLoading(false); setError(null); return }
     const request = new AbortController(); current.current = request
-    setLoading(true); setError(null)
+    if (!catalogRef.current) setLoading(true)
+    setError(null)
     try {
       const result = await api.catalog(request.signal)
       if (request.signal.aborted) return
       if (!result.ok) throw result.error
       setCatalog(result.value)
     } catch {
-      if (!request.signal.aborted) setError(language.startsWith('zh') ? '无法加载这台机器的 Agent，请重试。' : 'Agents on this machine could not be loaded. Retry to reconnect.')
+      if (!request.signal.aborted && !catalogRef.current) setError(language.startsWith('zh') ? '无法加载这台机器的 Agent，请重试。' : 'Agents on this machine could not be loaded. Retry to reconnect.')
     } finally { if (!request.signal.aborted) setLoading(false) }
   }, [api, language])
-  useEffect(() => { setCatalog(null); void refresh(); return () => current.current?.abort() }, [refresh])
+  useEffect(() => { void refresh(); return () => current.current?.abort() }, [refresh])
   return { catalog, loading, error, refresh }
 }
 /** A native source is selected before its directory; defaults remain source-owned. */
-export function RemoteCreateSessionForm({ api, access, open, close, initialSourceId, initialDirectory, intent, language = 'en', creation: suppliedCreation, createDsh, catalogState, sourceEngine, sourceLabels, onBusyChange, browseDirectories }: RemoteCreateSessionProps) {
+export function RemoteCreateSessionForm({ api, access, open, close, initialSourceId, initialDirectory, initialCatalog, intent, language = 'en', creation: suppliedCreation, createDsh, catalogState, sourceEngine, sourceLabels, onBusyChange, browseDirectories }: RemoteCreateSessionProps) {
   const zh = language.startsWith('zh'), text = (en: string, cn: string): string => zh ? cn : en
   const creation = useMemo(() => suppliedCreation ?? new RemoteCreationController(api, access, intent ? { intent } : {}), [api, access?.scope, access?.storage, intent, suppliedCreation])
   const state = useSyncExternalStore(creation.subscribe, creation.getSnapshot)
-  const ownCatalog = useCreationCatalog(catalogState ? undefined : api, language)
+  const ownCatalog = useCreationCatalog(catalogState ? undefined : api, language, initialCatalog)
   const { catalog, loading: catalogLoading, error: catalogError, refresh: loadCatalog } = catalogState ?? ownCatalog
-  const [sourceId, setSourceId] = useState(initialSourceId ?? ''), [directory, setDirectory] = useState(initialDirectory ?? '')
+  const [sourceId, setSourceId] = useState(() => initialSourceId ?? (catalog?.sources.find(source => (!sourceEngine || source.engine === sourceEngine) && source.create && source.online)?.id ?? '')), [directory, setDirectory] = useState(initialDirectory ?? '')
   const [error, setError] = useState<string | null>(null), [opening, setOpening] = useState(false), [newAttempt, setNewAttempt] = useState(state.record?.phase === 'accepted')
   const generation = useRef(0), submittedInView = useRef(false)
   useEffect(() => { ++generation.current; return () => { ++generation.current; if (!suppliedCreation) creation.dispose() } }, [creation, suppliedCreation])
@@ -77,6 +80,23 @@ export function RemoteCreateSessionForm({ api, access, open, close, initialSourc
   const sources = catalog?.sources.filter(item => !sourceEngine || item.engine === sourceEngine) ?? []
   const directories = source ? [...new Set(catalog?.sessions.filter(item => item.machineId === source.machineId && item.sourceId === source.id
     && item.engine === source.engine && item.cwd?.trim()).sort((a, b) => b.updatedAt - a.updatedAt).map(item => item.cwd!) ?? [])] : []
+  const manualDirectory = useRef(false), defaultAttempt = useRef<string | null>(null)
+  useEffect(() => {
+    if (!source || state.loading || unresolved || directory || manualDirectory.current) return
+    const identity = JSON.stringify([source.machineId, source.id, source.engine])
+    const preferred = initialDirectory && (!initialSourceId || initialSourceId === source.id) ? initialDirectory : directories[0]
+    if (preferred) { setDirectory(preferred); return }
+    if (!browseDirectories || defaultAttempt.current === identity) return
+    defaultAttempt.current = identity
+    const request = new AbortController()
+    const owner = { machineId: source.machineId, sourceId: source.id, engine: source.engine }
+    void browseDirectories(owner, undefined, request.signal).then(result => {
+      if (request.signal.aborted || manualDirectory.current || result.source.machineId !== owner.machineId || result.source.sourceId !== owner.sourceId || result.source.engine !== owner.engine) return
+      setDirectory(current => current || result.listing.path)
+    }).catch(() => {})
+    return () => request.abort()
+  }, [source?.machineId, source?.id, source?.engine, state.loading, unresolved, directory, initialDirectory, initialSourceId, directories[0], browseDirectories])
+  const changeDirectory = (value: string): void => { manualDirectory.current = true; setDirectory(value) }
   const finish = async (): Promise<void> => {
     const current = generation.current
     setOpening(true); setError(null)
@@ -119,11 +139,11 @@ export function RemoteCreateSessionForm({ api, access, open, close, initialSourc
             ? [{ id: state.record.source.id, label: readableEngine(state.record.source.engine), disabled: true }] : []),
           ...sources.map(item => ({ id: item.id, disabled: !item.online || !item.create,
             label: `${readableEngine(item.engine)} · ${sourceLabels?.[item.id] || item.id}${!item.online ? text(' (offline)', '（离线）') : !item.create ? text(' (creation unavailable)', '（无法新建）') : ''}` })),
-        ]} onChange={next => { setSourceId(next); setDirectory(''); setError(null) }}/>}
+        ]} onChange={next => { manualDirectory.current = false; defaultAttempt.current = null; setSourceId(next); setDirectory(''); setError(null) }}/>}
       {source && <SourceDirectoryPicker key={JSON.stringify([source.machineId, source.id, source.engine])} source={{ machineId: source.machineId, sourceId: source.id, engine: source.engine }}
-        value={directory} disabled={locked} language={language} {...(browseDirectories ? { browse: browseDirectories } : {})} onChange={setDirectory}/>}
+        value={directory} disabled={locked} language={language} {...(browseDirectories ? { browse: browseDirectories } : {})} onChange={changeDirectory}/>}
       {!!directories.length && <CreationChoice label={text('Recent directories on this Agent', '此 Agent 的最近目录')} value={directories.includes(directory) ? directory : ''} disabled={locked}
-        placeholder={text('Choose a directory', '选择目录')} options={directories.map(path => ({ id: path, label: path }))} onChange={setDirectory}/>}
+        placeholder={text('Choose a directory', '选择目录')} options={directories.map(path => ({ id: path, label: path }))} onChange={changeDirectory}/>}
       {catalog && !catalog.sources.some(item => item.online && item.create) && !state.record
         && <p role="status">{text('No source on this Host is available for creation. Choose another Host or refresh after reconnecting.', '此机器暂无可新建的来源。请选择其他机器，或连接后刷新。')}</p>}
     </> : !error && <p role="status">{catalogLoading ? text('Loading sources…', '正在加载来源…')

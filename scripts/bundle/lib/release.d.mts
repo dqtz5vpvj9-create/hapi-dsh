@@ -88,7 +88,7 @@ export interface SingletonScan {
 }
 
 export const STATE_VERSION: 1;
-export const DEFAULT_KEEP_PREVIOUS: 2;
+export const DEFAULT_KEEP_PREVIOUS: 0;
 export const HEALTH_TIMEOUT_MS: 30000;
 export const RELEASE_STATES: readonly string[];
 export const FAILED_STATE: 'failed';

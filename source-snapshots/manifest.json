@@ -149,6 +149,11 @@
         "packages/client/ui-theme/tests/focus-ring-styles.client.spec.ts",
         "packages/client/ui-tool/src/client/tool/toolviews/todo-row.tsx",
         "packages/client/ui-trajectory/src/client/index.ts",
+        "packages/client/ui-user-questions/src/client/PlanReviewPanel.tsx",
+        "packages/client/ui-user-questions/src/client/QuestionComposer.tsx",
+        "packages/client/ui-user-questions/src/client/contract/slots.ts",
+        "packages/client/ui-user-questions/src/client/index.ts",
+        "packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts",
         "packages/client/ui-workspace/src/client/index.ts",
         "packages/client/ui-workspace/src/client/navigation.ts",
         "packages/client/ui-workspace/tests/apply.client.spec.ts",
@@ -201,10 +206,10 @@
         "pnpm-lock.yaml"
       ],
       "upstreamVersion": "0.2.2-rc.1",
-      "extRelease": "hhpi-dsh-022-20261107.29",
-      "sourcePackageCount": 24,
-      "patchSha256": "62e69c2e32460be52cd4fb9760c20ef0c9fe5fe08065d18fe3df4cc6a64f7441",
-      "patchSetSha256": "0e990b1f4aad81f9c27c84e713a7bf8e63518e180aab06eb21de6799517e810a",
+      "extRelease": "hhpi-dsh-022-20261117.30",
+      "sourcePackageCount": 25,
+      "patchSha256": "2535abe563006cf6e22bd48bbc1b88b0f614f62dc6fcc50c675b1b58d8994cd0",
+      "patchSetSha256": "e3faffd0fed9c61318027543b69747117f2999c88e1a10fd92d26071e45324b7",
       "reconstruction": "Run scripts/dsh-ext/prepare.mjs from this repository. Apply only this consolidated source.patch to baseCommit; do not replay previousRc increments or historical build transformations.",
       "previousRc": {
         "upstreamVersion": "0.2.1-rc.3",
@@ -275,14 +280,14 @@
           }
         ]
       },
-      "packageSetSha256": "d8d87b9f6b105d25ffe26724864a68145344877202ba1f672b743aed1025d74a",
+      "packageSetSha256": "b5337c7bc4e163a3f8971912004872b1f28c727e22a656755d3fcf1b58c054ec",
       "previousExtension": {
-        "extRelease": "hhpi-dsh-022-20261107.28",
-        "patchSha256": "5471d05c4663cf047de5842bb02fa82964e64d15545969e5ab2250fc7d6e3e15",
-        "patchSetSha256": "83b4734a3b7d3cbfdbbb48487324a2c670971f49d7b6a57849f659b696385bf6",
-        "packageSetSha256": "0ed1ba16b29111be01a8c537b4f4333a767938af1e98bb860f8ebfe0efba9940",
-        "directory": "dsh-ext/releases/0.2.2-rc.1/hhpi-dsh-022-20261107.28",
-        "status": "Historical complete .28 source patch and release identities; do not apply after active source.patch."
+        "extRelease": "hhpi-dsh-022-20261107.29",
+        "patchSha256": "62e69c2e32460be52cd4fb9760c20ef0c9fe5fe08065d18fe3df4cc6a64f7441",
+        "patchSetSha256": "0e990b1f4aad81f9c27c84e713a7bf8e63518e180aab06eb21de6799517e810a",
+        "packageSetSha256": "d8d87b9f6b105d25ffe26724864a68145344877202ba1f672b743aed1025d74a",
+        "directory": "dsh-ext/releases/0.2.2-rc.1/hhpi-dsh-022-20261107.29",
+        "status": "Historical .29 source patch and installed Web-shell bundle manifest; do not apply after active source.patch."
       }
     },
     {

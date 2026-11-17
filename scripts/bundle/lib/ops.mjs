@@ -347,7 +347,7 @@ function normalizeOptions(options) {
     const style = options.style ?? 'tarball';
     if (style !== 'tarball' && style !== 'directory') throw new Error('override style must be tarball or directory');
     const keepPrevious = options.keepPrevious ?? DEFAULT_KEEP_PREVIOUS;
-    if (!Number.isInteger(keepPrevious) || keepPrevious < DEFAULT_KEEP_PREVIOUS) throw new Error(`at least ${DEFAULT_KEEP_PREVIOUS} previous releases must be retained`);
+    if (!Number.isInteger(keepPrevious) || keepPrevious < DEFAULT_KEEP_PREVIOUS) throw new Error(`keepPrevious must be a non-negative integer`);
     return {
         ...options,
         dshHome: resolve(dshHome),
@@ -604,6 +604,12 @@ async function removeReleaseArtifacts(dshHome, releaseIds, logger) {
 /* ------------------------------------------------------------------ */
 
 export async function rollbackRelease(rawOptions) {
+    const unlock = await acquireInstallLock(resolve(rawOptions.dshHome));
+    try { return await rollbackReleaseUnlocked(rawOptions); }
+    finally { await unlock(); }
+}
+
+async function rollbackReleaseUnlocked(rawOptions) {
     const { dshHome, profile, toReleaseId, pnpm, env: extraEnv, logger = () => {}, reinstall } = rawOptions;
     // The CLI may omit the process runner; rollback still needs it for the
     // profile reinstall and the composed-profile health check.
@@ -705,12 +711,20 @@ export async function verifyReleaseStore({ dshHome }) {
 
 export async function pruneReleaseStore({ dshHome, keepPrevious = DEFAULT_KEEP_PREVIOUS, logger = () => {} }) {
     const home = resolve(dshHome);
-    let state = await readBundleState(home);
-    const plan = prunePlan(state, { keepPrevious });
-    await removeReleaseArtifacts(home, plan.remove, logger);
-    state = forgetReleases(state, plan.remove);
-    await writeBundleState(home, state);
-    return { ok: true, removed: plan.remove, retained: plan.keep };
+    const unlock = await acquireInstallLock(home);
+    try {
+        let state = await readBundleState(home);
+        if (state.attempt && state.attempt.state !== FAILED_STATE && state.attempt.state !== ROLLED_BACK_STATE) {
+            throw new Error('Cannot prune while an upgrade is in progress');
+        }
+        const plan = prunePlan(state, { keepPrevious });
+        await removeReleaseArtifacts(home, plan.remove, logger);
+        state = trimRetained(forgetReleases(state, plan.remove), { keepPrevious });
+        await writeBundleState(home, state);
+        return { ok: true, removed: plan.remove, retained: plan.keep };
+    } finally {
+        await unlock();
+    }
 }
 
 /* ------------------------------------------------------------------ */

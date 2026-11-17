@@ -99,10 +99,10 @@ async function bundleChecks(config: RuntimeConfig, options: DoctorOptions): Prom
     const previousProblems = inspection.previous.filter((entry) => entry.error !== undefined);
     checks.push({
         name: 'release-integrity',
-        status: previousProblems.length > 0 ? 'fail' : inspection.previous.length >= 2 ? 'pass' : 'warn',
+        status: previousProblems.length > 0 ? 'fail' : 'pass',
         detail: previousProblems.length > 0
             ? redact(`Previous release(s) unusable: ${previousProblems.map((entry) => `r-${entry.releaseId.slice(0, 16)}: ${entry.error}`).join('; ')}`)
-            : `${inspection.previous.length} previous release(s) retained and verified; the distribution requirement is at least 2`,
+            : `${inspection.previous.length} previous release(s) retained and verified`,
     });
     const capabilities = inspection.extCapabilities;
     if (!capabilities) {

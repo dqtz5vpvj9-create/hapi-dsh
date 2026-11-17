@@ -13,7 +13,7 @@ import { memoryOperations } from '../fixtures/operation-transactions.ts'
 vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 
 function directoryInput() {
-    if (!screen.queryByLabelText('Working directory')) fireEvent.click(screen.getByRole('button', { name: 'Enter a path (optional)' }))
+    if (!screen.queryByLabelText('Working directory')) fireEvent.click(screen.getByRole('button', { name: 'Enter a path (optional)' })) // DSH's separate form
     return screen.getByLabelText('Working directory')
 }
 
@@ -24,6 +24,54 @@ function directoryPage(source: SourceDirectoryIdentity, path = 'C:\\Users\\owned
         entries: path.endsWith('Projects') ? [] : [{ name: 'Projects', path: drive + 'Projects', hidden: false }], truncated: false,
     } }
 }
+
+test('cached agents are usable immediately while a background refresh is pending', async () => {
+    const local = sourceHost('cached-machine'), snapshot = await local.api.catalog(); if (!snapshot.ok) throw new Error('fixture catalog')
+    let finish!: (value: typeof snapshot) => void
+    vi.mocked(local.api.catalog).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    local.sourceCreation.cachedCatalog = () => snapshot.value
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: local.navigation, sourceCreation: local.sourceCreation, storageKey: 'cached-creation' })
+    controller.requestNewSession('source', { hostId: 'local', directory: '' })
+    const view = render(<CreationFlow controller={controller}/>)
+    try {
+        expect(screen.getByRole('button', { name: 'Agent Codex' })).toBeEnabled()
+        expect(screen.queryByText('Loading Agents…')).not.toBeInTheDocument()
+        expect(await screen.findByLabelText('Working directory')).toBeVisible()
+        await act(async () => finish(snapshot))
+        expect(screen.getByRole('button', { name: 'Agent Codex' })).toBeEnabled()
+    } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
+})
+
+test('source home fills an empty directory but a manual clear defeats a late response', async () => {
+    const local = sourceHost('home-machine'), source = { machineId: 'home-machine', sourceId: 'same-source', engine: 'codex' }
+    let finish!: (value: { ok: true; value: SourceDirectoryListing }) => void
+    const listing = vi.fn(() => new Promise<{ ok: true; value: SourceDirectoryListing }>(resolve => { finish = resolve }))
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: local.navigation, sourceCreation: local.sourceCreation, sourceDirectories: listing, storageKey: 'home-default-race' })
+    controller.requestNewSession('source', { hostId: 'local', directory: '' })
+    const view = render(<CreationFlow controller={controller}/>)
+    try {
+        const input = await screen.findByLabelText('Working directory')
+        await waitFor(() => expect(listing).toHaveBeenCalledTimes(1))
+        fireEvent.change(input, { target: { value: 'C:\\manual' } }); fireEvent.change(input, { target: { value: '' } })
+        await act(async () => finish({ ok: true, value: directoryPage(source) }))
+        expect(input).toHaveValue(''); expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
+        expect(listing).toHaveBeenCalledTimes(1)
+    } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
+})
+
+test('source home enables creation without opening the folder browser', async () => {
+    const local = sourceHost('home-default'), source = { machineId: 'home-default', sourceId: 'same-source', engine: 'codex' }
+    const listing = vi.fn(async () => ({ ok: true as const, value: directoryPage(source) }))
+    const controller = new WorkspaceController({ sessions: local.sessions, navigation: local.navigation, sourceCreation: local.sourceCreation, sourceDirectories: listing, storageKey: 'home-default' })
+    controller.requestNewSession('source', { hostId: 'local', directory: '' })
+    const view = render(<CreationFlow controller={controller}/>)
+    try {
+        await waitFor(() => expect(directoryInput()).toHaveValue('C:\\Users\\owned'))
+        expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
+        expect(screen.queryByRole('button', { name: 'Select this folder' })).not.toBeInTheDocument()
+        expect(listing).toHaveBeenCalledTimes(1)
+    } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
+})
 
 test('the central forwarded Windows Agent browses its exact paired owner, chooses another drive folder and creates without typing', async () => {
     const local = sourceHost('central-machine'), windows = sourceHost('windows-machine')
@@ -53,7 +101,7 @@ test('the central forwarded Windows Agent browses its exact paired owner, choose
         await waitFor(() => expect(windowsBrowse).toHaveBeenLastCalledWith({ ...source, path: 'D:\\' }, expect.any(AbortSignal)))
         fireEvent.click(screen.getByRole('button', { name: 'Projects' })); await screen.findByRole('button', { name: 'Parent folder' })
         fireEvent.click(screen.getByRole('button', { name: 'Select this folder' }))
-        expect(screen.queryByLabelText('Working directory')).not.toBeInTheDocument(); expect(screen.getByText('D:\\Projects')).toBeVisible()
+        expect(directoryInput()).toHaveValue('D:\\Projects')
         expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled(); expect(local.api.create).not.toHaveBeenCalled()
         expect(centralBrowse).not.toHaveBeenCalled(); expect(hostBrowse).not.toHaveBeenCalled()
         fireEvent.click(screen.getByRole('button', { name: 'Create' })); await waitFor(() => expect(open).toHaveBeenCalledWith(sessionResourceId('local', windows.session.id)))
@@ -71,12 +119,13 @@ test.each(['source', 'machine', 'close'] as const)('a late folder listing cannot
     const remove = controller.addHost({ id: 'remote', label: 'Other machine', sessions: remote.sessions, navigation: remote.navigation, sourceCreation: remote.sourceCreation, renderConversation: () => null })
     controller.requestNewSession('source', { hostId: 'local', directory: '' }); const view = render(<CreationFlow controller={controller}/>)
     try {
-        fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' })); await waitFor(() => expect(listing).toHaveBeenCalledTimes(1))
+        fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' })); await waitFor(() => expect(listing).toHaveBeenCalledTimes(2))
+        const pickerSignal = readSignal, finishPicker = finish
         if (action === 'source') { fireEvent.click(screen.getByRole('button', { name: /^Connection / })); fireEvent.click(screen.getAllByRole('menuitem')[1]!) }
         else if (action === 'machine') { fireEvent.click(screen.getByRole('button', { name: /^Machine / })); fireEvent.click(screen.getByRole('menuitem', { name: 'Other machine' })) }
         else act(() => controller.closeNewSession())
-        expect(readSignal?.aborted).toBe(true)
-        await act(async () => finish({ ok: true, value: directoryPage(source, 'C:\\stale-folder') }))
+        expect(pickerSignal?.aborted).toBe(true)
+        await act(async () => finishPicker({ ok: true, value: directoryPage(source, 'C:\\stale-folder') }))
         expect(screen.queryByText('C:\\stale-folder')).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Select this folder' })).not.toBeInTheDocument()
         expect(local.api.create).not.toHaveBeenCalled(); expect(remote.api.create).not.toHaveBeenCalled()
     } finally { view.unmount(); remove(); controller.dispose(); local.creation.dispose(); remote.creation.dispose() }
@@ -93,7 +142,7 @@ test('an unavailable inherited directory can recover through Home without typing
     try {
         fireEvent.click(await screen.findByRole('button', { name: 'Choose folder' })); await screen.findByRole('alert')
         fireEvent.click(screen.getByRole('button', { name: 'Home' })); await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
-        fireEvent.click(screen.getByRole('button', { name: 'Select this folder' })); expect(screen.getByText('C:\\Users\\owned')).toBeVisible()
+        fireEvent.click(screen.getByRole('button', { name: 'Select this folder' })); expect(directoryInput()).toHaveValue('C:\\Users\\owned')
         expect(listing).toHaveBeenLastCalledWith(source, expect.any(AbortSignal)); expect(local.api.create).not.toHaveBeenCalled()
     } finally { view.unmount(); controller.dispose(); local.creation.dispose() }
 })
@@ -221,8 +270,8 @@ test('Windows directory choices belong to its exact source, and changing machine
         fireEvent.click(screen.getByRole('button', { name: 'Connection Codex · Windows machine' }))
         expect(screen.getByRole('menuitem', { name: 'Codex · Linux machine' })).toBeVisible()
         fireEvent.click(screen.getByRole('menuitem', { name: 'Codex · Windows machine' }))
-        expect(screen.getByRole('button', { name: 'Create' })).toBeDisabled()
-        fireEvent.click(screen.getByRole('button', { name: 'Recent directories on this Agent Choose a directory' }))
+        expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
+        fireEvent.click(screen.getByRole('button', { name: 'Recent directories on this Agent C:\\Users\\owned\\project' }))
         expect(screen.getAllByRole('menuitem')).toHaveLength(1)
         expect(screen.getByRole('menuitem', { name: 'C:\\Users\\owned\\project' })).toBeVisible()
         expect(screen.queryByText('/home/linux/project')).not.toBeInTheDocument()
@@ -264,12 +313,12 @@ test('native creation never inherits an unidentified DSH path and a removed sour
     const view = render(<CreationFlow controller={controller}/>)
     try {
         await screen.findByRole('button', { name: 'Create' })
-        expect(directoryInput()).toHaveValue('')
+        expect(directoryInput()).toHaveValue('C:\\Users\\owned\\current')
         act(() => controller.closeNewSession())
         act(() => controller.requestNewSession('source', { hostId: 'local', directory: '/wrong/removed', sourceSessionId: 'hhpi:native-machine:removed:codex:old' }))
         await screen.findByRole('button', { name: 'Create' })
-        expect(directoryInput()).toHaveValue('')
-        fireEvent.click(screen.getByRole('button', { name: 'Recent directories on this Agent Choose a directory' }))
+        expect(directoryInput()).toHaveValue('C:\\Users\\owned\\current')
+        fireEvent.click(screen.getByRole('button', { name: 'Recent directories on this Agent C:\\Users\\owned\\current' }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'C:\\Users\\owned\\current' }))
         expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled()
         fireEvent.click(screen.getByRole('button', { name: 'Create' }))

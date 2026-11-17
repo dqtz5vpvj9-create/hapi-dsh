@@ -47,15 +47,16 @@ function HostCreation({ controller, host, engine, language, catalog, setBusy }: 
 function HostAgentForm({ controller, host, language, agent, setAgent, busy, setBusy }: {
     controller: WorkspaceController; host: WorkspaceHost; language: string; agent: string; setAgent(agent: string): void; busy: boolean; setBusy(busy: boolean): void
 }) {
-    const catalog = useCreationCatalog(host.sourceCreation?.api, language), zh = language.startsWith('zh')
+    const catalog = useCreationCatalog(host.sourceCreation?.api, language, host.sourceCreation?.cachedCatalog?.() ?? null), zh = language.startsWith('zh')
     const dsh = !!host.workspaces && typeof host.sessions.create === 'function'
     const engines = [...new Set(catalog.catalog?.sources.map(source => source.engine) ?? [])]
     const available = engines.filter(engine => catalog.catalog!.sources.some(source => source.engine === engine && source.online && source.create))
+    const selectedAgent = agent || (!catalog.loading && !catalog.error ? available[0] ? `source:${available[0]}` : dsh ? 'dsh' : '' : '')
     useEffect(() => {
         if (agent || catalog.loading || catalog.error) return
         setAgent(available[0] ? `source:${available[0]}` : dsh ? 'dsh' : '')
     }, [agent, catalog.catalog, catalog.loading, catalog.error, dsh, setAgent])
-    const engine = agent.startsWith('source:') ? agent.slice(7) : ''
+    const engine = selectedAgent.startsWith('source:') ? selectedAgent.slice(7) : ''
     const options = engines.map(value => ({ id: `source:${value}`, label: readableEngine(value) + (available.includes(value) ? '' : zh ? '（暂不可用）' : ' (unavailable)') }))
     if (engine && !engines.includes(engine)) options.push({ id: agent, label: `${readableEngine(engine)}${zh ? '（此机器不可用）' : ' (unavailable on this machine)'}` })
     if (dsh) options.push({ id: 'dsh', label: 'DSH' })
@@ -63,10 +64,10 @@ function HostAgentForm({ controller, host, language, agent, setAgent, busy, setB
     const context = controller.getSnapshot().creationContext
     const t: WorkspaceTranslate = key => (zh ? chinese : en)[key]
     return <>
-        <CreationChoice label="Agent" value={agent} disabled={busy || catalog.loading} placeholder={catalog.loading ? (zh ? '正在加载 Agent…' : 'Loading Agents…') : (zh ? '选择 Agent' : 'Choose an Agent')}
+        <CreationChoice label="Agent" value={selectedAgent} disabled={busy || (!catalog.catalog && catalog.loading)} placeholder={!catalog.catalog && catalog.loading ? (zh ? '正在加载 Agent…' : 'Loading Agents…') : (zh ? '选择 Agent' : 'Choose an Agent')}
             options={options} onChange={setAgent}/>
         {catalog.error && <div className="hhpi-create-empty"><p role="alert">{catalog.error}</p><Button type="button" onClick={() => { void catalog.refresh() }}>{zh ? '重试' : 'Retry'}</Button></div>}
-        {agent === 'dsh' && dsh ? <DshSessionForm key={`${host.id}:dsh`} controller={controller} close={controller.closeNewSession} t={t} selectedHostId={host.id}
+        {selectedAgent === 'dsh' && dsh ? <DshSessionForm key={`${host.id}:dsh`} controller={controller} close={controller.closeNewSession} t={t} selectedHostId={host.id}
             initialDirectory={context?.hostId === host.id && (!context.sourceSessionId || !isSourceSessionId(context.sourceSessionId)) ? context.directory : ''} onPendingChange={setBusy}/>
             : engine && available.includes(engine) && host.sourceCreation ? <HostCreation key={`${host.id}:${engine}`} controller={controller} host={host} engine={engine} language={language} catalog={catalog} setBusy={setBusy}/>
                 : !catalog.loading && !catalog.error && <div className="hhpi-create-empty"><p role="status">{agent

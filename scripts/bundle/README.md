@@ -55,7 +55,7 @@ node package/dist/install.mjs install --dsh-home DSH_HOME --profile hapi-runner 
 
 检查通过不等于进程已经重启。服务管理器仍需监督原 CLI、避免双实例，并确认新 runtime 真正运行。Windows 任务显示 Ready 不证明 Runner 在运行；实际 Session 0 app-server、文件和 PTY 要另验收。
 
-失败恢复 profile 备份与原 lock，保留旧 active。至少保留两个先前 release，`--keep-previous` 不能小于 2。回滚恢复软件与依赖，不改原生日志、队列或审批结果，不重发未知写操作。现有 CLI 提供：
+失败恢复 profile 备份与原 lock，保留旧 active。健康升级后默认不保留旧 release；需要历史版本时可通过 `--keep-previous` 指定数量。回滚恢复软件与依赖，不改原生日志、队列或审批结果，不重发未知写操作。现有 CLI 提供：
 
 ```text
 hapi-dsh bundle status

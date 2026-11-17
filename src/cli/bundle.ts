@@ -29,7 +29,7 @@ Options:
   --role ROLE        host (default) or runner profile
   --style STYLE      tarball (default) or directory pnpm overrides fallback
   --dry-run          Verify and stage, print the plan, change nothing
-  --keep-previous N  Previous releases to retain (minimum 2)
+  --keep-previous N  Previous releases to retain (minimum 0)
   --json             Machine-readable output
 
 The release pointer only moves after the 30s health gate passes. A failed

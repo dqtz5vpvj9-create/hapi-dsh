@@ -7,7 +7,7 @@ import { build } from 'esbuild'
 import { Context } from '@deepseek-ai/cordis'
 import type { ISessions, SessionReference } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { HhpiRemoteApi } from '../src/hhpi-api.ts'
-import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts'
+import { sourceSessionId, type SourceCatalog, type SourceSession } from '../src/remote/protocol.ts'
 import type { HhpiCatalogCapability, HhpiCatalogCapabilityStore } from '../src/client/remote-sessions.ts'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -16,6 +16,8 @@ interface Runtime {
   RemoteSessions: new (ctx: Context, original: ISessions, api: HhpiRemoteApi) => {
     readonly list: { getSnapshot(): ISessions['list'] extends { getSnapshot(): infer T } ? T : never; subscribe(listener: () => void): () => void }
     readonly capabilities: HhpiCatalogCapabilityStore
+    cachedCatalog(): SourceCatalog | null
+    revokeStorage(): void
     refresh(): Promise<void>
     retain(id: string, options: { source: 'hapiWorkspace' }): SessionReference
     dispose(): void
@@ -76,6 +78,7 @@ test('the session list stays pending until the first HHPI catalog result publish
   try {
     assert.equal(remote.list.getSnapshot().phase, 'pending')
     assert.equal(remote.capabilities.getSnapshot().catalogReady, false)
+    assert.equal(remote.cachedCatalog(), null)
     answer({ ok: true, value: { protocol: 1, legacyHapi: false, sessions: [source], sources: [] } })
     await remote.refresh()
     assert.equal(remote.list.getSnapshot().phase, 'ready')
@@ -85,6 +88,9 @@ test('the session list stays pending until the first HHPI catalog result publish
     assert.deepEqual(row.projectionValues, { hhpiSource: source, hhpiDiscovery: 'advertised', subagentCatalog: [] }, 'the advertised row must carry native machine/engine identity for workspace migration')
     assert.ok(retained, 'a source row listener can retain the just-advertised source in the same publication')
     assert.deepEqual(remote.capabilities.getSnapshot(), { catalogReady: true, legacyHapi: false })
+    assert.deepEqual(remote.cachedCatalog()?.sessions, [source])
+    remote.revokeStorage()
+    assert.equal(remote.cachedCatalog(), null)
   } finally {
     stop(); retained?.release(); remote.dispose(); await ctx.fiber.dispose()
   }

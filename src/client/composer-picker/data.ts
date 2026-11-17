@@ -40,7 +40,9 @@ export function permissionPickerAvailable(capable: boolean, data: PickerData | n
 /** Model identifiers are source values; labels never become operation values. */
 export function modelKey(value: string | null): string { return JSON.stringify(value) }
 export function modelLabel(value: string | null, choices: readonly PickerChoice<string | null>[]): string | null {
-    return choices.find(choice => choice.value === value)?.label ?? value
+    if (value === 'host-settings') return null
+    const label = choices.find(choice => choice.value === value)?.label ?? value
+    return label === 'host-settings' ? null : label
 }
 
 /** Recheck the latest capability snapshot at dispatch, including after a popup

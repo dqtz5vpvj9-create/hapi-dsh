@@ -130,7 +130,7 @@ export interface Harness {
     fakePnpm: string
     logFile: string
     pnpmLog: string
-    install: (tag: string, options?: { env?: NodeJS.ProcessEnv; waitIdleTimeoutMs?: number; healthTimeoutMs?: number; role?: 'host' | 'runner';
+    install: (tag: string, options?: { keepPrevious?: number; env?: NodeJS.ProcessEnv; waitIdleTimeoutMs?: number; healthTimeoutMs?: number; role?: 'host' | 'runner';
         runtimeBuilder?: (options: { releaseRoot: string; manifest: { release: { upstreamVersion: string }; payload: { dshExt: Array<{ name: string; version: string; tarball: string }> } } }) => Promise<{ directory: string; dshBinary: string; dshVersion: string; packages: Array<{ name: string; version: string; sha256: string }> }> }) => Promise<InstallResult>
     command: { executable: string; args: string[] }
     pnpm: { executable: string; args: string[] }
@@ -214,7 +214,7 @@ export async function createHarness(): Promise<Harness> {
         return { directory, dshBinary: join(directory, 'node_modules/@deepseek-ai/dsh/lib/bin.js'), dshVersion: manifest.release.upstreamVersion, packages }
     }
     type RuntimeBuilder = ReturnType<typeof runtimeBuilderFor>
-    const install = async (tag: string, options: { env?: NodeJS.ProcessEnv; waitIdleTimeoutMs?: number; healthTimeoutMs?: number; role?: 'host' | 'runner'; runtimeBuilder?: RuntimeBuilder } = {}) => {
+    const install = async (tag: string, options: { keepPrevious?: number; env?: NodeJS.ProcessEnv; waitIdleTimeoutMs?: number; healthTimeoutMs?: number; role?: 'host' | 'runner'; runtimeBuilder?: RuntimeBuilder } = {}) => {
         const target = await ensureRelease(tag)
         return ops.installRelease({
             runtimeBuilder: options.runtimeBuilder ?? runtimeBuilderFor(options.env?.HAPI_DSH_FAKE_FAIL),
@@ -226,6 +226,7 @@ export async function createHarness(): Promise<Harness> {
             pnpm,
             pnpmVersion: '11.28.5',
             env: { ...process.env, HAPI_DSH_FAKE_LOG: logFile, HAPI_DSH_FAKE_PNPM_LOG: pnpmLog, ...(options.env ?? {}) },
+            ...(options.keepPrevious === undefined ? {} : { keepPrevious: options.keepPrevious }),
             waitIdleTimeoutMs: options.waitIdleTimeoutMs ?? 0,
             healthTimeoutMs: options.healthTimeoutMs ?? 500,
             healthIntervalMs: 50,

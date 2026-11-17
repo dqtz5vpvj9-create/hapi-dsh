@@ -81,10 +81,10 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
     // One reconciliation timer per occurrence, including a closed pending
     // picker. The durable ledger never resubmits an uncertain operation.
     useEffect(() => {
-        if (!paneState.visible || !(visible && visible !== 'actions' || pending)) return
+        if (!paneState.visible || !pending) return
         const timer = setInterval(() => { void refresh() }, 3000)
         return () => { clearInterval(timer) }
-    }, [visible, paneState.visible, pending?.operationId, refresh])
+    }, [paneState.visible, pending?.operationId, refresh])
     useLayoutEffect(() => { popup.remeasure.current?.() }, [data, loading, error, pending, applied, locale])
     useEffect(() => {
         if (!visible) return
@@ -98,13 +98,16 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
         if (!popup.native) document.addEventListener('pointerdown', outside, true)
         document.addEventListener('focusin', outside, true)
         document.addEventListener('keydown', escape, true)
-        const panel = panelElement()
-        ;(panel?.querySelector<HTMLElement>('input:checked:not(:disabled)') ?? panel?.querySelector<HTMLElement>('button:not(:disabled),input:not(:disabled)'))?.focus({ preventScroll: true })
         return () => {
             document.removeEventListener('pointerdown', outside, true); document.removeEventListener('focusin', outside, true)
             document.removeEventListener('keydown', escape, true)
         }
     }, [visible, close, popup.native])
+    useEffect(() => {
+        if (!visible) return
+        const panel = panelElement()
+        ;(panel?.querySelector<HTMLElement>('input:checked:not(:disabled)') ?? panel?.querySelector<HTMLElement>('button:not(:disabled),input:not(:disabled)'))?.focus({ preventScroll: true })
+    }, [visible])
 
     const select = (action: PickerAction): void => {
         if (disabled || action.kind === 'permission' && !permissionAvailable) return

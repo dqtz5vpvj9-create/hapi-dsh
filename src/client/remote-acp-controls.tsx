@@ -30,6 +30,7 @@ export function DirectAcpControls({ ctx, api, props, session }: {
     const version = ++revision.current
     setLoading(true)
     try {
+      await actions.recover(metadata.id, 'settings')
       if (!api.nativeCall) throw new Error('The source model controls are unavailable.')
       const response = await api.nativeCall({ sourceId: metadata.sourceId, method: 'session/models', params: { sessionId: metadata.nativeId } })
       if (!response.ok) throw new Error(response.error.message)
@@ -39,13 +40,14 @@ export function DirectAcpControls({ ctx, api, props, session }: {
       if (alive.current && version === revision.current) { setCatalog(value); setError(null) }
     } catch (failure) { if (alive.current && version === revision.current) setError(failure instanceof Error ? failure.message : String(failure)) }
     finally { if (alive.current && version === revision.current) setLoading(false) }
-  }, [api, metadata.sourceId, metadata.nativeId, metadata.engine])
+  }, [api, actions, metadata.id, metadata.sourceId, metadata.nativeId, metadata.engine])
   const current = catalog?.current ?? metadata.agent
+  const rawModel = current?.model === 'host-settings' ? null : (current?.model ?? null)
   const models = catalog?.groups.filter(group => group.id === metadata.engine).flatMap(group => group.models) ?? []
-  const selected = models.find(model => model.id === current?.model)
+  const selected = models.find(model => model.id === rawModel)
   const writable = !!catalog?.routable && !sourceIsOffline(metadata) && metadata.status !== 'running' && !pendingAction
   const data: PickerData | null = catalog ? {
-    model: current?.model ?? null, models: models.map(model => ({ value: model.id, label: model.name })),
+    model: rawModel, models: models.map(model => ({ value: model.id, label: model.name === 'host-settings' ? 'Default' : model.name })),
     effort: current?.reasoningEffort ?? null,
     efforts: selected?.reasoning?.efforts.map(effort => ({ value: effort.id, label: effort.name ?? effort.id })) ?? [],
     permission: null, permissions: [], readOnly: !writable, serviceTier: null, fast: false, fastAvailable: false,
@@ -68,9 +70,18 @@ export function DirectAcpControls({ ctx, api, props, session }: {
     } catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : String(failure)); return false }
     finally { if (alive.current) setBusy(false) }
   }
+  const resume = async () => {
+    const original = actions.get(metadata.id, 'settings')
+    if (busy || original?.phase !== 'prepared' || sourceIsOffline(metadata) || metadata.status === 'running') return
+    setBusy(true); setError(null)
+    try { await actions.submit({ sessionId: original.sessionId, intent: original.intent, kind: original.kind, request: original.request }) }
+    catch (failure) { if (alive.current) setError(failure instanceof Error ? failure.message : String(failure)) }
+    finally { if (alive.current) setBusy(false); await refresh() }
+  }
   return <SourceControls ctx={ctx} props={props}
-    initial={{ model: current?.model ?? null, effort: current?.reasoningEffort ?? null, permission: null, serviceTier: null, collaboration: null }}
+    initial={{ model: rawModel, effort: current?.reasoningEffort ?? null, permission: null, serviceTier: null, collaboration: null }}
     permissionCapable={false} data={data} loading={loading} busy={busy} pending={pendingAction ? {
       operationId: pendingAction.request.operationId, change: { kind: 'model', value: String(pendingAction.request.params?.model ?? '') },
-    } : null} error={error} sourceLocked={sourceIsOffline(metadata) || metadata.status === 'running'} refresh={refresh} apply={apply}/>
+    } : null} error={error} sourceLocked={sourceIsOffline(metadata) || metadata.status === 'running'} refresh={refresh} apply={apply}
+    {...(pendingAction?.phase === 'prepared' ? { resume } : {})}/>
 }

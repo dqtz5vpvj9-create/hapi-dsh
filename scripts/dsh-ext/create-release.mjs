@@ -68,6 +68,8 @@ for (const [from, to] of [
   ['docs/upstream-pr-plugin-session-delegation.md', 'source/plugin-session-delegation-upstream-pr.md'],
   ['docs/adr/hhpi-native-queue-start.md', 'source/native-queue-start-architecture.md'],
   ['docs/dsh-pr-native-queue-start.md', 'source/native-queue-start-upstream-pr.md'],
+  ['docs/adr/hhpi-question-presentation.md', 'source/question-presentation-architecture.md'],
+  ['docs/upstream-pr-question-presentation.md', 'source/question-presentation-upstream-pr.md'],
   ['scripts/dsh-ext/prepare.mjs', 'source/prepare.mjs.txt'],
   ['scripts/dsh-ext/build-extension.mjs', 'source/build-extension.mjs.txt'],
   ['scripts/dsh-ext/cache.mjs', 'source/cache.mjs.txt'],
@@ -81,8 +83,8 @@ run('tar', ['--exclude=lib', '--exclude=node_modules', '-czf', join(output, 'sou
 const packages = built.map(({ name, file, sha256 }) => ({ name, version: UPSTREAM_VERSION, tarball: file, sha256 }));
 const release = {
   upstreamVersion: manifest.upstreamVersion, upstreamCommit: manifest.upstreamCommit,
-  extRelease: 'hhpi-dsh-022-20261107.29', patchSetSha256: manifest.patchSetSha256,
-  packageSetSha256: packageSetSha256(packages), compositionVersion: `${UPSTREAM_VERSION}+hhpi.20261107.29`,
+  extRelease: 'hhpi-dsh-022-20261117.30', patchSetSha256: manifest.patchSetSha256,
+  packageSetSha256: packageSetSha256(packages), compositionVersion: `${UPSTREAM_VERSION}+hhpi.20261117.30`,
   protocol: 2, capabilities: { historySource: 1, mountedChat: 1, windowCommit: 1 },
   packages, sourceOffer, licenses: ['licenses/DSH-MIT.txt'],
 };

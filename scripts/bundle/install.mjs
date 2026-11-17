@@ -38,7 +38,7 @@ Options:
   --wait-idle-timeout MS   Wait this long at waiting-idle before reporting (default 0: stop)
   --health-timeout MS      Health gate timeout (default 30000)
   --health-url URL         Optional live health endpoint polled during the gate
-  --keep-previous N        Previous releases to retain (minimum 2, default 2)
+  --keep-previous N        Previous releases to retain (minimum 0, default 0)
   --json                   Print a machine-readable result
 
 Exit status: 0 success (including an idempotent no-op), 1 failure (the previous
@@ -141,7 +141,7 @@ async function installCommand(options, { upgrade = false } = {}) {
         waitIdleTimeoutMs: waitIdleTimeout,
         healthTimeoutMs: integerFlag(flags, 'health-timeout', 30_000),
         healthIntervalMs: integerFlag(flags, 'health-interval', 1000),
-        keepPrevious: integerFlag(flags, 'keep-previous', 2),
+        keepPrevious: integerFlag(flags, 'keep-previous', 0),
         ...(typeof flags['health-url'] === 'string' ? { healthUrl: flags['health-url'] } : {}),
         logger: (message) => { if (flags.json !== true) logger(`${upgrade ? 'upgrade' : 'install'}: ${message}`); },
     });
@@ -198,7 +198,7 @@ async function main() {
             case 'prune':
                 result = await pruneReleaseStore({
                     dshHome: resolve(options.flags['dsh-home'] ?? dshHomeFromEnv()),
-                    keepPrevious: integerFlag(options.flags, 'keep-previous', 2),
+                    keepPrevious: integerFlag(options.flags, 'keep-previous', 0),
                     logger: (message) => { if (!json) logger(`prune: ${message}`); },
                 });
                 break;

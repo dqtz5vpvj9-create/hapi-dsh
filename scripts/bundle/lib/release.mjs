@@ -24,7 +24,7 @@ import { extractTgz } from './tar.mjs';
 import { assertTargetInside, buildManagedOverrides, describeConflicts, mergeOverrides, overridesEqual } from './overrides.mjs';
 
 export const STATE_VERSION = 1;
-export const DEFAULT_KEEP_PREVIOUS = 2;
+export const DEFAULT_KEEP_PREVIOUS = 0;
 /** Fixed by the spec: a release that is not healthy within 30s is rolled back. */
 export const HEALTH_TIMEOUT_MS = 30_000;
 
@@ -236,7 +236,7 @@ export function rollbackActivation(state, profile, { toReleaseId } = {}) {
 /** Releases safe to delete: active nowhere, kept as the last `keepPrevious` for every profile. */
 export function prunePlan(state, { keepPrevious = DEFAULT_KEEP_PREVIOUS } = {}) {
     if (!Number.isInteger(keepPrevious) || keepPrevious < DEFAULT_KEEP_PREVIOUS) {
-        throw new Error(`At least ${DEFAULT_KEEP_PREVIOUS} previous releases must be retained`);
+        throw new Error(`keepPrevious must be a non-negative integer`);
     }
     const kept = new Set();
     for (const profile of Object.values(state.profiles)) {

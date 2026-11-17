@@ -8,7 +8,7 @@ import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/t
 import type { FileAttachmentRef, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { RemoteError, type RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
-import { sourceSessionId, isSourceSessionId, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
+import { sourceSessionId, isSourceSessionId, type SourceCatalog, type SourceOperation, type SourceReceipt, type SourceSession } from '../remote/protocol.ts'
 import { isSourceDisplayId } from '../shared/source-display-id.ts'
 import { operationRefusal, sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { sourceIsOffline, sourceOffline } from '../shared/source-connectivity.ts'
@@ -33,6 +33,7 @@ import type { SourceWorkspaceApi } from '../workspace/source-api.ts'
 import { NativeSubmissionPending, submitRemoteStructuredInput, supportsCodexReference } from './remote-structured-input.ts'
 import { RemoteNativeQueue, type SourceQueueSnapshot } from './remote-native-queue.ts'
 import { sourceQuestion, sourceQuestionCallId } from '../shared/native-async-questions.ts'
+import { NativeQuestionPresentation, nativeMessageIdentity, type NativeQuestionHead } from './native-question-presentation.ts'
 import type { AskUserQuestionAnswer, UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
 import type { ToolCallId } from '@deepseek-ai/dsh-llm/brand'
 
@@ -84,6 +85,14 @@ export class RemoteSourceSession implements SessionFace {
   private readonly checkedRestoredDeliveries = new Set<string>()
   private nativeQueue: RemoteNativeQueue | undefined
   private stopQueueHistory: (() => void) | undefined
+  private stopQuestionHistory: (() => void) | undefined
+  private stopQuestionHead: (() => void) | undefined
+  private latestNativeTurn: string | undefined
+  private latestNativeSeq = -1
+  private questionEpoch: string | undefined
+  private questionHeadReady = false
+  private lastNativeUserSeq = -1
+  private readonly nativeQuestionPositions = new Map<string, number>()
   private readonly lifetime = new AbortController()
   private disposed = false
   readonly ready: Promise<void>
@@ -119,6 +128,19 @@ export class RemoteSourceSession implements SessionFace {
       this.stopQueueHistory = history.subscribeEntries(entries => { this.nativeQueue?.observe(entries) })
       void this.nativeQueue.refresh()
     }
+    this.stopQuestionHistory = history.subscribeEntries(entries => {
+      if (this.questionHeadReady && this.questionEpoch !== history.sourceEpoch) {
+        this.questionHeadReady = false; this.latestNativeTurn = undefined; this.nativeQuestionPositions.clear(); this.lastNativeUserSeq = -1
+        const questions = this.projectionValues.get('userQuestions')
+        if (questions) questions.set(questions.getSnapshot())
+      }
+      if (this.questionHeadReady) this.observeQuestionHead(entries)
+    })
+    this.stopQuestionHead = history.subscribeHead(page => {
+      if (!page.session.codex) return
+      this.questionHeadReady = true
+      this.observeQuestionHead(page.entries)
+    })
     this.ready = history.prepare(this.lifetime.signal).then(page => {
       if (this.disposed) throw new DOMException('The source view was released.', 'AbortError')
       this.state.set({ ...this.state.getSnapshot(), openState: 'open', hasMore: page.hasBefore,
@@ -132,6 +154,33 @@ export class RemoteSourceSession implements SessionFace {
   }
   readonly getSnapshot = (): SessionSnapshot => this.state.getSnapshot()
   readonly subscribe = (listener: () => void): (() => void) => this.state.subscribe(listener)
+  private observeQuestionHead(entries: readonly import('../remote/protocol.ts').SourceEntry[]): void {
+    const epoch = this.history.sourceEpoch
+    if (this.questionEpoch !== epoch) {
+      this.questionEpoch = epoch; this.latestNativeSeq = -1; this.latestNativeTurn = undefined
+      this.lastNativeUserSeq = -1; this.nativeQuestionPositions.clear()
+    }
+    let changed = false
+    for (const entry of entries) {
+      const event = entry.event
+      const id = event.type === 'assistant/message' ? event.data.message.id : event.type === 'user/message' ? event.data.id : undefined
+      const identity = nativeMessageIdentity(id, this.metadata.getSnapshot().nativeId)
+      if (!identity) continue
+      if (event.seq > this.latestNativeSeq) { this.latestNativeSeq = event.seq; this.latestNativeTurn = identity.turnId; changed = true }
+      if (event.type === 'assistant/message' && this.nativeQuestionPositions.get(identity.itemId) !== event.seq) {
+        this.nativeQuestionPositions.set(identity.itemId, event.seq); changed = true
+      }
+      if (event.type === 'user/message' && event.data.source.kind !== 'user-question-reply' && event.seq > this.lastNativeUserSeq) {
+        this.lastNativeUserSeq = event.seq; changed = true
+      }
+    }
+    while (this.nativeQuestionPositions.size > 2000) this.nativeQuestionPositions.delete(this.nativeQuestionPositions.keys().next().value!)
+    if (changed) {
+      const questions = this.projectionValues.get('userQuestions')
+      if (questions) questions.set(questions.getSnapshot())
+    }
+  }
+  questionPresentationHead(): NativeQuestionHead { return { turnId: this.latestNativeTurn, lastUserSeq: this.lastNativeUserSeq, positions: this.nativeQuestionPositions } }
   private publishNativeQueue(snapshot: SourceQueueSnapshot): void {
     if (this.disposed) return
     for (const [key, value] of [['queueActions', snapshot.actions], ['inbox', snapshot.inbox]] as const) {
@@ -228,7 +277,7 @@ export class RemoteSourceSession implements SessionFace {
       return question ? [{ callId: sourceQuestionCallId(request) as ToolCallId, questions: [question], state: 'continued' as const }] : []
     }), settled: [] }
     const projected = this.projections.faceOf('userQuestions')
-    if (JSON.stringify(projected.getSnapshot()) !== JSON.stringify(questions)) this.projectionValues.get('userQuestions')!.set(questions)
+    if (previous.activeTurnId !== session.activeTurnId || JSON.stringify(projected.getSnapshot()) !== JSON.stringify(questions)) this.projectionValues.get('userQuestions')!.set(questions)
   }
   /** Official question composer channel; the source owns validation, dispatch and settlement. */
   async answerQuestion(callId: string, answer: AskUserQuestionAnswer): Promise<boolean> {
@@ -555,7 +604,7 @@ export class RemoteSourceSession implements SessionFace {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true; this.lifetime.abort(); this.stopMetadata(); this.stopDeliveries(); this.stopRetirements()
-    this.stopQueueHistory?.(); this.nativeQueue?.dispose()
+    this.stopQueueHistory?.(); this.stopQuestionHistory?.(); this.stopQuestionHead?.(); this.nativeQueue?.dispose()
     for (const id of this.submissions.keys()) if (!this.outbox?.get(id)) this.retire(id, { reason: 'failed' })
     this.submissions.clear()
     this.nativeSubmissions.clear()
@@ -587,6 +636,7 @@ export class RemoteSessions implements ISessions {
   private readingCache: SourceReadingCache | undefined
   private readonly readingSamples = new WeakMap<SessionBinding, number>()
   private readingStorage: SourceReadingStorage | undefined
+  private readonly questionPresentation = new NativeQuestionPresentation(() => this.readingStorage)
   private storageRevoked = false
   private readonly outbox: RemoteOutbox
   private readonly directories: SourceDirectories
@@ -601,6 +651,8 @@ export class RemoteSessions implements ISessions {
   private timer: ReturnType<typeof setInterval> | undefined
   private catalogChecked = false
   private catalogReceived = false
+  private catalogSnapshot: SourceCatalog | null = null
+  cachedCatalog(): SourceCatalog | null { return this.catalogReceived ? this.catalogSnapshot : null }
   private advertised = new Set<string>()
   private directoryOmissions = new Set<string>()
   readonly capabilities: HhpiCatalogCapabilityStore
@@ -658,6 +710,7 @@ export class RemoteSessions implements ISessions {
     for (const lifetime of this.workspaceLifetimes.values()) lifetime.abort()
     this.workspaceLifetimes.clear()
     ++this.storageGeneration; this.refreshAbort?.abort(); this.refreshAbort = undefined; this.refreshRead = undefined
+    this.catalogReceived = false; this.catalogSnapshot = null
     for (const creation of this.creations.values()) creation.dispose()
     this.creations.clear()
     this.directories.reset(access?.scope ?? 'revoked', this.storageGeneration)
@@ -668,6 +721,7 @@ export class RemoteSessions implements ISessions {
       this.readingCache.clear(); this.readingCache.dispose(); this.readingCache = undefined
     }
     this.readingStorage = access
+    this.questionPresentation.clear()
     this.outbox.clear(); this.outbox.setStorage(access)
     this.nativeActions.setStorage(access)
     if (access) {
@@ -679,6 +733,15 @@ export class RemoteSessions implements ISessions {
     }
     this.publish()
     if (refresh && this.timer !== undefined) void this.refreshSources().catch(() => {})
+  }
+  questionAutoPresent(sessionId: SessionId, callId: string): boolean {
+    if (!isSourceSessionId(sessionId)) return true
+    const session = this.records.get(sessionId)?.session
+    return !!session && this.questionPresentation.isVisible(session.metadata.getSnapshot(), session.questionPresentationHead(), callId)
+  }
+  dismissQuestionPresentation(sessionId: SessionId, callId: string): void {
+    const session = isSourceSessionId(sessionId) && this.records.get(sessionId)?.session
+    if (session) this.questionPresentation.dismiss(session.metadata.getSnapshot(), callId)
   }
   /** Register an actual mounted reader; source/cache presence alone never proves a capture. */
   installReadingCheckpoint(updates: WorkspaceUpdatePreparations, binding: SessionBinding,
@@ -778,6 +841,7 @@ export class RemoteSessions implements ISessions {
         this.setReadingStorage(access, false)
       }
       this.catalogReceived = true
+      this.catalogSnapshot = catalog
       // A source absent from this directory may still be discovering, or may
       // be readable through session-only grants. Only an actual observation
       // changes its last accepted connection state; requests still check ACLs.

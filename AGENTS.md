@@ -46,6 +46,8 @@ Runtime work follows [the current architecture](docs/architecture.md): native DS
 
 ## Collaboration responsibilities
 
+- **常驻审美审查（用户要求）**：UI 工作复用独立的 `ui_reviewer` subAgent，新会话按此规则重建。修改前审查原生入口与信息层级；交付前由主代理主动提供受影响的实际中文界面，让它检查比例、留白、遮挡、重复入口、归属与状态提示。主代理修复后交回复看；功能或构建通过不替代视觉通过，无实图明确未验证。复用已有适用证据，不新增整套测试矩阵，不等用户截图才发现问题。
+
 - 开始 HHPI 功能实施、续接长任务或改进 Agent 工作流时，按 [开发 profile 与 harness 改进](docs/development-profile-rsi.md) 创建或续接执行记录，加载当前任务的策略与 scope，记录实际验证和新增缺口。调度由现有 Agent 工具按完成/阻塞事件驱动；RSI 对照实验已取消，复用经验与执行入口见 [开发经验](docs/development-practices.md)，发布要求保持不变。
 - 续接本轮开发前，先读该文的“减少重复验证与完整路径交付”：产品开发已由用户恢复，按一条可用用户路径组织工作，组件完成与产品交付分开；已有适用检查直接复用，重复失败先查原因。用量缺失不阻止开工，不根据缩减并发声称节省 token。
 

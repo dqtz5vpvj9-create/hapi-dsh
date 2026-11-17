@@ -15,7 +15,7 @@ import type { NativeQuestionsPage } from '../src/remote/codex-metadata-core.mjs'
 import type { DirectCodexConfig } from '../src/remote/protocol.ts';
 import { SyntheticResponsesModel } from './fixtures/hhpi/model.ts';
 import { SourceEventIndex } from '../src/remote/event-index.ts';
-import { CodexHistory } from '../src/remote/codex-history.ts';
+import { CodexHistory, CODEX_HISTORY_PROJECTION_VERSION } from '../src/remote/codex-history.ts';
 import { sourceSessionId, type SourceSession } from '../src/remote/protocol.ts';
 import { nativeMetadataFixture, sliceNativeEntries } from './fixtures/hhpi-native-metadata.ts';
 
@@ -123,13 +123,13 @@ async function skipSource(t: { after(callback: () => Promise<void>): void }) {
         async reopen() { await source.dispose(); source = make(); },
         commitSkippedDecision() {
             const hash = createHash('sha256').update(sessionId).digest('hex');
-            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v8.sqlite`), initial.session);
+            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`), initial.session);
             try { index.edit(index.session, () => index.cache('native-async-questions:v1',
                 acceptNativeSkips(index.cached('native-async-questions:v1')!, [sourceQuestionCallId(pending)]))); } finally { index.dispose(); }
         },
         seedChannel() {
             const hash = createHash('sha256').update(sessionId).digest('hex');
-            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v8.sqlite`), initial.session);
+            const index = new SourceEventIndex(join(directory, 'history', `${hash}.v${CODEX_HISTORY_PROJECTION_VERSION}.sqlite`), initial.session);
             try { index.edit(index.session, () => index.cache(`native-question-channel:${pending.id}`, {
                 method: 'thread/queue/add', operationId: operation.operationId })); } finally { index.dispose(); }
         } };
@@ -200,7 +200,8 @@ test('typed question/history projections show the official answer payload and re
         const events = index.read({ sessionId: session.id, limit: 100 }).entries;
         const questionEvent = events.find(entry => entry.event.type === 'assistant/message')!;
         assert.equal(questionEvent.event.type, 'assistant/message');
-        if (questionEvent.event.type === 'assistant/message') assert.deepEqual(questionEvent.event.data.message.content, []);
+        if (questionEvent.event.type === 'assistant/message') assert.deepEqual(questionEvent.event.data.message.content,
+            [{ type: 'text', text: 'Choose a route\n- Blue\n- Green' }]);
         const user = events.find(entry => entry.event.type === 'user/message')!;
         if (user.event.type !== 'user/message') throw new Error('Missing human answer');
         assert.equal(user.event.data.source.kind, 'user-question-reply');

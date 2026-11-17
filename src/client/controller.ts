@@ -49,7 +49,7 @@ export interface WorkspaceOptions {
     sourceActions?: WorkspaceSourceActions
     sourceExporter?: SourceExportApi
     readHead?: import('./source-reading-head.ts').SourceReadHead
-    sourceCreation?: Pick<RemoteSessions, 'api' | 'list' | 'createController'>
+    sourceCreation?: Pick<RemoteSessions, 'api' | 'list' | 'createController'> & Partial<Pick<RemoteSessions, 'cachedCatalog'>>
     sourceWorkspaceAuthority?: Pick<RemoteSessions, 'captureWorkspaceAccess'>
     locateSourcePosition?: SourceNavigationApi['locatePosition']
     resumeContext?: SourceNavigationApi['resumeContext']

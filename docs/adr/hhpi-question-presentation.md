@@ -1,0 +1,9 @@
+# Native question presentation
+
+The native source owns whether a question is answerable. The client owns whether its panel should automatically occupy the composer. These are separate facts: closing a panel never submits an answer, skips a question, or changes native history.
+
+The pinned `ui-user-questions` consumer accepts an optional client-side `questionPresentationPolicy`. Without that service, DSH behavior is unchanged. For continued calls the policy decides whether a newly created card is published, and is notified only when the user explicitly closes it. Hidden cards remain registered and can be reopened through the existing `userQuestionPanels.reveal` capability. A post-submit hide is distinguished from a user close so a cancelled queued reply can still restore the original question.
+
+HHPI supplies this policy only for source sessions. The authoritative latest native turn and native message sequence determine which question batch is current; a later ordinary user message supersedes earlier prompts. The last confirmed tail, not a historical page, supplies this evidence. The exact question identity and its content are retained in account-scoped browser storage when the user closes it. A native revision with unchanged content does not resurrect the panel; a new identity or changed question can be presented. Missing or cached-only tail evidence does not promote a historical question to an input-blocking panel.
+
+Codex source history keeps the original question text or its structured title and choices when the text is absent. Pending questions have an action in the corresponding history row that uses the official panel provider. The v9 display index is rebuilt from native records. Existing exact-owner blocking-request evidence and retained images are migrated only under the existing verification gates; accepted Skip receipts continue to be recovered from the operation ledger.

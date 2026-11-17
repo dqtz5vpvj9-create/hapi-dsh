@@ -8,7 +8,7 @@ export function SourceDirectoryPicker({ source, value, disabled, language, brows
     source: SourceDirectoryIdentity; value: string; disabled: boolean; language: string; browse?: SourceDirectoryBrowser; onChange(path: string): void
 }) {
     const zh = language.startsWith('zh'), text = (en: string, cn: string) => zh ? cn : en, id = useId()
-    const [open, setOpen] = useState(false), [manual, setManual] = useState(false), [page, setPage] = useState<SourceDirectoryListing | null>(null)
+    const [open, setOpen] = useState(false), [page, setPage] = useState<SourceDirectoryListing | null>(null)
     const [busy, setBusy] = useState(false), [error, setError] = useState(false), [hidden, setHidden] = useState(false)
     const pending = useRef<AbortController | null>(null)
     useEffect(() => {
@@ -31,9 +31,9 @@ export function SourceDirectoryPicker({ source, value, disabled, language, brows
     }
     const listing = page?.listing
     return <div className="hhpi-source-folder-picker">
-        <div className="hhpi-create-field"><span>{text('Working directory', '工作目录')}</span>
+        <div className="hhpi-create-field"><label htmlFor={id}>{text('Working directory', '工作目录')}</label>
+            <Input id={id} value={value} disabled={disabled} placeholder={text('Absolute path on this Agent’s machine', '此 Agent 所在机器上的绝对路径')} onChange={event => onChange(event.currentTarget.value)}/>
             <Button type="button" variant="outline" disabled={disabled} onClick={() => { void scan(value || undefined) }}>{text('Choose folder', '选择文件夹')}</Button>
-            <span title={value}>{value || text('Choose a folder on this Agent’s machine.', '请选择此 Agent 所在机器上的文件夹。')}</span>
         </div>
         {open && <section className="hapi-directory-browser" aria-label={text('Choose folder', '选择文件夹')} aria-busy={busy}>
             <nav aria-label={text('Source roots', '磁盘与主目录')}><Button type="button" disabled={disabled || busy} onClick={() => { void scan() }}>{text('Home', '主目录')}</Button>
@@ -54,8 +54,5 @@ export function SourceDirectoryPicker({ source, value, disabled, language, brows
             <div className="hapi-button-row"><Button type="button" onClick={cancel}>{text('Cancel selection', '取消选择')}</Button>
                 <Button type="button" variant="primary" disabled={disabled || busy || error || !listing} onClick={() => { if (listing) { onChange(listing.path); cancel() } }}>{text('Select this folder', '选择此文件夹')}</Button></div>
         </section>}
-        <Button type="button" disabled={disabled} onClick={() => setManual(current => !current)} aria-expanded={manual}>{text('Enter a path (optional)', '手动输入路径（可选）')}</Button>
-        {manual && <label className="hhpi-create-field" htmlFor={id}>{text('Working directory', '工作目录')}<Input id={id} value={value} disabled={disabled}
-            placeholder={text('Absolute path on this Agent’s machine', '此 Agent 所在机器上的绝对路径')} onChange={event => onChange(event.currentTarget.value)}/></label>}
     </div>
 }

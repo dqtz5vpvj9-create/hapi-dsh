@@ -220,8 +220,8 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
                     const detail = lease.sourceResolution && lease.error ? lease.error : error.detail
                     return <div className="hapi-lease-error" role="alert"><h2>{t('openFailed')}</h2>
                         <p>{lease.sourceResolution ? t(sourceResolutionLabel[lease.sourceResolution]) : error.summary}</p>
-                        {detail && <details><summary>{t('technicalDetails')}</summary><pre>{detail}</pre></details>}
                         <button type="button" onClick={() => controller.retryPane(pane.id)}>{t('retry')}</button>
+                        <details><summary>{t('technicalDetails')}</summary>{detail && <pre>{detail}</pre>}
                         <button type="button" onClick={() => {
                             try {
                                 const data = controller.exportSavedPaneReference(pane.id)
@@ -229,7 +229,7 @@ function WorkspacePane({ pane, window, focused, hidden, style, controller, bind,
                                 const link = document.createElement('a'); link.href = url; link.download = 'saved-pane-reference.json'; link.click()
                                 setTimeout(() => URL.revokeObjectURL(url), 1000)
                             } catch (cause) { controller.report(cause) }
-                        }}>{t('exportSavedReference')}</button></div>
+                        }}>{t('exportSavedReference')}</button></details></div>
                 })()
                 : bind(pane, !hidden)}
         </div>

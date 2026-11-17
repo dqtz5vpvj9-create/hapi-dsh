@@ -29,7 +29,7 @@ const en = {
   none: 'No matching files.', open: 'Open in official preview', openDirectory: 'Manage directory', staged: 'Staged', unstaged: 'Working tree',
   refresh: 'Refresh from source', noChanges: 'No changes reported by Git.', noDiff: 'No textual diff was returned. Open the file to inspect its current contents.',
   save: 'Save source file', saved: 'Source confirmed the saved revision.', draft: 'Unsaved draft', discard: 'Discard draft', content: 'File contents',
-  readOnly: 'This source is read only.', cannotEdit: 'This file is not editable text, exceeds the source edit limit, or has mixed line endings. Use the official preview or download it.',
+  readOnly: 'This source is read only.', cannotEdit: 'This file is binary or exceeds the editable size limit. Use preview or download instead.',
   uncertain: 'The source result is unconfirmed or changed. No operation will be repeated automatically. Read the current source before taking another action.',
   inspect: 'Inspect current source', current: 'Current source contents', keepDraft: 'Keep draft using this source revision', useCurrent: 'Use current source contents',
   discardAsk: 'Discard the unsaved source file drafts in this view?', mutationDraftAsk: 'This operation affects an unsaved source file draft. Discard that draft and continue?',
@@ -40,7 +40,7 @@ const en = {
   execute: 'Apply source operation', completed: 'Source confirmed this operation.', entries: 'Entries affected', inspected: 'Inspected source revision', uploadDirectory: 'Upload directory',
   deleteConfirm: 'Permanently delete this inspected source entry and, for a directory, all its children?',
   invalidName: 'Enter one nonempty file name without separators, control characters, or a drive prefix.',
-  invalidDestination: 'Choose a different destination outside the selected entry.', inspectFirst: 'Inspect this target before modifying it.',
+  invalidDestination: 'Choose a different destination outside the selected entry.',
   tooLarge: 'Each upload is limited to 64 MiB.', notFound: 'The source path is absent.', unknown: 'No result', partial: 'The source reported partial progress. Inspect the paths before continuing.',
   sourceChanged: 'The displayed source session changed. Open the file from its own session.',
   copyText: 'Copy', copied: 'Copied', code: 'Source', wrap: 'Wrap lines', unwrap: 'Keep columns',
@@ -48,7 +48,7 @@ const en = {
   useBrowser: 'Use this saved browser draft', keepBrowser: 'Keep my current draft in this browser', downloadDraft: 'Download current draft',
   useBrowserAsk: 'Replace the current editor text with this saved browser draft? Download your current draft first if you want to keep both.',
   recover: 'Recover source file operation', receipt: 'Saved operation intent', receiptId: 'Operation ID', readReceipt: 'Read saved operation',
-  reviewed: 'You acknowledged the current source state locally. The earlier operation still has no confirmed source receipt; reading paths cannot prove it completed.',
+  reviewed: 'Source state checked. You can start a new operation.',
   omittedPaths: 'Additional affected paths omitted from the bounded browser receipt',
   resumeUpload: 'Resume original upload', reselectUpload: 'Reselect original file', cancelUpload: 'Cancel staged upload',
   reselectAsk: 'Confirm this is the original file for the saved destination, size and type. Only unconfirmed bytes will be uploaded.',
@@ -60,7 +60,7 @@ const zh: Record<keyof typeof en, string> = {
   none: '没有匹配文件。', open: '在官方预览中打开', openDirectory: '管理目录', staged: '已暂存', unstaged: '工作目录',
   refresh: '从源端刷新', noChanges: 'Git 未报告改动。', noDiff: '未返回文本差异。可以打开文件查看当前内容。',
   save: '保存源文件', saved: '源端已确认保存后的版本。', draft: '未保存的草稿', discard: '丢弃草稿', content: '文件内容',
-  readOnly: '此源会话当前只读。', cannotEdit: '此文件不是可编辑文本、超过源端编辑限制，或使用混合换行符。请使用官方预览或下载。',
+  readOnly: '此源会话当前只读。', cannotEdit: '此文件为二进制文件或超过在线编辑大小限制，请使用预览或下载。',
   uncertain: '源端结果尚未确认或已发生变化。操作不会自动重发。请先读取当前源状态，再选择下一步。',
   inspect: '核对当前源状态', current: '源端当前内容', keepDraft: '保留草稿并使用此源版本', useCurrent: '使用源端当前内容',
   discardAsk: '丢弃此视图中尚未保存的源文件草稿吗？', mutationDraftAsk: '此操作会影响未保存的源文件草稿。丢弃该草稿后继续吗？',
@@ -71,7 +71,7 @@ const zh: Record<keyof typeof en, string> = {
   execute: '执行源文件操作', completed: '源端已确认此操作。', entries: '影响的条目数', inspected: '已检查的源版本', uploadDirectory: '上传目录',
   deleteConfirm: '永久删除此已检查的源条目吗？目录中的所有子条目也将删除。',
   invalidName: '请输入一个非空名称，不要包含路径分隔符、控制字符或盘符前缀。',
-  invalidDestination: '请选择不同且位于所选条目之外的目标路径。', inspectFirst: '修改前请先检查此目标。',
+  invalidDestination: '请选择不同且位于所选条目之外的目标路径。',
   tooLarge: '每个上传文件最多为 64 MiB。', notFound: '源路径不存在。', unknown: '尚无结果', partial: '源端报告了部分改动。请先检查路径，再继续操作。',
   sourceChanged: '当前显示的源会话已切换，请从文件所属会话打开。',
   copyText: '复制', copied: '已复制', code: '源内容', wrap: '自动换行', unwrap: '保留列宽',
@@ -79,7 +79,7 @@ const zh: Record<keyof typeof en, string> = {
   useBrowser: '采用此浏览器保存草稿', keepBrowser: '在浏览器中保留当前草稿', downloadDraft: '下载当前草稿',
   useBrowserAsk: '用这份浏览器保存草稿替换当前编辑器内容吗？如需保留两份，请先下载当前草稿。',
   recover: '恢复源文件操作', receipt: '已保存的操作意图', receiptId: '操作 ID', readReceipt: '读取已保存的操作',
-  reviewed: '已在本地确认你核对了当前源状态。此前操作仍没有源端确认回执；读取路径不能证明该操作已经完成。',
+  reviewed: '已核对源端当前状态，可继续操作。',
   omittedPaths: '浏览器有界回执中省略的其他受影响路径数量',
   resumeUpload: '继续原上传', reselectUpload: '重选原文件', cancelUpload: '取消暂存上传',
   reselectAsk: '请确认这是原文件，目标路径、文件大小和类型均与已保存意图一致。仅上传源端尚未确认的字节。',
@@ -267,26 +267,38 @@ function SourceManage({ actions, context, cwd, path, directory, writable, open, 
   const mutation = useMemo(() => actions.mutation(context), [actions, context]), state = useSyncExternalStore(mutation.subscribe, mutation.getSnapshot)
   const [action, setAction] = useState<ManageAction>(directory ? 'create-file' : 'rename'), [target, setTarget] = useState(path), [value, setValue] = useState('')
   const [entry, setEntry] = useState<WorkspaceEntry | null>(), [inspectedPath, setInspectedPath] = useState('')
-  const [reading, setReading] = useState(false), [uploading, setUploading] = useState(false), [error, setError] = useState<string | null>(null)
+  const [reading, setReading] = useState(false), [showInspection, setShowInspection] = useState(false), [submitting, setSubmitting] = useState(false), [uploading, setUploading] = useState(false), [error, setError] = useState<string | null>(null)
   const [uploadTarget, setUploadTarget] = useState(directory ? path : parentPath(path))
   const uploadInput = useRef<HTMLInputElement>(null), resumeInput = useRef<HTMLInputElement>(null), inspection = useRef<AbortController | null>(null), creating = action === 'create-file' || action === 'create-directory'
-  const mounted = useRef(true)
+  const mounted = useRef(true), submitFlight = useRef(false), autoInspection = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => { mounted.current = true; void mutation.load(); return () => { mounted.current = false; inspection.current?.abort() } }, [mutation])
   const selectedPath = resolveWorkspacePath(cwd, target), parent = directory ? path : parentPath(path)
-  const inspect = async (): Promise<void> => {
-    if (reading || state.busy) return
+  const inspect = async (silent = false): Promise<void> => {
+    if (state.busy || submitFlight.current) return
+    if (!silent && autoInspection.current) { clearTimeout(autoInspection.current); autoInspection.current = null }
     inspection.current?.abort(); const controller = new AbortController(); inspection.current = controller
-    const inspected = selectedPath; setReading(true); setError(null); setEntry(undefined); setInspectedPath('')
+    const inspected = selectedPath; setReading(!silent); setShowInspection(!silent); if (!silent) setError(null); setEntry(undefined); setInspectedPath('')
     try {
       const result = await context.services.documents.inspect(inspected, sourceFileAccess(context.owner, controller.signal))
       if (!mounted.current || controller.signal.aborted) return
       if (!result) throw new Error(t('notFound'))
       setEntry(result); setInspectedPath(inspected)
-    } catch (error) { if (!controller.signal.aborted && mounted.current) setError(errorMessage(error)) }
+    } catch (error) { if (!silent && !controller.signal.aborted && mounted.current) setError(errorMessage(error)) }
     finally { if (!controller.signal.aborted && mounted.current) setReading(false) }
   }
+  useEffect(() => {
+    inspection.current?.abort(); setReading(false); setShowInspection(false); setEntry(undefined); setInspectedPath('')
+    if (creating) return
+    const timer = setTimeout(() => { autoInspection.current = null; void inspect(true) }, 150)
+    autoInspection.current = timer
+    return () => { clearTimeout(timer); if (autoInspection.current === timer) autoInspection.current = null; inspection.current?.abort() }
+  }, [context, mutation, creating, selectedPath])
   const submit = async (): Promise<void> => {
-    if (!writable || mutation.blocked || uploading || reading) return
+    if (!writable || mutation.blocked || uploading || submitFlight.current) return
+    submitFlight.current = true; setSubmitting(true)
+    inspection.current?.abort(); setReading(false)
+    const controller = new AbortController(); inspection.current = controller
+    const finish = actions.beginWork()
     setError(null)
     try {
       if (creating) {
@@ -295,19 +307,22 @@ function SourceManage({ actions, context, cwd, path, directory, writable, open, 
         if (await mutation.manage({ action, path: newPath }) && mounted.current) { setValue(''); open(newPath, action === 'create-directory') }
         return
       }
-      if (!entry || inspectedPath !== selectedPath) throw new Error(t('inspectFirst'))
+      const currentEntry = entry && inspectedPath === selectedPath ? entry
+        : await context.services.documents.inspect(selectedPath, sourceFileAccess(context.owner, controller.signal))
+      if (!mounted.current || controller.signal.aborted) return
+      if (!currentEntry) throw new Error(t('notFound'))
       if (action === 'delete') {
-        if (!window.confirm(`${t('deleteConfirm')}\n${entry.absolutePath}\n${t('entries')}: ${entry.entryCount}`) || !actions.beforeMutation(context.owner, selectedPath)) return
-        if (await mutation.manage({ action, path: selectedPath, expectedVersion: entry.version, recursive: entry.type === 'directory' }) && mounted.current) { setEntry(undefined); setInspectedPath('') }
+        if (!window.confirm(`${t('deleteConfirm')}\n${currentEntry.absolutePath}\n${t('entries')}: ${currentEntry.entryCount}`) || !actions.beforeMutation(context.owner, selectedPath)) return
+        if (await mutation.manage({ action, path: selectedPath, expectedVersion: currentEntry.version, recursive: currentEntry.type === 'directory' }) && mounted.current) { setEntry(undefined); setInspectedPath('') }
         return
       }
       if (action === 'rename' && !validSourceFileName(value)) throw new Error(t('invalidName'))
       const destination = action === 'rename' ? childPath(parentPath(selectedPath), value) : resolveWorkspacePath(cwd, value)
       if (!value.trim() || sourceFileContains(selectedPath, destination)) throw new Error(t('invalidDestination'))
       if (action !== 'copy' && !actions.beforeMutation(context.owner, selectedPath)) return
-      if (await mutation.manage({ action, path: selectedPath, destination, expectedVersion: entry.version }) && mounted.current) { setEntry(undefined); setInspectedPath(''); open(destination, entry.type === 'directory') }
-    } catch (error) { setError(errorMessage(error)) }
-    finally { if (mounted.current) { setEntry(undefined); setInspectedPath('') } }
+      if (await mutation.manage({ action, path: selectedPath, destination, expectedVersion: currentEntry.version }) && mounted.current) { setEntry(undefined); setInspectedPath(''); open(destination, currentEntry.type === 'directory') }
+    } catch (error) { if (mounted.current && !controller.signal.aborted) setError(errorMessage(error)) }
+    finally { finish(); submitFlight.current = false; if (mounted.current) { setSubmitting(false); setEntry(undefined); setInspectedPath('') } }
   }
   const upload = async (files: FileList | null): Promise<void> => {
     if (!files?.length || mutation.blocked || !writable || uploading) return
@@ -324,7 +339,7 @@ function SourceManage({ actions, context, cwd, path, directory, writable, open, 
     } catch (error) { setError(errorMessage(error)) }
     finally { finish(); setUploading(false); if (uploadInput.current) uploadInput.current.value = '' }
   }
-  const disabled = !writable || mutation.blocked || uploading || reading
+  const disabled = !writable || mutation.blocked || uploading || submitting
   return <div className="hapi-source-body">
     {!writable && <p>{t('readOnly')}</p>}
     {!state.loaded && <p role="status">{t('loading')}</p>}
@@ -342,14 +357,14 @@ function SourceManage({ actions, context, cwd, path, directory, writable, open, 
         if (next === 'create-file' || next === 'create-directory') setTarget(parent)
       }}>{(Object.keys(actionKey) as ManageAction[]).map(key => <option key={key} value={key}>{t(actionKey[key])}</option>)}</select></label>
       <label>{t('path')}<input value={target} disabled={disabled} onChange={event => { setTarget(event.target.value); setEntry(undefined); setInspectedPath('') }} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>
-      {!creating && <div className="hapi-source-row"><button type="button" disabled={state.busy || uploading || reading} onClick={() => { void inspect() }}>{t('target')}</button>{reading && <span role="status">{t('loading')}</span>}</div>}
-      {entry && <div><p className="hapi-source-path">{entry.absolutePath} · {entry.type} · {entry.bytes} B · {t('entries')}: {entry.entryCount}</p><p className="hapi-source-revision">{t('inspected')}: {entry.version}</p></div>}
+      {!creating && <div className="hapi-source-row"><button type="button" disabled={state.busy || uploading || reading || submitting} onClick={() => { void inspect() }}>{t('target')}</button>{reading && <span role="status">{t('loading')}</span>}</div>}
+      {showInspection && entry && inspectedPath === selectedPath && <div><p className="hapi-source-path">{entry.absolutePath} · {entry.type} · {entry.bytes} B · {t('entries')}: {entry.entryCount}</p><p className="hapi-source-revision">{t('inspected')}: {entry.version}</p></div>}
       {action !== 'delete' && <label>{creating || action === 'rename' ? t('name') : t('destination')}<input value={value} disabled={disabled} onChange={event => setValue(event.target.value)} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>}
       <label>{t('uploadDirectory')}<input value={uploadTarget} disabled={disabled} onChange={event => setUploadTarget(event.target.value)} spellCheck={false} autoCapitalize="none" autoCorrect="off"/></label>
-      <div className="hapi-source-row"><button type="submit" className={action === 'delete' ? 'hapi-source-danger' : undefined} disabled={disabled || !creating && (!entry || inspectedPath !== selectedPath) || action !== 'delete' && !value.trim()}>{t('execute')}</button>
+      <div className="hapi-source-row"><button type="submit" className={action === 'delete' ? 'hapi-source-danger' : undefined} disabled={disabled || action !== 'delete' && !value.trim()}>{t('execute')}</button>
         <button type="button" disabled={disabled || !context.services.uploads} onClick={() => uploadInput.current?.click()}>{t('upload')}</button><input ref={uploadInput} type="file" multiple hidden aria-label={t('upload')} onChange={event => { void upload(event.target.files) }}/></div>
     </form>
-    {(state.busy || uploading) && <p role="status">{t('working')}</p>}
+    {(state.busy || uploading || submitting) && <p role="status">{t('working')}</p>}
     {(error || state.error) && <p className="hapi-source-error" role="alert">{error || state.error}</p>}
     {state.storageError && <button type="button" disabled={state.busy} onClick={() => { void mutation.load() }}>{t('readReceipt')}</button>}
     {state.result?.status === 'indeterminate' && <div className="hapi-source-warning"><p>{t('partial')}</p></div>}

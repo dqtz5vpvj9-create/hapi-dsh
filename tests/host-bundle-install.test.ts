@@ -185,15 +185,53 @@ test('an existing contributor override is a conflict, never overwritten', async 
     }
 })
 
+test('a healthy upgrade removes the old release by default', async () => {
+    const harness = await createHarness()
+    try {
+        await seedProfile(harness.dshHome, harness.profile)
+        assert.equal((await harness.install('a')).ok, true)
+        assert.equal((await harness.install('b')).ok, true)
+        const state = await harness.state()
+        assert.equal(state.profiles[harness.profile]!.active!.releaseId, harness.releaseId('b'))
+        assert.deepEqual(state.profiles[harness.profile]!.previous, [])
+        assert.equal(existsSync(release.releaseDirectory(harness.dshHome, harness.releaseId('a'))), false)
+        assert.equal(existsSync(release.releaseDirectory(harness.dshHome, harness.releaseId('b'))), true)
+    } finally {
+        await rm(harness.root, { recursive: true, force: true })
+    }
+})
+
+test('prune respects the installer lock and removes no active release', async () => {
+    const harness = await createHarness()
+    try {
+        await seedProfile(harness.dshHome, harness.profile)
+        assert.equal((await harness.install('a', { keepPrevious: 2 })).ok, true)
+        assert.equal((await harness.install('b', { keepPrevious: 2 })).ok, true)
+        const lock = join(harness.dshHome, 'hapi-dsh', 'install.lock')
+        await writeFile(lock, JSON.stringify({ pid: process.ppid, startedAt: new Date().toISOString() }))
+        try {
+            await assert.rejects(ops.pruneReleaseStore({ dshHome: harness.dshHome }), /lock/i)
+            assert.equal(existsSync(harness.releaseRoot('a')), true)
+        } finally { await rm(lock, { force: true }) }
+        const result = await ops.pruneReleaseStore({ dshHome: harness.dshHome })
+        assert.deepEqual(result.removed, [harness.releaseId('a')])
+        assert.equal(existsSync(harness.releaseRoot('a')), false)
+        assert.equal(existsSync(harness.releaseRoot('b')), true)
+        assert.deepEqual((await harness.state()).profiles[harness.profile]!.previous, [])
+    } finally {
+        await rm(harness.root, { recursive: true, force: true })
+    }
+})
+
 test('an upgrade keeps two previous releases and rollback restores the pointer and profile', async () => {
     const harness = await createHarness()
     try {
         await seedProfile(harness.dshHome, harness.profile)
-        for (const tag of ['a', 'b', 'c']) assert.equal((await harness.install(tag)).ok, true)
+        for (const tag of ['a', 'b', 'c']) assert.equal((await harness.install(tag, { keepPrevious: 2 })).ok, true)
         let state = await harness.state()
         assert.deepEqual(state.profiles[harness.profile]!.previous.map((entry) => entry.releaseId), [harness.releaseId('b'), harness.releaseId('a')])
 
-        assert.equal((await harness.install('d')).ok, true)
+        assert.equal((await harness.install('d', { keepPrevious: 2 })).ok, true)
         state = await harness.state()
         const previousAfterD = state.profiles[harness.profile]!.previous.map((entry) => entry.releaseId)
         assert.deepEqual(previousAfterD, [harness.releaseId('c'), harness.releaseId('b')], 'two previous releases are retained')

@@ -640,3 +640,28 @@ test('exact queued replies carry the official question Inbox identity while nati
   assert.equal(active().length, 1, 'source-confirmed cancellation leaves the original question available to its official consumer')
   assert.equal(calls.length, 0, 'projection and cancellation reconciliation never send or resume anything')
 })
+
+test('native question presentation follows the accepted tail and is not revived by older reading pages', async t => {
+  const question = { id: questionItemId('question-item', 0), method: 'request_user_input_async', itemId: 'question-item', turnId: 'turn-one', params: { index: 0, question: { title: 'Original question' }, revision: 36 } }
+  const session: SourceSession = { id: 'hhpi:machine:source:codex:thread', machineId: 'machine', sourceId: 'source', nativeId: 'thread', engine: 'codex', title: 'Fixture', cwd: '/', updatedAt: 1,
+    status: 'idle', activeTurnId: null, capabilities: { send: true, steer: true, cancel: true, approve: true, files: true }, codex: { model: 'fixture' } as SourceSession['codex'], pendingRequests: [question] }
+  const user = (seq: number, turn: string, item: string) => ({ type: 'event', event: { type: 'user/message', seq, time: seq, data: {
+    id: `codex:thread:${turn}:${item}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Continue' }] } } }) as SourceEntry
+  const assistant = (seq: number) => ({ type: 'event', event: { type: 'assistant/message', seq, time: seq, data: {
+    message: { id: 'codex:thread:turn-one:question-item', role: 'assistant', source: { kind: 'model' }, content: [] }, turn: 1, step: 1, stream: [] } } }) as SourceEntry
+  let page: SourcePage = { session, epoch: 'epoch', version: 1, entries: [user(10, 'turn-one', 'user'), assistant(20)], before: 10, after: 20, hasBefore: true, hasAfter: false, context: [] }
+  const history = new RemoteSourceHistory(session.id, { read: async () => page, async *changes() { throw new Error('No mounted reading view') } })
+  const face = new Session(session.id as SessionId, session, history, {} as HhpiRemoteApi)
+  t.after(() => { face.dispose(); history.dispose() })
+  await face.ready
+  assert.equal(face.questionPresentationHead().turnId, 'turn-one')
+  assert.equal(face.questionPresentationHead().positions.get('question-item'), 20)
+  assert.equal(face.questionPresentationHead().lastUserSeq, 10)
+  page = { ...page, version: 2, entries: [user(30, 'turn-two', 'new-user')], before: 30, after: 30 }
+  await history.page({ around: 30 }, new AbortController().signal)
+  assert.equal(face.questionPresentationHead().turnId, 'turn-two')
+  assert.equal(face.questionPresentationHead().lastUserSeq, 30)
+  page = { ...page, entries: [assistant(20)], before: 20, after: 20 }
+  await history.page({ around: 20 }, new AbortController().signal)
+  assert.equal(face.questionPresentationHead().turnId, 'turn-two', 'reading an older page must not revive its question')
+})
