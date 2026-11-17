@@ -12,7 +12,7 @@ import { WorkspaceShell } from './hub/workspace-shell.ts';
 import { WorkspaceRepository } from './hub/workspaces.ts';
 import { FederationHub } from './hub/federation.ts';
 import { runtimeIdentity } from './runner/identity.ts';
-import { mountRemoteCarrier, type RemoteOwnerRuntime } from './shared/remote-carrier.ts';
+import { installRemoteWebSource, mountRemoteCarrier, type RemoteOwnerRuntime } from './shared/remote-carrier.ts';
 import { AppServicesController } from './workspace/app-service.ts';
 import { ShareService } from './workspace/share-service.ts';
 import { AppNotificationHost } from './workspace/notification-host.ts';
@@ -42,6 +42,11 @@ export async function apply(ctx: Context, input: Config): Promise<void> {
     const dataDirectory = join(config.dsh.home, 'profiles', config.dsh.profile, 'data', 'hapi-dsh');
     const federation = new FederationHub({ credentialsFile: config.federation?.credentialsFile ?? join(dataDirectory, 'machines.json'),
         identity: runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }) });
+    installRemoteWebSource(ctx, runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: config.dsh.home, profile: config.dsh.profile }));
+    if (config.remote?.hosts.length) ctx.inject(['dshRemoteClient'], scope => {
+        const client = scope.get('dshRemoteClient') as Parameters<FederationHub['bindRemote']>[1];
+        scope.effect(() => federation.bindRemote(config.remote!, client), 'hhpi: pinned Remote Web routes');
+    });
     ctx.effect(() => () => federation.close(), 'hapi-dsh: Runner connections');
     ctx.effect(() => mountBootstrapRoute({
         webServer: ctx.webServer, clientModules: ctx.clientModules, connection: ctx.connection,

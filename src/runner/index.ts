@@ -6,8 +6,10 @@ import { installSources, registerSourceContract } from '../remote/service.ts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readRunnerConfig } from './config.ts';
+import { DSH_VERSION } from '../cli/config.ts';
 import { RunnerClient } from './client.ts';
 import { runtimeIdentity } from './identity.ts';
+import { installRemoteWebSource } from '../shared/remote-carrier.ts';
 import { bootstrapPayload, mountBootstrapRoute } from '../shared/bootstrap.ts';
 import { mountSourceAttentionRoutes } from '../workspace/source-attention-route.ts';
 import { NativeDshAttention } from '../workspace/native-dsh-attention.ts';
@@ -33,6 +35,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const path = config.configFile ?? process.env.HAPI_DSH_RUNNER_CONFIG_FILE;
     if (!path) throw new Error('HAPI_DSH_RUNNER_CONFIG_FILE is required for the Runner profile');
     const runtime = await readRunnerConfig(path);
+    installRemoteWebSource(ctx, runtimeIdentity({ dshVersion: DSH_VERSION, dshHome: runtime.dsh.home, profile: runtime.dsh.profile }));
     const gateway = installSources(ctx, runtime.sources ?? [], join(runtime.dsh.home, 'profiles', runtime.dsh.profile, 'data', 'hapi-dsh', 'sources'), runtime.sourceWorkspaces);
     registerSourceContract(ctx);
     const services = Object.fromEntries(inject.map((service) => [service, ctx.get(service)])) as unknown as RunnerServices;

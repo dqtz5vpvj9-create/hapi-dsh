@@ -1,4 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-client-connection';
+import type {} from '@deepseek-ai/dsh-host-webserver';
+import { WebSourceCarrier } from '@dsh-remote/native-runtime/web/carrier';
+import type { RuntimeIdentityV1 } from '../runner/identity.ts';
 
 /** Explicit, per-Host cutover. Omission keeps that Host on its existing carrier. */
 export interface RemoteCarrierConfig {
@@ -9,11 +14,23 @@ export interface RemoteOwnerRuntime {
     registerOwnedClient(descriptor: unknown): Promise<{
         serverUrl: string; deviceId: string; identityKey: string; account: string; tokens: unknown;
     }>;
+    registerWebSource(factory: () => WebSourceCarrier): () => void;
+}
+
+/** Bind the official listener without exposing its cookie to the Remote peer. */
+export function installRemoteWebSource(ctx: Context, identity: RuntimeIdentityV1): void {
+    ctx.inject(['dshRemote'], scope => {
+        const runtime = scope.get('dshRemote') as RemoteOwnerRuntime;
+        scope.effect(() => runtime.registerWebSource(() => new WebSourceCarrier({
+            origin: scope.webServer.getOrigin(),
+            authenticatedUrl: origin => scope.connection.authenticatedUrl(origin),
+        }, identity)), 'hhpi: Remote source Web carrier');
+    });
 }
 interface Services {
     webServer: { register(route: { kind: 'exact'; path: string; handler(req: IncomingMessage, res: ServerResponse): void }): () => void };
     connection: { requestRejection(req: IncomingMessage): number | undefined };
-    runtime(): RemoteOwnerRuntime | undefined;
+    runtime(): Pick<RemoteOwnerRuntime, 'registerOwnedClient'> | undefined;
 }
 
 /** Preserve HHPI admission; issue an independent Remote Client credential.

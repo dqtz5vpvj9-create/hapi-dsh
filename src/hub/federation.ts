@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { connectWeb, type WebLink } from '@dsh-remote/native-runtime/web/client';
+import type { WebTransport } from '@dsh-remote/native-runtime/web/source';
+import type { RemoteCarrierConfig } from '../shared/remote-carrier.ts';
 import { watch, type FSWatcher } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname } from 'node:path';
@@ -20,18 +24,18 @@ export interface FederationMount {
     authorize(req: IncomingMessage): number | undefined;
 }
 
-interface RunnerState { machine: FederatedMachine; tunnel: Tunnel; credentialHash: string }
-interface HttpChannel { owner: Tunnel; request: IncomingMessage; response: ServerResponse; writer: ResponseWriter; timer: ReturnType<typeof setTimeout>; done: boolean }
+interface RunnerState { machine: FederatedMachine; tunnel: WebTransport; credentialHash: string; remote?: true }
+interface HttpChannel { owner: WebTransport; request: IncomingMessage; response: ServerResponse; writer: ResponseWriter; timer: ReturnType<typeof setTimeout>; done: boolean }
 export interface ApplicationReadResponse { status: number; body: Uint8Array<ArrayBuffer> }
 interface ApplicationChannel {
-    owner: Tunnel; machineId: string; status?: number; chunks: Buffer[]; bytes: number;
+    owner: WebTransport; machineId: string; status?: number; chunks: Buffer[]; bytes: number;
     resolve(value: ApplicationReadResponse): void; reject(error: unknown): void;
     timer: ReturnType<typeof setTimeout>; cleanup(): void;
 }
 const APPLICATION_MAX_BYTES = 1024 * 1024;
 const APPLICATION_PATHS = new Set(['catalog', 'poll', 'authorize', 'locate', 'request'].map(name => `/hapi-dsh/application/attention/${name}`));
 interface SocketChannel {
-    owner: Tunnel;
+    owner: WebTransport;
     request: IncomingMessage;
     stream: Duplex;
     head: Buffer;
@@ -107,6 +111,8 @@ export class FederationHub {
     private closed = false;
 
     private readonly identity: RuntimeIdentityV1;
+    private readonly remoteHosts = new Set<string>();
+    private readonly remoteLifetime = new AbortController();
 
     constructor(private readonly options: { credentialsFile: string; httpIdleTimeoutMs?: number; applicationTimeoutMs?: number; identity?: RuntimeIdentityV1 }) {
         this.identity = options.identity ?? runtimeIdentity({ dshVersion: DSH_VERSION });
@@ -116,10 +122,11 @@ export class FederationHub {
     private changed(): void { for (const listener of this.listeners) { try { listener(); } catch { /* observers cannot break transport cleanup */ } } }
 
     listMachines(): FederatedMachine[] {
-        return [...this.paired.values()].map((paired) => {
-            const state = this.runners.get(paired.id)?.machine ?? this.previous.get(paired.id);
-            return { id: paired.id, dshVersion: DSH_VERSION, baseUrl: `${MACHINE_PREFIX}/${encodeURIComponent(paired.id)}/`,
-                socketUrl: `${SOCKET_PATH}?machine=${encodeURIComponent(paired.id)}`, ...state, name: paired.name, online: this.runners.has(paired.id) };
+        return [...new Set([...this.paired.keys(), ...this.remoteHosts])].map(id => {
+            const paired = this.paired.get(id);
+            const state = this.runners.get(id)?.machine ?? this.previous.get(id);
+            return { id, dshVersion: DSH_VERSION, baseUrl: `${MACHINE_PREFIX}/${encodeURIComponent(id)}/`,
+                socketUrl: `${SOCKET_PATH}?machine=${encodeURIComponent(id)}`, ...state, name: paired?.name ?? state?.name ?? id, online: this.runners.has(id) };
         }).sort((a, b) => a.name.localeCompare(b.name));
     }
 
@@ -133,14 +140,14 @@ export class FederationHub {
             catch (error) {
                 this.pairingInventoryComplete = false;
                 this.paired.clear();
-                for (const state of this.runners.values()) state.tunnel.close(1008);
+                for (const state of this.runners.values()) if (!state.remote) state.tunnel.close(1008);
                 this.changed();
                 throw error;
             }
             if (this.closed) return;
             this.paired = new Map(store.machines.map((machine) => [machine.id, machine]));
             this.pairingInventoryComplete = true;
-            for (const [id, state] of this.runners) if (this.paired.get(id)?.tokenHash !== state.credentialHash) state.tunnel.close(1008);
+            for (const [id, state] of this.runners) if (!state.remote && this.paired.get(id)?.tokenHash !== state.credentialHash) state.tunnel.close(1008);
             this.changed();
         });
         this.refresh = operation.catch(() => {});
@@ -183,7 +190,7 @@ export class FederationHub {
         const header = request.headers.authorization;
         const token = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
         if (!paired || !matchesPairingToken(token, paired.tokenHash)) { rejectUpgrade(socket, 401); return; }
-        if (this.runners.has(paired.id)) { rejectUpgrade(socket, 409); return; }
+        if (this.remoteHosts.has(paired.id) || this.runners.has(paired.id)) { rejectUpgrade(socket, 409); return; }
         this.runnerServer.handleUpgrade(request, socket, head, (ws) => {
             let established = false;
             const timeout = setTimeout(() => tunnel.close(1008), 10_000);
@@ -219,13 +226,73 @@ export class FederationHub {
         });
     }
 
-    private channels(owner: Tunnel): number {
+    /** Explicit source cutover. A configured Remote source never falls back
+     * to a legacy Runner, including while it is offline or reconnecting. */
+    bindRemote(config: RemoteCarrierConfig, client: {
+        authorizeThroughHost(): Promise<void>;
+        webForHost(id: string, key: string, signal?: AbortSignal): Promise<WebLink>;
+    }): () => void {
+        const control = new AbortController();
+        const signal = AbortSignal.any([control.signal, this.remoteLifetime.signal]);
+        const bindings = config.hosts.filter(host => host.hostId !== 'local');
+        for (const binding of bindings) {
+            if (this.remoteHosts.has(binding.hostId)) throw new Error('Remote Host is already bound');
+            this.remoteHosts.add(binding.hostId);
+            this.runners.get(binding.hostId)?.tunnel.close();
+            void (async () => {
+                let failures = 0;
+                while (!signal.aborted) {
+                    let transport: Awaited<ReturnType<typeof connectWeb>> | undefined;
+                    let ended!: () => void;
+                    const disconnected = new Promise<void>(resolve => { ended = resolve; });
+                    try {
+                        await client.authorizeThroughHost();
+                        const link = await client.webForHost(binding.deviceId, binding.identityKey, signal);
+                        transport = await connectWeb(link, { signal,
+                            validateIdentity: identity => identityMatches(identity as RuntimeIdentityV1, this.identity),
+                            receive: frame => { if (transport) return this.handleRunnerFrame(transport, frame); },
+                            ended: () => {
+                                const current = this.runners.get(binding.hostId);
+                                if (transport && current?.tunnel === transport) {
+                                    this.runners.delete(binding.hostId);
+                                    this.previous.set(binding.hostId, { ...current.machine, online: false, disconnectedAt: Date.now() });
+                                    this.endChannels(transport); this.changed();
+                                }
+                                ended();
+                            },
+                        });
+                        signal.throwIfAborted();
+                        if (!transport.isOpen) throw new Error('Remote Web connection closed during admission');
+                        const machine: FederatedMachine = { id: binding.hostId,
+                            name: this.paired.get(binding.hostId)?.name ?? binding.hostId,
+                            online: true, dshVersion: DSH_VERSION, generation: randomUUID(), connectedAt: Date.now(),
+                            baseUrl: `${MACHINE_PREFIX}/${encodeURIComponent(binding.hostId)}/`,
+                            socketUrl: `${SOCKET_PATH}?machine=${encodeURIComponent(binding.hostId)}` };
+                        this.runners.set(binding.hostId, { machine, tunnel: transport, credentialHash: '', remote: true });
+                        failures = 0; this.changed();
+                        await disconnected;
+                    } catch { transport?.close(); }
+                    if (!signal.aborted) await delay(Math.min(30_000, 500 * 2 ** Math.min(failures++, 6)), undefined, { signal }).catch(() => {});
+                }
+            })();
+        }
+        return () => {
+            control.abort();
+            for (const binding of bindings) {
+                this.remoteHosts.delete(binding.hostId);
+                const state = this.runners.get(binding.hostId);
+                if (state?.remote) state.tunnel.close();
+            }
+        };
+    }
+
+    private channels(owner: WebTransport): number {
         return [...this.http.values(), ...this.application.values(), ...this.sockets.values()].filter((channel) => channel.owner === owner).length;
     }
 
     private applicationOwner(machineId: string): RunnerState {
         const state = this.runners.get(machineId), paired = this.paired.get(machineId);
-        if (this.closed || !state || !paired || paired.tokenHash !== state.credentialHash || !state.tunnel.isOpen) throw new Error('The paired source Runner is unavailable or no longer authorized.');
+        if (this.closed || !state || (!state.remote && (!paired || paired.tokenHash !== state.credentialHash)) || !state.tunnel.isOpen) throw new Error('The paired source Runner is unavailable or no longer authorized.');
         return state;
     }
     /** Host-internal, read-only application requests over the already paired Runner transport. */
@@ -379,7 +446,7 @@ export class FederationHub {
         }
     }
 
-    private async handleRunnerFrame(owner: Tunnel, frame: FederationFrame): Promise<void> {
+    private async handleRunnerFrame(owner: WebTransport, frame: FederationFrame): Promise<void> {
         if (!('id' in frame) || !validIdentifier(frame.id)) { owner.close(1002); return; }
         const http = this.http.get(frame.id);
         const application = this.application.get(frame.id);
@@ -460,7 +527,7 @@ export class FederationHub {
         else { channel.response.writeHead(status, { 'cache-control': 'no-store' }); channel.response.end('Runner request was interrupted; delivery was not retried'); }
     }
 
-    private endChannels(owner: Tunnel): void {
+    private endChannels(owner: WebTransport): void {
         for (const [id, channel] of this.http) if (channel.owner === owner) this.failHttp(id, 502);
         for (const [id, channel] of this.application) if (channel.owner === owner) this.failApplication(id, new Error('The source Runner disconnected. The original attention cursor is retained.'));
         for (const [id, channel] of this.sockets) if (channel.owner === owner) this.failSocket(id, 502);
@@ -469,6 +536,7 @@ export class FederationHub {
     async close(): Promise<void> {
         if (this.closed) return;
         this.closed = true;
+        this.remoteLifetime.abort();
         for (const id of this.application.keys()) this.failApplication(id, new Error('The source federation closed.'));
         this.watcher?.close();
         if (this.refreshTimer) clearInterval(this.refreshTimer);

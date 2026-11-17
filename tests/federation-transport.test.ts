@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test, type TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
+import { WebSourceCarrier } from '@dsh-remote/native-runtime/web/carrier';
 import { FederationHub, type FederationMount } from '../src/hub/federation.ts';
 import { addPairing, readPairingStore, revokePairing } from '../src/hub/federation-credentials.ts';
 import { RunnerClient } from '../src/runner/client.ts';
@@ -146,7 +147,22 @@ async function transportFixture(t: TestContext, options: { httpIdleTimeoutMs?: n
         await rm(directory, { recursive: true, force: true });
     });
     const runner = await connectRunner();
-    return { base, id, origin, runner, hub, connectRunner, credentialsFile, upstreamHeaders, get mutationCount() { return mutationCount; },
+    let carrier: WebSourceCarrier | undefined;
+    let closeRemote: (() => void) | undefined;
+    let remoteOnline = true;
+    const cutoverRemote = () => hub.bindRemote({ serverUrl: 'https://remote.fixture', hosts: [{ hostId: id, deviceId: 'remote-device', identityKey: 'pinned-key' }] }, {
+        async authorizeThroughHost() {},
+        async webForHost(device, key) {
+            assert.equal(device, 'remote-device'); assert.equal(key, 'pinned-key');
+            if (!remoteOnline) throw new Error('Remote offline');
+            carrier = new WebSourceCarrier({ origin, authenticatedUrl: local => `${local}/?token=fixture-launch` }, runtimeIdentity({ dshVersion: DSH_VERSION }));
+            const current = carrier;
+            return { call: input => current.call(input), onClose(listener) { closeRemote = listener; return () => { if (closeRemote === listener) closeRemote = undefined; }; } };
+        },
+    });
+    t.after(() => carrier?.close());
+    return { cutoverRemote, dropRemote() { remoteOnline = false; carrier?.close(); closeRemote?.(); },
+        recoverRemote() { remoteOnline = true; }, base, id, origin, runner, hub, connectRunner, credentialsFile, upstreamHeaders, get mutationCount() { return mutationCount; },
         get compressedChunks() { return compressedChunks; }, get compressedStreamClosed() { return compressedStreamClosed; },
         get upstreamSocketCount() { return upstreamSockets.clients.size; },
         headers: { cookie: 'fixture-main-dsh=authorized' } };
@@ -353,4 +369,29 @@ test('a Runner whose runtime identity differs is rejected before any business fr
     } finally {
         await runner.stop();
     }
+});
+
+
+test('Remote Web cutover retains opaque bytes and rejects legacy fallback after a committed write loses its reply', async t => {
+    const fixture = await transportFixture(t);
+    const unbind = fixture.cutoverRemote(); t.after(unbind);
+    await until(() => fixture.hub.listMachines()[0]?.online === true, 'Remote source did not become online');
+    const payload = Buffer.alloc(3 * 1024 * 1024 + 19, 91);
+    const reply = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/plugins/client.js?rev=source`, {
+        method: 'POST', headers: fixture.headers, body: payload, signal: AbortSignal.timeout(5000),
+    });
+    assert.equal(reply.status, 200); assert.deepEqual(Buffer.from(await reply.arrayBuffer()), payload);
+    const pending = fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/api/mutate`, {
+        method: 'POST', headers: fixture.headers, body: 'single-write', signal: AbortSignal.timeout(5000),
+    });
+    await until(() => fixture.mutationCount === 1, 'Source did not accept mutation');
+    fixture.dropRemote();
+    assert.equal((await pending).status, 502);
+    const offline = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/api/read`, { headers: fixture.headers });
+    assert.equal(offline.status, 503);
+    fixture.recoverRemote();
+    await until(() => fixture.hub.listMachines()[0]?.online === true, 'Remote source did not recover');
+    const recovered = await fetch(`${fixture.base}/hapi-dsh/machine/${fixture.id}/api/read`, { headers: fixture.headers });
+    assert.equal(recovered.status, 200); await recovered.body?.cancel();
+    assert.equal(fixture.mutationCount, 1);
 });
