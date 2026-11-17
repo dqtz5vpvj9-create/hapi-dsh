@@ -52,6 +52,7 @@ import { canReleaseHistory } from './surface/history-retention.ts'
 import type { UserQuestionProjectionView } from '@deepseek-ai/dsh-user-questions/types'
 import { resolveOriginalSession } from './source-session-resolver.ts'
 import { createGraphStore, graphStorage, GRAPH_STORE_MODULE } from './runtime-store.ts'
+import { createGraphSlots, GRAPH_SLOTS_MODULE } from './runtime-slots.ts'
 import type { WorkspacePaneNavigation } from './pane-navigation.ts'
 import type {} from './native-integration.tsx'
 import { createPaneInputRouter } from './pane-input.ts'
@@ -134,6 +135,7 @@ async function loadHostResources(root: Context, host: FederationHost, signal: Ab
     const payload = bootstrapSchema.parse(await response.json())
     if (host.id !== 'local' && payload.graph.entries.some(row => row.id === 'hapi-dsh')) throw new Error('A Runner must use the Host-only hapi-dsh-runner bundle')
     const staticModules = Object.fromEntries(await Promise.all(PLATFORM_MODULES.map(async id => [id, await root.modules.import(id, '', {})])))
+    staticModules[GRAPH_SLOTS_MODULE] = createGraphSlots()
     const eventsUrl = new URL('/hapi-dsh/plugin-events', window.location.origin)
     eventsUrl.protocol = eventsUrl.protocol === 'https:' ? 'wss:' : 'ws:'
     eventsUrl.searchParams.set('host', host.id)

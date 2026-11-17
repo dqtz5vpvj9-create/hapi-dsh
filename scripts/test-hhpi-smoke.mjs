@@ -101,6 +101,14 @@ export function canonicalHhpiSessionId(value) {
   } catch { return false; }
 }
 
+export function remoteControlRead(pathname, verb, body) {
+  const endpoint = pathname.match(/^\/ds-harness-remote\/(status|settings\.get)$/)?.[1];
+  return verb === 'POST' && endpoint !== undefined && body?.type === 'client-request'
+    && typeof body.rpcId === 'string' && body.method === endpoint
+    && body.payload !== null && typeof body.payload === 'object' && !Array.isArray(body.payload)
+    && Object.keys(body.payload).length === 0;
+}
+
 export function hhpiRequestPolicy(method, body, targetId) {
   const args = body?.payload?.args ?? {};
   if (method === 'sourceNavigation/locatePosition') {
@@ -292,7 +300,7 @@ export function syntheticWorkspace(sessionId) {
     activeWindowId: 'hhpi-smoke-window', focused: { 'hhpi-smoke-window': 'hhpi-smoke-pane' }, zoomed: {} };
 }
 
-export function installObserver({ sessionId, allowedReadStreams, profile = false, geometryProfile = profile }) {
+export function installObserver({ sessionId, paneId = sessionId, allowedReadStreams, profile = false, geometryProfile = profile }) {
   const state = window.__hhpiSmoke = { sessionId, blocked: 0, isolatedWorkspace: 0, isolatedReadState: 0,
     isolatedPresence: 0, changesStreams: 0, changeErrors: 0, frameGaps: [], frameHitches: [], monitor: false, lastFrame: null };
   state.probeTasks = []; state.frameEvents = []; state.longTasks = []; state.phases = []; state.nativeReads = {}; state.mutationReads = []; state.slowGeometryReads = [];
@@ -424,7 +432,7 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
   state.rows = () => {
     const probeStarted = performance.now();
     const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
-      .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
+      .find(element => element.getAttribute('data-session-id') === paneId && element.dataset.hapiPaneVisible === 'true');
     const scroll = pane?.querySelector('[data-conversation-scroll]');
     if (!scroll) return { exists: false, rows: [], top: 0, max: 0 };
     trackScroll(scroll);
@@ -483,7 +491,7 @@ export function installObserver({ sessionId, allowedReadStreams, profile = false
   };
   state.armLayoutCommit = async () => {
     const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')]
-      .find(element => element.getAttribute('data-session-id') === sessionId && element.dataset.hapiPaneVisible === 'true');
+      .find(element => element.getAttribute('data-session-id') === paneId && element.dataset.hapiPaneVisible === 'true');
     const port = pane?.querySelector('[data-conversation-scroll]');
     if (!port) throw new Error('No mounted reading port at publication.');
     phase('wait-input-idle');
@@ -572,6 +580,7 @@ async function parseOptions(argv) {
     if (key === '--help') { config.help = true; continue; }
     const value = argv[++index]; if (!value) fail('invalid-arguments');
     if (key === '--session-id') config.sessionId = value;
+    else if (key === '--host-id') config.hostId = value;
     else if (key === '--url-file') config.urlFile = value;
     else if (key === '--scenario' && ['both', 'desktop', 'mobile'].includes(value)) config.scenario = value;
     else if (key === '--timeout-ms') config.timeoutMs = Number(value);
@@ -587,6 +596,7 @@ async function parseOptions(argv) {
   if (config.openingSeq !== undefined && (!Number.isSafeInteger(config.openingSeq) || config.openingSeq < 0)) fail('invalid-opening-sequence');
   const url = new URL((await readFile(config.urlFile, 'utf8')).trim());
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) fail('invalid-launch-url');
+  config.paneId = config.hostId ? `hapi-remote:${encodeURIComponent(config.hostId)}:${encodeURIComponent(config.sessionId)}` : config.sessionId;
   config.url = url.href;
   return config;
 }
@@ -607,6 +617,7 @@ export async function settleReadPublications(publications, responses, checkpoint
 async function runScenario(browser, config, name) {
   const result = { name, status: 'not-run', durationMs: 0, earlierPagesVisible: 0, targetReads: 0,
     cachedTailReadDelta: null, changesStreams: 0, maxFrameGapMs: 0, blockedWrites: 0, blockedStreams: 0 };
+  const privateConsole = [];
   const start = performance.now(); let context, page, cdp, deadline, timedOut = false;
   let diagnosticCapture, traceCompletion, readStateIsolation;
   const traceOnly = process.env.HAPI_DSH_SMOKE_TRACE_ONLY === '1';
@@ -630,16 +641,23 @@ async function runScenario(browser, config, name) {
     const admission = await awaiting('authenticate-launch-page', context.request.get(config.url, { timeout: 10_000 }));
     if (!admission.ok()) fail('launch-authentication-failed');
     const appUrl = new URL(admission.url());
+    let sourceUrl = appUrl;
     const bootstrap = async (method, args = {}) => {
-      const response = await awaiting('read-hhpi-catalog', context.request.post(hapiPath(appUrl, method), { timeout: 10_000,
+      const response = await awaiting('read-hhpi-catalog', context.request.post(hapiPath(method.startsWith('hhpi/') ? sourceUrl : appUrl, method), { timeout: 10_000,
         data: { type: 'client-request', rpcId: randomUUID(), method, payload: { args } } }));
       let envelope; try { envelope = await awaiting('decode-hhpi-catalog', response.json()); } catch { fail('catalog-response-invalid'); }
       if (!response.ok() || envelope.result?.ok !== true) fail('hhpi-catalog-read-failed');
       return unwrap(envelope.result.value);
     };
+    if (config.hostId) {
+      const machines = await bootstrap('hapi/catalog');
+      const host = machines.hosts.find(host => host.id === config.hostId && host.online);
+      if (!host) fail('target-host-unavailable');
+      sourceUrl = new URL(host.basePath.replace(/\/$/, '') + '/', appUrl);
+    }
     const catalog = await awaiting('resolve-canonical-session', bootstrap('hhpi/catalog'));
     const appSettings = appServiceOutputs.appNotificationSettings.parse(await bootstrap('appServices/appNotificationSettings', { request: { deviceId: 'hhpi-smoke-isolation' } }));
-    readStateIsolation = createSmokeReadStateIsolation(appSettings.scope, config.sessionId);
+    readStateIsolation = createSmokeReadStateIsolation(appSettings.scope, config.sessionId, config.hostId ?? 'local');
     if (!Array.isArray(catalog?.sessions)) fail('catalog-response-invalid');
     if (!catalog.sessions.some(session => session.id === config.sessionId && canonicalHhpiSessionId(session.id))) {
       // A freshly started Host may still be discovering its sidebar. Exercise
@@ -647,7 +665,7 @@ async function runScenario(browser, config, name) {
       const resolved = await awaiting('resolve-unadvertised-canonical-session', bootstrap('hhpi/resolve', { request: { sessionId: config.sessionId } }));
       if (resolved?.id !== config.sessionId || !canonicalHhpiSessionId(resolved.id)) fail('canonical-session-not-in-hhpi-catalog');
     }
-    const workspace = syntheticWorkspace(config.sessionId);
+    const workspace = syntheticWorkspace(config.paneId);
     appUrl.searchParams.delete('hapiSession'); appUrl.searchParams.delete('hapiHub');
     appUrl.searchParams.delete('hapiMessage'); appUrl.searchParams.delete('hapiRequest');
     if (config.openingSeq !== undefined) {
@@ -657,15 +675,20 @@ async function runScenario(browser, config, name) {
     }
     await awaiting('install-synthetic-workspace-bootstrap', context.addInitScript(({ origin, sessionId }) => {
       if (location.origin === origin) localStorage.setItem('dsh.sessions.current', JSON.stringify({ sessionId }));
-    }, { origin: appUrl.origin, sessionId: config.sessionId }));
-    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, allowedReadStreams: [...readStreams], profile, geometryProfile: profile && !traceOnly }));
+    }, { origin: appUrl.origin, sessionId: config.paneId }));
+    await awaiting('install-read-only-browser-observer', context.addInitScript(installObserver, { sessionId: config.sessionId, paneId: config.paneId, allowedReadStreams: [...readStreams], profile, geometryProfile: profile && !traceOnly }));
     await awaiting('install-write-isolation-routes', context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url());
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) return route.continue();
       let body; try { body = request.postDataJSON(); } catch {}
+      if (remoteControlRead(url.pathname, request.method(), body)) return route.continue();
       const method = url.pathname.replace(/^.*\/api\//, '');
       const validApi = request.method() === 'POST' && url.pathname.includes('/api/') && body?.method === method;
       const policy = validApi ? hhpiRequestPolicy(method, body, config.sessionId) : 'block';
+      if (policy === 'block') {
+        const key = validApi ? method : url.pathname;
+        result.blockedPaths ??= {}; result.blockedPaths[key] = (result.blockedPaths[key] ?? 0) + 1;
+      }
       const input = body?.payload?.args?.request;
       if (policy === 'read' && method === 'hapi/workspaceGet') {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ type: 'server-response', rpcId: body.rpcId,
@@ -732,7 +755,10 @@ async function runScenario(browser, config, name) {
 
     page = await awaiting('create-browser-page', context.newPage());
     page.on('pageerror', () => { result.pageErrors = (result.pageErrors ?? 0) + 1; });
-    page.on('console', message => { if (message.type() === 'error') recordConsoleError(result, message.text()); });
+    page.on('console', message => { if (message.type() === 'error') {
+      recordConsoleError(result, message.text());
+      if (process.env.HHPI_SMOKE_PRIVATE_DIAGNOSTICS) privateConsole.push({ text: message.text(), location: message.location() });
+    } });
     page.on('request', request => {
       const url = new URL(request.url());
       if (!url.pathname.endsWith('/api/hhpi/read')) return;
@@ -821,7 +847,7 @@ async function runScenario(browser, config, name) {
     });
     await awaiting('load-app-document', page.goto(appUrl.href, { waitUntil: 'domcontentloaded', timeout: Math.min(20_000, timeoutMs) }));
     await awaiting('wait-for-workspace-shell', page.locator('[data-hapi-workspace]').waitFor({ state: 'visible' }));
-    const pane = page.locator(`.hapi-pane[data-session-id="${config.sessionId}"][data-hapi-pane-visible="true"]`);
+    const pane = page.locator(`.hapi-pane[data-session-id="${config.paneId}"][data-hapi-pane-visible="true"]`);
     await awaiting('wait-for-target-pane', pane.waitFor({ state: 'visible' }));
     const scroll = pane.locator('[data-conversation-scroll]');
     await awaiting('wait-for-conversation-scrollport', scroll.waitFor({ state: 'visible' }));
@@ -831,7 +857,7 @@ async function runScenario(browser, config, name) {
     await awaiting('wait-for-first-mounted-chat-row', page.waitForFunction(sessionId => {
       const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
       return !!pane?.querySelector('[data-conversation-scroll] [data-chat-node-key][data-chat-anchor-key]');
-    }, config.sessionId, { timeout: 10_000 }));
+    }, config.paneId, { timeout: 10_000 }));
     await awaiting('wait-for-initial-source-read', Promise.all([...pending]));
     if (config.openingSeq !== undefined) {
       await awaiting('wait-for-exact-opening-source-read', (async () => {
@@ -992,7 +1018,7 @@ async function runScenario(browser, config, name) {
         const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
         const scroll = pane?.querySelector('[data-conversation-scroll]');
         return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
-      }, config.sessionId, { timeout: 5_000 }));
+      }, config.paneId, { timeout: 5_000 }));
       const readCount = result.targetReads;
       result.cachedTailCycles = [];
       // Check three complete returns to the same resident tail. Three cumulative
@@ -1005,7 +1031,7 @@ async function runScenario(browser, config, name) {
             const pane = [...document.querySelectorAll('.hapi-pane[data-session-id]')].find(node => node.getAttribute('data-session-id') === sessionId);
             const scroll = pane?.querySelector('[data-conversation-scroll]');
             return !!scroll && scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4;
-          }, config.sessionId, { timeout: 5_000 }));
+          }, config.paneId, { timeout: 5_000 }));
         }
         const latestRows = await readRows(`read-latest-position-${index + 1}`);
         if (latestRows.max < result.residentRunway.requiredPx - 1) fail('resident-tail-range-lost-on-return');
@@ -1043,7 +1069,7 @@ async function runScenario(browser, config, name) {
         const dom = await page.locator('[data-hapi-workspace]').evaluate(element => element.outerHTML).catch(() => null);
         const retry = process.env.HHPI_SMOKE_DIAGNOSTIC_RETRY === '1' && details.length
           ? await page.evaluate(() => window.__hhpiSmoke?.retryReading?.()).catch(error => ({ message: error.message })) : null;
-        await writeFile(process.env.HHPI_SMOKE_PRIVATE_DIAGNOSTICS, JSON.stringify({ name, details, rows, dom, sourcePages, sourceChanges, readingViews, windowMeasures, measureAnchors, retry }), { mode: 0o600 });
+        await writeFile(process.env.HHPI_SMOKE_PRIVATE_DIAGNOSTICS, JSON.stringify({ name, details, rows, dom, sourcePages, sourceChanges, readingViews, windowMeasures, measureAnchors, retry, console: privateConsole }), { mode: 0o600 });
       }
     }
     await collectFailureDiagnostics(page, result);
@@ -1126,7 +1152,7 @@ export async function main() {
       report.coverage = `Exact original source-position opening, ${config.pages} visible earlier source-content pages, anchor continuity and frame gaps. Latest return and cached-tail acceptance are not run in this diagnostic; default release acceptance remains separate.`;
     }
     if (config.help) {
-      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--url-file FILE] [--scenario both|desktop|mobile] [--pages 6..N] [--opening-seq N] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Optional opening-seq follows the original exact-position link for a controlled diagnostic; default opening remains latest. Workspace persistence is synthetic; no screenshot is captured.\n');
+      process.stdout.write('Usage: node scripts/test-hhpi-smoke.mjs --session-id hhpi:<machine>:<source>:<engine>:<native> [--host-id MACHINE] [--url-file FILE] [--scenario both|desktop|mobile] [--pages 6..N] [--opening-seq N] [--timeout-ms 1..60000] [--report FILE]\nRequires the external webshot Chromium runtime. Each live scenario is read-only and runs for at most 60 seconds. Optional opening-seq follows the original exact-position link for a controlled diagnostic; default opening remains latest. Workspace persistence is synthetic; no screenshot is captured.\n');
       return;
     }
     const { applyEnv } = await import(pathToFileURL(process.env.HAPI_DSH_WEBSHOT_TOOLCHAIN ?? '/home/chris/.agents/tools/webshot/lib/toolchain.mjs').href);

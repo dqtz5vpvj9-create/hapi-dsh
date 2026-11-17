@@ -13,12 +13,18 @@ export async function buildClientBundle(buildIdentity, { publish = true, minifyI
         platform: 'browser', target: 'es2022', write: false, legalComments: 'inline',
         define: { 'process.env.NODE_ENV': '"production"' },
     });
+    const slotsRuntime = await build({
+        entryPoints: ['@deepseek-ai/dsh-client-ui-slots'], bundle: true, format: 'iife', globalName: '__HAPI_DSH_OFFICIAL_SLOTS__',
+        platform: 'browser', target: 'es2022', write: false, legalComments: 'inline',
+        define: { 'process.env.NODE_ENV': '"production"' },
+    });
     const options = {
         bundle: true, format: 'cjs', platform: 'browser', target: 'es2022',
         write: false, jsx: 'automatic', legalComments: 'inline', minifyWhitespace: true, minifySyntax: true, minifyIdentifiers,
         metafile: Boolean(process.env.HAPI_DSH_BUNDLE_REPORT),
         logOverride: { 'import-is-undefined': 'error' },
         define: { __HAPI_DSH_OFFICIAL_STORE_SOURCE__: JSON.stringify(storeRuntime.outputFiles[0].text),
+            __HAPI_DSH_OFFICIAL_SLOTS_SOURCE__: JSON.stringify(slotsRuntime.outputFiles[0].text),
             __HAPI_DSH_OFFICIAL_MODULES_SOURCE__: JSON.stringify(modulesSource), __HAPI_DSH_BUILD_ID__: buildIdentity },
         plugins: [{ name: 'style-text', setup(builder) {
             builder.onResolve({ filter: /\?text$/ }, args => {

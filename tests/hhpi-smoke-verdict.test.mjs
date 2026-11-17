@@ -4,12 +4,28 @@ import vm from 'node:vm';
 import { JSDOM } from 'jsdom';
 import { hhpiRequestPolicy, canonicalHhpiSessionId, syntheticWorkspace, matchVisibleSourcePage, captureVisibleSourceAnchor,
   sourceAnchorVerdict, installObserver, createSmokeReadStateIsolation, settleReadPublications,
-  publicConsoleCategory, allowedMissingModuleNames, safeHhpiDiagnosticMarks } from '../scripts/test-hhpi-smoke.mjs';
+  publicConsoleCategory, allowedMissingModuleNames, safeHhpiDiagnosticMarks, remoteControlRead } from '../scripts/test-hhpi-smoke.mjs';
 import { readStreams, requestPolicy, streamPolicy } from '../scripts/smoke-read-policy.mjs';
 import { parseWorkspaceState } from '../src/client/model.ts';
 
 const target = 'hhpi:runner%3Aone:codex-main:codex:thread%2F42';
 const body = (request = {}) => ({ payload: { args: { request } } });
+
+test('Remote control reads require exact endpoint and empty RPC payload', () => {
+  for (const method of ['status', 'settings.get']) {
+    const request = { type: 'client-request', rpcId: 'read', method, payload: {} };
+    const path = `/ds-harness-remote/${method}`;
+    assert.equal(remoteControlRead(path, 'POST', request), true);
+    assert.equal(remoteControlRead(path, 'PUT', request), false);
+    assert.equal(remoteControlRead(path, 'POST', { ...request, method: 'settings.configure' }), false);
+    assert.equal(remoteControlRead(path, 'POST', { ...request, payload: { enabled: true } }), false);
+    assert.equal(remoteControlRead(path, 'POST', { ...request, payload: [] }), false);
+    assert.equal(remoteControlRead(`/prefix${path}`, 'POST', request), false);
+  }
+  assert.equal(remoteControlRead('/ds-harness-remote/settings.configure', 'POST', {
+    type: 'client-request', rpcId: 'write', method: 'settings.configure', payload: {},
+  }), false);
+});
 
 test('ordinary acceptance retains bad-frame intervals and phases without geometry or CPU instrumentation', () => {
   const dom = new JSDOM('<main></main>', { runScripts: 'outside-only', pretendToBeVisual: true });
