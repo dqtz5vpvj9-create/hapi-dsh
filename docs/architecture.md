@@ -105,3 +105,11 @@ A system service must launch HHPI through its stable profile path
 release directory. The profile link follows an installed upgrade or rollback;
 retaining two rollback releases must not leave the service pointing into a third
 release that can be pruned.
+
+Once a source has passed Remote cutover, set its Runner configuration's
+`carrier` to `remote`. This retains its original profile, native source owner,
+bootstrap and attention routes, but does not start the legacy reverse connector
+or require its pairing token. Remote outages cannot reactivate that connector.
+The optional field is omitted for sources not yet migrated; their transport is
+unchanged. Rollback restores the prior matching release and private configuration,
+without replaying native operations.

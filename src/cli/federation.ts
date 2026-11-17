@@ -79,7 +79,7 @@ export async function runnerCommand(action: string, flags: Partial<Record<string
         process.stdout.write(`Official DSH Web profile ${config.dsh.profile} includes the Host-only Runner bundle.\n`);
         return 0;
     }
-    runnerToken(config);
+    if (config.carrier !== 'remote') runnerToken(config);
     const command = await resolveDshCommand(config);
     const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: config.dsh.home, HAPI_DSH_RUNNER_CONFIG_FILE: configFile };
     delete env.HAPI_DSH_CONFIG_FILE;

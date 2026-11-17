@@ -21,6 +21,20 @@ import { parseFrame, validateUpstreamPath } from '../src/runner/protocol.ts';
 import { runtimeIdentity } from '../src/runner/identity.ts';
 import { DSH_VERSION } from '../src/cli/config.ts';
 
+test('a migrated source cannot start a competing legacy carrier or request its credentials', async () => {
+    const config = createRunnerConfig('https://unused.invalid', { id: 'remote-owned' });
+    config.carrier = 'remote';
+    let statusCalls = 0, authenticationCalls = 0;
+    const runner = new RunnerClient({ config, origin: 'http://127.0.0.1:1',
+        authenticatedUrl() { authenticationCalls++; throw Error('Legacy authentication must not run'); },
+        status() { statusCalls++; },
+    });
+    assert.throws(() => runner.start(), /Remote owns this source transport/);
+    await runner.stop();
+    assert.equal(statusCalls, 0);
+    assert.equal(authenticationCalls, 0);
+});
+
 async function until(condition: () => boolean, message: string): Promise<void> {
     const deadline = Date.now() + 5000;
     while (!condition()) { if (Date.now() >= deadline) throw new Error(message); await delay(10); }

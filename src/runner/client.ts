@@ -46,6 +46,7 @@ export class RunnerClient {
     }
 
     start(): void {
+        if (this.options.config.carrier === 'remote') throw new Error('Remote owns this source transport; the legacy Runner client must remain stopped');
         if (this.running) throw new Error('Runner client already started');
         runnerToken(this.options.config);
         this.running = this.run();

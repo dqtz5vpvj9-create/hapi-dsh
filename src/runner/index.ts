@@ -48,6 +48,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     ctx.effect(() => () => { lifetime.abort(); stopEvents(); stopDisposed(); stopAttention(); }, 'hhpi: Runner application attention owner');
     let client: RunnerClient | undefined;
     const disposeRoute = mountBootstrapRoute(services, () => {
+        if (runtime.carrier === 'remote') return;
         const payload = bootstrapPayload(services);
         client = new RunnerClient({ config: runtime, origin: services.webServer.getOrigin(), dshVersion: payload.dshVersion,
             identity: runtimeIdentity({ dshVersion: payload.dshVersion, dshHome: runtime.dsh.home, profile: runtime.dsh.profile }),

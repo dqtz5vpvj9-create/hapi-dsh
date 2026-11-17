@@ -55,6 +55,8 @@ test('a paired Runner can retain the original Web profile without relaxing works
     const path = join(directory, 'runner.json');
     await writeRunnerConfig(path, config);
     assert.deepEqual(await readRunnerConfig(path), config, 'the same home, profile and machine survive a private configuration round trip');
+    assert.equal(parseRunnerConfig({ ...config, carrier: 'remote' }).carrier, 'remote');
+    assert.throws(() => parseRunnerConfig({ ...config, carrier: 'invalid' }), /Unknown Runner carrier/);
     assert.throws(() => parseConfig({ version: 1, dsh: config.dsh, server: config.server }), /dedicated custom profile/);
     for (const profile of ['sdk', 'headless', '../web']) {
         assert.throws(() => parseRunnerConfig({ ...config, dsh: { ...config.dsh, profile } }));
