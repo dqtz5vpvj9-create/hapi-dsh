@@ -50,6 +50,7 @@ export interface WorkspaceOptions {
     sourceExporter?: SourceExportApi
     readHead?: import('./source-reading-head.ts').SourceReadHead
     sourceCreation?: Pick<RemoteSessions, 'api' | 'list' | 'createController'>
+    sourceWorkspaceAuthority?: Pick<RemoteSessions, 'captureWorkspaceAccess'>
     locateSourcePosition?: SourceNavigationApi['locatePosition']
     resumeContext?: SourceNavigationApi['resumeContext']
     application?: Pick<WorkspaceApplicationIdentity, 'getSnapshot' | 'subscribe'>
@@ -332,6 +333,7 @@ export class WorkspaceController {
     private aggregateValue?: WorkspaceCatalog
     private readonly discovery = new CatalogDiscovery()
     private readonly sourceRouteCheckpoints = new Map<string, { sessionId: string; transfer(target: { hostId: string; scope: string }): boolean }>()
+    private readonly failedSourceRouteChecks = new Map<string, { lease: PaneLease; key: string; empty: boolean }>()
     private readonly paneCloseGuards = new Map<string, Set<() => boolean>>()
     private readonly reading = new PaneReadingIntents()
     private readonly lifetime = new AbortController()
@@ -1290,11 +1292,13 @@ export class WorkspaceController {
                         this.leases.set(paneId, { ...current, status: 'failed', error: paneFailureError(failure),
                             reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
                         this.publish()
+                        queueMicrotask(() => this.rebindFailedSourceRoutes())
                     })
                 } catch (error) {
                     const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(error) })
                     this.leases.set(paneId, { hostId, sessionId, status: 'failed', error: paneFailureError(failure),
                         reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
+                    queueMicrotask(() => this.rebindFailedSourceRoutes())
                 }
             }
         } finally { this.reconciling = false }
@@ -1695,6 +1699,48 @@ export class WorkspaceController {
         }
     }
 
+    private rebindFailedSourceRoutes(): void {
+        if (this.disposed) return
+        const state = this.store.getSnapshot(), rebound = this.bindLayout(state)
+        if (rebound !== state) this.store.replace(rebound)
+    }
+
+    /** An input that never mounted cannot supply a live checkpoint. Only a
+     * failed local view with proven-empty durable input can change routes. */
+    private failedSourceRouteIsEmpty(paneId: string, sessionId: string): boolean {
+        const lease = this.leases.get(paneId), account = this.options.application?.getSnapshot(), storage = this.options.storage
+        if (!lease || lease.status !== 'failed' || lease.hostId !== 'local' || lease.sessionId !== sessionId
+            || this.sourceRouteCheckpoints.has(paneId) || this.paneCloseGuards.get(paneId)?.size
+            || !account || account.signal.aborted || !storage) return false
+        try {
+            // The official sessions facade does not expose HHPI authority.
+            // Use the same source owner as the local Conversation composer.
+            const authority = this.options.sourceWorkspaceAuthority ?? this.hosts.get('local')?.sessions
+            const access = authority?.captureWorkspaceAccess?.(sessionId)
+            if (!access || access.signal.aborted) return false
+            access.assertCurrent()
+            const key = accountComposerDraftKey(JSON.stringify([account.scope, access.scope]), 'local', sessionId)
+            if (hasStoredComposerDraft(storage, key)) return false
+            const previous = this.failedSourceRouteChecks.get(paneId)
+            if (previous?.lease === lease && previous.key === key) {
+                // A completed read authorizes only this immediate rebind. A
+                // later attempt must observe other tabs' attachment writes.
+                if (previous.empty) this.failedSourceRouteChecks.delete(paneId)
+                return previous.empty
+            }
+            const check = { lease, key, empty: false }
+            this.failedSourceRouteChecks.set(paneId, check)
+            void hasStoredComposerAttachments(key).then(protectedDraft => {
+                if (this.disposed || account.signal.aborted || access.signal.aborted || this.leases.get(paneId) !== lease
+                    || this.failedSourceRouteChecks.get(paneId) !== check) return
+                check.empty = !protectedDraft
+                if (check.empty) this.rebindFailedSourceRoutes()
+                if (this.failedSourceRouteChecks.get(paneId) === check) this.failedSourceRouteChecks.delete(paneId)
+            })
+        } catch { /* Unknown ownership or storage must retain the original view. */ }
+        return false
+    }
+
     private bindLayout(state: WorkspaceState): WorkspaceState {
         const aliased = bindSourceAliases(state, reference => {
             const resolution = this.sourceResolutions.get(originalSourceKey(reference))
@@ -1710,13 +1756,14 @@ export class WorkspaceController {
             const sessionId = this.preferredSourceResource(value.resource.sessionId)
             if (sessionId === value.resource.sessionId) return value
             const checkpoint = this.sourceRouteCheckpoints.get(value.id), account = this.options.application?.getSnapshot()
-            if (!checkpoint || !account || account.signal.aborted) return value
+            if (!account || account.signal.aborted) return value
+            if (!checkpoint && !this.failedSourceRouteIsEmpty(value.id, value.resource.sessionId)) return value
             try {
                 const address = parseSessionResourceId(sessionId), access = this.hosts.get(address.hostId)?.sessions.captureWorkspaceAccess?.(address.sessionId)
-                if (!access || access.signal.aborted || checkpoint.sessionId !== address.sessionId) return value
+                if (!access || access.signal.aborted || checkpoint && checkpoint.sessionId !== address.sessionId) return value
                 access.assertCurrent()
                 for (const guard of this.paneCloseGuards.get(value.id) ?? []) if (!guard()) return value
-                if (!checkpoint.transfer({ hostId: address.hostId, scope: JSON.stringify([account.scope, access.scope]) })) return value
+                if (checkpoint && !checkpoint.transfer({ hostId: address.hostId, scope: JSON.stringify([account.scope, access.scope]) })) return value
                 changed = true
                 return { ...value, resource: { ...value.resource, sessionId } }
             } catch { return value }

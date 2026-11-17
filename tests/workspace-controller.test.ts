@@ -1369,3 +1369,41 @@ test('same-native route keeps the original Pane for unsafe drafts and rejects wr
         assert.equal(local.actions.length + remote.actions.length, 0)
     } finally { stop(); controller.dispose(); local.disposeMain(); remote.disposeMain(); application.dispose() }
 })
+
+test('a failed unmounted native view recovers its original Host without bypassing durable drafts or live guards', async () => {
+    const id = 'hhpi:windows:win-antigravity:antigravity:native', target = sessionResourceId('windows', id)
+    for (const mode of ['empty-sync', 'empty-async', 'draft', 'guard', 'revoked']) {
+        const local = fixture(), remote = fixture(), application = new WorkspaceApplicationIdentity()
+        application.set({ accountId: 'owner', origin: 'https://workspace.test' }, 'device')
+        const lifetime = new AbortController()
+        local.sessions.captureWorkspaceAccess = () => ({ scope: 'local-account', signal: lifetime.signal, assertCurrent() { lifetime.signal.throwIfAborted() } })
+        remote.sessions.captureWorkspaceAccess = () => ({ scope: 'original-account', signal: lifetime.signal, assertCurrent() { lifetime.signal.throwIfAborted() } })
+        local.add(id)
+        const retain = local.sessions.retain.bind(local.sessions)
+        local.sessions.retain = (session, options) => {
+            if (options.source !== 'hapiWorkspace') return retain(session, options)
+            if (mode !== 'empty-async') throw new Error('No registered source owns this session identity.')
+            return { ...retain(session, options), ready: Promise.reject(new Error('No registered source owns this session identity.')) }
+        }
+        const key = accountComposerDraftKey(JSON.stringify([application.getSnapshot()!.scope, 'local-account']), 'local', id)
+        if (mode === 'draft') local.memory.set(key, JSON.stringify({ version: 1, draft: { text: 'Keep my unsent draft', references: [] } }))
+        const sourceWorkspaceAuthority = { captureWorkspaceAccess: local.sessions.captureWorkspaceAccess }
+        delete local.sessions.captureWorkspaceAccess
+        const controller = new WorkspaceController({ ...local.options, application, sourceWorkspaceAuthority, sourceSessionQuery: id })
+        const paneId = controller.store.focusedPane().id
+        const stop = mode === 'guard' ? controller.registerPaneCloseGuard(paneId, () => false) : () => {}
+        try {
+            controller.addHost({ id: 'windows', label: 'Windows', sessions: remote.sessions, navigation: remote.navigation, renderConversation: () => null })
+            remote.add(id)
+            remote.project(id, { hhpiSource: { id, machineId: 'windows', sourceId: 'win-antigravity', engine: 'antigravity', nativeId: 'native',
+                title: 'Original', cwd: 'C:\\work', updatedAt: 1, status: 'idle', activeTurnId: null,
+                capabilities: { send: true, steer: false, cancel: true, approve: false, files: true }, pendingRequests: [] } })
+            if (mode === 'revoked') lifetime.abort()
+            await turn(); await turn()
+            assert.equal(focusedResourceId(controller), mode.startsWith('empty') ? target : id, mode)
+            assert.equal(controller.store.focusedPane().id, paneId, 'the saved pane identity survives route recovery')
+            if (mode === 'draft') assert.match(local.memory.get(key)!, /Keep my unsent draft/)
+            assert.equal(local.actions.length + remote.actions.length, 0, 'recovery never sends or recreates a conversation')
+        } finally { stop(); controller.dispose(); local.disposeMain(); remote.disposeMain(); application.dispose() }
+    }
+})

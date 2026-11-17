@@ -59,6 +59,8 @@ test('an uncertain source answer remains visible and unmounting never resends', 
   const a = owner('hhpi:machine:source:codex:thread')
   const view = render(<SourceApprovalControl session={a.session} request={request} zh={false}/>)
   await userEvent.click(screen.getByRole('button', { name: 'Allow' }))
+  // The stable operation ID is hashed asynchronously before the RPC starts.
+  await waitFor(() => expect(a.session.operate).toHaveBeenCalledTimes(1))
   await act(async () => { a.pending.resolve({ ...a.done('Outcome unknown; not retried'), status: 'indeterminate' }); await a.pending.promise })
   expect(screen.getByRole('status')).toHaveTextContent('Outcome unknown; not retried')
   expect(screen.getByRole('button', { name: 'Allow' })).toBeDisabled()
