@@ -226,8 +226,8 @@ export async function activateRelease({ dshHome, profile, role, releaseRoot, man
         const links = role === 'runner' ? [runnerSourceProviderTarget(releaseRoot), target] : [target];
         for (const linked of links) {
             await requireDirectory(linked, `the release does not contain ${linked}`);
-            logger?.(`running the official plugin manager: ${commandLine({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', `link:${linked}`] })}`);
-            const installed = await runOfficial(run, command, ['plugin', '--profile', profile, 'add', `link:${linked}`], { env, cwd: directory });
+            logger?.(`running the official plugin manager: ${commandLine({ ...command, args: [...command.args, 'plugin', '--profile', profile, 'add', '-w', `link:${linked}`] })}`);
+            const installed = await runOfficial(run, command, ['plugin', '--profile', profile, 'add', '-w', `link:${linked}`], { env, cwd: directory });
             if (installed.exitCode !== 0) throw new Error('official DSH plugin installation failed; run dsh plugin for its installation diagnostics');
         }
         const after = await readProfileManifest(directory);
@@ -487,8 +487,8 @@ export async function installRelease(rawOptions) {
                 packages: manifest.payload.dshExt.map(item => item.name) },
             plannedCommands: command ? [
                 { purpose: 'initialize-profile (only when missing)', args: ['--profile', profile, '--from-default-profile', 'web', '--dump-config'] },
-                ...(role === 'runner' ? [{ purpose: 'link-source-provider', args: ['plugin', '--profile', profile, 'add', `link:${runnerSourceProviderTarget(releaseRoot)}`] }] : []),
-                { purpose: 'add-bundle', args: ['plugin', '--profile', profile, 'add', `link:${linkTarget(releaseRoot, role)}`] },
+                ...(role === 'runner' ? [{ purpose: 'link-source-provider', args: ['plugin', '--profile', profile, 'add', '-w', `link:${runnerSourceProviderTarget(releaseRoot)}`] }] : []),
+                { purpose: 'add-bundle', args: ['plugin', '--profile', profile, 'add', '-w', `link:${linkTarget(releaseRoot, role)}`] },
                 { purpose: 'dump-config', args: ['--profile', profile, '--dump-config'] },
             ] : [],
         };
