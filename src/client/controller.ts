@@ -1298,12 +1298,16 @@ export class WorkspaceController {
                     const failure = bindingFailureState({ ...this.paneOpenContext(hostId, sessionId, resource), error: errorMessage(error) })
                     this.leases.set(paneId, { hostId, sessionId, status: 'failed', error: paneFailureError(failure),
                         reason: failure.reason, nextStep: failure.nextStep, detail: failure.detail, retryable: true, waitingForCatalog: true })
-                    queueMicrotask(() => this.rebindFailedSourceRoutes())
                 }
             }
         } finally { this.reconciling = false }
         this.publish({ catalog: this.aggregateCatalog() })
         this.scheduleSettleCheck()
+        // Direct resolution can fail before retain is ever called. Reconsider
+        // routing after the final lease is installed, including that path.
+        if ([...this.leases.values()].some(lease => lease.status === 'failed' && lease.hostId === 'local')) {
+            queueMicrotask(() => this.rebindFailedSourceRoutes())
+        }
     }
 
     private syncNavigation(): void {
