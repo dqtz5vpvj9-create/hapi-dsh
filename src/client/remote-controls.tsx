@@ -113,8 +113,9 @@ function SourceApprovalButtons({ session, request, zh, disabled = false }: Appro
     {!!permissions.length && <ul>{permissions.map((permission, index) => <li key={index}>{permission}</li>)}</ul>}
     {!decisions.length && <p>{zh ? '此请求需要对应的原生界面，不能使用通用允许操作。' : 'This request requires its native interface; a generic approval is unavailable.'}</p>}
     <details><summary>{zh ? '技术详情' : 'Technical details'}</summary><p>{request.method}</p><p>{zh ? '请求：' : 'Request: '}{request.id} · {zh ? '轮次：' : 'Turn: '}{request.turnId ?? '—'} · {zh ? '项目：' : 'Item: '}{request.itemId ?? '—'}</p><pre>{JSON.stringify(request.params, null, 2)}</pre></details>
-    <div>{decisions.map(decision => <button key={decision} type="button" disabled={disabled || busy || receipt?.status === 'accepted' || receipt?.status === 'indeterminate'} onClick={() => { void answer(decision) }}>{labels[decision]}</button>)}</div>
-    {receipt?.status === 'indeterminate' && chosen.current && <button type="button" disabled={disabled || busy} onClick={() => { void answer(chosen.current!, true) }}>{zh ? '检查原审批结果' : 'Check original decision'}</button>}
+    <div className="hhpi-approval-actions">{decisions.map(decision => <Button key={decision} size="sm" variant={decision === 'accept' ? 'primary' : decision === 'acceptForSession' ? 'outline' : 'ghost'} type="button" disabled={disabled || busy || receipt?.status === 'accepted' || receipt?.status === 'indeterminate'} onClick={() => { void answer(decision) }}>{labels[decision]}</Button>)}
+      {receipt?.status === 'indeterminate' && chosen.current && <Button size="sm" variant="outline" type="button" disabled={disabled || busy} onClick={() => { void answer(chosen.current!, true) }}>{zh ? '检查原审批结果' : 'Check original decision'}</Button>}
+    </div>
     {receipt && <p role={receipt.status === 'rejected' ? 'alert' : 'status'}>{receipt.message}</p>}
     {error && <p role="alert">{error}</p>}
   </section>
@@ -143,7 +144,7 @@ export function installRemoteSourceControls(ctx: Context): () => void {
 
   const dock = ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({ name: 'conversation.input.dock', id: 'hhpi.source-approval', order: -90 }, Dock))
   const style = document.createElement('style')
-  style.textContent = `.hhpi-source-dock:empty{display:none}.hhpi-source-dock{max-width:960px;margin:0 auto;font:13px/1.5 system-ui;padding:0 12px}.hhpi-source-dock p{margin:4px 0}.hhpi-source-approval{border:1px solid var(--dsw-alias-border-l1,#8884);border-radius:12px;padding:8px}.hhpi-source-approval pre{max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.hhpi-source-approval button,.hhpi-source-steer{font:inherit;color:inherit;border:1px solid var(--dsw-alias-border-l1,#8884);background:var(--dsw-alias-bg-base,transparent);border-radius:8px;padding:5px 10px;cursor:pointer}.hhpi-source-approval button+button{margin-left:8px}.hhpi-source-approval button:disabled,.hhpi-source-steer:disabled{opacity:.5;cursor:default}.hhpi-source-dock [role=alert]{color:var(--text-error,#c44)}@media(pointer:coarse){.hhpi-source-steer,.hhpi-source-approval button{min-height:44px}}`
+  style.textContent = `.hhpi-source-dock:empty{display:none}.hhpi-source-dock{max-width:960px;margin:0 auto;font:13px/1.5 system-ui;padding:0 12px}.hhpi-source-dock p{margin:4px 0}.hhpi-source-dock [role=alert]{color:var(--text-error,#c44)}`
   document.head.append(style)
   return () => { dock(); style.remove() }
 }

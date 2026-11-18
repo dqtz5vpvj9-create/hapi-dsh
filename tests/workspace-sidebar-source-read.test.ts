@@ -29,3 +29,18 @@ test('retiring an account read owner clears only its derived unread display fact
     assert.equal(sidebar.isUnread('owned', 9000), true)
     assert.equal(sidebar.getSnapshot().seen.owned, 4490)
 })
+
+test('historical sessions older than 7 days suppress automatic unread noise while preserving manual unread', () => {
+    const now = Date.UTC(2026, 10, 17, 12, 0, 0)
+    const eightDaysAgo = now - 8 * 86_400_000
+    const twoDaysAgo = now - 2 * 86_400_000
+    const sidebar = new SidebarState()
+    sidebar.mergeSource([
+        { id: 'stale', seenAt: 0, manualUnreadAt: null },
+        { id: 'recent', seenAt: 0, manualUnreadAt: null },
+    ])
+    assert.equal(sidebar.isUnread('stale', eightDaysAgo, now), false)
+    assert.equal(sidebar.isUnread('recent', twoDaysAgo, now), true)
+    sidebar.markUnread('stale', eightDaysAgo)
+    assert.equal(sidebar.isUnread('stale', eightDaysAgo, now), true)
+})

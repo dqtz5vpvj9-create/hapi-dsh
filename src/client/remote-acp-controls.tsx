@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 import { SourceControls, type InputProps } from './composer-picker/index.tsx'
-import { validPickerAction, type PickerAction, type PickerData } from './composer-picker/data.ts'
+import { validPickerAction, type PickerAction, type PickerData, type PickerPending } from './composer-picker/data.ts'
 import { sourceIsOffline } from '../shared/source-connectivity.ts'
 
 interface Selection { provider: string; model: string; reasoningEffort?: string }
@@ -25,6 +25,7 @@ export function DirectAcpControls({ ctx, api, props, session }: {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const alive = useRef(true), revision = useRef(0)
+  const submittedChange = useRef<PickerPending | null>(null)
   useEffect(() => { alive.current = true; return () => { alive.current = false; revision.current++ } }, [])
   const refresh = useCallback(async () => {
     const version = ++revision.current
@@ -44,11 +45,13 @@ export function DirectAcpControls({ ctx, api, props, session }: {
   const current = catalog?.current ?? metadata.agent
   const rawModel = current?.model === 'host-settings' ? null : (current?.model ?? null)
   const models = catalog?.groups.filter(group => group.id === metadata.engine).flatMap(group => group.models) ?? []
-  const selected = models.find(model => model.id === rawModel)
+  const effectiveModelId = rawModel ?? models[0]?.id ?? null
+  const selected = models.find(model => model.id === effectiveModelId)
+  const effort = current?.reasoningEffort ?? selected?.reasoning?.defaultEffort ?? null
   const writable = !!catalog?.routable && !sourceIsOffline(metadata) && metadata.status !== 'running' && !pendingAction
   const data: PickerData | null = catalog ? {
-    model: rawModel, models: models.map(model => ({ value: model.id, label: model.name === 'host-settings' ? 'Default' : model.name })),
-    effort: current?.reasoningEffort ?? null,
+    model: effectiveModelId, models: models.map(model => ({ value: model.id, label: model.name === 'host-settings' ? 'Default' : model.name })),
+    effort,
     efforts: selected?.reasoning?.efforts.map(effort => ({ value: effort.id, label: effort.name ?? effort.id })) ?? [],
     permission: null, permissions: [], readOnly: !writable, serviceTier: null, fast: false, fastAvailable: false,
     editable: { model: writable, effort: writable && !!selected?.reasoning?.efforts.length, permission: false, fast: false },
@@ -56,14 +59,17 @@ export function DirectAcpControls({ ctx, api, props, session }: {
   } : null
   const apply = async (action: PickerAction) => {
     if (!data || busy || !validPickerAction(data, action) || !['model', 'effort'].includes(action.kind)) return false
-    const model = action.kind === 'model' ? action.value : current?.model
+    const model = action.kind === 'model' ? action.value : effectiveModelId
     if (!model || typeof model !== 'string') return false
     const target = models.find(item => item.id === model)
     const effort = action.kind === 'effort' ? action.value : target?.reasoning?.defaultEffort
+    const operationId = crypto.randomUUID()
+    submittedChange.current = { operationId, change: action.kind === 'effort'
+      ? { kind: 'effort', value: action.value } : { kind: 'model', value: model } }
     setBusy(true); setError(null)
     try {
       const result = await actions.submit({ sessionId: metadata.id, intent: 'settings', kind: 'settings', newAttempt: true,
-        request: { sourceId: metadata.sourceId, method: 'session/selectModel', params: { sessionId: metadata.nativeId,
+        request: { operationId, sourceId: metadata.sourceId, method: 'session/selectModel', params: { sessionId: metadata.nativeId,
           provider: metadata.engine, model, ...(typeof effort === 'string' ? { reasoningEffort: effort } : {}) } } })
       if (result.phase !== 'accepted') throw new Error(result.outcome?.message ?? 'The source has not confirmed this model selection.')
       await refresh(); return true
@@ -79,9 +85,12 @@ export function DirectAcpControls({ ctx, api, props, session }: {
     finally { if (alive.current) setBusy(false); await refresh() }
   }
   return <SourceControls ctx={ctx} props={props}
-    initial={{ model: rawModel, effort: current?.reasoningEffort ?? null, permission: null, serviceTier: null, collaboration: null }}
+    initial={{ model: catalog ? effectiveModelId : rawModel, effort, permission: null, serviceTier: null, collaboration: null }}
     permissionCapable={false} data={data} loading={loading} busy={busy} pending={pendingAction ? {
-      operationId: pendingAction.request.operationId, change: { kind: 'model', value: String(pendingAction.request.params?.model ?? '') },
+      operationId: pendingAction.request.operationId, change: submittedChange.current?.operationId === pendingAction.request.operationId ? submittedChange.current.change
+        : pendingAction.request.params?.model === effectiveModelId && typeof pendingAction.request.params.reasoningEffort === 'string'
+        ? { kind: 'effort', value: pendingAction.request.params.reasoningEffort }
+        : { kind: 'model', value: typeof pendingAction.request.params?.model === 'string' ? pendingAction.request.params.model : null },
     } : null} error={error} sourceLocked={sourceIsOffline(metadata) || metadata.status === 'running'} refresh={refresh} apply={apply}
     {...(pendingAction?.phase === 'prepared' ? { resume } : {})}/>
 }

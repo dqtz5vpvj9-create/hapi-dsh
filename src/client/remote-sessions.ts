@@ -123,6 +123,7 @@ export class RemoteSourceSession implements SessionFace {
     }) ?? (() => {})
     this.syncDeliveries()
     this.update(metadata)
+    if (metadata.codex && directories && !sourceIsOffline(metadata)) void this.sourceDirectory()?.capabilities().catch(() => {})
     if (metadata.codex && nativeActions && directories) {
       this.nativeQueue = new RemoteNativeQueue(this, api, snapshot => this.publishNativeQueue(snapshot))
       this.stopQueueHistory = history.subscribeEntries(entries => { this.nativeQueue?.observe(entries) })
@@ -245,7 +246,11 @@ export class RemoteSourceSession implements SessionFace {
       this.outbox?.retry(operationId)
     } catch (cause) { this.controlStatus.set(cause instanceof Error ? cause.message : 'The original request cannot be resumed.') }
   }
-  discardSubmission(operationId: string): void { this.outbox?.discard(operationId) }
+  discardSubmission(operationId: string): void {
+    const saved = this.outbox?.get(operationId)
+    if (saved?.state === 'queued' && saved.attempts === 0) this.outbox?.abandon(operationId)
+    else this.outbox?.discard(operationId)
+  }
   ownsSavedSubmission(operationId: string | undefined, mode: Parameters<SessionFace['prompt']>[1] = 'queue'): boolean {
     const saved = operationId === undefined ? undefined : this.outbox?.get(operationId)
     return saved?.operation.sessionId === this.sessionId && saved.operation.kind === (mode === 'steer' ? 'steer' : 'send')

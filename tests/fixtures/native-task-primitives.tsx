@@ -1,11 +1,11 @@
 /** Presentation seats only. Production task/controller/ledger behavior is tested;
  * native styling, menu focus and Modal dismissal require the actual browser path. */
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
+import { forwardRef, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react'
 
-function Button({ variant: _variant, size: _size, icon, children, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; icon?: ReactNode }) {
-  return <button type="button" {...props}>{icon}{children}</button>
-}
-function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <input {...props}/> }
+const Button = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string; icon?: ReactNode }>(function Button({ variant: _variant, size: _size, icon, children, ...props }, ref) {
+  return <button ref={ref} type="button" {...props}>{icon}{children}</button>
+})
+const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(props, ref) { return <input ref={ref} {...props}/> })
 function Checkbox({ checked, onChange, label, disabled }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean }) {
   return <label><input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.currentTarget.checked)}/>{label}</label>
 }

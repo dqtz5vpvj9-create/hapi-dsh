@@ -4,6 +4,7 @@ import { userEvent } from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 import { SourceNativeQuestion } from '../../src/client/remote-native-question.tsx'
 import type { SourceApproval, SourceOperation, SourceReceipt } from '../../src/remote/protocol.ts'
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 const request: SourceApproval = { id: 'native-question', method: 'item/tool/requestUserInput', turnId: 'turn', itemId: 'item', params: { questions: [{ id: 'choice', header: 'Choice', question: 'Which option?', options: [{ label: 'First', description: 'One' }, { label: 'Second', description: 'Two' }] }] } }
 test('human answers retain native question IDs and cannot be submitted twice while pending', async () => {
   const pending = Promise.withResolvers<SourceReceipt>()

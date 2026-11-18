@@ -100,8 +100,10 @@ export class SidebarState {
         if (!Object.entries(patch).some(([key, value]) => this.snapshot.preferences[key as keyof SidebarPreferences] !== value)) return
         this.commit({ ...this.snapshot, preferences: { ...this.snapshot.preferences, ...patch } })
     }
-    isUnread(id: string, updatedAt: number): boolean {
+    isUnread(id: string, updatedAt: number, now = Date.now()): boolean {
         if (this.snapshot.unread[id] !== undefined) return true
+        // Suppress automatic unread noise for stale historical threads (>7 days old).
+        if (updatedAt >= 946_684_800_000 && updatedAt < now - 7 * 86_400_000) return false
         const source = this.sourceUnread.get(id)
         return source?.updatedAt === updatedAt ? source.unread : updatedAt > (this.snapshot.seen[id] ?? this.snapshot.baseline)
     }

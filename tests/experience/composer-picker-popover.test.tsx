@@ -3,8 +3,10 @@ import { userEvent } from '@testing-library/user-event'
 import { afterEach, expect, test, vi } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { SourceControls, type InputProps } from '../../src/client/composer-picker/index.tsx'
-import { modelLabel, type PickerData, type PickerPending } from '../../src/client/composer-picker/data.ts'
+import { modelLabel, validPickerAction, type PickerData, type PickerPending } from '../../src/client/composer-picker/data.ts'
 import { DirectAcpControls } from '../../src/client/remote-acp-controls.tsx'
+
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 
 // Only the unavailable jsdom browser APIs/layout are fixtures. The production
 // controls, retained subtree, focus, state and source callbacks run unchanged.
@@ -160,22 +162,81 @@ test('the internal host-settings placeholder never becomes a model caption', () 
   expect(modelLabel('actual', [{ value: 'actual', label: 'host-settings' }])).toBeNull()
 })
 
-test('ACP host-settings remains a clean model caption after its catalog loads', async () => {
+test('model popover exposes effort pills and Fast while retaining the standalone effort picker', async () => {
+  bounds(); const f = seat('A'), user = userEvent.setup(); render(f.ui)
+  await user.click(screen.getByRole('button', { name: 'First' }))
+  let panel = screen.getByRole('dialog', { name: 'Choose model' })
+  await user.click(within(panel).getByRole('button', { name: 'High' }))
+  expect(f.apply).toHaveBeenLastCalledWith({ kind: 'effort', value: 'high' })
+  expect(panel).toBeVisible()
+  await user.click(within(panel).getByRole('switch', { name: 'Fast mode' }))
+  expect(f.apply).toHaveBeenLastCalledWith({ kind: 'fast', value: true })
+  await user.keyboard('{Escape}')
+  await user.click(screen.getByRole('button', { name: /Reasoning effort/ }))
+  panel = screen.getByRole('dialog', { name: 'Reasoning effort' })
+  await user.click(within(panel).getByRole('button', { name: 'High' }))
+  expect(f.apply).toHaveBeenLastCalledWith({ kind: 'effort', value: 'high' })
+  expect(within(panel).getByRole('slider')).toBeEnabled()
+  expect(within(panel).getByRole('switch', { name: 'Fast mode' })).toBeEnabled()
+})
+
+test('Plan dispatch accepts only advertised collaboration values', () => {
+  expect(validPickerAction(data, { kind: 'collaboration', value: 'plan' })).toBe(false)
+  const editable = { ...data, editable: { ...data.editable, collaboration: true } }
+  expect(validPickerAction(editable, { kind: 'collaboration', value: 'plan' })).toBe(true)
+  expect(validPickerAction(editable, { kind: 'collaboration', value: 'default' })).toBe(true)
+  expect(validPickerAction(editable, { kind: 'collaboration', value: 'unknown' } as never)).toBe(false)
+})
+
+test('ACP host-settings resolves its model and effort, and pending changes retain the correct target', async () => {
   const ctx = { get: () => undefined, locale: { getSnapshot: () => ({ active: 'zh' }), subscribe: () => () => {} } } as unknown as Context
   const props = { sessionId: 'A', sessionBinding: { session: { metadata: { getSnapshot: () => ({ capabilities: {} }) } } }, useInput: () => false, useSession: () => false, renderSlot: () => null } as unknown as InputProps
   const metadata = { id: 'A', sourceId: 'agy', nativeId: 'thread', engine: 'antigravity', status: 'idle', agent: { model: 'host-settings' } }
-  const empty: never[] = []
+  let records: unknown[] = [], notify = () => {}
+  let write = Promise.withResolvers<{ phase: string }>()
+  const submit = vi.fn(async (request: { request: { operationId: string; params: Record<string, unknown> } }) => {
+    records = [{ ...request, intent: 'settings', phase: 'submitted' }]
+    notify()
+    const result = await write.promise
+    records = []; notify()
+    return result
+  })
   const session = { metadata: { getSnapshot: () => metadata, subscribe: () => () => {} }, nativeActions: {
-    view: () => ({ getSnapshot: () => empty, subscribe: () => () => {} }), recover: async () => {},
+    view: () => ({ getSnapshot: () => records, subscribe: (listener: () => void) => { notify = listener; return () => { notify = () => {} } } }), recover: async () => {}, submit,
   } }
+  const current = { provider: 'antigravity', model: 'host-settings' }
   const api = { nativeCall: async () => ({ ok: true, value: { status: 'accepted', result: {
-    current: { provider: 'antigravity', model: 'host-settings' }, routable: true,
-    groups: [{ id: 'antigravity', models: [{ id: 'real-model', name: 'Gemini' }] }], failures: [],
+    current: { ...current }, routable: true,
+    groups: [{ id: 'antigravity', models: [{ id: 'real-model', name: 'Gemini 4 Carbon', reasoning: {
+      defaultEffort: 'medium', efforts: [{ id: 'low' }, { id: 'medium' }, { id: 'high' }],
+    } }, { id: 'other-model', name: 'Other model', reasoning: { defaultEffort: 'high', efforts: [{ id: 'high' }] } }] }], failures: [],
   } } }) }
   render(<DirectAcpControls ctx={ctx} props={props} session={session as never} api={api as never}/>)
-  await screen.findByRole('button', { name: '模型' })
+  await screen.findByRole('button', { name: 'Gemini 4 Carbon' })
+  expect(screen.getByRole('button', { name: '推理强度 · 中' })).toBeVisible()
   expect(document.body).not.toHaveTextContent('host-settings')
-  fireEvent.click(screen.getByRole('button', { name: '模型' }))
-  expect(await screen.findByText('Gemini')).toBeVisible()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Gemini 4 Carbon' }))
+  const panel = screen.getByRole('dialog', { name: '选择模型' })
+  await user.click(within(panel).getByRole('button', { name: '高' }))
+  expect(submit).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({
+    method: 'session/selectModel', params: { sessionId: 'thread', provider: 'antigravity', model: 'real-model', reasoningEffort: 'high' },
+  }) }))
+  expect(within(panel).getByText('推理强度: 高')).toBeVisible()
+  expect(within(panel).getByRole('button', { name: '低' })).toBeDisabled()
+  await act(async () => { write.resolve({ phase: 'accepted' }); await write.promise })
+  write = Promise.withResolvers<{ phase: string }>()
+  await user.click(within(panel).getByRole('radio', { name: 'Other model' }))
+  expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({ request: expect.objectContaining({
+    params: { sessionId: 'thread', provider: 'antigravity', model: 'other-model', reasoningEffort: 'high' },
+  }) }))
+  expect(within(panel).getByText('模型: Other model')).toBeVisible()
+  current.model = 'other-model'
+  await user.keyboard('{Escape}')
+  await user.click(screen.getByRole('button', { name: 'Gemini 4 Carbon' }))
+  await screen.findByRole('button', { name: 'Other model' })
+  expect(screen.getByText('模型: Other model')).toBeVisible()
+  expect(screen.queryByText('推理强度: 高')).not.toBeInTheDocument()
+  await act(async () => { write.resolve({ phase: 'accepted' }); await write.promise })
   expect(document.body).not.toHaveTextContent('host-settings')
 })

@@ -768,7 +768,9 @@ export function SessionSidebar({ controller, wide, expandSidebar, useWorkspaces,
         </header>
         <SidebarSearchControls persistent query={searchInput} onQueryChange={setSearchInput} start={dateFrom} end={dateThrough} onDatesChange={(start, end) => { setDateFrom(start); setDateThrough(end) }}
             activityDates={activityDates} expanded={searchExpanded} onExpandedChange={setSearchExpanded} inputRef={input} t={t}/>
-        <SidebarScope filter={filter} counts={counts} onFilter={filter => controller.sidebar.change({ filter })} t={t}/>
+        <SidebarScope filter={filter} counts={counts} onFilter={filter => controller.sidebar.change({ filter })}
+            engines={engines} selectedEngine={engine} onEngineChange={engine => controller.sidebar.change({ engine })}
+            onMarkAllRead={() => { controller.sidebar.markAllSeen(rows); controller.sidebar.requestAllSeen(rows) }} t={t}/>
         <div className="hapi-session-list" aria-label={t('allChats')} ref={setScrollElement}>
             <SidebarScrollAnchor view={mode} scope={bookmarkScope} bookmarks={bookmarks} hasSessions={recentRows.length > 0} sessions={recentRows} onScrollRestored={onScrollRestored}>
             {!tree.length && <div className="hapi-list-empty" role="status">

@@ -6,6 +6,8 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SourceApproval, SourceOperation, SourceReceipt } from '../../src/remote/protocol.ts'
 import { SourceApprovalControl } from '../../src/client/remote-controls.tsx'
 
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
+
 const request: SourceApproval = { id: 'same-native-request', method: 'item/commandExecution/requestApproval', turnId: 'turn', itemId: 'item', params: { command: 'synthetic operation' } }
 function owner(id: string) {
   const pending = Promise.withResolvers<SourceReceipt>()

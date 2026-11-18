@@ -11,11 +11,11 @@ import { sourceIsOffline } from '../shared/source-connectivity.ts'
 const emptyRecords: readonly NativeActionRecord[] = []
 const emptyStore = { getSnapshot: () => emptyRecords, subscribe: () => () => {} }
 type Edit = { original: NativeQueueItem; texts: readonly string[] }
-function TaskHeader({ language, refresh, loading, close }: { language: string; refresh?: (() => void) | undefined; loading?: boolean; close?: (() => void) | undefined }) {
+function TaskHeader({ language, hasQueue = false, refresh, loading, close }: { language: string; hasQueue?: boolean; refresh?: (() => void) | undefined; loading?: boolean; close?: (() => void) | undefined }) {
   const zh = language.startsWith('zh'), tr = (en: string, cn: string) => zh ? cn : en
-  return <header className="hhpi-task-header"><h2>{tr('Queue & Goal', '队列与目标')}</h2><div className="hhpi-task-actions">
-    {refresh && <Button variant="toolbar" size="sm" className="hhpi-task-icon" aria-label={tr('Refresh source state', '刷新来源状态')} title={tr('Refresh source state', '刷新来源状态')} disabled={loading} onClick={refresh}><IconRefreshOutlineRegular size={16}/></Button>}
-    {close && <Button variant="toolbar" size="sm" className="hhpi-task-icon" aria-label={tr('Close', '关闭')} title={tr('Close', '关闭')} onClick={close}><IconCloseOutlineRegular size={16}/></Button>}
+  return <header className="hhpi-task-header"><h2>{hasQueue ? tr('Queue & Goal', '队列与目标') : tr('Persistent goal', '持续目标')}</h2><div className="hhpi-task-actions">
+    {refresh && <Button variant="ghost" size="sm" className="hhpi-task-icon" aria-label={tr('Refresh source state', '刷新来源状态')} title={tr('Refresh source state', '刷新来源状态')} disabled={loading} onClick={refresh}><IconRefreshOutlineRegular size={16}/></Button>}
+    {close && <Button variant="ghost" size="sm" className="hhpi-task-icon" aria-label={tr('Close', '关闭')} title={tr('Close', '关闭')} onClick={close}><IconCloseOutlineRegular size={16}/></Button>}
   </div></header>
 }
 function elapsedTime(seconds: number, zh: boolean): string {
@@ -87,7 +87,7 @@ function TaskBody({ controller, language, close }: { controller: RemoteNativeTas
   const number = (value: number) => new Intl.NumberFormat(language, { notation: 'compact', maximumFractionDigits: 1 }).format(value)
   const finishGoalEdit = () => { setGoalDirty(false); setGoalEditing(false) }
   return <div className="hhpi-native-task-panel">
-    <TaskHeader language={language} refresh={() => { void controller.refresh() }} loading={state.loading} close={close}/>
+    <TaskHeader language={language} hasQueue={Boolean(state.queue?.length)} refresh={() => { void controller.refresh() }} loading={state.loading} close={close}/>
     <div className="hhpi-task-content">
       {sourceIsOffline(metadata) && <p className="hhpi-task-notice" role="status">{tr('Source offline. Your edits are kept; reconnect before saving.', '来源离线，编辑已保留。重新连接后可保存。')}</p>}
       <section aria-label={tr('Persistent goal', '持续目标')} className="hhpi-task-section">
@@ -119,7 +119,7 @@ function TaskBody({ controller, language, close }: { controller: RemoteNativeTas
           <div><dt>{tr('Recorded time', '累计时间')}</dt><dd>{elapsedTime(state.goal.timeUsedSeconds, zh)}</dd></div>
         </dl></details>}
       </section>
-      <section aria-label={tr('Native queue', '原生队列')} className="hhpi-task-section">
+      {((state.queue && state.queue.length > 0) || edits.size > 0 || (state.queue === undefined && state.loading)) && <section aria-label={tr('Native queue', '原生队列')} className="hhpi-task-section">
         <div className="hhpi-task-section-heading"><h3><IconQueueOutlineRegular size={16}/>{tr('Queue', '排队消息')}</h3>{!!state.queue?.length && <span className="hhpi-task-count">{state.queue.length}</span>}</div>
         {state.capabilities && state.capabilities.methods['thread/queue/list'] !== 'read' && <p className="hhpi-task-muted">{tr('Queue is unavailable for this source.', '此来源暂不支持排队消息。')}</p>}
         {state.queue === undefined && state.loading && <p className="hhpi-task-muted" role="status">{tr('Loading queued messages…', '正在读取排队消息…')}</p>}
@@ -141,7 +141,7 @@ function TaskBody({ controller, language, close }: { controller: RemoteNativeTas
           {!edit.texts.length && <p className="hhpi-task-muted">{tr('This message has no editable text.', '这条消息没有可编辑正文。')}</p>}
           <div className="hhpi-task-actions"><Button variant="primary" size="sm" type="submit" disabled={!edit.texts.length || !state.queue?.some(row => row.id === id) || blocked(queueIntent(id), 'thread/queue/update')}>{tr('Save queued edit', '保存排队编辑')}</Button><Button size="sm" onClick={() => closeEdit(id)}>{tr('Close editor', '关闭编辑')}</Button></div>
         </form>)}
-      </section>
+      </section>}
       {pending.map(action => <div className="hhpi-task-notice" key={action.intent}><p role="status">{action.outcome?.message ?? tr('Waiting for source confirmation.', '等待来源确认。')}</p>
         <Button size="sm" variant="outline" disabled={busy} onClick={() => { void run(() => controller.check(action.intent)) }}>{action.phase === 'prepared' ? tr('Continue original request', '继续原请求') : tr('Check original request', '检查原请求结果')}</Button></div>)}
       {last?.outcome && ['accepted', 'rejected'].includes(last.phase) && <p className="hhpi-task-feedback" role={last.phase === 'rejected' ? 'alert' : 'status'}>{last.outcome.message}</p>}
@@ -172,6 +172,7 @@ export const remoteNativeTaskStyles = `
 .hhpi-native-task-dialog{width:min(600px,100%);max-height:100%;padding:0;gap:0;color:var(--dsw-alias-label-primary)}
 .hhpi-native-task-panel{display:flex;flex-direction:column;min-width:0;min-height:0;font:var(--dsw-font-sm-14,14px/1.5 Inter,system-ui,sans-serif);color:var(--dsw-alias-label-primary)}
 .hhpi-task-header{display:flex;flex-shrink:0;justify-content:space-between;align-items:center;gap:16px;padding:18px 20px 12px}.hhpi-task-header h2{margin:0;font-size:16px;line-height:24px;font-weight:500}
+.hhpi-task-header .hhpi-task-icon{border-radius:8px}
 .hhpi-task-content{display:grid;gap:20px;min-width:0;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:4px 24px 24px}.hhpi-task-section{display:grid;gap:12px;min-width:0}.hhpi-task-section+.hhpi-task-section{padding-top:18px;border-top:1px solid var(--dsw-alias-border-l2,#8883)}
 .hhpi-task-section-heading{display:flex;align-items:center;gap:8px;min-width:0}.hhpi-task-section-heading h3{display:flex;align-items:center;gap:8px;flex:1;min-width:0;margin:0;font-size:13px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary)}
 .hhpi-native-task-panel p{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.hhpi-task-objective{font-size:14px;line-height:22px;max-height:264px;overflow-y:auto}.hhpi-task-muted{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}

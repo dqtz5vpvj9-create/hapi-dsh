@@ -1,6 +1,6 @@
 /** Source-owned folder selection; the official browse backend supplies every path. */
 import { useEffect, useId, useRef, useState } from 'react'
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Checkbox, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SourceDirectoryIdentity, SourceDirectoryListing } from '../workspace/source-api.ts'
 
 export type SourceDirectoryBrowser = (source: SourceDirectoryIdentity, path: string | undefined, signal: AbortSignal) => Promise<SourceDirectoryListing>
@@ -32,8 +32,8 @@ export function SourceDirectoryPicker({ source, value, disabled, language, brows
     const listing = page?.listing
     return <div className="hhpi-source-folder-picker">
         <div className="hhpi-create-field"><label htmlFor={id}>{text('Working directory', '工作目录')}</label>
-            <Input id={id} value={value} disabled={disabled} placeholder={text('Absolute path on this Agent’s machine', '此 Agent 所在机器上的绝对路径')} onChange={event => onChange(event.currentTarget.value)}/>
-            <Button type="button" variant="outline" disabled={disabled} onClick={() => { void scan(value || undefined) }}>{text('Choose folder', '选择文件夹')}</Button>
+            <div className="hhpi-folder-input-row"><Input id={id} value={value} disabled={disabled} placeholder={text('Absolute path on this Agent’s machine', '此 Agent 所在机器上的绝对路径')} onChange={event => onChange(event.currentTarget.value)}/>
+                <Button type="button" variant="outline" disabled={disabled} onClick={() => { void scan(value || undefined) }}>{text('Choose folder', '选择文件夹')}</Button></div>
         </div>
         {open && <section className="hapi-directory-browser" aria-label={text('Choose folder', '选择文件夹')} aria-busy={busy}>
             <nav aria-label={text('Source roots', '磁盘与主目录')}><Button type="button" disabled={disabled || busy} onClick={() => { void scan() }}>{text('Home', '主目录')}</Button>
@@ -49,7 +49,7 @@ export function SourceDirectoryPicker({ source, value, disabled, language, brows
                 <div className="hapi-directory-entries">{listing.entries.filter(entry => hidden || !entry.hidden).map(entry => <Button type="button" key={entry.path} disabled={disabled || busy} onClick={() => { void scan(entry.path) }}>{entry.name}</Button>)}</div>
                 {!listing.entries.length && !busy && <p>{text('No subfolders in this folder.', '此文件夹没有子文件夹。')}</p>}
                 {listing.truncated && <p>{text('Only the first folders are shown.', '文件夹较多，当前仅显示前面一部分。')}</p>}
-                <label className="hapi-create-checkbox"><input type="checkbox" checked={hidden} onChange={event => setHidden(event.currentTarget.checked)}/>{text('Show hidden folders', '显示隐藏文件夹')}</label>
+                <Checkbox className="hapi-create-checkbox" checked={hidden} onChange={setHidden} label={text('Show hidden folders', '显示隐藏文件夹')}/>
             </>}
             <div className="hapi-button-row"><Button type="button" onClick={cancel}>{text('Cancel selection', '取消选择')}</Button>
                 <Button type="button" variant="primary" disabled={disabled || busy || error || !listing} onClick={() => { if (listing) { onChange(listing.path); cancel() } }}>{text('Select this folder', '选择此文件夹')}</Button></div>

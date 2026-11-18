@@ -50,9 +50,14 @@ export const compactComposerStyles = String.raw`
 .hapi-picker-utility:hover {background:var(--dsw-alias-interactive-bg-hover)}
 .hapi-picker-utility:disabled {opacity:.45;cursor:default}
 .hapi-picker-utility[aria-pressed=true] {color:var(--hapi-accent)}
+.hapi-composer-inline-steer {flex:none;height:28px;padding:0 10px;border-radius:999px;border:1px solid color-mix(in srgb,var(--hapi-palette-accent,#359b6c) 40%,transparent);background:color-mix(in srgb,var(--hapi-palette-accent,#359b6c) 12%,transparent);color:var(--hapi-palette-accent,#359b6c);font:inherit;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer}
+.hapi-composer-inline-steer:hover {background:color-mix(in srgb,var(--hapi-palette-accent,#359b6c) 20%,transparent)}
+.hapi-composer-inline-steer:focus-visible {outline:2px solid var(--hapi-palette-accent,#359b6c);outline-offset:2px}
+.hapi-pane [data-composer-card]:has(.hapi-compact-attach) .hapi-plan-trigger {flex:none;height:28px;min-height:28px;padding:0 6px;border-radius:999px}
 .hapi-source-controls [data-slot="hapi.source.composer-tools"] {display:contents}
 .hapi-picker-actions .hapi-composer-expand-more {display:none}
 @container hapi-pane (max-width:520px) {
+ .hapi-pane [data-composer-card]:has(.hapi-compact-attach) [data-hapi-composer-picker="model"] {min-width:44px}
  .hapi-pane [data-composer-card]:has(.hapi-compact-attach) .hapi-permission-trigger {width:44px}
  .hapi-pane [data-composer-card]:has(.hapi-compact-attach) .hapi-permission-trigger [data-picker-label] {display:none!important}
  .hapi-pane [data-composer-card]:has(.hapi-compact-attach) .hapi-effort-trigger {width:44px;padding:0}

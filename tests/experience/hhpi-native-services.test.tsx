@@ -8,6 +8,8 @@ import { CodexActions } from '../../src/client/remote-codex-actions.tsx'
 import { RemoteNativeServicesPanel } from '../../src/client/remote-native-services.tsx'
 import { nativeServicesFixture, mcpServer } from '../fixtures/native-services.ts'
 
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
+
 function moreFixture() {
   const f = nativeServicesFixture()
   const input = { draft: '中文 original draft', attachmentIds: ['original-image'], phase: 'plain' }

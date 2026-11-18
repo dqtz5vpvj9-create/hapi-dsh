@@ -1,5 +1,6 @@
 /** Native tool detail presentation through the official keyed Tool slot. */
 import { createElement, useEffect, useRef, useState, useSyncExternalStore, type ComponentType } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '@deepseek-ai/cordis'
 import type { PropsLocale, StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
@@ -75,9 +76,9 @@ export function ToolDetailPanel({ sessionId, value, api, zh = false }: {
         <p>{label} · {detail.bytes.toLocaleString()} {zh ? '字节；下方为预览，完整内容可分段阅读或下载。' : 'bytes. Preview below; read the complete content in sections or download it.'}</p>
         <pre style={{ maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{current?.text ?? value.preview}</pre>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button type="button" disabled={busy || current?.previous === null} onClick={() => { void read(current ? current.previous ?? 0 : 0) }}>{current ? (zh ? '上一段' : 'Previous section') : (zh ? '查看完整内容的第一段' : 'Read first section')}</button>
-            {current && <button type="button" disabled={busy || current.next === null} onClick={() => { if (current.next !== null) void read(current.next) }}>{zh ? '下一段' : 'Next section'}</button>}
-            <button type="button" disabled={busy} onClick={() => { void download() }}>{zh ? '下载完整内容' : 'Download complete content'}</button>
+            <Button size="sm" variant="outline" type="button" disabled={busy || current?.previous === null} onClick={() => { void read(current ? current.previous ?? 0 : 0) }}>{current ? (zh ? '上一段' : 'Previous section') : (zh ? '查看完整内容的第一段' : 'Read first section')}</Button>
+            {current && <Button size="sm" variant="outline" type="button" disabled={busy || current.next === null} onClick={() => { if (current.next !== null) void read(current.next) }}>{zh ? '下一段' : 'Next section'}</Button>}
+            <Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => { void download() }}>{zh ? '下载完整内容' : 'Download complete content'}</Button>
             {current && <span>{current.offset.toLocaleString()} / {detail.bytes.toLocaleString()}</span>}
             {busy && <span role="status">{zh ? '正在读取' : 'Reading'}{downloaded ? ` ${downloaded.toLocaleString()} / ${detail.bytes.toLocaleString()}` : '…'}</span>}
         </div>

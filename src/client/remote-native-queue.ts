@@ -35,6 +35,12 @@ export class RemoteNativeQueue {
         this.stopActions = session.nativeActions!.subscribe(() => { this.pendingChanged(); void this.refresh() })
     }
     private current(): void { this.lifetime.signal.throwIfAborted(); this.assertAuthorization() }
+    private canDiscardSubmission(itemId: string): boolean {
+        const saved = this.session.deliveries.getSnapshot().find(entry => entry.operation.operationId === itemId)
+        const composer = this.session.nativeActions!.get(this.session.sessionId, 'composer')
+        return Boolean(saved && (saved.state === 'rejected' || saved.state === 'queued'))
+            && composer?.phase !== 'confirming' && composer?.phase !== 'accepted'
+    }
     /** Native body identity owns the handoff, even when a queue read settles late. */
     observe(entries: readonly SourceEntry[]): void {
         let boundary = this.boundarySeq, changed = false
@@ -56,7 +62,7 @@ export class RemoteNativeQueue {
         const composer = this.session.nativeActions!.get(this.session.sessionId, 'composer')
         for (const pending of this.session.getSnapshot().pendingSubmissions) if (pending.placement === 'queued') {
             const saved = this.session.deliveries.getSnapshot().find(entry => entry.operation.operationId === pending.requestId)
-            actions[pending.requestId] = { edit: false, remove: false, steer: false,
+            actions[pending.requestId] = { edit: false, remove: this.canDiscardSubmission(pending.requestId), steer: false,
                 delivery: saved?.state === 'rejected' ? 'failed' : saved && ['confirming', 'accepted', 'owner-accepted'].includes(saved.state)
                     || composer?.phase === 'confirming' || composer?.phase === 'accepted' ? 'confirming' : 'sending' }
         }
@@ -160,6 +166,10 @@ export class RemoteNativeQueue {
     }
     async update(itemId: MessageId, action: QueueAction): Promise<void> {
         this.current()
+        if (action.kind === 'remove' && !this.rows.some(row => row.id === itemId) && this.canDiscardSubmission(itemId)) {
+            this.session.discardSubmission(itemId)
+            return
+        }
         if (action.kind === 'start' && this.starting.has(itemId)) {
             const prior = await this.session.nativeActions!.recover(this.session.sessionId, queueIntent(itemId))
             this.current(); await this.refresh()
@@ -199,7 +209,7 @@ export class RemoteNativeQueue {
             inserted = true
             return [{ ...part, text: editedText, text_elements: [] }]
         })
-        if (!inserted) input.unshift({ type: 'text', text: editedText, text_elements: [] })
+        if (action.kind === 'edit' && !inserted) input.push({ type: 'text', text: editedText, text_elements: [] })
         if (action.kind === 'start') this.starting.set(itemId, current)
         const result = await this.session.nativeActions!.submit({ sessionId: this.session.sessionId,
             intent: current.resumeOperationId && action.kind === 'steer' ? `${queueIntent(itemId)}:resume:${current.resumeOperationId}` : queueIntent(itemId), kind: 'queue', newAttempt: true,

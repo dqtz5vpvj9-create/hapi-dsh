@@ -52,13 +52,15 @@ export interface SourceControlSummary {
     permissionAvailable: boolean
     serviceTier: string | null
     collaboration?: string | null
+    collaborationEditable?: boolean
 }
 
 /** Source execution permission is separate from a temporary settings lock. */
-export function SourceControlRow({ summary, sessionId, open, panelId, pending, attention, refs = {}, onToggle, tr, utilities }: {
+export function SourceControlRow({ summary, sessionId, open, panelId, pending, attention, refs = {}, onToggle, onTogglePlan, collaborationEditable = summary.collaborationEditable, tr, utilities }: {
     summary: SourceControlSummary; sessionId: string; open: PickerMode | null; panelId: string
     pending: boolean; attention: boolean; refs?: Partial<Record<PickerMode, Ref<HTMLButtonElement>>>
     onToggle(mode: PickerMode): void; tr: Translate; utilities?: ReactNode
+    collaborationEditable?: boolean; onTogglePlan?: () => void
 }) {
     const effort = explicitEffort(summary.effort), tier = visibleServiceTier(summary.serviceTier)
     const model = summary.model && summary.model !== 'host-settings' ? summary.model : tr('Model', '模型')
@@ -89,7 +91,10 @@ export function SourceControlRow({ summary, sessionId, open, panelId, pending, a
                 <Glyph kind="permission"/><span data-picker-label>{compactPermissionLabel(summary.permission, tr)}</span><Glyph kind="down"/>
             </button>
         </span> : summary.permission !== null && <span className="hapi-source-permission" data-hapi-source-permission>{permissionLabel(summary.permission, tr)}</span>}
-        {summary.collaboration && <span className="hapi-source-collaboration" data-hapi-source-collaboration={summary.collaboration}>{summary.collaboration === 'plan' ? tr('Plan', '规划') : summary.collaboration}</span>}
+        {collaborationEditable ? <button type="button" className="hapi-picker-capsule hapi-plan-trigger"
+            data-hapi-source-collaboration={summary.collaboration ?? 'default'} aria-pressed={summary.collaboration === 'plan'}
+            disabled={pending} onClick={onTogglePlan}>{tr('Plan', '规划')}</button>
+            : summary.collaboration === 'plan' && <span className="hapi-source-collaboration" data-hapi-source-collaboration="plan">{tr('Plan', '规划')}</span>}
         {utilities}
         <button ref={refs.actions} type="button" className="hapi-picker-overflow hapi-overflow-trigger" data-hapi-composer-overflow="" {...shared('actions')}
             aria-label={tr('More input controls', '更多输入控件')} title={tr('More input controls', '更多输入控件')} onClick={() => onToggle('actions')}>

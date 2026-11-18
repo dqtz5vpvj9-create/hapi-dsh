@@ -5,6 +5,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { SourceControls, type InputProps } from '../../src/client/composer-picker/index.tsx'
 import { composerPickerStyles } from '../../src/client/composer-picker/styles.ts'
 
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
+
 test('HHPI activity leaves the persistent footer, remains in More details, and ordinary DSH stays unchanged', () => {
     const ctx = { get: () => undefined, locale: { subscribe: () => () => {}, getSnapshot: () => ({ active: 'en' }) },
         sessions: { binding: () => { throw new Error('These controls must keep their own public binding') } } } as unknown as Context

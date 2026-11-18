@@ -1,6 +1,7 @@
 /** Human requests keep native identities; answers remain in memory and never enter browser persistence. */
 import { NativeElicitation } from './remote-elicitation.tsx'
 import { useLayoutEffect, useRef, useState } from 'react'
+import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SourceApproval, SourceOperation, SourceReceipt } from '../remote/protocol.ts'
 import { sourceControlOperationId } from '../shared/source-operation-policy.ts'
 import { nativePermissionDescriptions } from './native-tool-admission.ts'
@@ -59,20 +60,20 @@ export function SourceNativeQuestion({ session, request, zh, disabled }: Props) 
       {questions.map(question => {
         const id = String(question.id), options = Array.isArray(question.options) ? question.options.filter(record) : []
         return <fieldset key={id} disabled={locked}><legend>{String(question.question)}</legend>
-          {options.map(option => <label key={String(option.label)} style={{ display: 'block' }}><input type="radio" name={`${request.id}:${id}`} value={String(option.label)} checked={answers[id] === option.label} onChange={() => setAnswers(value => ({ ...value, [id]: String(option.label) }))}/>{String(option.label)}{typeof option.description === 'string' && <small> · {option.description}</small>}</label>)}
-          {(question.isOther === true || !options.length) && <label>{options.length ? zh ? '其他回答' : 'Other answer' : String(question.header ?? question.question)}<input type={question.isSecret ? 'password' : 'text'} autoComplete={question.isSecret ? 'off' : undefined} aria-label={String(question.header ?? question.question)} value={options.some(option => option.label === answers[id]) ? '' : answers[id] ?? ''} onChange={event => setAnswers(value => ({ ...value, [id]: event.target.value }))}/></label>}
+          {options.map(option => <label key={String(option.label)} className="hhpi-question-option"><Input className="hhpi-question-radio" type="radio" name={`${request.id}:${id}`} value={String(option.label)} checked={answers[id] === option.label} onChange={() => setAnswers(value => ({ ...value, [id]: String(option.label) }))}/><span>{String(option.label)}{typeof option.description === 'string' && <small> · {option.description}</small>}</span></label>)}
+          {(question.isOther === true || !options.length) && <label className="hhpi-question-field">{options.length ? zh ? '其他回答' : 'Other answer' : String(question.header ?? question.question)}<Input type={question.isSecret ? 'password' : 'text'} autoComplete={question.isSecret ? 'off' : undefined} aria-label={String(question.header ?? question.question)} value={options.some(option => option.label === answers[id]) ? '' : answers[id] ?? ''} onChange={event => setAnswers(value => ({ ...value, [id]: event.target.value }))}/></label>}
         </fieldset>
       })}
-      <button type="submit" disabled={locked || questions.some(question => !answers[String(question.id)]?.trim())}>{zh ? '提交回答' : 'Submit answers'}</button>
+      <div className="hhpi-approval-actions"><Button size="sm" variant="primary" type="submit" disabled={locked || questions.some(question => !answers[String(question.id)]?.trim())}>{zh ? '提交回答' : 'Submit answers'}</Button></div>
     </form> : permissions && record(request.params.permissions) ? <>
       <p>{typeof request.params.reason === 'string' ? request.params.reason : zh ? 'Codex 请求额外权限' : 'Codex requests additional permissions'}</p>
       {typeof request.params.cwd === 'string' && <p>{zh ? '工作目录：' : 'Working directory: '}{request.params.cwd}</p>}
       {scope.length ? <ul>{scope.map((value, index) => <li key={index}>{value}</li>)}</ul> : <p>{zh ? '请在技术详情中核对原生权限范围。' : 'Review the native permission scope in technical details.'}</p>}
-      <button type="button" disabled={locked} onClick={() => { void submit({ permissions: request.params.permissions, scope: 'turn' }) }}>{zh ? '允许本轮' : 'Allow for this turn'}</button>
-      <button type="button" disabled={locked} onClick={() => { void submit({ permissions: {}, scope: 'turn' }) }}>{zh ? '拒绝' : 'Deny'}</button>
+      <div className="hhpi-approval-actions"><Button size="sm" variant="primary" type="button" disabled={locked} onClick={() => { void submit({ permissions: request.params.permissions, scope: 'turn' }) }}>{zh ? '允许本轮' : 'Allow for this turn'}</Button>
+        <Button size="sm" variant="ghost" type="button" disabled={locked} onClick={() => { void submit({ permissions: {}, scope: 'turn' }) }}>{zh ? '拒绝' : 'Deny'}</Button></div>
     </> : <p>{zh ? '此请求需要对应的原生界面，不能使用通用批准。' : 'This request requires its native interface; a generic approval is unavailable.'}</p>}
     <details><summary>{zh ? '技术详情' : 'Technical details'}</summary><p>{request.method} · {request.id} · {request.turnId ?? '—'} · {request.itemId ?? '—'}</p><pre>{JSON.stringify(request.params, null, 2)}</pre></details>
-    {receipt?.status === 'indeterminate' && original.current && <button type="button" disabled={disabled || busy} onClick={() => { void submit({}, true) }}>{zh ? '检查原回答结果' : 'Check original answer'}</button>}
+    {receipt?.status === 'indeterminate' && original.current && <div className="hhpi-approval-actions"><Button size="sm" variant="outline" type="button" disabled={disabled || busy} onClick={() => { void submit({}, true) }}>{zh ? '检查原回答结果' : 'Check original answer'}</Button></div>}
     {receipt && <p role={receipt.status === 'rejected' ? 'alert' : 'status'}>{receipt.message}</p>}{error && <p role="alert">{error}</p>}
   </section>
 }

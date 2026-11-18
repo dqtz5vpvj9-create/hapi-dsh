@@ -14,6 +14,7 @@ import { NativeActionOwner } from '../../src/client/remote-native-actions.ts'
 import { SourceDirectory } from '../../src/client/source-capabilities.ts'
 import type { RemoteSourceSession } from '../../src/client/remote-sessions.ts'
 import { memoryOperations } from '../fixtures/operation-transactions.ts'
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 const stops: Array<() => void> = []
 afterEach(() => { for (const stop of stops.splice(0)) stop() })
 

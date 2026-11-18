@@ -1,5 +1,6 @@
 /** Plan prose stays in official Conversation; execution uses the shared account-scoped native owner. */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { CodexCallResult } from '../remote/codex-access.ts'
@@ -93,10 +94,10 @@ export function SourcePlanActions({ ctx, sessionId, planId, text, session: suppl
   const disabled = busy || !session?.nativeActions || !metadata?.codex?.model || metadata.status !== 'idle' || sourceIsOffline(metadata) || reason !== null
     || Boolean(original && original.phase !== 'rejected')
   return <section className="hhpi-plan-actions" aria-label={zh ? '计划操作' : 'Plan actions'}>
-    <div><button type="button" disabled={disabled} onClick={() => { void run('default') }}>{zh ? '实施计划' : 'Implement plan'}</button>
-      <button type="button" disabled={disabled} onClick={() => { void run('plan') }}>{zh ? '继续规划' : 'Continue planning'}</button></div>
+    <div><Button size="sm" variant="primary" type="button" disabled={disabled} onClick={() => { void run('default') }}>{zh ? '实施计划' : 'Implement plan'}</Button>
+      <Button size="sm" variant="outline" type="button" disabled={disabled} onClick={() => { void run('plan') }}>{zh ? '继续规划' : 'Continue planning'}</Button></div>
     {original && <p role="status">{original.phase === 'accepted' ? zh ? '源端已接收，执行进度见正文。' : 'Accepted by the source. Progress appears in this conversation.' : original.outcome?.message ?? (zh ? '原操作等待确认，不会重复发送。' : 'The original action is awaiting confirmation; it will not be resent.')}</p>}
-    {original && !['accepted', 'rejected'].includes(original.phase) && <button type="button" disabled={busy} onClick={() => { void run() }}>{original.phase === 'prepared' ? zh ? '继续原请求' : 'Continue original request' : zh ? '检查原请求结果' : 'Check original request'}</button>}
+    {original && !['accepted', 'rejected'].includes(original.phase) && <div><Button size="sm" variant="ghost" type="button" disabled={busy} onClick={() => { void run() }}>{original.phase === 'prepared' ? zh ? '继续原请求' : 'Continue original request' : zh ? '检查原请求结果' : 'Check original request'}</Button></div>}
     {(error || reason) && <p role="alert">{error || reason}</p>}
   </section>
 }

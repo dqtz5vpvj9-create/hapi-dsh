@@ -1,5 +1,6 @@
 /** Same-popover secondary page: source reads never replace the conversation or composer. */
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HhpiRemoteApi } from '../hhpi-api.ts'
 import type { RemoteSourceSession } from './remote-sessions.ts'
 import { RemoteNativeServices, type NativeServiceIssue, type NativeServicesAccess } from './remote-native-services-state.ts'
@@ -26,40 +27,39 @@ export function RemoteNativeServicesPanel({ session, api, chinese, back, capture
   }[value ?? ''] ?? tr('Connection state not reported', '连接状态未报告'))
   const auth = (value: string): string => ({ unknown: tr('Authorization state unknown', '授权状态未知'), unsupported: tr('OAuth unsupported', '不支持 OAuth'),
     notLoggedIn: tr('Not logged in', '未登录'), bearerToken: tr('Token configured', '已配置令牌'), oAuth: tr('OAuth', 'OAuth 授权') }[value] ?? value)
-  return <div className="hapi-native-actions">
-    <button ref={backButton} type="button" aria-label={tr('Back to conversation actions', '返回会话操作')} onClick={back}><span aria-hidden="true">← </span>{tr('Back to conversation actions', '返回会话操作')}</button>
-    <h3>{tr('Source connections & background work', '源连接与后台任务')}</h3>
+  return <div className="hapi-service-panel">
+    <Button ref={backButton} type="button" variant="ghost" size="sm" aria-label={tr('Back to conversation actions', '返回会话操作')} onClick={back}><span aria-hidden="true">← </span>{tr('Back to conversation actions', '返回会话操作')}</Button>
     {!state.current ? <p role="status">{tr('This account or source changed. Close this menu and reopen the conversation.', '账号或来源已改变，请关闭菜单后重新打开会话。')}</p> : <>
-      <section className="hapi-native-actions" aria-label={tr('MCP connections', 'MCP 连接')}>
-        <h4>{tr('MCP connections', 'MCP 连接')}</h4>
-        <button type="button" disabled={state.mcp.loading} onClick={() => { void controller.read('mcp') }}>{tr('Refresh connections', '刷新连接')}</button>
+      <section className="hapi-service-section" aria-label={tr('MCP connections', 'MCP 连接')}>
+        <header><strong>{tr('MCP connections', 'MCP 连接')}</strong>
+          <Button type="button" variant="ghost" size="sm" disabled={state.mcp.loading} onClick={() => { void controller.read('mcp') }}>{tr('Refresh connections', '刷新连接')}</Button></header>
         {state.mcp.loading && <p role="status">{tr('Reading source connections…', '正在读取来源连接…')}</p>}
         {state.mcp.issue && <p role="status">{issue(state.mcp.issue)}</p>}
         {state.mcp.issue && state.mcp.rows.length > 0 && <p>{tr('Showing the last successful read.', '以下保留上次读取结果。')}</p>}
         {state.mcp.loaded && !state.mcp.rows.length && !state.mcp.issue && <p>{tr('This conversation source returned no MCP servers.', '此会话来源未返回 MCP 服务。')}</p>}
-        {state.mcp.rows.map(server => <article key={server.name} style={{ overflowWrap: 'anywhere' }}>
-          <strong>{server.title || server.name}</strong>
-          <p>{runtime(server.runtimeStatus)} · {auth(server.authStatus)} · {tr(`${server.toolCount} tools`, `${server.toolCount} 项工具`)}</p>
+        {state.mcp.rows.map(server => <article className="hapi-service-card" key={server.name}>
+          <header><strong>{server.title || server.name}</strong></header>
+          <p className="hapi-service-status" data-state={server.runtimeStatus ?? 'unknown'}>{runtime(server.runtimeStatus)} · {auth(server.authStatus)} · {tr(`${server.toolCount} tools`, `${server.toolCount} 项工具`)}</p>
           {(server.runtimeStatus === 'authenticationRequired' || server.authStatus === 'notLoggedIn') && <p>{tr('Complete authorization in Codex on this source machine, then refresh here.', '请在该来源机器的 Codex 中完成授权，再回此处刷新。')}</p>}
           {server.toolsUnavailable && <p>{tr('The source could not read this service’s tools. Check its connection and refresh.', '来源暂未读到该服务的工具，请检查连接后刷新。')}</p>}
         </article>)}
-        {state.mcp.nextCursor && <button type="button" disabled={state.mcp.loading} onClick={() => { void controller.read('mcp', true) }}>{tr('More connections', '更多连接')}</button>}
+        {state.mcp.nextCursor && <Button type="button" variant="ghost" size="sm" disabled={state.mcp.loading} onClick={() => { void controller.read('mcp', true) }}>{tr('More connections', '更多连接')}</Button>}
       </section>
-      <section className="hapi-native-actions" aria-label={tr('Codex background processes', 'Codex 后台进程')}>
-        <h4>{tr('Codex background processes', 'Codex 后台进程')}</h4>
-        <button type="button" disabled={state.background.loading} onClick={() => { void controller.read('background') }}>{tr('Refresh background work', '刷新后台任务')}</button>
+      <section className="hapi-service-section" aria-label={tr('Codex background processes', 'Codex 后台进程')}>
+        <header><strong>{tr('Codex background processes', 'Codex 后台进程')}</strong>
+          <Button type="button" variant="ghost" size="sm" disabled={state.background.loading} onClick={() => { void controller.read('background') }}>{tr('Refresh background work', '刷新后台任务')}</Button></header>
         {state.background.loading && <p role="status">{tr('Reading background work…', '正在读取后台任务…')}</p>}
         {state.background.issue && <p role="status">{issue(state.background.issue)}</p>}
         {state.background.issue && state.background.rows.length > 0 && <p>{tr('Showing the last successful read.', '以下保留上次读取结果。')}</p>}
         {state.background.loaded && !state.background.rows.length && !state.background.issue && <p>{tr('This conversation returned no background processes.', '此会话未返回后台进程。')}</p>}
-        {state.background.rows.map(process => <article key={process.processId} style={{ overflowWrap: 'anywhere' }}>
-          <strong>{process.command.split('\n')[0]?.slice(0, 160) || tr('Background process', '后台进程')}</strong>
+        {state.background.rows.map(process => <article className="hapi-service-card" key={process.processId}>
+          <header><strong>{process.command.split('\n')[0]?.slice(0, 160) || tr('Background process', '后台进程')}</strong>
+            <span className="hapi-service-status">{tr('Process', '进程')} {process.osPid ?? process.processId}</span></header>
           <p>{process.cwd}</p>
           {(process.cpuPercent !== null || process.rssKb !== null) && <p>{[process.cpuPercent !== null ? `CPU ${process.cpuPercent}%` : '', process.rssKb !== null ? `${Math.round(process.rssKb / 1024)} MiB` : ''].filter(Boolean).join(' · ')}</p>}
-          <details><summary>{tr('Process details', '进程详情')}</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{process.command}</pre>
-            <p>{tr('Process', '进程')} {process.osPid ?? process.processId}</p></details>
+          <details><summary>{tr('Process details', '进程详情')}</summary><pre>{process.command}</pre></details>
         </article>)}
-        {state.background.nextCursor && <button type="button" disabled={state.background.loading} onClick={() => { void controller.read('background', true) }}>{tr('More background work', '更多后台任务')}</button>}
+        {state.background.nextCursor && <Button type="button" variant="ghost" size="sm" disabled={state.background.loading} onClick={() => { void controller.read('background', true) }}>{tr('More background work', '更多后台任务')}</Button>}
       </section>
     </>}
   </div>

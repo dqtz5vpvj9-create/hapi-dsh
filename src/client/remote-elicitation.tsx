@@ -1,5 +1,6 @@
 /** Native MCP forms submit typed values; unsupported schemas and device proof never become generic approvals. */
 import { useState } from 'react'
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SourceApproval } from '../remote/protocol.ts'
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 function choices(schema: Record<string, unknown>): Array<{ value: string; title: string }> {
@@ -57,11 +58,11 @@ export function NativeElicitation({ request, disabled, zh, submit }: { request: 
     {urlMode && <a href={url} target="_blank" rel="noopener noreferrer">{zh ? '打开服务验证页面' : 'Open service verification page'}</a>}
     {supported && fields.map(([name, field]) => {
       const required = requiredNames.includes(name), options = choices(field)
-      return <label key={name} style={{ display: 'block' }}>{String(field.title ?? name)}
+      return <label key={name} className={field.type === 'boolean' ? 'hhpi-question-option' : 'hhpi-question-field'}>{String(field.title ?? name)}
         {field.type === 'boolean' ? <input name={name} type="checkbox" defaultChecked={field.default === true} disabled={disabled}/>
-          : field.type === 'array' && record(field.items) ? <select name={name} multiple required={required} disabled={disabled} defaultValue={Array.isArray(field.default) ? field.default.map(String) : []}>{choices(field.items).map(option => <option key={option.value} value={option.value}>{option.title}</option>)}</select>
-          : options.length ? <select name={name} required={required} disabled={disabled} defaultValue={typeof field.default === 'string' ? field.default : ''}><option value="">—</option>{options.map(option => <option key={option.value} value={option.value}>{option.title}</option>)}</select>
-          : <input name={name} disabled={disabled} required={required} defaultValue={typeof field.default === 'string' || typeof field.default === 'number' ? field.default : ''}
+          : field.type === 'array' && record(field.items) ? <select className="hhpi-question-input" name={name} multiple required={required} disabled={disabled} defaultValue={Array.isArray(field.default) ? field.default.map(String) : []}>{choices(field.items).map(option => <option key={option.value} value={option.value}>{option.title}</option>)}</select>
+          : options.length ? <select className="hhpi-question-input" name={name} required={required} disabled={disabled} defaultValue={typeof field.default === 'string' ? field.default : ''}><option value="">—</option>{options.map(option => <option key={option.value} value={option.value}>{option.title}</option>)}</select>
+          : <input className="hhpi-question-input" name={name} disabled={disabled} required={required} defaultValue={typeof field.default === 'string' || typeof field.default === 'number' ? field.default : ''}
             type={field.type === 'integer' || field.type === 'number' ? 'number' : field.format === 'email' ? 'email' : field.format === 'uri' ? 'url' : field.format === 'date' ? 'date' : 'text'}
             step={field.type === 'integer' ? 1 : 'any'} min={typeof field.minimum === 'number' ? field.minimum : undefined} max={typeof field.maximum === 'number' ? field.maximum : undefined}
             minLength={typeof field.minLength === 'number' ? field.minLength : undefined} maxLength={typeof field.maxLength === 'number' ? field.maxLength : undefined}/>
@@ -70,8 +71,8 @@ export function NativeElicitation({ request, disabled, zh, submit }: { request: 
     })}
     {!supported && !urlMode && <p>{params.mode === 'openai/userVerification' ? zh ? '此请求需要可信原生界面生成设备验证证明。' : 'This request needs a trusted native interface to produce device verification proof.' : zh ? '此表单需要服务专用的原生界面。' : 'This form requires the service’s native interface.'}</p>}
     {error && <p role="alert">{error}</p>}
-    <button type="submit" disabled={disabled || !supported && !urlMode}>{urlMode ? zh ? '我已完成服务验证' : 'I completed service verification' : zh ? '确认' : 'Confirm'}</button>
-    <button type="button" disabled={disabled} onClick={() => { void submit({ action: 'decline' }) }}>{zh ? '拒绝' : 'Decline'}</button>
-    <button type="button" disabled={disabled} onClick={() => { void submit({ action: 'cancel' }) }}>{zh ? '取消' : 'Cancel'}</button>
+    <div className="hhpi-approval-actions"><Button size="sm" variant="primary" type="submit" disabled={disabled || !supported && !urlMode}>{urlMode ? zh ? '我已完成服务验证' : 'I completed service verification' : zh ? '确认' : 'Confirm'}</Button>
+      <Button size="sm" variant="outline" type="button" disabled={disabled} onClick={() => { void submit({ action: 'decline' }) }}>{zh ? '拒绝' : 'Decline'}</Button>
+      <Button size="sm" variant="ghost" type="button" disabled={disabled} onClick={() => { void submit({ action: 'cancel' }) }}>{zh ? '取消' : 'Cancel'}</Button></div>
   </form>
 }

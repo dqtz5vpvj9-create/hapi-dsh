@@ -78,14 +78,15 @@ export class CodexSettingsController {
     const serviceTier = typeof settings?.serviceTier === 'string' ? settings.serviceTier : null
     const writable = this.writable && !!this.services && !sourceIsOffline(this.metadata)
     const fastTier = this.fastTier()
+    const mode = record(settings?.collaborationMode) ? settings.collaborationMode.mode : null
     return { model: source?.model ?? null, models: this.models.map(model => ({ value: model.model, label: model.displayName })),
       effort: source?.reasoningEffort ?? null, efforts: model?.supportedReasoningEfforts.map(effort => ({ value: effort.reasoningEffort, label: effort.reasoningEffort, detail: effort.description })) ?? [],
-      permission, permissions: this.permissions,
+      permission, permissions: this.permissions, collaboration: mode === 'plan' ? 'plan' : 'default',
       approvalPolicy: typeof settings?.approvalPolicy === 'string' ? settings.approvalPolicy : record(settings?.approvalPolicy) ? 'custom' : null,
       // These scalar choices are part of the pinned native settings API; granular policies stay descriptive.
       approvalPolicies: this.writable ? ['untrusted', 'on-request', 'never'] : [],
       readOnly: !writable, serviceTier, fast: !!fastTier && serviceTier === fastTier, fastAvailable: !!fastTier,
-      editable: { model: writable, effort: writable && !!model?.supportedReasoningEfforts.length, permission: writable && !!this.permissions.length, fast: writable && !!fastTier, approvalPolicy: writable }, warnings: [] }
+      editable: { model: writable, effort: writable && !!model?.supportedReasoningEfforts.length, permission: writable && !!this.permissions.length, fast: writable && !!fastTier, approvalPolicy: writable, collaboration: writable && Boolean(source?.model) }, warnings: [] }
   }
   private async call(request: CodexCall) {
     if (!this.api.nativeCall) throw new Error('The source does not expose native Codex controls.')
@@ -130,12 +131,18 @@ export class CodexSettingsController {
     if (this.disposed || !this.services || this.state.pending || this.state.busy || !this.state.data || !validPickerAction(this.state.data, action)) return false
     const key = action.kind === 'permission' ? 'permissions' : action.kind === 'fast' ? 'serviceTier' : action.kind
     const value = action.kind === 'fast' ? action.value ? this.fastTier() : null : action.value
+    const params = action.kind === 'collaboration'
+      ? { threadId: this.metadata.nativeId, collaborationMode: { mode: action.value, settings: {
+        model: this.metadata.codex?.model ?? this.state.data.model,
+        reasoning_effort: this.metadata.codex?.reasoningEffort ?? this.state.data.effort ?? null, developer_instructions: null,
+      } } }
+      : { threadId: this.metadata.nativeId, [key]: value }
     ++this.revision; this.mutationError = null
     this.publish({ busy: true, error: null })
     let accepted = false
     try {
       const result = await this.services.actions.submit({ sessionId: this.metadata.id, intent: 'settings', kind: 'settings', newAttempt: true,
-        request: { sourceId: this.metadata.sourceId, method: 'thread/settings/update', params: { threadId: this.metadata.nativeId, [key]: value } } })
+        request: { sourceId: this.metadata.sourceId, method: 'thread/settings/update', params } })
       accepted = result.phase === 'accepted'
       this.reconcile()
     } catch (error) { this.mutationError = error instanceof Error ? error.message : String(error); this.publish({ error: this.mutationError }) }
@@ -167,7 +174,7 @@ function Controls({ ctx, api, props, session }: { ctx: Context; api: HhpiRemoteA
   const locked = props.useInput(value => value.phase === 'adjudicating' || value.phase === 'submitting')
   if (!metadata.codex || !api.nativeCall) return null
   return <SourceControls ctx={ctx} props={props} initial={{ model: metadata.codex.model, effort: metadata.codex.reasoningEffort, permission: null, serviceTier: null, collaboration: record(metadata.codex.settings?.collaborationMode) && typeof metadata.codex.settings.collaborationMode.mode === 'string' ? metadata.codex.settings.collaborationMode.mode : null }}
-    actionsContent={<CodexActions key={metadata.id} ctx={ctx} session={session} metadata={metadata} zh={ctx.locale.getSnapshot().active.startsWith('zh')}/>}
+    actionsContent={(onSubpageChange, actionsOpen) => <CodexActions key={metadata.id} ctx={ctx} session={session} metadata={metadata} zh={ctx.locale.getSnapshot().active.startsWith('zh')} onSubpageChange={onSubpageChange} actionsOpen={actionsOpen}/>}
     permissionCapable data={state.data} loading={state.loading} busy={state.busy} pending={state.pending} applied={state.applied} error={state.error} sourceLocked={locked || sourceIsOffline(metadata)} refresh={refresh} apply={settings.apply}
     {...(session.nativeActions?.get(metadata.id, 'settings')?.phase === 'prepared' ? { resume: settings.continuePending } : {})}/>
 }

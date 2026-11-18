@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { userEvent } from '@testing-library/user-event'
 import type { Context } from '@deepseek-ai/cordis'
@@ -6,12 +6,15 @@ import { SourceControls, installComposerPicker, type InputProps } from '../../sr
 /** Production settings state; only native RPC is synthetic. No model inference is performed. */
 import { afterEach, expect, test, vi } from 'vitest'
 import { CodexSettingsController } from '../../src/client/remote-codex-controls.tsx'
+import { CodexActions } from '../../src/client/remote-codex-actions.tsx'
 import type { HhpiRemoteApi } from '../../src/hhpi-api.ts'
 import type { SourceSession } from '../../src/remote/protocol.ts'
 import type { CodexCall, CodexCallResult } from '../../src/remote/codex-access.ts'
 import { NativeActionOwner } from '../../src/client/remote-native-actions.ts'
 import { SourceDirectory } from '../../src/client/source-capabilities.ts'
 import { memoryOperations } from '../fixtures/operation-transactions.ts'
+import { nativeServicesFixture } from '../fixtures/native-services.ts'
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 const cleanup: Array<() => void> = []
 afterEach(() => { for (const stop of cleanup.splice(0)) stop() })
 const metadata: SourceSession = { id: 'hhpi:machine:source:codex:original', machineId: 'machine', sourceId: 'source', engine: 'codex', nativeId: 'original', title: 'Task', cwd: '/fixture', status: 'idle', updatedAt: 1, activeTurnId: null, pendingRequests: [], capabilities: { send: true, steer: false, cancel: true, approve: false, files: false }, codex: { model: 'first', reasoningEffort: 'medium', parentThreadId: null, agentNickname: null } }
@@ -119,6 +122,42 @@ test('Fast uses the source priority ID and works independently of steer capabili
   expect(f.calls.find(call => call.method === 'thread/settings/update')?.params).toEqual({ threadId: 'original', serviceTier: 'priority' })
 })
 
+test('Plan capsule sends the native collaboration payload once and displays only source-confirmed mode', async () => {
+  const f = fixture(); await f.controller.refresh()
+  const user = userEvent.setup(); render(<SettingsSeat controller={f.controller}/>)
+  const plan = screen.getByRole('button', { name: 'Plan' })
+  expect(plan).toHaveAttribute('aria-pressed', 'false')
+  await user.click(plan)
+  await waitFor(() => expect(plan).toBeDisabled())
+  expect(plan).toHaveAttribute('aria-pressed', 'false')
+  await user.click(plan)
+  expect(f.calls.filter(call => call.method === 'thread/settings/update')).toMatchObject([{
+    sourceId: 'source', params: { threadId: 'original', collaborationMode: { mode: 'plan', settings: {
+      model: 'first', reasoning_effort: 'medium', developer_instructions: null,
+    } } },
+  }])
+  f.write.resolve({ status: 'accepted', message: 'source accepted' })
+  await waitFor(() => expect(plan).toBeEnabled())
+  expect(plan).toHaveAttribute('aria-pressed', 'false')
+  act(() => f.controller.observe({ ...metadata, codex: { ...metadata.codex!, settings: { collaborationMode: { mode: 'plan' } } } }))
+  expect(plan).toHaveAttribute('aria-pressed', 'true')
+  await user.click(plan)
+  await waitFor(() => expect(f.calls.filter(call => call.method === 'thread/settings/update')).toHaveLength(2))
+  expect(f.calls.filter(call => call.method === 'thread/settings/update')[1]?.params).toMatchObject({ collaborationMode: { mode: 'default' } })
+  await waitFor(() => expect(plan).toBeEnabled())
+})
+
+test('Plan cannot write without a known model or while its source is offline', async () => {
+  const f = fixture(); await f.controller.refresh()
+  f.controller.observe({ ...metadata, codex: { ...metadata.codex!, model: null } })
+  expect(f.controller.getSnapshot().data?.editable.collaboration).toBe(false)
+  expect(await f.controller.apply({ kind: 'collaboration', value: 'plan' })).toBe(false)
+  f.controller.observe({ ...metadata, connection: { state: 'offline' } } as SourceSession)
+  expect(f.controller.getSnapshot().data?.editable.collaboration).toBe(false)
+  expect(await f.controller.apply({ kind: 'collaboration', value: 'plan' })).toBe(false)
+  expect(f.calls.filter(call => call.method === 'thread/settings/update')).toHaveLength(0)
+})
+
 test('a recovered catalog clears its old read error', async () => {
   const f = fixture()
   const original = f.api.nativeCall!
@@ -218,4 +257,73 @@ test('rejected or uncertain settings never show applied and unadvertised policy 
   expect(f.controller.getSnapshot().error).toBe('source policy denied')
   expect(f.controller.getSnapshot().data?.approvalPolicy).toBeNull()
   expect(f.calls.filter(call => call.method === 'thread/settings/update')).toHaveLength(1)
+})
+
+test('services subpage isolates outer actions, returns focus and preserves retained drafts when closed and reopened', async () => {
+  const f = nativeServicesFixture(), user = userEvent.setup()
+  cleanup.push(() => f.close())
+  const original = f.session.metadata.getSnapshot()
+  const source: SourceSession = { ...original, status: 'running', activeTurnId: 'active-turn', capabilities: { ...original.capabilities, steer: true } }
+  const session = { ...f.session, metadata: { getSnapshot: () => source, subscribe: () => () => {} } } as unknown as typeof f.session
+  const input = { phase: 'plain', draft: '保留草稿', attachmentIds: [] as string[] }
+  const submit = vi.fn(), bindingCtx = {}
+  const forInput = vi.fn(() => ({ submit }))
+  const ctx = { get: () => undefined, remote: { hhpi: f.api }, hhpiSessions: { captureWorkspaceAccess: f.captureAccess },
+    locale: { getSnapshot: () => ({ active: 'zh' }), subscribe: () => () => {} }, conversation: { input: { for: forInput } },
+  } as unknown as Context
+  const props = { sessionId: source.id, sessionBinding: { session, ctx: bindingCtx },
+    useInput: (select: (value: typeof input) => unknown) => select(input),
+    useSession: (select: (value: { running: boolean }) => unknown) => select({ running: source.status === 'running' }),
+    renderSlot: (name: string) => name === 'hapi.source.composer-navigation'
+      ? <button type="button">搜索当前会话</button>
+      : name === 'hapi.source.composer-actions' ? <input aria-label="暂存草稿" defaultValue="保留附件说明"/>
+      : name === 'hapi.source.composer-details' ? <span>上下文详情</span> : null,
+  } as unknown as InputProps
+  const ui = () => <SourceControls ctx={ctx} props={props} initial={{ model: 'fixture', effort: null, permission: null, serviceTier: null }}
+    permissionCapable={false} data={null} loading={false} busy={false} pending={null} error={null} sourceLocked={false}
+    refresh={async () => {}} apply={async () => false}
+    actionsContent={(onSubpageChange, actionsOpen) => <CodexActions ctx={ctx} session={session} metadata={source} zh onSubpageChange={onSubpageChange} actionsOpen={actionsOpen}/>}/>
+  const view = render(ui())
+  await user.click(screen.getByRole('button', { name: '插话' }))
+  expect(forInput).toHaveBeenCalledWith(bindingCtx)
+  expect(submit).toHaveBeenCalledExactlyOnceWith('steer', 'click')
+  await user.click(screen.getByRole('button', { name: '更多输入控件' }))
+  const parked = screen.getByRole('textbox', { name: '暂存草稿' })
+  await user.type(parked, '，未保存')
+  expect(screen.getByRole('button', { name: '立即插话发送' })).toBeVisible()
+  expect(screen.queryByRole('textbox', { name: '会话名称' })).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '切换为规划模式' })).toBeVisible()
+  await user.click(screen.getByRole('button', { name: '源连接与后台任务' }))
+  expect(await screen.findByText('Repository service')).toBeVisible()
+  const panel = screen.getByRole('dialog', { name: '源连接与后台任务' })
+  expect(within(panel).queryByRole('button', { name: '搜索当前会话' })).not.toBeInTheDocument()
+  expect(within(panel).queryByRole('button', { name: '立即插话发送' })).not.toBeInTheDocument()
+  expect(within(panel).queryByRole('textbox', { name: '暂存草稿' })).not.toBeInTheDocument()
+  expect(within(panel).getByText('上下文详情')).not.toBeVisible()
+  expect(panel.querySelector('.hapi-composer-overflow-section')).toHaveAttribute('hidden')
+  expect(within(panel).getByText('已连接 · 已配置令牌 · 1 项工具')).toHaveClass('hapi-service-status')
+  await user.click(within(panel).getByRole('button', { name: '返回会话操作' }))
+  expect(screen.getByRole('button', { name: '源连接与后台任务' })).toHaveFocus()
+  expect(screen.getByRole('textbox', { name: '暂存草稿' })).toBe(parked)
+  expect(parked).toHaveValue('保留附件说明，未保存')
+  await user.click(screen.getByRole('button', { name: '源连接与后台任务' }))
+  await screen.findByText('Repository service')
+  await user.keyboard('{Escape}')
+  await user.click(screen.getByRole('button', { name: '更多输入控件' }))
+  expect(screen.getByRole('dialog', { name: '更多输入控件' })).toBeVisible()
+  expect(screen.getByRole('button', { name: '搜索当前会话' })).toBeVisible()
+  expect(screen.getByRole('textbox', { name: '暂存草稿' })).toBe(parked)
+  expect(f.writes).toHaveLength(0)
+  // The inline action follows the retained input and current native turn.
+  input.draft = '  '; view.rerender(ui())
+  expect(screen.queryByRole('button', { name: '插话' })).not.toBeInTheDocument()
+  input.attachmentIds = ['image']; view.rerender(ui())
+  expect(screen.getByRole('button', { name: '插话' })).toBeVisible()
+  source.activeTurnId = null; view.rerender(ui())
+  expect(screen.queryByRole('button', { name: '插话' })).not.toBeInTheDocument()
+  source.activeTurnId = 'active-turn'; source.connection = { state: 'offline', observedAt: 1 }; view.rerender(ui())
+  expect(screen.queryByRole('button', { name: '插话' })).not.toBeInTheDocument()
+  source.connection = { state: 'online', observedAt: 2 }; input.phase = 'submitting'; view.rerender(ui())
+  expect(screen.queryByRole('button', { name: '插话' })).not.toBeInTheDocument()
+  expect(submit).toHaveBeenCalledTimes(1)
 })

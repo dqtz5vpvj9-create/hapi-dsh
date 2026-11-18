@@ -99,9 +99,9 @@ export function installSourceNativeNavigation(ctx: Context, options: SourceNativ
                 entry.onClose()
             } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
         }
-        return <span className="hhpi-native-navigation-entry"><button type="button" onClick={() => open('search', 'conversation')}>{zh ? '搜索当前会话' : 'Search this conversation'}</button>
+        return <div className="hapi-native-actions hhpi-native-navigation-entry"><button type="button" onClick={() => open('search', 'conversation')}>{zh ? '搜索当前会话' : 'Search this conversation'}</button>
             <button type="button" onClick={() => open('search')}>{zh ? '搜索来源正文' : 'Search source history'}</button>
-            <button type="button" onClick={() => open('tasks')}>{zh ? '父子任务' : 'Related tasks'}</button>{error && <span role="alert">{error}</span>}</span>
+            <button type="button" onClick={() => open('tasks')}>{zh ? '父子任务' : 'Related tasks'}</button>{error && <span role="alert">{error}</span>}</div>
     }
     const ActiveBody = ({ owner, access, props }: { owner: Owner; access: Access; props: PropsRuntime<'sidebar.right.pane.tab'> }) => {
         const { tab } = props.useTabInfo(), lang = useLanguage(), zh = lang.startsWith('zh')
@@ -152,7 +152,15 @@ export function installSourceNativeNavigation(ctx: Context, options: SourceNativ
         title: () => ctx.locale.getSnapshot().active.startsWith('zh') ? '来源历史' : 'Source history' }),
         ctx.slots.inject('hapi.source.composer-navigation', () => ctx.slots.register({ name: 'hapi.source.composer-navigation', id: 'hhpi.native-navigation', order: 35 }, Entry)),
         ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({ name: 'sidebar.right.pane.tab', key: SOURCE_NATIVE_NAVIGATION_ID }, Body))]
-    const style = document.createElement('style'); style.textContent = nativeHistoryStyles + '.hhpi-native-navigation-entry{display:inline-flex;gap:4px;flex-wrap:wrap}.hhpi-native-navigation-entry button,.hhpi-native-navigation nav button{font:inherit;color:inherit;background:transparent;border:1px solid var(--dsw-alias-border-l1,#8884);border-radius:6px;padding:4px 7px;cursor:pointer}.hhpi-native-navigation [hidden]{display:none}.hhpi-native-navigation nav{display:flex;gap:6px;padding:8px}'
+    const style = document.createElement('style'); style.textContent = nativeHistoryStyles + `
+        .hhpi-native-navigation-entry {border-top:1px solid var(--dsw-alias-border-l2,#d8dedf);padding-top:4px;margin-top:4px}
+        .hhpi-native-navigation [hidden] {display:none}
+        .hhpi-native-navigation>nav {display:flex;gap:4px;margin:8px;padding:4px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,#f2f4f3)}
+        .hhpi-native-navigation>nav>button {flex:1;min-width:0;min-height:32px;padding:6px 12px;border:0;border-radius:999px;background:transparent;font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary,#65717b);cursor:pointer}
+        .hhpi-native-navigation>nav>button:hover {background:var(--dsw-alias-interactive-bg-hover,#eef2f1)}
+        .hhpi-native-navigation>nav>button[aria-pressed=true] {background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#22272c);font-weight:500;box-shadow:0 1px 3px rgb(0 0 0 / 8%)}
+        .hhpi-native-navigation>nav>button:focus-visible {outline:2px solid var(--hapi-palette-accent,#359b6c);outline-offset:2px}
+    `
     document.head.append(style)
     return () => { lifetime.abort(); stopReading(); for (const sample of committed.values()) sample.release(); committed.clear()
         for (const stop of stops.reverse()) stop(); for (const owner of owners.values()) owner.dispose(); owners.clear(); retained.clear(); style.remove() }

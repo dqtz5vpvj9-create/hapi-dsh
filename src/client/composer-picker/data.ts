@@ -12,12 +12,14 @@ export interface PickerData {
     serviceTier: string | null
     fast: boolean
     fastAvailable: boolean
-    editable: { model: boolean; effort: boolean; permission: boolean; fast: boolean; approvalPolicy?: boolean }
+    collaboration?: 'plan' | 'default' | null
+    editable: { model: boolean; effort: boolean; permission: boolean; fast: boolean; approvalPolicy?: boolean; collaboration?: boolean }
     warnings: readonly string[]
 }
 export type PickerAction = { kind: 'model'; value: string | null }
     | { kind: 'effort'; value: string | null } | { kind: 'permission'; value: string } | { kind: 'fast'; value: boolean }
     | { kind: 'approvalPolicy'; value: string }
+    | { kind: 'collaboration'; value: 'plan' | 'default' }
 export type PickerChange = { kind: 'model'; value: string | null } | { kind: 'effort'; value: string | null }
     | { kind: 'permission'; value: string } | { kind: 'serviceTier'; value: string }
     | { kind: 'collaboration'; value: string }
@@ -53,5 +55,6 @@ export function validPickerAction(data: PickerData, action: PickerAction): boole
     if (action.kind === 'effort') return data.efforts.some(row => row.value === action.value)
     if (action.kind === 'permission') return data.permissions.includes(action.value)
     if (action.kind === 'approvalPolicy') return data.approvalPolicies?.includes(action.value) === true
+    if (action.kind === 'collaboration') return data.editable.collaboration === true && (action.value === 'plan' || action.value === 'default')
     return data.fastAvailable
 }

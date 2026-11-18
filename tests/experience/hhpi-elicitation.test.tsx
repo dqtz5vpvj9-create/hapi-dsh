@@ -4,6 +4,7 @@ import { userEvent } from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 import type { SourceApproval } from '../../src/remote/protocol.ts'
 import { NativeElicitation } from '../../src/client/remote-elicitation.tsx'
+vi.mock('@deepseek-ai/dsh-client-ui-primitives', async () => (await import('../fixtures/native-task-primitives.tsx')).nativeTaskPrimitives)
 const request: SourceApproval = { id: 'exact-mcp-request', method: 'mcpServer/elicitation/request', turnId: 'turn', itemId: null, params: {} }
 test('native MCP numeric, boolean and multi-select answers retain their types and required option count', async () => {
   const submit = vi.fn(async (_value: Record<string, unknown>) => {}), user = userEvent.setup()

@@ -153,7 +153,7 @@ test('the goal opens as readable content, cancels a draft locally and shows only
   expect(screen.getByRole('button', { name: 'Pause goal' })).toBeEnabled()
   expect(screen.queryByRole('button', { name: 'Resume goal' })).toBeNull()
   expect(screen.queryByRole('menuitem', { name: 'Clear goal' })).toBeNull()
-  expect(screen.getByText('No queued messages.')).toBeVisible()
+  expect(screen.queryByText('No queued messages.')).toBeNull()
   expect(screen.getByText('29.7M')).not.toBeVisible()
   await user.click(screen.getByText('Usage details'))
   expect(screen.getByText('29.7M')).toBeVisible()

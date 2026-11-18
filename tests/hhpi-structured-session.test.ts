@@ -73,6 +73,24 @@ async function fixture(t: TestContext, call: (request: CodexCall) => Promise<Cod
   return { face, actions, observe, session, history, setQueue, entries: () => page.entries, failQueueReads(error: Error | undefined) { queueReadError = error } }
 }
 
+for (const offline of [false, true]) test(`native capabilities ${offline ? 'stay lazy offline' : 'prewarm online without an action owner'}`, async t => {
+  const f = await fixture(t, async () => { throw new Error('Capability discovery must not submit input') })
+  let reads = 0
+  const directory = new SourceDirectory({ async nativeCapabilities() {
+    reads++
+    return { ok: true, value: { methods: { 'thread/queue/add': 'write' }, unavailable: {} } }
+  } } as unknown as HhpiRemoteApi, f.session.sourceId)
+  const metadata = { ...f.session, status: offline ? 'offline' as const : 'idle' as const }
+  const face = new Session(f.face.sessionId, metadata, f.history, {} as HhpiRemoteApi, undefined,
+    { forSession: () => directory } as unknown as SourceDirectories)
+  t.after(() => { face.dispose(); directory.dispose() })
+  assert.equal(reads, offline ? 0 : 1, 'online discovery begins during construction, without Send or a queue refresh')
+  await face.ready
+  await directory.capabilities()
+  await directory.capabilities()
+  assert.equal(reads, 1, 'later structured input reuses the same cached source capabilities')
+})
+
 test('structured admission never enters ordinary text outbox and cached exact native identity retires its echo', async t => {
   const calls: CodexCall[] = []
   const f = await fixture(t, async request => { calls.push(request); return { status: 'accepted', message: 'Queued' } })
@@ -418,6 +436,62 @@ test('native dock edits attachment text without dropping or flattening original 
   assert.equal((await f.face.updateQueue(sourceRow.id as never, { kind: 'remove' })).ok, true)
   assert.equal(calls.at(-1)?.method, 'thread/queue/delete')
   assert.equal(calls.filter(call => call.method === 'thread/queue/add').length, 1)
+})
+
+test('native dock edits image-only input by preserving the image and appending the new text', async t => {
+  const calls: CodexCall[] = []
+  const image = { type: 'localImage', path: '/source/original-only.png', detail: 'original' }
+  let row: NativeQueueItem = { id: 'native-image-only', clientUserMessageId: 'original-image-client', input: [image] }
+  const f = await fixture(t, async request => {
+    calls.push(request)
+    if (request.method === 'thread/queue/update') {
+      row = { ...row, input: request.params!.input as NativeQueueItem['input'] }
+      await f.setQueue([row])
+    }
+    return { status: 'accepted', message: 'Original image input updated' }
+  })
+  await f.setQueue([row])
+  assert.equal(f.face.projections.faceOf('queueActions').getSnapshot()?.[row.id]?.edit, true)
+  assert.equal((await f.face.updateQueue(row.id as never, { kind: 'edit', content: [{ type: 'text', text: 'Describe this image' }] })).ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]?.method, 'thread/queue/update')
+  assert.deepEqual(calls[0]?.params, { threadId: 'thread', queuedSubmissionId: row.id,
+    input: [image, { type: 'text', text: 'Describe this image', text_elements: [] }] })
+  assert.deepEqual(queueInbox(f.face)?.['next-turn'][0]?.content, [{ type: 'text', text: 'Image attachment' }, { type: 'text', text: 'Describe this image' }])
+})
+
+for (const state of ['queued', 'rejected'] as const) test(`native dock dismisses a ${state} local delivery without a source queue write`, async t => {
+  let nativeWrites = 0, deliveryWrites = 0
+  const outbox = new RemoteOutbox(async operation => {
+    deliveryWrites++
+    return { sessionId: operation.sessionId, operationId: operation.operationId, status: 'rejected', message: 'Source rejected input' }
+  }, undefined, undefined, memoryOperations)
+  outbox.setStorage({ storage: new BrowserStorage(), scope: `dismiss-${state}` })
+  t.after(() => outbox.dispose())
+  const f = await fixture(t, async () => { nativeWrites++; throw new Error('Local dismissal must never write to the source') }, undefined, { outbox })
+  const saved = { sessionId: f.session.id, operationId: `local-${state}`, kind: 'send' as const, text: 'Dismiss this local input' }
+  outbox.acceptCatalog([f.session])
+  await outbox.admit(saved)
+  if (state === 'rejected') {
+    const rejected = new Promise<void>(resolve => {
+      const stop = outbox.view(saved.sessionId).subscribe(() => {
+        if (outbox.get(saved.operationId)?.state === 'rejected') { stop(); resolve() }
+      })
+    })
+    outbox.start(saved.operationId)
+    await rejected
+  }
+  assert.equal(outbox.get(saved.operationId)?.state, state)
+  assert.equal(f.face.getSnapshot().pendingSubmissions[0]?.requestId, saved.operationId)
+  assert.equal(f.face.projections.faceOf('queueActions').getSnapshot()?.[saved.operationId]?.remove, true)
+  assert.equal((await f.face.updateQueue(saved.operationId as never, { kind: 'remove' })).ok, true)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(outbox.get(saved.operationId), undefined)
+  assert.equal(f.face.deliveries.getSnapshot().length, 0)
+  assert.equal(f.face.getSnapshot().pendingSubmissions.length, 0)
+  assert.equal(f.face.projections.faceOf('queueActions').getSnapshot()?.[saved.operationId], undefined)
+  assert.equal(nativeWrites, 0)
+  assert.equal(deliveryWrites, state === 'rejected' ? 1 : 0)
 })
 
 test('source-owned queued steering uses original queue identity and keeps the native dock until exact body handoff', async t => {

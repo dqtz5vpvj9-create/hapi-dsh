@@ -34,7 +34,7 @@ interface ControlsProps {
     sourceLocked: boolean
     refresh(): Promise<void>
     resume?(): Promise<void>
-    actionsContent?: ReactNode
+    actionsContent?: ReactNode | ((onSubpageChange: (open: boolean) => void, actionsOpen: boolean) => ReactNode)
     apply(action: PickerAction): Promise<boolean>
 }
 
@@ -54,13 +54,15 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
     const id = useId()
     const permissionAvailable = permissionPickerAvailable(permissionCapable, data)
     const visible = paneState.visible ? open : null
+    const [actionsSubpage, setActionsSubpage] = useState(false)
     const disabled = busy || Boolean(pending) || sourceLocked || !data
     const summary: SourceControlSummary = {
         model: data ? modelLabel(data.model, data.models) : initial.model,
         effort: data ? data.effort : initial.effort,
         permission: data ? data.permission : initial.permission,
         serviceTier: data ? data.serviceTier : initial.serviceTier,
-        permissionAvailable, collaboration: initial.collaboration ?? null,
+        permissionAvailable, collaboration: data?.collaboration ?? initial.collaboration ?? null,
+        collaborationEditable: data?.editable.collaboration === true && !sourceLocked,
     }
     const close = useCallback((restoreFocus = false): void => {
         setOpen(null)
@@ -74,6 +76,7 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
     const { position } = popup
 
     useEffect(() => { if (!paneState.visible || open === 'permission' && !permissionAvailable) setOpen(null) }, [paneState.visible, open, permissionAvailable])
+    useEffect(() => { if (visible !== 'actions') setActionsSubpage(false) }, [visible])
     // Warm settings while the pane is visible, before the first click. A
     // mounted hidden pane must not start another source/model request.
     useEffect(() => { if (paneState.visible && !data) void refresh() }, [paneState.visible, refresh])
@@ -85,7 +88,7 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
         const timer = setInterval(() => { void refresh() }, 3000)
         return () => { clearInterval(timer) }
     }, [paneState.visible, pending?.operationId, refresh])
-    useLayoutEffect(() => { popup.remeasure.current?.() }, [data, loading, error, pending, applied, locale])
+    useLayoutEffect(() => { popup.remeasure.current?.() }, [data, loading, error, pending, applied, locale, actionsSubpage])
     useEffect(() => {
         if (!visible) return
         const outside = (event: Event): void => {
@@ -114,6 +117,7 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
         void apply(action).then(confirmed => { if (confirmed && action.kind === 'model') close(true) })
     }
     const heading = visible === 'permission' ? tr('Permissions', '权限') : visible === 'effort' ? tr('Reasoning effort', '推理强度') : tr('Choose model', '选择模型')
+    const actionsHeading = actionsSubpage ? tr('Connections & processes', '源连接与后台任务') : tr('More input controls', '更多输入控件')
     const panelStyle = popup.anchored ? { positionAnchor: popup.anchorName, '--hhpi-picker-pane-anchor': popup.paneAnchor } as CSSProperties
         : { left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }
     const nativePopover = popup.native ? { popover: 'auto' as const } : {}
@@ -133,6 +137,12 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
                     disabled={disabled || !data.editable.model} onChange={() => select({ kind: 'model', value: choice.value })}/>
                 <span>{choice.label}{choice.detail && <small>{choice.detail}</small>}</span>{modelKey(data.model) === modelKey(choice.value) && <Glyph kind="check"/>}
             </label>)}
+        </div>}
+        {visible === 'model' && data && data.efforts.length > 0 && <div className="hapi-picker-model-footer">
+            <EffortChoices data={data} disabled={disabled || !data.editable.effort} select={select} tr={tr} name={`${id}-model-effort`}/>
+            {(data.fastAvailable || data.fast) && <div className="hapi-picker-fast"><span>Fast</span>
+                <button className="hapi-picker-switch" type="button" role="switch" aria-label={tr('Fast mode', '快速模式')} aria-checked={data.fast}
+                    disabled={disabled || !data.editable.fast} onClick={() => select({ kind: 'fast', value: !data.fast })}><span/></button></div>}
         </div>}
         {visible === 'permission' && <>
             {!!data?.permissions.length && <div className="hapi-picker-options" role="radiogroup" aria-label={tr('Permission modes', '权限模式')}>
@@ -171,19 +181,20 @@ export function SourceControls({ ctx, props, initial, permissionCapable, data, l
     // portal too, without replacing its controller with a new occurrence.
     const actions = <div ref={actionsPopup} id={`${id}-actions`} className="hapi-picker-popover hapi-picker-actions" hidden={visible !== 'actions'} role="dialog" aria-modal="false"
         {...nativePopover} data-picker-positioning={popup.anchored ? 'anchor' : 'geometry'}
-        aria-label={tr('More input controls', '更多输入控件')} data-hapi-picker-popup="actions" data-picker-layout={position.layout}
+        aria-label={actionsHeading} data-hapi-picker-popup="actions" data-picker-layout={position.layout}
         data-picker-session={props.sessionId} data-picker-pane={pane?.paneId} style={panelStyle}>
-        <header><strong>{tr('More input controls', '更多输入控件')}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
-        <div role="group" aria-label={tr('More input controls', '更多输入控件')}>
-            <ComposerSteerAction ctx={ctx} props={props} zh={locale.startsWith('zh')} close={closeActions}/>
-            {actionsContent}
-            {props.renderSlot('hapi.source.composer-navigation', { source: props, onClose: closeActions })}
-            {props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}
-            <div className="hapi-composer-overflow-section" ref={setOverflowTools}/>
-            <div className="hapi-composer-details">{props.renderSlot('hapi.source.composer-details', {})}</div>
+        <header><strong>{actionsHeading}</strong><button type="button" aria-label={tr('Close picker', '关闭选择器')} onClick={() => close(true)}><Glyph kind="close"/></button></header>
+        <div role="group" aria-label={actionsHeading}>
+            <div hidden={actionsSubpage}><ComposerSteerAction ctx={ctx} props={props} zh={locale.startsWith('zh')} close={closeActions}/></div>
+            {typeof actionsContent === 'function' ? actionsContent(setActionsSubpage, visible === 'actions') : actionsContent}
+            <div hidden={actionsSubpage}>{props.renderSlot('hapi.source.composer-navigation', { source: props, onClose: closeActions })}</div>
+            <div hidden={actionsSubpage}>{props.renderSlot('hapi.source.composer-actions', { source: props, onAttention: setAttention, onClose: closeActions })}</div>
+            <div className="hapi-composer-overflow-section" hidden={actionsSubpage} ref={setOverflowTools}/>
+            <div className="hapi-composer-details" hidden={actionsSubpage}>{props.renderSlot('hapi.source.composer-details', {})}</div>
         </div>
     </div>
-    return <><SourceControlRow summary={summary} sessionId={props.sessionId} open={visible} panelId={id} pending={Boolean(pending)} attention={attention} tr={tr} onToggle={toggle}
+    return <><SourceControlRow summary={summary} sessionId={props.sessionId} open={visible} panelId={id} pending={Boolean(pending) || busy} attention={attention} tr={tr} onToggle={toggle}
+        onTogglePlan={() => select({ kind: 'collaboration', value: summary.collaboration === 'plan' ? 'default' : 'plan' })}
         utilities={<>{props.renderSlot('hapi.source.composer-tools', { source: props })}<CompactComposerTools ctx={ctx} props={props} zh={locale.startsWith('zh')} overflow={overflowTools}/></>}
         refs={{ effort: node => { triggers.current.effort = node }, model: node => { triggers.current.model = node }, permission: node => { triggers.current.permission = node }, actions: node => { triggers.current.actions = node } }}/>
         {createPortal(<>{settings}{actions}</>, document.body)}</>

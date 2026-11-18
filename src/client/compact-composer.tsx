@@ -42,7 +42,13 @@ export function CompactComposerTools({ ctx, props, zh, overflow }: { ctx: Contex
     const [expanded, setExpanded] = useState(false)
     const [expandInMore, setExpandInMore] = useState(false)
     useLayoutEffect(() => { insertion.current = undefined }, [props.sessionId, props.sessionBinding, props.inputActions])
-    const locked = props.useInput(input => input.phase !== 'plain' && input.phase !== 'claimed')
+    const running = props.useSession(value => value.running)
+    const input = props.useInput(value => value)
+    const binding = props.sessionBinding ?? ctx.sessions.binding(props.sessionId)
+    const metadata = (binding?.session as RemoteSourceSession | undefined)?.metadata?.getSnapshot()
+    const locked = input.phase !== 'plain' && input.phase !== 'claimed'
+    const canSteer = isSourceSessionId(props.sessionId) && running && metadata?.capabilities.steer && !sourceIsOffline(metadata)
+        && Boolean(metadata.activeTurnId) && input.phase === 'plain' && (Boolean(input.draft.trim()) || input.attachmentIds.length > 0)
     useLayoutEffect(() => {
         const card = anchor.current?.closest<HTMLElement>('[data-composer-card]')
         if (!card) return
@@ -64,6 +70,8 @@ export function CompactComposerTools({ ctx, props, zh, overflow }: { ctx: Contex
     const expandLabel = zh ? expanded ? '收起输入框' : '展开输入框' : expanded ? 'Collapse editor' : 'Expand editor'
     const toggleExpanded = () => { setExpanded(value => !value); focus() }
     return <>
+        {canSteer && <button type="button" className="hapi-composer-inline-steer"
+            onClick={() => { if (binding) ctx.conversation.input.for(binding.ctx).submit('steer', 'click') }}>{zh ? '插话' : 'Steer'}</button>}
         <button ref={anchor} type="button" className="hapi-picker-utility" data-hhpi-composer-controls={isSourceSessionId(props.sessionId) ? '' : undefined}
             aria-label={zh ? '引用文件' : 'Reference a file'} disabled={locked}
             onPointerDown={event => { insertion.current = props.inputActions.captureInsertion(); event.preventDefault() }}
